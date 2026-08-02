@@ -48,15 +48,42 @@ funcionar **100% standalone, sem nenhum servidor central** — cliente e
 servidor colapsam no mesmo processo local.
 
 Princípio: o servidor só existe pra resolver o que **de fato** exige
-coordenação entre múltiplos nodes. Fora isso, não é necessário. Candidatos ao
-que realmente precisa de servidor (ainda não confirmado — ver P14):
+coordenação entre múltiplos nodes. Fora isso, não é necessário.
 
-- Gerenciamento de múltiplos computadores/dispositivos (workspace de máquinas, Fase 9)
-- Possivelmente: emitir/validar chaves da "Warden API" (P12) se usadas de fora do device
-- Possivelmente: hospedar integrações MCP acessíveis de fora do device
+Reframe importante: "servidor" aqui **não é uma categoria de infraestrutura
+à parte**. É sempre um device que o próprio usuário já tem (o desktop fixo, o
+homelab) só que designado como "o que fica sempre ligado". Não existe nenhum
+cenário no Warden que exige infraestrutura de terceiro que o usuário não
+controle — o pior caso é "preciso que uma das minhas próprias máquinas
+fique ligada", nunca "preciso alugar/operar um serviço".
 
-O usuário quer minimizar a dependência de servidor o máximo possível — é
-exceção pra necessidade comprovada, não o padrão.
+### Mapa de dependência de servidor (P14)
+
+| Precisa de servidor? | Feature |
+|---|---|
+| ❌ Não | Orquestrador, model calls, tools, vault local (Fase 1) |
+| ❌ Não | Canal Terminal (Fase 1.3 / canal Terminal completo, P8) |
+| ❌ Não | App Desktop ou Mobile rodando sozinho, 1 device (Fases 6/7) |
+| ❌ Não | Warden como *client* MCP — conectar em servers externos, ex. Anchor (P11a) |
+| ❌ Não | Sub-agente leve — invocação síncrona, mesmo processo (1.8) |
+| ❌ Não | Backup em IPFS — usa Filebase/Pinata, não infra própria (Fase 4) |
+| ❌ Não | Warden API (P12) ou Warden como *server* MCP (P11b), **se só chamado do mesmo device** (localhost) |
+| ⚠️ Precisa de "algo sempre ligado" — não é topologia servidor↔cliente, é só uptime | Canal Telegram (long polling, Fase 2) |
+| ⚠️ Precisa de "algo sempre ligado" | Canal WhatsApp (sessão Baileys tem que ficar conectada, Fase 3) |
+| ⚠️ Precisa ser alcançável de fora do device | Warden API (P12) chamada de fora do device onde o Warden roda |
+| ⚠️ Precisa ser alcançável de fora do device | Warden como *server* MCP (P11b) pra app remoto/cloud, não local |
+| ✅ Sim — precisa do node primário (papel "servidor" de fato) | Execução remota de tool em outro device (Fase 9) |
+| ✅ Sim | Pareamento / workspace de múltiplos devices (Fase 9.6/9.7) |
+| ✅ Sim | Extensão de navegador falando com orquestrador rodando em **outro** device (se for o mesmo device, cai no ❌) |
+
+Conclusão: só a Fase 9 (rede de nós) exige de fato o papel "servidor" da
+topologia estrela. Tudo mais é local por padrão, ou vira servidor só na
+medida em que o usuário decide expor pra fora do próprio device — nunca por
+exigência estrutural. O protocolo servidor↔cliente (P1) só importa pra essa
+fatia "✅ Sim".
+
+P14 fica marcado como respondido por esse mapeamento — pode ser revisado
+quando a Fase 9 for implementada de verdade e detalhes concretos aparecerem.
 
 ---
 

@@ -2,7 +2,32 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 6)
+> Última atualização: 2026-08-02 (Sessão 7)
+
+---
+
+### 2026-08-02 — Sessão 7
+
+- **Objetivo**: Mapear P14 (o que realmente exige servidor) a pedido do usuário — sem código nesta sessão.
+
+**O que foi feito**:
+
+- Passei por todas as features já registradas (Fases 1-10 + P8-P16) e classifiquei cada uma em três
+  baldes: não precisa de servidor, precisa só de "algo sempre ligado" (uptime, não topologia
+  servidor↔cliente), ou precisa de fato do node primário/servidor
+- Conclusão registrada em `ARCHITECTURE.md` ("Mapa de dependência de servidor"): só a **Fase 9**
+  (execução remota de tool em outro device, pareamento multi-device) exige de fato o papel servidor.
+  Canais Telegram/WhatsApp só precisam de um processo sempre ligado, não de topologia estrela. A
+  "Warden API" (P12) e o Warden como server MCP (P11b) só entram nessa categoria se chamados de fora
+  do device onde o Warden roda — localmente, não precisam de nada
+- Reforcei o reframe: "servidor" no Warden nunca é infra de terceiro — é sempre uma das próprias
+  máquinas do usuário designada como "a que fica ligada". Não existe cenário que exija algo que o
+  usuário não já controle
+- P14 movida pra "Resolvidas" em `PENDING.md`, com nota de que pode ser revista quando a Fase 9 for
+  implementada de fato e detalhes concretos aparecerem
+
+**Próximo passo**: retomar a Fase 1 (1.4/1.5 — Vault injetando contexto no orchestrator) quando o
+usuário quiser voltar à implementação.
 
 ---
 
