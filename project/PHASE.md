@@ -13,7 +13,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Stack**: Rust (core), TypeScript (CLI se necessário)
 
 **Etapas**:
-- [ ] 1.1 — Setup do projeto Rust + estrutura de módulos (orchestrator, model, memory, tool)
+- [x] 1.1 — Setup do projeto Rust + estrutura de módulos (orchestrator, model, memory, tool)
 - [ ] 1.2 — Trait `ModelProvider` + implementação OpenAI (primeiro provedor)
 - [ ] 1.3 — Loop de conversa via stdin/stdout (CLI)
 - [ ] 1.4 — Vault markdown local: ler/escrever arquivos `.md` em pasta configurável
@@ -25,7 +25,6 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [ ] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
 
 **Decisões pendentes**:
-- Framework de CLI: clap vs structopt
 - Formato do prompt de sistema (persona configurável)
 - Estratégia de busca no vault (grep simples vs fuzzy finder)
 

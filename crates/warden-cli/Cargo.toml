@@ -1,0 +1,13 @@
+[package]
+name = "warden-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "warden"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+warden-core = { path = "../warden-core" }

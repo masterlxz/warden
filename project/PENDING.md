@@ -15,7 +15,6 @@
 | ID | Item | Onde se originou | Prioridade |
 |---|---|---|---|
 | P1 | **Protocolo servidor↔cliente** — gRPC vs WebSocket. O TruthID já tem um relay stateless por WS — reaproveitar seria natural. | `ARCHITECTURE.md` | 🔴 Alta |
-| P2 | **Framework de CLI** — clap vs structopt vs gum (TUI) | `PHASE.md` (Fase 1) | 🔴 Alta |
 | P3 | **Formato do prompt de sistema** — como estruturar a persona configurável do agente | `PHASE.md` (Fase 1) | 🟠 Média |
 | P4 | **Controle de custo/rate limit** — onde e como limitar chamadas de modelo por usuário/período | Visão original | 🟠 Média |
 | P5 | **Estratégia de busca no vault** — grep simples vs fuzzy finder vs embedding (Fase 4) | `PHASE.md` (Fase 1) | 🟡 Baixa |
@@ -31,4 +30,6 @@
 
 ## Resolvidas
 
-Nenhuma pendência resolvida ainda — projeto recém-criado.
+| ID | Item | Resolução | Sessão |
+|---|---|---|---|
+| P2 | **Framework de CLI** — clap vs structopt vs gum | **clap v4 (derive)** — structopt descontinuado/incorporado ao clap; gum não se aplica a Rust | Sessão 2 (2026-08-01) |
