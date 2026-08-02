@@ -2,7 +2,37 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 5)
+> Última atualização: 2026-08-02 (Sessão 6)
+
+---
+
+### 2026-08-02 — Sessão 6
+
+- **Objetivo**: Refinar P11/P12 com base em feedback do usuário sobre as ideias registradas na Sessão 5, e registrar duas ideias novas — sem código nesta sessão.
+
+**O que foi feito**:
+
+- Dei minha opinião sobre P9–P13: sinalizei risco de segurança em P11 server-side (expor vault via
+  MCP pra terceiros sem escopo granular), tensão de identidade em P12 (agente pessoal self-hosted vs
+  virar plataforma SaaS multi-tenant), e sugeri não reinventar indexador de arquivo/app em P9
+  (reaproveitar `mdfind`/`Everything`/`plocate` em vez de indexação própria)
+- Usuário esclareceu P11: exemplo concreto é Warden conectar via MCP com o **Anchor** e criar um
+  valuation por conta do usuário; e a parte mais ambiciosa é **P15** — conectores MCP genéricos,
+  não ficar restrito a integrações que já têm servidor MCP pronto no mercado
+- Usuário esclareceu P12: a chave de API é criada dentro do próprio app (não é serviço à parte),
+  totalmente opcional, roda no "app host" que já está no device do usuário
+- **Refinamento arquitetural importante**: a topologia estrela (`ARCHITECTURE.md`) não significa que
+  o servidor é sempre necessário — um único node deve funcionar 100% standalone. Servidor só entra
+  pro que exige coordenação entre múltiplos devices (ex. gerenciamento multi-máquina, Fase 9).
+  Não está confirmado se a "Warden API" (P12) ou hospedar MCP acessível de fora exigem servidor —
+  registrado como **P14**, decisão explicitamente em aberto
+- Nova ideia registrada: **P16** — sistema de "Skills" configuráveis pela UX (não só código), no
+  espírito das Skills do Claude, ainda sem arquitetura definida
+- Atualizados `ARCHITECTURE.md` (nota "servidor é opcional"), `PENDING.md` (P11/P12 refinados,
+  P14/P15/P16 novos), `ROADMAP.md` (seções de MCP e Warden API reescritas, seção nova de Skills)
+
+**Próximo passo**: retomar a Fase 1 (1.4/1.5 — Vault injetando contexto no orchestrator) quando o
+usuário quiser voltar à implementação.
 
 ---
 

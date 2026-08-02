@@ -71,26 +71,57 @@ parte de produto (o que o usuário vê e configura). Ver P10.
 
 ### Tela de gerenciamento de integrações MCP
 
-Duas direções distintas, não uma só:
+Três frentes, não uma só:
 
-- **Warden como client MCP** — conectar em servers MCP externos (Google,
-  GitHub, etc., já previstos na Fase 5.2/5.7), com UI pra adicionar/remover
-  integrações convencionais
+- **Warden como client MCP (integrações prontas)** — conectar em servers MCP
+  externos que já existem (Google, GitHub, etc., já previstos na Fase 5.2/5.7),
+  com UI pra adicionar/remover. Exemplo concreto do usuário: conectar com o
+  **Anchor** (ex-Practice Valuation) via MCP e pedir pro agente criar um
+  valuation lá — o Warden não precisa saber nada de Anchor hardcoded, só
+  conversa com o MCP server que o Anchor expõe
 - **Warden como server MCP** — expor o próprio Warden (tools + vault) como um
   MCP server, pra qualquer app — inclusive de terceiros — poder integrar com
   ele. "Só integra a IA com o que ela quiser" foi como o usuário descreveu
+- **Conectores genéricos (P15)** — a parte mais ambiciosa: não ficar restrito
+  a integrações que já têm um MCP server pronto no mercado. O usuário quer que
+  qualquer pessoa consiga conectar o software dela — mesmo sem MCP pronto —
+  e o agente crie/leia algo nesse software. Mecanismo ainda em aberto
+  (gerador a partir de spec OpenAPI? assistente guiado que a própria IA usa
+  pra "aprender" a integração?)
 
-Ver P11.
+Ver P11 e P15 em `PENDING.md`.
 
-### "Warden API" — API unificada model-agnostic + vault-aware
+### "Warden API" — chave de API própria, auto-hospedada, opcional
 
 Ideia central: uma chave de API do **Warden**, não do provedor de IA por trás.
 Quem integra não escolhe "GPT" ou "Gemini" — escolhe o Warden, que resolve
 sozinho qual modelo usar e já vem com o contexto do vault do usuário embutido.
 É a mesma abstração `ModelProvider` que já existe internamente
 (`crates/warden-core/src/model`), só que exposta pra fora como produto.
-Levanta perguntas de auth, billing e rate limit que ainda não foram pensadas.
-Ver P12.
+
+Clarificado pelo usuário (2026-08-02): a chave é criada **dentro do próprio
+app** que já está rodando no device do usuário — não é um serviço à parte que
+precisa ser contratado ou hospedado em outro lugar. É **totalmente opcional**:
+quem não quiser usar isso, não usa, e o resto do Warden funciona igual. Isso
+conecta direto com o princípio de "servidor é opcional" (ver `ARCHITECTURE.md`
+e P14) — só entra servidor de verdade se a chave precisar ser usada de fora
+do device onde o Warden está rodando.
+
+Perguntas de auth, billing e rate limit ainda não foram pensadas. Ver P12.
+
+### Skills configuráveis via UX
+
+Nova ideia do usuário (2026-08-02): além de `Tool` (capacidade em código),
+quer um conceito de **Skill** — pacote de instrução/comportamento reutilizável
+que o usuário consegue criar **pela interface**, sem escrever código. No
+espírito das Skills do próprio Claude. Ainda não definido:
+
+- Skill é só um prompt/instrução empacotada, ou pode compor tools?
+- Onde mora (vault? config separada?) e como é versionada
+- Como se relaciona com sub-agentes (P8) — uma skill pode ser "invocar um
+  sub-agente com esse contexto pronto"?
+
+Ver P16.
 
 ### Ecossistema descentralizado (Practice Valuation/Anchor + TruthID)
 

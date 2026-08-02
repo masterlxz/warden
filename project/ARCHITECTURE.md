@@ -5,7 +5,7 @@
 | Decisão | Opções | Status |
 |---|---|---|
 | Framework desktop/mobile | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
-| Topologia de rede | Estrela vs Malha P2P | **Estrela** ✓ — servidor central, clientes se conectam |
+| Topologia de rede | Estrela vs Malha P2P | **Estrela** ✓ — servidor central, clientes se conectam. **Refinado 2026-08-02**: servidor é opcional, só entra quando a feature exige coordenação entre múltiplos nodes — ver nota abaixo e P14 em `PENDING.md` |
 | Memória | Markdown vault (Obsidian) vs banco vetorial | **Markdown vault** ✓ — portátil, legível, versionável |
 | Backup | IPFS (Filebase/Pinata) vs S3 vs auto | **IPFS** ✓ — mesmo padrão do TruthID Vault |
 | Model-agnostic | Camada de abstração vs hardcoded | **Camada de abstração** ✓ — suporta OpenAI, Anthropic, Gemini |
@@ -39,6 +39,24 @@
 │  Browser    │    │  WhatsApp   │
 └─────────────┘    └─────────────┘
 ```
+
+### Servidor é opcional (refinamento 2026-08-02)
+
+O diagrama acima é o caso de **múltiplos nodes**. Mas um único node (ex: só o
+app rodando no celular do usuário, sem nenhum outro dispositivo) deve
+funcionar **100% standalone, sem nenhum servidor central** — cliente e
+servidor colapsam no mesmo processo local.
+
+Princípio: o servidor só existe pra resolver o que **de fato** exige
+coordenação entre múltiplos nodes. Fora isso, não é necessário. Candidatos ao
+que realmente precisa de servidor (ainda não confirmado — ver P14):
+
+- Gerenciamento de múltiplos computadores/dispositivos (workspace de máquinas, Fase 9)
+- Possivelmente: emitir/validar chaves da "Warden API" (P12) se usadas de fora do device
+- Possivelmente: hospedar integrações MCP acessíveis de fora do device
+
+O usuário quer minimizar a dependência de servidor o máximo possível — é
+exceção pra necessidade comprovada, não o padrão.
 
 ---
 
