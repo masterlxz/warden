@@ -109,7 +109,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Etapas**:
 - [x] 6.1 — Setup Tauri + React + TypeScript
 - [x] 6.2 — Shell do app: sidebar de conversas, área de chat
-- [ ] 6.3 — Integração com o core (IPC Rust↔frontend)
+- [x] 6.3 — Integração com o core (IPC Rust↔frontend)
 - [ ] 6.4 — Canal nativo (chat direto no app)
 - [ ] 6.5 — Configuração visual (modelo, API keys, canais)
 - [ ] 6.6 — Histórico de conversas

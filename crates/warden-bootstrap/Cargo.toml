@@ -1,0 +1,11 @@
+[package]
+name = "warden-bootstrap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+serde.workspace = true
+toml.workspace = true
+warden-core = { path = "../warden-core" }

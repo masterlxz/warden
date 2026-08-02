@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
@@ -12,37 +13,51 @@ function titleFromMessage(content: string): string {
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
-  function handleSendMessage(content: string) {
-    const message: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-      createdAt: Date.now(),
-    };
+  function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {
+    setConversations((prev) => {
+      if (!prev.some((c) => c.id === conversationId)) {
+        const conversation: Conversation = {
+          id: conversationId,
+          title: titleFromMessage(titleSeed ?? message.content),
+          messages: [message],
+          createdAt: message.createdAt,
+          updatedAt: message.createdAt,
+        };
+        return [conversation, ...prev];
+      }
+      return prev.map((c) =>
+        c.id === conversationId ? { ...c, messages: [...c.messages, message], updatedAt: message.createdAt } : c
+      );
+    });
+  }
 
-    if (activeConversationId === null) {
-      const conversation: Conversation = {
+  async function handleSendMessage(content: string) {
+    const conversationId = activeConversationId ?? crypto.randomUUID();
+    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now() };
+
+    appendMessage(conversationId, userMessage, content);
+    if (activeConversationId === null) setActiveConversationId(conversationId);
+
+    setSendError(null);
+    setIsSending(true);
+    try {
+      const reply = await invoke<string>("send_message", { content });
+      appendMessage(conversationId, {
         id: crypto.randomUUID(),
-        title: titleFromMessage(content),
-        messages: [message],
-        createdAt: message.createdAt,
-        updatedAt: message.createdAt,
-      };
-      setConversations((prev) => [conversation, ...prev]);
-      setActiveConversationId(conversation.id);
-      return;
+        role: "assistant",
+        content: reply,
+        createdAt: Date.now(),
+      });
+    } catch (err) {
+      setSendError(String(err));
+    } finally {
+      setIsSending(false);
     }
-
-    setConversations((prev) =>
-      prev.map((conversation) =>
-        conversation.id === activeConversationId
-          ? { ...conversation, messages: [...conversation.messages, message], updatedAt: message.createdAt }
-          : conversation
-      )
-    );
   }
 
   return (
@@ -53,7 +68,12 @@ function App() {
         onSelectConversation={setActiveConversationId}
         onNewConversation={() => setActiveConversationId(null)}
       />
-      <ChatArea activeConversation={activeConversation} onSendMessage={handleSendMessage} />
+      <ChatArea
+        activeConversation={activeConversation}
+        onSendMessage={handleSendMessage}
+        isSending={isSending}
+        sendError={sendError}
+      />
     </div>
   );
 }

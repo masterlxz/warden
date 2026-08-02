@@ -4,9 +4,10 @@ interface MessageInputProps {
   onSend: (content: string) => void;
   /** Bumped by the parent whenever the active conversation changes, so the composer refocuses. */
   focusKey?: string | null;
+  disabled?: boolean;
 }
 
-function MessageInput({ onSend, focusKey }: MessageInputProps) {
+function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -16,7 +17,7 @@ function MessageInput({ onSend, focusKey }: MessageInputProps) {
 
   function submit() {
     const content = draft.trim();
-    if (content === "") return;
+    if (content === "" || disabled) return;
     onSend(content);
     setDraft("");
   }
@@ -42,9 +43,15 @@ function MessageInput({ onSend, focusKey }: MessageInputProps) {
             submit();
           }
         }}
+        disabled={disabled}
         rows={1}
       />
-      <button type="submit" className="chat-send-btn" aria-label="Send message" disabled={draft.trim() === ""}>
+      <button
+        type="submit"
+        className="chat-send-btn"
+        aria-label="Send message"
+        disabled={disabled || draft.trim() === ""}
+      >
         Send
       </button>
     </form>

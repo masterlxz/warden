@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 15)
+> Última atualização: 2026-08-02 (Sessão 16)
 
 ---
 
@@ -436,6 +436,65 @@ visual roxa em mente.
 **Próximo passo**: 6.3 — integração com o core (IPC Rust↔frontend), plugando o `warden-core` de
 verdade no `desktop/src-tauri` (que hoje só está no workspace estruturalmente, sem depender dele
 ainda).
+
+---
+
+### 2026-08-02 — Sessão 16
+
+- **Objetivo**: Etapa 6.3 — integração com o core (IPC Rust↔frontend). Mandar mensagem no chat
+  agora chama o `Orchestrator` de verdade e mostra a resposta.
+
+**O que foi feito**:
+
+- Antes de plugar o desktop, identificado um problema real: `warden-cli/src/main.rs` já tinha
+  ~90 linhas de lógica sensível (carregar config TOML, resolver provider/model/vault/API keys com
+  precedência, montar `Orchestrator`+tools+sub-agente) que o desktop ia precisar duplicar
+  inteirinha. Duplicar lógica de resolução de chave de API é exatamente o tipo de coisa que diverge
+  silenciosamente com o tempo — não é abstração prematura extrair isso agora, já existem dois
+  consumidores reais querendo o mesmo comportamento
+- Planejado com um agente de arquitetura, que confirmou o desenho e leu o estado real de todos os
+  arquivos envolvidos antes de finalizar
+- Criado o crate `crates/warden-bootstrap` — recebe `FileConfig`/`ApiKeys`/`Provider` (com
+  `Deserialize`, sem `ValueEnum` — não depende de `clap`), `load_config`/`resolve_secret`, e a
+  função nova `bootstrap(explicit_config_path, overrides, default_vault_path) ->
+  anyhow::Result<Orchestrator>`. Decisão deliberada: **não** foi pro `warden-core` (fonte de
+  config é decisão de camada de canal, não do motor agnóstico de modelo) nem virou "warden-cli
+  como lib" (misturaria parsing de CLI com algo que um app GUI também usa)
+- `default_vault_path` é parâmetro da função, não hardcoded — o fallback certo difere por canal:
+  CLI mantém `"vault"` relativo (comportamento idêntico ao de antes, usuário roda de onde quiser);
+  desktop usa `~/Warden/vault` (absoluto — cwd de app lançado por ícone é imprevisível; vault fica
+  direto na home por ser conteúdo navegável, tipo Obsidian, não escondido numa pasta de config)
+- `warden-cli/src/main.rs` encolheu bastante: só ficou o `Cli` (clap), um `Provider` local com
+  `ValueEnum` (convertido pra `warden_bootstrap::Provider` via `From`) e o loop REPL. Os 5 testes
+  unitários de config migraram verbatim pro `warden-bootstrap`. `Cargo.toml` do `warden-cli`
+  perdeu `dirs`/`serde`/`toml` (não usa mais direto) e ganhou `warden-bootstrap`
+- **Problema de UX resolvido antes de acontecer**: no primeiro uso do desktop é bem provável que
+  não exista `GEMINI_API_KEY` nem config file ainda (não existe tela de configuração — isso é a
+  6.5). Se `bootstrap()` fosse chamado com `.expect()` antes do `tauri::Builder::run()`, o app
+  nunca abriria janela nenhuma nesse caso — pior UX possível. Solução: `AppState { orchestrator:
+  Result<Orchestrator, String> }` guardado no estado gerenciado do Tauri (sem `Mutex` — nada muta
+  depois da construção, `Orchestrator` já é `Send + Sync`), e o comando `send_message` só propaga
+  o erro quando a mensagem é de fato enviada. Janela sempre abre
+- Frontend: `App.tsx` ganhou `isSending`/`sendError`, `handleSendMessage` virou `async` e chama
+  `invoke<string>("send_message", { content })` — sucesso anexa a resposta como mensagem
+  `assistant`, erro fica num banner (`sendError`) sem inventar uma bolha de assistente falsa.
+  `ChatArea` mostra o banner (`role="alert"`) acima do input; `MessageInput` ganhou prop
+  `disabled` (desabilita durante o envio, evita reenvio duplo)
+- Verificação: `cargo build/test/clippy --workspace` limpos (22 testes — os 5 migrados pro
+  `warden-bootstrap` + os 5 de processo de `warden-cli/tests/cli.rs` **sem nenhuma alteração**,
+  confirmando que o refactor não mudou comportamento externo nenhum); `npm run build` (tsc+vite)
+  limpo; testado de verdade via `npm run tauri dev` sem `GEMINI_API_KEY`/config file — janela abriu
+  normal, sem crash, `~/Warden/vault` não foi criado (bootstrap falhou antes de tocar o
+  filesystem, exatamente como esperado). Não deu pra testar o envio de mensagem de fato — sem
+  `xdotool`/`wtype` funcionando nesse Wayland nativo (KDE Plasma), não há como simular digitação
+  na janela a partir do terminal; fica pro usuário confirmar visualmente
+- `PHASE.md` (6.3 concluída), `ARCHITECTURE.md` (decisão do `warden-bootstrap` registrada)
+
+**Próximo passo**: 6.4 — canal nativo (chat direto no app, já praticamente pronto pós-6.3) ou 6.5
+— configuração visual (tela de settings pra API keys/provider/vault, que hoje só dá pra editar via
+`~/.config/warden/config.toml` na mão). Vale o usuário testar enviar uma mensagem de verdade
+(com `GEMINI_API_KEY` setada) antes de seguir, já que isso não foi confirmado automaticamente
+nesta sessão.
 
 ---
 

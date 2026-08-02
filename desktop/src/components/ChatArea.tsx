@@ -6,9 +6,11 @@ import MessageInput from "./MessageInput";
 interface ChatAreaProps {
   activeConversation: Conversation | undefined;
   onSendMessage: (content: string) => void;
+  isSending: boolean;
+  sendError: string | null;
 }
 
-function ChatArea({ activeConversation, onSendMessage }: ChatAreaProps) {
+function ChatArea({ activeConversation, onSendMessage, isSending, sendError }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,7 +33,12 @@ function ChatArea({ activeConversation, onSendMessage }: ChatAreaProps) {
           </>
         )}
       </div>
-      <MessageInput onSend={onSendMessage} focusKey={activeConversation?.id ?? null} />
+      {sendError && (
+        <div className="chat-error-banner" role="alert">
+          {sendError}
+        </div>
+      )}
+      <MessageInput onSend={onSendMessage} focusKey={activeConversation?.id ?? null} disabled={isSending} />
     </div>
   );
 }
