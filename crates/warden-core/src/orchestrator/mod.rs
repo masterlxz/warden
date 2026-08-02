@@ -27,7 +27,25 @@ impl Orchestrator {
     }
 
     pub async fn handle_message(&self, user_input: &str) -> anyhow::Result<String> {
-        let messages = vec![Message { role: Role::User, content: user_input.to_string() }];
+        let mut messages = Vec::new();
+
+        let hits = self.vault.search(user_input, 8).unwrap_or_default();
+        if !hits.is_empty() {
+            let context = hits
+                .iter()
+                .map(|h| format!("[{}:{}] {}", h.path, h.line_number, h.line.trim()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            messages.push(Message {
+                role: Role::System,
+                content: format!(
+                    "Relevant context found in the user's memory vault (may or may not be relevant — use your judgment):\n{context}"
+                ),
+            });
+        }
+
+        messages.push(Message { role: Role::User, content: user_input.to_string() });
+
         let tool_specs = self.tools.iter().map(|t| t.spec()).collect();
         let response = self.model.chat(messages, tool_specs).await?;
         Ok(response.content)

@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 7)
+> Última atualização: 2026-08-02 (Sessão 8)
 
 ---
 
@@ -106,6 +106,35 @@ usuário quiser voltar à implementação.
   correto/gratuito
 
 **Próximo passo**: 1.4/1.5 — plugar o `Vault` no orchestrator pra injetar contexto relevante no prompt.
+
+---
+
+### 2026-08-02 — Sessão 8
+
+- **Objetivo**: Etapas 1.4 e 1.5 — vault markdown local completo + busca de contexto injetada no prompt.
+
+**O que foi feito**:
+
+- `Vault::new` agora cria a pasta raiz automaticamente (`create_dir_all`) se não existir, em vez de
+  falhar silenciosamente no primeiro `read`/`list`
+- Adicionado `Vault::list_files()` — varre a raiz recursivamente e retorna só arquivos `.md`
+  (paths relativos à raiz)
+- Adicionado `Vault::search(query, max_hits)` — grep simples: quebra a query em palavras (≥3
+  caracteres), busca substring case-insensitive linha a linha em todo `.md` do vault, retorna
+  `SearchHit { path, line_number, line }`. Resolve a P5 pra v1 (grep simples; embedding fica pra
+  Fase 4, ver P6)
+- `Orchestrator::handle_message` agora chama `vault.search` com o texto do usuário como query antes
+  de montar as mensagens; se houver hits, injeta uma `Message { role: System }` com o contexto
+  encontrado (path:linha + conteúdo) antes da mensagem do usuário. Ambos providers (`OpenAiProvider`,
+  `GeminiProvider`) já tratavam `Role::System` corretamente, não precisou mexer neles
+- Testes unitários em `memory/mod.rs` (roundtrip de write/read, listagem só de `.md` em subpastas,
+  busca case-insensitive + respeito ao limite `max_hits`) — `cargo test --workspace` passa (3 testes)
+- `cargo build --workspace` limpo
+- `PHASE.md` atualizado (1.4 e 1.5 concluídas), `PENDING.md` (P5 resolvida)
+
+**Próximo passo**: 1.6 — trait `Tool` já existe (`crates/warden-core/src/tool/mod.rs`), falta a
+primeira implementação concreta (`read_file`/`write_file`, provavelmente sobre o próprio `Vault`) e
+registrá-la no `Orchestrator` via `register_tool`.
 
 ---
 
