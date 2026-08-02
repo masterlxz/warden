@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 13)
+> Última atualização: 2026-08-02 (Sessão 14)
 
 ---
 
@@ -334,6 +334,61 @@ fecha a Fase 1; depois entra a Fase 2 (canal Telegram).
   status geral), `ARCHITECTURE.md` (decisão TOML + localização + precedência)
 
 **Próximo passo**: Fase 2 — Canal Telegram (2.1: setup do bot, token, webhook/polling).
+
+---
+
+### 2026-08-02 — Sessão 14
+
+- **Objetivo**: Reordenar prioridades (usuário quer o app desktop antes de Telegram/WhatsApp) e
+  implementar a etapa 6.1 — setup Tauri + React + TypeScript.
+
+**O que foi feito**:
+
+- Usuário pediu pra pular a ordem numérica das fases e ir direto pro app desktop, priorizando ter
+  uma interface de chat de verdade em vez dos canais de mensageria. Validei que é seguro
+  tecnicamente (app desktop só faz IPC local, não depende da topologia servidor↔cliente da Fase 9 —
+  já mapeado em P14) e registrei a reordenação em `ROADMAP.md` (nota datada, números das fases em
+  `PHASE.md` não mudaram, só a ordem de execução)
+- Antes de implementar, usei um agente Explore pra levantar a stack Tauri real do TruthID
+  (`/home/masterlxz/Documents/workspace/truthid/desktop`), já que o usuário confirmou "mesma
+  stack": Tauri 2, React 19, TypeScript ~5.8, Vite 7, npm, sem router nem lib de state management
+  (só Context), CSS puro sem Tailwind. TruthID não tem nenhuma UI de chat pra reaproveitar —
+  território novo
+- Scaffold gerado via `create-tauri-app` (`npx --yes create-tauri-app@latest desktop -m npm -t
+  react-ts --identifier com.warden.desktop -y`) — confirma exatamente a stack do TruthID.
+  `desktop/` na raiz do repo, irmã de `crates/`, não dentro dela (não é lib Rust compartilhável)
+- Rebranding mínimo: `productName`/`windows[0].title` em `tauri.conf.json` → "Warden" (resto do
+  config fica no default do template por enquanto — CSP/capabilities não valem endurecer ainda,
+  não tem conteúdo remoto carregado)
+- `desktop/src-tauri` entrou no workspace Cargo raiz (`Cargo.toml` → `members`), com
+  `version.workspace = true`/`edition.workspace = true` pra consistência com `warden-core`/
+  `warden-cli`. **Sem** dependência em `warden-core` ainda — isso é explicitamente 6.3 (IPC), não
+  6.1; entrar no workspace agora é só estrutural, garante que `cargo build/test/clippy --workspace`
+  já cobre esse crate a partir de agora
+- Corrigido `.gitignore`: a seção "# Tauri" antiga (`src-tauri/target/`, `src-tauri/icons/**`) tinha
+  sido escrita antecipando um `src-tauri/` na raiz do repo — como o app real ficou em
+  `desktop/src-tauri/`, essas regras (ancoradas por terem `/` no meio) nunca bateriam de verdade.
+  Removidas: o scaffold já gera seus próprios `.gitignore` aninhados (`desktop/.gitignore`,
+  `desktop/src-tauri/.gitignore`) que cobrem `target/`/`node_modules/`/`dist/` corretamente pro
+  caminho real — e de propósito **não** ignoro os ícones (devem ser commitados, igual o TruthID
+  faz, senão o build de bundle quebra em quem clonar o repo sem eles)
+- Diferente do `Cargo.lock` (ignorado no repo), decidi commitar `desktop/package-lock.json` —
+  mesmo precedente do TruthID, e o ecossistema npm se beneficia mais de lockfile fixado
+  (resolução de transitivas mais volátil que a do Cargo)
+- Verificação: `cargo build --workspace` (~4min na primeira vez, todo o GTK/webkit2gtk do Tauri
+  compilando do zero) e `cargo clippy --workspace --all-targets` limpos; `npm install && npm run
+  build` (tsc + vite build) sem erro; `npm run tauri dev` rodado de verdade em background — janela
+  "Warden" subiu (processo `target/debug/desktop` confirmado rodando, log de compilação sem erro).
+  Tela do ambiente estava bloqueada, então não deu pra tirar screenshot da janela de verdade — usuário
+  pode conferir visualmente rodando `npm run tauri dev` ele mesmo. `cargo test --workspace`
+  confirma que os 17 testes já existentes continuam passando com o novo membro no workspace
+- Usuário pediu, en passant: identidade visual parecida com o TruthID mas **roxo vibrante** em vez
+  de azul — registrado em `PHASE.md` (Fase 6) pra valer a partir da 6.2, já que a 6.1 ainda é só
+  boilerplate padrão do template, sem branding nenhum
+- `PHASE.md` (6.1 concluída + nota de identidade visual), `ROADMAP.md` (reordenação de prioridade)
+
+**Próximo passo**: 6.2 — shell do app (sidebar de conversas, área de chat), já com a identidade
+visual roxa em mente.
 
 ---
 

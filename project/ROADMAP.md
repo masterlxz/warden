@@ -2,14 +2,22 @@
 
 ## Sequenciamento Sugerido
 
-Ordem de implementação recomendada, baseada em dependências técnicas:
+> **Atualizado em 2026-08-02** — decisão do usuário: priorizar o App Desktop (Fase 6) logo
+> depois da Fase 1, antes dos canais de mensageria (Telegram/WhatsApp) e do resto da Fase
+> 4/5. Motivo: interface de chat de verdade importa mais agora do que canais externos, e
+> tecnicamente não há bloqueio — o app desktop só faz IPC local Rust↔frontend (não depende da
+> topologia servidor↔cliente, que só entra na Fase 9; ver P14 em `PENDING.md`). Os números das
+> fases em `PHASE.md` não mudaram — só a ordem de execução abaixo.
 
-1. **Orquestrador CLI + 1 modelo + vault local** (Fase 1) — base de tudo
-2. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples
-3. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys
-4. **Vault espelhado em IPFS** (Fase 4) — redundância da memória
-5. **Tools & MCP** (Fase 5) — extensibilidade
-6. **App Desktop** (Fase 6) — interface nativa
+Ordem de implementação recomendada:
+
+1. **Orquestrador CLI + 1 modelo + vault local** (Fase 1) — base de tudo ✅ concluída
+2. **App Desktop** (Fase 6) — interface nativa de chat, valor mais visível pro usuário agora
+3. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples
+4. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys
+5. **Vault espelhado em IPFS** (Fase 4) — redundância da memória
+6. **Tools & MCP** (Fase 5) — extensibilidade (parte já implementada ad-hoc na Fase 1: `read_file`,
+   `write_file`, `web_search`, `delegate_task`)
 7. **Rede de nós + Tailscale** (Fase 9) — execução remota de tools
 8. **Extensão de Navegador** (Fase 8) — canal + tool de browser
 9. **App Mobile** (Fase 7) — cliente móvel

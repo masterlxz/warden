@@ -20,10 +20,6 @@ build/
 *.msi
 *.exe
 
-# Tauri
-src-tauri/target/
-src-tauri/icons/**
-
 # IDE
 .vscode/
 .idea/
