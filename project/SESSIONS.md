@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 10)
+> Última atualização: 2026-08-02 (Sessão 11)
 
 ---
 
@@ -206,6 +206,45 @@ leve) e 1.9 (testes de integração ponta a ponta do pipeline via CLI).
 
 **Próximo passo**: 1.8 — sub-agente leve (delegar tarefa escopada pra outro modelo/contexto). Depois,
 1.9 (testes de integração ponta a ponta) e 1.10 (config via YAML/TOML).
+
+---
+
+### 2026-08-02 — Sessão 11
+
+- **Objetivo**: Etapa 1.8 — sub-agente leve: delegar tarefa escopada pra outro modelo/contexto.
+
+**O que foi feito**:
+
+- Planejado com um agente de arquitetura antes de implementar, pra validar a abordagem (evitar
+  duplicar lógica, garantir `Send + Sync`, revisar o schema da tool). Design confirmado: sub-agente
+  leve = mais uma `Tool`, não um mecanismo novo
+- Implementado `DelegateTool` (`crates/warden-core/src/tool/delegate.rs`), tool `delegate_task`:
+  internamente possui um `Orchestrator` completo (mesmo `model`, mesmo `vault`, subconjunto de tools
+  escolhido pelo chamador) e delega pra `Orchestrator::handle_message` — reaproveita 100% do loop de
+  tool-calling já existente (injeção de contexto do vault, cap de iterações, etc.) sem duplicar lógica
+- Prevenção estrutural de recursão: o sub-`Orchestrator` passado pro `DelegateTool` nunca recebe
+  outro `DelegateTool` registrado (é montado a partir de um conjunto de tools "base", sem o próprio
+  `delegate_task`), então não existe caminho de código pra um sub-agente lançar outro sub-agente —
+  consistente com a decisão em `ARCHITECTURE.md` de que sub-agentes autônomos/recursivos ficam fora
+  do escopo v1
+- `warden-cli`/`main.rs` reestruturado: as tools "base" (`read_file`, `write_file`, `web_search` se
+  `TAVILY_API_KEY` estiver setada) agora são construídas uma vez como `Vec<Arc<dyn Tool>>` e
+  registradas em dois orchestrators — um "sub" (usado só pra montar o `DelegateTool`) e o principal,
+  que também ganha o `delegate_task` — evita duplicar construção de `Vault`/cliente HTTP
+  (`Arc<dyn Tool>` é barato de clonar/registrar em múltiplos orchestrators)
+- Confirmado que `Orchestrator` é `Send + Sync` automaticamente (todos os campos —
+  `Arc<dyn ModelProvider>`, `Arc<Vault>`, `Vec<Arc<dyn Tool>>` — já são `Send + Sync`), então
+  guardá-lo direto (sem `Arc` extra) dentro de `DelegateTool` e expor esse `DelegateTool` como
+  `Arc<dyn Tool>` funciona sem `unsafe`
+- Testes unitários em `tool/delegate.rs`: erro claro quando falta o argumento `task`; round-trip
+  completo com um `ModelProvider` mock de resposta fixa (sem tool_calls), confirmando que
+  `DelegateTool::call` repassa a tarefa pro sub-orchestrator e devolve `{ "result": ... }`
+- `cargo build`/`test`/`clippy --all-targets` limpos (10 testes)
+- `PHASE.md` atualizado (1.8 concluída), `ARCHITECTURE.md` (nota do `DelegateTool` na seção de
+  sub-agentes)
+
+**Próximo passo**: 1.9 — testes de integração do pipeline completo (CLI). Depois, 1.10 — config via
+YAML/TOML (modelo, API keys, vault path).
 
 ---
 

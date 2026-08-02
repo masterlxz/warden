@@ -132,5 +132,5 @@ O orquestrador não sabe de onde veio a mensagem — só processa e responde.
 
 ## Sub-agentes: Invocação Leve vs. Autônomos
 
-- **Invocação leve (v1)**: agente principal chama sub-agente escopado pra tarefa específica, contexto reduzido, devolve resultado, encerra
+- **Invocação leve (v1)**: agente principal chama sub-agente escopado pra tarefa específica, contexto reduzido, devolve resultado, encerra. Implementado como `DelegateTool` (`crates/warden-core/src/tool/delegate.rs`, tool `delegate_task`) — internamente é só mais um `Orchestrator` completo (mesmo `model`, mesmo `vault`, subconjunto de tools escolhido pelo chamador, nunca incluindo outro `DelegateTool`), reaproveitando 100% do loop de tool-calling existente em vez de duplicar lógica
 - **Sub-agentes autônomos (fora de escopo v1)**: criam outros agentes recursivamente, precisam de fila de jobs, controle de custo, isolamento — fica pra depois

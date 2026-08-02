@@ -8,8 +8,10 @@ use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::ModelProvider;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::web_search::WebSearchTool;
+use warden_core::tool::Tool;
 
 #[derive(ValueEnum, Clone, Debug)]
 enum Provider {
@@ -54,16 +56,27 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let vault = Arc::new(Vault::new(cli.vault_path));
-    let mut orchestrator = Orchestrator::new(model_provider, vault.clone());
-    orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
-    orchestrator.register_tool(Arc::new(WriteFileTool::new(vault)));
+
+    let mut base_tools: Vec<Arc<dyn Tool>> =
+        vec![Arc::new(ReadFileTool::new(vault.clone())), Arc::new(WriteFileTool::new(vault.clone()))];
 
     match std::env::var("TAVILY_API_KEY") {
-        Ok(tavily_key) => orchestrator.register_tool(Arc::new(WebSearchTool::new(tavily_key))),
+        Ok(tavily_key) => base_tools.push(Arc::new(WebSearchTool::new(tavily_key))),
         Err(_) => eprintln!(
             "note: TAVILY_API_KEY not set — web_search tool disabled (get a free key at https://tavily.com)\n"
         ),
     }
+
+    let mut sub_orchestrator = Orchestrator::new(model_provider.clone(), vault.clone());
+    for tool in &base_tools {
+        sub_orchestrator.register_tool(tool.clone());
+    }
+
+    let mut orchestrator = Orchestrator::new(model_provider, vault);
+    for tool in base_tools {
+        orchestrator.register_tool(tool);
+    }
+    orchestrator.register_tool(Arc::new(DelegateTool::new(sub_orchestrator)));
 
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 
