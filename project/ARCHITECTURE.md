@@ -16,6 +16,7 @@
 | Extensão de navegador | Canal + Tool provider vs só canal | **Canal + Tool provider** ✓ — expõe DOM/clique/navegação como tool MCP |
 | Framework de CLI | clap vs structopt vs gum | **clap v4 (derive)** ✓ — structopt foi descontinuado e incorporado ao clap desde a v3; gum é ferramenta Bash/TUI, não se aplica a Rust |
 | API de `web_search` | Tavily vs Brave Search API vs Google Custom Search | **Tavily** ✓ — feita pra tool use de agentes LLM (resultados já vêm resumidos), free tier de 1.000 buscas/mês sem cartão de crédito. Tool só é registrada se `TAVILY_API_KEY` estiver setada (degradação graciosa, mesmo espírito de P14) |
+| Formato do arquivo de config | TOML vs YAML | **TOML** ✓ — convenção do próprio ecossistema Rust (mesmo formato do `Cargo.toml`), sem as ambiguidades clássicas de parsing do YAML, crate `toml` madura e serde-native. Localização default via crate `dirs` (`~/.config/warden/config.toml` no Linux, equivalente no Windows/macOS), com override via `--config`. Precedência: flag de CLI > variável de ambiente (só pra API keys) > arquivo de config > default embutido |
 
 ---
 

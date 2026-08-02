@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 12)
+> Última atualização: 2026-08-02 (Sessão 13)
 
 ---
 
@@ -287,6 +287,53 @@ YAML/TOML (modelo, API keys, vault path).
 
 **Próximo passo**: 1.10 — configuração via arquivo YAML/TOML (modelo, API keys, vault path). Isso
 fecha a Fase 1; depois entra a Fase 2 (canal Telegram).
+
+---
+
+### 2026-08-02 — Sessão 13
+
+- **Objetivo**: Etapa 1.10 — configuração via arquivo YAML/TOML (modelo, API keys, vault path).
+  Fecha a Fase 1 inteira.
+
+**O que foi feito**:
+
+- Decidido **TOML** em vez de YAML (não pedi confirmação ao usuário pra essa — é decisão técnica
+  contida, sem tradeoff externo tipo assinatura de serviço, então segui o mesmo padrão de P2):
+  convenção do próprio ecossistema Rust (mesmo formato do `Cargo.toml`), sem ambiguidades clássicas
+  de parsing do YAML, crate `toml` madura e serde-native. Registrado em `ARCHITECTURE.md`
+- Localização do arquivo: diretório de config do SO via crate `dirs`
+  (`~/.config/warden/config.toml` no Linux, equivalente no Windows/macOS), com override via
+  `--config <path>`
+- `warden-cli`/`main.rs` reestruturado com precedência clara: **flag de CLI > variável de ambiente
+  (só pra API keys) > arquivo de config > default embutido**. Pra isso, os campos do `Cli` (clap)
+  que tinham `default_value`/`default_value_t` viraram `Option<T>` — sem isso não dava pra
+  distinguir "usuário não passou a flag" de "usuário passou o valor default explicitamente"
+- `FileConfig { provider, model, vault_path, api_keys: ApiKeys { gemini, openai, tavily } }`,
+  tudo opcional, com `#[serde(deny_unknown_fields)]` (typo no config agora vira erro claro em vez de
+  ser silenciosamente ignorado). `Provider` (o enum já existente de `--provider`) ganhou
+  `#[derive(Deserialize)]` além do `ValueEnum` do clap, com `rename_all = "lowercase"` pra bater com
+  o mesmo texto que já era aceito via CLI (`gemini`/`openai`)
+- Semântica de "arquivo ausente" diferenciada por intenção: se o usuário passou `--config` e o
+  arquivo não existe, é erro claro (ele pediu aquele arquivo especificamente); se é o caminho
+  default do SO e não existe, cai silenciosamente pra config vazia (a maioria dos usuários ainda não
+  vai ter criado um) — mesmo espírito de degradação graciosa já usado em P14/`TAVILY_API_KEY`.
+  Extraído em duas funções (`load_config` fino chamando `load_config_from_path` com a lógica pura)
+  justamente pra dar pra testar essa distinção sem depender do `dirs::config_dir()` real
+- `resolve_secret(from_env, from_file)` centraliza a precedência de API keys (env var vence o
+  arquivo, pra dar pra sobrescrever uma key salva só naquela execução sem editar o arquivo)
+- Novas dependências (`Cargo.toml` do workspace): `toml` (parser) e `dirs` (diretório de config
+  cross-platform) — ambas só em `warden-cli`, `warden-core` continua sem saber nada sobre arquivo
+  de config (isso é decisão de camada de CLI/canal, não do core)
+- Testes: 5 unitários novos em `main.rs` (parse de config válido, path não-obrigatório ausente ⇒
+  config vazia, path obrigatório ausente ⇒ erro, TOML malformado ⇒ erro claro, precedência de
+  `resolve_secret`) + 2 testes de processo novos em `tests/cli.rs` (sobe usando key e vault_path só
+  do arquivo de config, sem nenhuma env var; `--config` apontando pra arquivo inexistente falha com
+  mensagem clara)
+- `cargo build`/`test`/`clippy --all-targets` limpos — 22 testes no total
+- `PHASE.md` (1.10 concluída — **Fase 1 completa**), `OVERVIEW.md` (Fase 1 marcada como concluída no
+  status geral), `ARCHITECTURE.md` (decisão TOML + localização + precedência)
+
+**Próximo passo**: Fase 2 — Canal Telegram (2.1: setup do bot, token, webhook/polling).
 
 ---
 

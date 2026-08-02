@@ -14,13 +14,14 @@ fn warden_command() -> Command {
 }
 
 fn temp_vault_path(name: &str) -> String {
-    std::env::temp_dir()
-        .join(format!(
-            "warden-cli-test-{name}-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ))
-        .to_string_lossy()
-        .to_string()
+    unique_temp_path(&format!("warden-cli-test-{name}")).to_string_lossy().to_string()
+}
+
+fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ))
 }
 
 #[test]
@@ -65,4 +66,48 @@ fn starts_up_and_exits_cleanly_with_a_key_present() {
     assert!(stderr.contains("TAVILY_API_KEY"), "stderr was: {stderr}");
 
     assert!(std::path::Path::new(&vault_path).is_dir(), "vault root should be created on startup");
+}
+
+#[test]
+fn reads_api_key_and_vault_path_from_config_file() {
+    let vault_path = temp_vault_path("from-config");
+    let config_path = unique_temp_path("warden-cli-test-config").with_extension("toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "vault_path = \"{vault_path}\"\n\n[api_keys]\ngemini = \"fake-key-from-config\"\n",
+        ),
+    )
+    .unwrap();
+
+    let mut child = warden_command()
+        .args(["--config", config_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child.stdin.take().unwrap().write_all(b"exit\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(std::path::Path::new(&vault_path).is_dir(), "vault root should be created from the config file's path");
+
+    std::fs::remove_file(&config_path).ok();
+}
+
+#[test]
+fn fails_clearly_when_explicit_config_path_is_missing() {
+    let missing_config_path = unique_temp_path("warden-cli-test-missing-config").with_extension("toml");
+
+    let output = warden_command()
+        .env("GEMINI_API_KEY", "fake-key")
+        .args(["--config", missing_config_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("config file"), "stderr was: {stderr}");
 }

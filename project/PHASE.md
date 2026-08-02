@@ -22,7 +22,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 1.7 — Tool `web_search` (pesquisa na internet via API)
 - [x] 1.8 — Sub-agente leve: delegar tarefa escopada pra outro modelo/contexto
 - [x] 1.9 — Testes de integração do pipeline completo (CLI)
-- [ ] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
+- [x] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
 
 **Decisões pendentes**:
 - Formato do prompt de sistema (persona configurável)
