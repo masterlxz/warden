@@ -2,7 +2,30 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 3)
+> Última atualização: 2026-08-02 (Sessão 4)
+
+---
+
+### 2026-08-02 — Sessão 4
+
+- **Objetivo**: Adicionar `GeminiProvider` e priorizá-lo como provedor padrão (API gratuita).
+
+**O que foi feito**:
+
+- Implementado `GeminiProvider` (`crates/warden-core/src/model/gemini.rs`) — segunda implementação de
+  `ModelProvider`, chama `generateContent` da API do Gemini. Schema bem diferente do OpenAI: roles
+  `user`/`model` (não `assistant`), mensagem de sistema vai em `system_instruction` separado, tools em
+  formato `function_declarations` agrupado (não um objeto por tool)
+- `warden-cli` ganhou flag `--provider` (`gemini` | `openai`, default `gemini`) e `--model` (opcional,
+  default depende do provider: `gemini-2.5-flash` ou `gpt-4o-mini`). Key lida de `GEMINI_API_KEY` ou
+  `OPENAI_API_KEY` conforme o provider escolhido
+- Testado: erro claro sem key, erro real da API do Gemini com key inválida (confirma que a request
+  chega certa), `--provider openai` continua funcionando
+- **Atenção**: nome do modelo Gemini default (`gemini-2.5-flash`) é o mais recente conhecido até o
+  cutoff de conhecimento do Claude (jan/2026) — vale confirmar em aistudio.google.com se ainda é o
+  correto/gratuito
+
+**Próximo passo**: 1.4/1.5 — plugar o `Vault` no orchestrator pra injetar contexto relevante no prompt.
 
 ---
 
