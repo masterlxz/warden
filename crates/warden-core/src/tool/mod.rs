@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 pub mod file_tools;
+pub mod web_search;
 
 #[derive(Debug, Clone)]
 pub struct ToolSpec {

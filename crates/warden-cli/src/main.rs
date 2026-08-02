@@ -9,6 +9,7 @@ use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::ModelProvider;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
+use warden_core::tool::web_search::WebSearchTool;
 
 #[derive(ValueEnum, Clone, Debug)]
 enum Provider {
@@ -56,6 +57,13 @@ async fn main() -> anyhow::Result<()> {
     let mut orchestrator = Orchestrator::new(model_provider, vault.clone());
     orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
     orchestrator.register_tool(Arc::new(WriteFileTool::new(vault)));
+
+    match std::env::var("TAVILY_API_KEY") {
+        Ok(tavily_key) => orchestrator.register_tool(Arc::new(WebSearchTool::new(tavily_key))),
+        Err(_) => eprintln!(
+            "note: TAVILY_API_KEY not set — web_search tool disabled (get a free key at https://tavily.com)\n"
+        ),
+    }
 
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 

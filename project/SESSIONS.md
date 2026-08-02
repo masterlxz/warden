@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 9)
+> Última atualização: 2026-08-02 (Sessão 10)
 
 ---
 
@@ -177,6 +177,35 @@ registrá-la no `Orchestrator` via `register_tool`.
 
 **Próximo passo**: 1.7 — tool `web_search` (pesquisa na internet via API). Depois, 1.8 (sub-agente
 leve) e 1.9 (testes de integração ponta a ponta do pipeline via CLI).
+
+---
+
+### 2026-08-02 — Sessão 10
+
+- **Objetivo**: Etapa 1.7 — tool `web_search` (pesquisa na internet via API).
+
+**O que foi feito**:
+
+- Decisão de qual API de busca usar não estava registrada em nenhum lugar — perguntei ao usuário
+  entre Tavily, Brave Search API e Google Custom Search JSON API. Escolhido **Tavily**: feita
+  especificamente pra tool use de agentes LLM (resultados já vêm como snippets curtos, não HTML cru),
+  free tier de 1.000 buscas/mês sem exigir cartão de crédito no cadastro
+- Implementado `WebSearchTool` (`crates/warden-core/src/tool/web_search.rs`) — `POST
+  https://api.tavily.com/search` com `{api_key, query, max_results: 5}`, retorna `{results: [{title,
+  url, content}]}`
+- `warden-cli`/`main.rs`: tool só é registrada se `TAVILY_API_KEY` estiver setada — se não estiver,
+  o Warden roda normalmente sem ela (mensagem de aviso no start, não erro fatal). Segue o mesmo
+  espírito de "servidor opcional"/degradação graciosa já registrado em P14: nem toda capability exige
+  todo pré-requisito configurado
+- Teste unitário cobrindo validação do argumento `query` obrigatório (sem chamar a API de verdade —
+  não há mock de HTTP no projeto ainda, então só o que não depende de rede é testado aqui)
+- Testado manualmente: `cargo run` com `GEMINI_API_KEY` fake e sem `TAVILY_API_KEY` mostra o aviso e
+  sobe normal
+- `cargo build`/`test`/`clippy --all-targets` limpos (8 testes)
+- `PHASE.md` atualizado (1.7 concluída)
+
+**Próximo passo**: 1.8 — sub-agente leve (delegar tarefa escopada pra outro modelo/contexto). Depois,
+1.9 (testes de integração ponta a ponta) e 1.10 (config via YAML/TOML).
 
 ---
 
