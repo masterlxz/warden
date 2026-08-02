@@ -46,6 +46,67 @@ ainda em aberto, ver P8 em `PENDING.md`. Precisa de:
 - Critério de parada
 - __Fora do escopo v1__ — mas não mais só brainstorm, é algo que o usuário quer priorizar eventualmente
 
+### App "Copilot" — IA leve rodando no SO
+
+Confirmado pelo usuário (2026-08-02): quer um app leve, em segundo plano, no
+espírito do Windows Copilot / Spotlight / PowerToys Run, instalável em
+Linux, Windows e Mac. Invocado por atalho global, abre um campo de busca que:
+
+- Busca apps/arquivos/pastas no sistema ("procura pra mim uma pasta X")
+- Dá acesso rápido ao Warden sem precisar abrir o app principal
+- Totalmente opt-in e configurável — só ativa quem quiser usar assim
+
+Provável relação com a Fase 6 (App Desktop Nativo) — mas é um *modo* diferente
+do app principal (overlay leve de busca vs janela de chat completa), então
+pode merecer fase própria em vez de virar uma feature a mais da Fase 6.
+Ver P9 em `PENDING.md`.
+
+### Dashboard de custo & gerenciamento de chaves de API
+
+Ligado à pendência P4 (controle de custo/rate limit), agora com requisito
+explícito de UI: dashboard mostrando consumo de tokens, custo estimado por
+provedor/modelo, e uma tela pra cadastrar/gerenciar as chaves de API usadas
+(OpenAI, Gemini, etc.). P4 é a parte de backend (onde/como limitar), P10 é a
+parte de produto (o que o usuário vê e configura). Ver P10.
+
+### Tela de gerenciamento de integrações MCP
+
+Duas direções distintas, não uma só:
+
+- **Warden como client MCP** — conectar em servers MCP externos (Google,
+  GitHub, etc., já previstos na Fase 5.2/5.7), com UI pra adicionar/remover
+  integrações convencionais
+- **Warden como server MCP** — expor o próprio Warden (tools + vault) como um
+  MCP server, pra qualquer app — inclusive de terceiros — poder integrar com
+  ele. "Só integra a IA com o que ela quiser" foi como o usuário descreveu
+
+Ver P11.
+
+### "Warden API" — API unificada model-agnostic + vault-aware
+
+Ideia central: uma chave de API do **Warden**, não do provedor de IA por trás.
+Quem integra não escolhe "GPT" ou "Gemini" — escolhe o Warden, que resolve
+sozinho qual modelo usar e já vem com o contexto do vault do usuário embutido.
+É a mesma abstração `ModelProvider` que já existe internamente
+(`crates/warden-core/src/model`), só que exposta pra fora como produto.
+Levanta perguntas de auth, billing e rate limit que ainda não foram pensadas.
+Ver P12.
+
+### Ecossistema descentralizado (Practice Valuation/Anchor + TruthID)
+
+O Warden não é um projeto isolado — faz parte de um ecossistema open-source
+descentralizado que o usuário está construindo, junto com:
+
+- **TruthID** — identidade/autenticação (já citado na Fase 10 como dependência)
+- **Practice Valuation** (em processo de rebrand pra **Anchor**) — outro
+  produto do usuário
+- **Warden** — este projeto
+
+Visão de longo prazo: os três conversam entre si via MCP — o Warden como hub
+que integra com os outros produtos do próprio usuário, usando a mesma tela de
+integrações MCP (P11) que serve pra integrações de terceiros. Depende desses
+outros projetos terem um lado MCP pronto pra integrar. Ver P13.
+
 ### Memória vetorial (RAG)
 
 Substituir busca por grep por embedding +相似度 search:

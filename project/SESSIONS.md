@@ -2,7 +2,32 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 4)
+> Última atualização: 2026-08-02 (Sessão 5)
+
+---
+
+### 2026-08-02 — Sessão 5
+
+- **Objetivo**: Registrar novas ideias de produto do usuário — sem código nesta sessão.
+
+**O que foi feito**:
+
+- Registradas cinco ideias novas em `ROADMAP.md`/`PENDING.md` (P9–P13):
+  - **P9** — App "Copilot" leve rodando em segundo plano no SO (Linux/Windows/Mac), tipo
+    Spotlight/PowerToys Run, busca apps/arquivos/pastas, atalho global, opt-in
+  - **P10** — Dashboard de consumo de tokens e gerenciamento de chaves de API, com custo
+    estimado por provedor/modelo (complementa P4, que é a parte de backend)
+  - **P11** — Tela de gerenciamento de integrações MCP, nos dois sentidos: Warden como
+    client MCP (consumindo servers externos) e como server MCP (expondo tools/vault pra terceiros)
+  - **P12** — "Warden API": chave de API do próprio Warden, não do provedor por trás —
+    abstrai o modelo escolhido e já injeta o contexto do vault do usuário
+  - **P13** — Integração via MCP com o ecossistema do usuário: Practice Valuation
+    (rebrand pra Anchor) e TruthID
+- Adicionada seção "Ecossistema" em `CONTEXT.md` explicando que o Warden é parte de um
+  ecossistema open-source descentralizado maior (TruthID + Practice Valuation/Anchor + Warden)
+
+**Próximo passo**: retomar a Fase 1 (1.4/1.5 — Vault injetando contexto no orchestrator) quando o
+usuário quiser voltar à implementação.
 
 ---
 

@@ -16,6 +16,22 @@ O sistema prioriza:
 
 ---
 
+## Ecossistema
+
+O Warden não é um projeto isolado — é parte de um ecossistema open-source
+descentralizado que o usuário está construindo:
+
+- **TruthID** — identidade/autenticação descentralizada (integração planejada, Fase 10)
+- **Practice Valuation** (em rebrand pra **Anchor**) — outro produto do usuário
+- **Warden** — este projeto
+
+Visão de longo prazo: os três integrados via MCP, com o Warden funcionando
+tanto como hub que consome os outros produtos do usuário quanto como
+plataforma que terceiros podem integrar com os deles (ver `ROADMAP.md` e
+P11/P13 em `PENDING.md`).
+
+---
+
 ## Core Problem
 
 Assistentes de IA hoje são:
