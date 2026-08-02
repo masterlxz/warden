@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 14)
+> Última atualização: 2026-08-02 (Sessão 15)
 
 ---
 
@@ -389,6 +389,53 @@ fecha a Fase 1; depois entra a Fase 2 (canal Telegram).
 
 **Próximo passo**: 6.2 — shell do app (sidebar de conversas, área de chat), já com a identidade
 visual roxa em mente.
+
+---
+
+### 2026-08-02 — Sessão 15
+
+- **Objetivo**: Etapa 6.2 — shell do app: sidebar de conversas + área de chat, tudo com estado
+  local do React (sem IPC/backend ainda — isso é a 6.3).
+
+**O que foi feito**:
+
+- Planejado com um agente de arquitetura antes de implementar (leu o estado real dos arquivos do
+  scaffold da 6.1 e o padrão do TruthID). Decisões principais validadas: sem lib de state
+  management (só `useState` em `App.tsx`, igual TruthID), componentes flat em
+  `desktop/src/components/` sem subpastas por feature, tipos locais próprios em vez de espelhar o
+  `Role`/`Message` completo do `warden-core` (só `user`/`assistant` aparecem na UI — `System`/
+  `Tool` são detalhe interno)
+- Criados `desktop/src/types.ts` (`ChatRole`, `ChatMessage`, `Conversation`) e os componentes
+  `Sidebar.tsx`, `ChatArea.tsx`, `MessageBubble.tsx` (extraído já pensando na 6.7 — renderização de
+  markdown vai mexer só nesse arquivo), `MessageInput.tsx` (Enter envia, Shift+Enter quebra linha,
+  autofoco, desabilitado com input vazio)
+- Decisão de estado que vale registrar: `activeConversationId === null` é estado normal
+  ("composer pronto, nada enviado ainda"), não erro — dá pra mandar a primeira mensagem sem clicar
+  em "nova conversa" antes. Clicar em "nova conversa" só zera o id ativo, não cria entrada vazia no
+  array — toda `Conversation` sempre tem ≥1 mensagem, então a UI nunca precisa tratar "conversa
+  existente mas vazia" como caso especial
+- Sem dado fake/seed na sidebar — estado vazio honesto até a primeira mensagem real (não existe
+  persistência ainda, isso é a 6.6)
+- `App.css` reescrito do zero: variáveis CSS customizadas em `:root` + `@media (prefers-color-scheme:
+  dark)`, tema roxo vibrante (`#7c3aed`/`#6d28d9` no light, `#a78bfa`/`#8b5cf6` no dark) — atende o
+  pedido do usuário (mesmo espírito do TruthID, mas roxo em vez de azul). Layout via CSS Grid
+  (`280px 1fr`) pra sidebar + área de chat. Toda a demo antiga do scaffold (logos, `.row`,
+  `.container`, cores hardcoded) removida
+- Acessibilidade barata: `<form>` de verdade no input, `aria-label`s, lista de mensagens com
+  `role="log" aria-live="polite"`, itens da sidebar como `<button>` nativo
+- Removido o comando de exemplo `greet` (`#[tauri::command]` + registro em `invoke_handler!`) de
+  `desktop/src-tauri/src/lib.rs` — boilerplate desconectado que a 6.3 não ia reaproveitar
+- Verificação: `npm run build` (tsc + vite build) sem erro de tipo; `cargo build --workspace` e
+  `cargo clippy --workspace --all-targets` limpos; `npm run tauri dev` rodado de verdade — dessa vez
+  a tela não estava bloqueada, então consegui tirar screenshot da janela real: sidebar roxa, botão
+  "+ New conversation", bolha de mensagem do usuário alinhada à direita em roxo vibrante. O usuário
+  parece ter testado ele mesmo digitando "opa" enquanto o dev server rodava — confirma o fluxo
+  completo (mensagem → bolha → conversa nomeada na sidebar) funcionando de ponta a ponta
+- `PHASE.md` atualizado (6.2 concluída)
+
+**Próximo passo**: 6.3 — integração com o core (IPC Rust↔frontend), plugando o `warden-core` de
+verdade no `desktop/src-tauri` (que hoje só está no workspace estruturalmente, sem depender dele
+ainda).
 
 ---
 
