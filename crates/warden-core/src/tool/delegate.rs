@@ -57,7 +57,7 @@ impl Tool for DelegateTool {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required 'task' argument"))?;
 
-        let result = self.orchestrator.handle_message(task).await?;
+        let result = self.orchestrator.handle_message(&[], task).await?;
         Ok(json!({ "result": result }))
     }
 }

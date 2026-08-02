@@ -81,7 +81,7 @@ async fn vault_context_and_read_file_tool_round_trip() {
     orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
     orchestrator.register_tool(Arc::new(WriteFileTool::new(vault)));
 
-    let result = orchestrator.handle_message("When is my dentist appointment?").await.unwrap();
+    let result = orchestrator.handle_message(&[], "When is my dentist appointment?").await.unwrap();
     assert_eq!(result, "Your dentist appointment is Friday at 3pm.");
 }
 
@@ -126,6 +126,32 @@ async fn delegate_task_round_trip_through_full_wiring() {
     }
     orchestrator.register_tool(Arc::new(DelegateTool::new(sub_orchestrator)));
 
-    let result = orchestrator.handle_message("please delegate").await.unwrap();
+    let result = orchestrator.handle_message(&[], "please delegate").await.unwrap();
     assert_eq!(result, "delegation complete");
+}
+
+#[tokio::test]
+async fn prior_turns_are_sent_to_the_model_on_the_next_call() {
+    let vault = temp_vault("history");
+
+    let model = Arc::new(ScriptedModel {
+        calls: AtomicUsize::new(0),
+        step: |_call, messages: &[Message]| {
+            let has_prior_user_turn =
+                messages.iter().any(|m| m.role == Role::User && m.content.contains("my name is Fabio"));
+            let has_prior_assistant_turn =
+                messages.iter().any(|m| m.role == Role::Assistant && m.content.contains("Hi Fabio"));
+            assert!(has_prior_user_turn, "expected prior user turn to be sent as history");
+            assert!(has_prior_assistant_turn, "expected prior assistant turn to be sent as history");
+
+            Response { content: "Your name is Fabio.".to_string(), tool_calls: Vec::new() }
+        },
+    });
+
+    let orchestrator = Orchestrator::new(model, vault);
+    let history =
+        vec![Message::user("my name is Fabio"), Message::assistant("Hi Fabio, nice to meet you!")];
+
+    let result = orchestrator.handle_message(&history, "what's my name?").await.unwrap();
+    assert_eq!(result, "Your name is Fabio.");
 }

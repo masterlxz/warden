@@ -38,6 +38,7 @@ function App() {
 
   async function handleSendMessage(content: string) {
     const conversationId = activeConversationId ?? crypto.randomUUID();
+    const history = (activeConversation?.messages ?? []).map(({ role, content }) => ({ role, content }));
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now() };
 
     appendMessage(conversationId, userMessage, content);
@@ -46,7 +47,7 @@ function App() {
     setSendError(null);
     setIsSending(true);
     try {
-      const reply = await invoke<string>("send_message", { content });
+      const reply = await invoke<string>("send_message", { history, content });
       appendMessage(conversationId, {
         id: crypto.randomUUID(),
         role: "assistant",

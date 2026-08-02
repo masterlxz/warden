@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
+use warden_core::model::Message;
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -52,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 
     let stdin = io::stdin();
+    let mut history: Vec<Message> = Vec::new();
     loop {
         print!("> ");
         io::stdout().flush()?;
@@ -68,8 +70,12 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        match orchestrator.handle_message(input).await {
-            Ok(response) => println!("{response}\n"),
+        match orchestrator.handle_message(&history, input).await {
+            Ok(response) => {
+                println!("{response}\n");
+                history.push(Message::user(input));
+                history.push(Message::assistant(response));
+            }
             Err(err) => eprintln!("error: {err:#}\n"),
         }
     }

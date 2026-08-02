@@ -2,7 +2,44 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 16)
+> Última atualização: 2026-08-02 (Sessão 17)
+
+---
+
+### 2026-08-02 — Sessão 17
+
+- **Objetivo**: Etapa 6.4 — canal nativo (chat direto no app).
+
+**O que foi feito**:
+
+- Antes de mexer no desktop, encontrado o real motivo pelo qual 6.4 não estava de fato pronta
+  apesar da 6.3: `Orchestrator::handle_message` era completamente stateless entre chamadas — cada
+  turno virava uma conversa nova pro modelo, só com o vault-context injetado e a mensagem atual.
+  O histórico visível na UI do desktop (array `messages` por conversa) nunca era enviado de volta
+  pro modelo. Isso valia tanto pro desktop quanto pro REPL do `warden-cli`
+- `Orchestrator::handle_message` ganhou um parâmetro `history: &[Message]` (turnos anteriores,
+  mais antigo primeiro), inserido entre o system message de contexto do vault e a mensagem nova do
+  usuário. `&[]` continua válido pra conversa nova ou tarefa de sub-agente avulsa (`DelegateTool`
+  passa `&[]` deliberadamente — sub-agente não deve ver a conversa do pai, isso já era intencional)
+- `warden-cli`: o loop REPL agora acumula um `Vec<Message>` e alimenta ele de volta a cada chamada
+- Desktop: comando Tauri `send_message` ganhou parâmetro `history: Vec<ChatTurn>` (struct local com
+  `Deserialize`, espelha o `ChatRole`/`ChatMessage` do frontend em `types.ts`) convertido pra
+  `Vec<Message>`. `App.tsx` monta esse histórico a partir de `activeConversation.messages` (antes
+  de anexar a nova mensagem do usuário) e manda junto no `invoke`
+- Novo teste de integração em `warden-core/tests/pipeline.rs`
+  (`prior_turns_are_sent_to_the_model_on_the_next_call`) que prova via `ScriptedModel` que turnos
+  anteriores (user + assistant) chegam de fato na lista de mensagens da chamada seguinte — sem
+  esse teste o bug de "modelo não lembra da conversa" não seria pego por nada
+- Verificação: `cargo build/test/clippy --workspace` limpos (25 testes, incluindo o novo);
+  `npm run build` (tsc+vite) limpo. Não testado o envio de mensagem de verdade no app (mesma
+  limitação da Sessão 16 — sem `GEMINI_API_KEY` no ambiente e sem `xdotool`/`wtype` nesse Wayland
+  pra simular digitação); fica pro usuário confirmar visualmente que o modelo agora lembra de
+  turnos anteriores dentro da mesma conversa
+- `PHASE.md` (6.4 concluída)
+
+**Próximo passo**: 6.5 — configuração visual (tela de settings pra API keys/provider/vault) segue
+como próximo item natural da Fase 6; ou o usuário testar 6.4 de verdade antes de seguir (mandar
+duas mensagens em sequência e confirmar que a segunda referencia a primeira).
 
 ---
 

@@ -30,7 +30,10 @@ impl Orchestrator {
         &self.vault
     }
 
-    pub async fn handle_message(&self, user_input: &str) -> anyhow::Result<String> {
+    /// `history` is the prior turns of this conversation (user/assistant pairs, oldest first),
+    /// as tracked by the caller — the orchestrator itself is stateless across calls. Pass `&[]`
+    /// for a fresh conversation or a one-off sub-agent task.
+    pub async fn handle_message(&self, history: &[Message], user_input: &str) -> anyhow::Result<String> {
         let mut messages = Vec::new();
 
         let hits = self.vault.search(user_input, 8).unwrap_or_default();
@@ -45,6 +48,7 @@ impl Orchestrator {
             )));
         }
 
+        messages.extend(history.iter().cloned());
         messages.push(Message::user(user_input));
 
         let tool_specs = self.tools.iter().map(|t| t.spec()).collect::<Vec<_>>();
@@ -139,7 +143,7 @@ mod tests {
         let mut orchestrator = Orchestrator::new(model, temp_vault());
         orchestrator.register_tool(Arc::new(EchoTool));
 
-        let result = orchestrator.handle_message("say hi").await.unwrap();
+        let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
         assert_eq!(result, "done");
     }
 
@@ -160,7 +164,7 @@ mod tests {
         let mut orchestrator = Orchestrator::new(Arc::new(AlwaysToolCallModel), temp_vault());
         orchestrator.register_tool(Arc::new(EchoTool));
 
-        let result = orchestrator.handle_message("loop forever").await;
+        let result = orchestrator.handle_message(&[], "loop forever").await;
         assert!(result.is_err());
     }
 }

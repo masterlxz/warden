@@ -1,11 +1,38 @@
 use std::path::PathBuf;
 
+use serde::Deserialize;
 use tauri::State;
 use warden_bootstrap::{bootstrap, Overrides};
+use warden_core::model::Message;
 use warden_core::orchestrator::Orchestrator;
 
 struct AppState {
     orchestrator: Result<Orchestrator, String>,
+}
+
+/// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
+/// roles ever shown in the chat UI, since the frontend is what owns conversation history
+/// (there's no server-side session to persist it in yet).
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Deserialize)]
+struct ChatTurn {
+    role: ChatRole,
+    content: String,
+}
+
+impl From<ChatTurn> for Message {
+    fn from(turn: ChatTurn) -> Self {
+        match turn.role {
+            ChatRole::User => Message::user(turn.content),
+            ChatRole::Assistant => Message::assistant(turn.content),
+        }
+    }
 }
 
 /// A markdown vault is meant to be human-browsable (like an Obsidian vault), unlike opaque
@@ -17,9 +44,10 @@ fn desktop_default_vault_path() -> PathBuf {
 }
 
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, content: String) -> Result<String, String> {
+async fn send_message(state: State<'_, AppState>, history: Vec<ChatTurn>, content: String) -> Result<String, String> {
     let orchestrator = state.orchestrator.as_ref().map_err(String::clone)?;
-    orchestrator.handle_message(&content).await.map_err(|e| format!("{e:#}"))
+    let history: Vec<Message> = history.into_iter().map(Into::into).collect();
+    orchestrator.handle_message(&history, &content).await.map_err(|e| format!("{e:#}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
