@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 11)
+> Última atualização: 2026-08-02 (Sessão 12)
 
 ---
 
@@ -245,6 +245,48 @@ leve) e 1.9 (testes de integração ponta a ponta do pipeline via CLI).
 
 **Próximo passo**: 1.9 — testes de integração do pipeline completo (CLI). Depois, 1.10 — config via
 YAML/TOML (modelo, API keys, vault path).
+
+---
+
+### 2026-08-02 — Sessão 12
+
+- **Objetivo**: Etapa 1.9 — testes de integração do pipeline completo (CLI).
+
+**O que foi feito**:
+
+- Até aqui só existiam testes unitários dentro de cada módulo (`memory`, `tool::*`,
+  `orchestrator`), cada um testando uma peça isolada com mocks locais. Faltava algo que provasse
+  que a fiação entre as peças — exatamente como o `main.rs` monta (`Vault` + tools compartilhadas
+  entre dois `Orchestrator`s + `DelegateTool`) — realmente funciona junta
+- Criado `crates/warden-core/tests/pipeline.rs` (teste de integração de verdade, crate separada
+  que só enxerga a API pública do `warden-core`, sem chamada de rede real):
+  - `vault_context_and_read_file_tool_round_trip` — escreve uma nota no vault, manda uma pergunta
+    cujas palavras batem com a nota, e um `ScriptedModel` (mock genérico com uma closure por
+    chamada, generaliza o padrão `MockModel`/`AtomicUsize` já usado em outros testes) confirma que
+    o contexto do vault chega como `Message::system` *e* que pedir a tool `read_file` e receber o
+    resultado de volta funciona ponta a ponta
+  - `delegate_task_round_trip_through_full_wiring` — monta a pilha exatamente como o `main.rs`
+    (tools "base" compartilhadas entre `sub_orchestrator` e o orchestrator principal via `Arc<dyn
+    Tool>`, `DelegateTool` só no principal) e confirma que o orchestrator de fora consegue de fato
+    despachar a tool `delegate_task` pelo nome e receber o resultado do sub-agente de volta — isso
+    não estava coberto antes (os testes de `delegate.rs` só chamavam `DelegateTool::call`
+    diretamente, nunca através do loop de tool-calling do `Orchestrator`)
+- Criado `crates/warden-cli/tests/cli.rs` — testes de processo de verdade, via
+  `std::process::Command` + `env!("CARGO_BIN_EXE_warden")` (sem precisar de crate extra tipo
+  `assert_cmd`), com `env_clear()` pra não vazar env vars do host: erro claro sem
+  `GEMINI_API_KEY`/`OPENAI_API_KEY` (exit code != 0, mensagem certa no stderr); startup limpo com
+  key fake + `exit` via stdin (banner no stdout, aviso de `TAVILY_API_KEY` no stderr, pasta do
+  vault criada no disco). Todos os cenários falham antes de qualquer chamada de rede, então não
+  precisam de API key real nem de mock de HTTP
+- `warden-core/Cargo.toml`: nada novo em `[dependencies]` precisou virar dev-dependency —
+  `async-trait`/`serde_json` já eram dependências normais (disponíveis em testes de integração por
+  padrão); só `tokio` já estava como dev-dependency desde a sessão 9
+- `cargo build`/`test`/`clippy --all-targets` limpos — 15 testes no total (10 unitários + 2 de
+  pipeline + 3 de processo do CLI)
+- `PHASE.md` atualizado (1.9 concluída)
+
+**Próximo passo**: 1.10 — configuração via arquivo YAML/TOML (modelo, API keys, vault path). Isso
+fecha a Fase 1; depois entra a Fase 2 (canal Telegram).
 
 ---
 

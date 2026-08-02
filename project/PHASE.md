@@ -21,7 +21,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 1.6 — Trait `Tool` + primeira tool: `read_file`, `write_file`
 - [x] 1.7 — Tool `web_search` (pesquisa na internet via API)
 - [x] 1.8 — Sub-agente leve: delegar tarefa escopada pra outro modelo/contexto
-- [ ] 1.9 — Testes de integração do pipeline completo (CLI)
+- [x] 1.9 — Testes de integração do pipeline completo (CLI)
 - [ ] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
 
 **Decisões pendentes**:
