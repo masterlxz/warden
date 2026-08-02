@@ -2,7 +2,65 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 17)
+> Última atualização: 2026-08-02 (Sessão 18)
+
+---
+
+### 2026-08-02 — Sessão 18
+
+- **Objetivo**: Etapa 6.5 — configuração visual (modelo, API keys, vault path) no app desktop.
+
+**O que foi feito**:
+
+- Antes de codar, duas explorações em paralelo (sistema de config em `warden-bootstrap` e
+  estrutura do frontend desktop) revelaram três lacunas reais que a 6.5 precisava resolver, não só
+  desenhar uma tela: **não existia função pra escrever** o TOML de volta (`FileConfig`/`ApiKeys`
+  só tinham `Deserialize`), **não existia reload** do orchestrator (montado uma única vez no
+  `run()`, `AppState` sem `Mutex`), e o `Overrides` não tinha campo pra chaves de API
+- Perguntado ao usuário duas decisões de escopo antes de fechar o plano: (1) as chaves de API
+  aparecem na tela mascaradas com um toggle de "olhinho" pra revelar, editáveis diretamente — não
+  só um booleano "configurada/não configurada"; (2) o campo de vault path ganha seletor nativo de
+  pasta (`tauri-plugin-dialog`), não só texto. A decisão (1) simplificou bastante o backend: como
+  o formulário sempre vem pré-preenchido com os valores reais, salvar virou um **overwrite
+  completo** do arquivo de config, sem precisar de lógica de merge parcial ("None = manter, Some =
+  sobrescrever") que tinha sido o desenho inicial
+- `warden-bootstrap`: `Provider`/`FileConfig`/`ApiKeys` ganharam `Serialize`; nova
+  `save_config(path, &FileConfig)` (cria diretório pai se preciso, escreve TOML bonito); extraído
+  `default_model_for(Provider) -> &str` do `bootstrap()` (refactor comportamento-preservando, usado
+  agora tanto pelo `bootstrap` quanto pelo `get_settings` do desktop pra não duplicar os literais
+  `"gemini-2.5-flash"`/`"gpt-4o-mini"` em TypeScript). 2 testes novos (7 no total no crate):
+  round-trip completo `save_config` → `load_config_from_path`, e criação do diretório pai ausente
+- `warden-core`: `Orchestrator` ganhou `#[derive(Clone)]` — de graça, já que todo campo é `Arc`
+  (ou `Vec<Arc<_>>`). É o que permite `send_message` clonar o orchestrator de dentro do mutex e
+  soltar o lock antes do `.await`, em vez de segurar um `MutexGuard` através de um ponto de espera
+- `desktop/src-tauri`: `AppState.orchestrator` virou `Mutex<Result<Orchestrator, String>>`.
+  Dois comandos novos: `get_settings` (lê o TOML atual do disco, devolve provider/model/vault_path/
+  as três chaves em texto puro — string vazia = "não definido", mesma convenção do `ChatTurn` de
+  manter a fronteira IPC em strings simples) e `save_settings` (monta um `FileConfig` completo a
+  partir do formulário, `save_config`, chama `bootstrap()` de novo e troca o resultado dentro do
+  mutex — live-reload sem reiniciar o app). Adicionado `tauri-plugin-dialog` (Cargo.toml +
+  package.json + permissão `dialog:default` em `capabilities/default.json`) pro seletor nativo de
+  pasta do vault path
+- Frontend: `types.ts` ganhou `Settings`/`ModelProvider`; `SettingsView.tsx` novo (form completo:
+  provider, model com placeholder do default, vault path com botão "Browse…", três campos de API
+  key com toggle 👁/🙈 de revelar); `Sidebar.tsx` ganhou botão de engrenagem no header
+  (`onOpenSettings`); `App.tsx` ganhou estado `view: "chat" | "settings"` — sidebar sempre visível,
+  troca só o painel direito; `onNewConversation`/`onSelectConversation` também voltam pra `"chat"`
+  se a Settings estiver aberta. CSS só aditivo em `App.css`, reaproveitando os tokens `--color-*` e
+  os padrões visuais já existentes (inclusive `color-mix`, que já era usado no banner de erro do
+  chat)
+- Verificação: `cargo build/test/clippy --workspace` limpos (27 testes); `npm run build` (tsc+vite)
+  limpo; `npm run tauri dev` rodou por ~55s sem crash nem erro no log (confirma que o Mutex, o
+  plugin novo e a permissão `dialog:default` não quebraram o startup) — mas não deu pra clicar/
+  digitar de verdade (mesma limitação de sempre: sem `xdotool`/`wtype` nesse Wayland). Fica pro
+  usuário confirmar visualmente o fluxo completo: abrir Settings, revelar/editar uma chave, usar o
+  seletor de pasta, salvar, confirmar que persiste após reiniciar o app, e que uma mensagem enviada
+  logo depois de salvar já usa o provider novo sem precisar reiniciar
+- `PHASE.md` (6.5 concluída)
+
+**Próximo passo**: Fase 6 só tem 6.6 (histórico de conversas — hoje as conversas somem ao fechar o
+app, só vivem no estado do React), 6.7 (renderização de markdown nas mensagens) e 6.8 (build
+Linux/Windows/macOS) restando. Ou o usuário testar 6.5 de verdade antes de seguir.
 
 ---
 

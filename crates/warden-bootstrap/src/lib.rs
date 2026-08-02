@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use warden_core::memory::Vault;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
@@ -20,7 +20,7 @@ use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::web_search::WebSearchTool;
 use warden_core::tool::Tool;
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Gemini,
@@ -29,7 +29,7 @@ pub enum Provider {
 
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
     pub provider: Option<Provider>,
@@ -39,12 +39,32 @@ pub struct FileConfig {
     pub api_keys: ApiKeys,
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ApiKeys {
     pub gemini: Option<String>,
     pub openai: Option<String>,
     pub tavily: Option<String>,
+}
+
+/// The model name used when neither an override nor the config file specify one.
+pub fn default_model_for(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Gemini => "gemini-2.5-flash",
+        Provider::Openai => "gpt-4o-mini",
+    }
+}
+
+/// Writes `config` as TOML to `path`, creating the parent directory if it doesn't exist yet
+/// (the default OS config dir may never have been created before the first save from a
+/// settings UI).
+pub fn save_config(path: &Path, config: &FileConfig) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory at {}", parent.display()))?;
+    }
+    let contents = toml::to_string_pretty(config).context("failed to serialize config")?;
+    std::fs::write(path, contents).with_context(|| format!("failed to write config file at {}", path.display()))
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
@@ -112,13 +132,13 @@ pub fn bootstrap(
             let api_key = resolve_secret(std::env::var("GEMINI_API_KEY").ok(), config.api_keys.gemini).context(
                 "GEMINI_API_KEY not set (env var or config file) — get a free key at https://aistudio.google.com/apikey",
             )?;
-            let model = model_override.unwrap_or_else(|| "gemini-2.5-flash".to_string());
+            let model = model_override.unwrap_or_else(|| default_model_for(Provider::Gemini).to_string());
             Arc::new(GeminiProvider::new(api_key, model))
         }
         Provider::Openai => {
             let api_key = resolve_secret(std::env::var("OPENAI_API_KEY").ok(), config.api_keys.openai)
                 .context("OPENAI_API_KEY not set (env var or config file) — export it before running warden")?;
-            let model = model_override.unwrap_or_else(|| "gpt-4o-mini".to_string());
+            let model = model_override.unwrap_or_else(|| default_model_for(Provider::Openai).to_string());
             Arc::new(OpenAiProvider::new(api_key, model))
         }
     };
@@ -219,6 +239,43 @@ tavily = "tk"
         assert!(err.to_string().contains("failed to parse config file"), "error was: {err}");
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_config_round_trips_through_load_config() {
+        let path = temp_toml_path("save-round-trip");
+        let config = FileConfig {
+            provider: Some(Provider::Openai),
+            model: Some("gpt-4o-mini".to_string()),
+            vault_path: Some("/tmp/some-vault".to_string()),
+            api_keys: ApiKeys {
+                gemini: Some("gk".to_string()),
+                openai: Some("ok".to_string()),
+                tavily: Some("tk".to_string()),
+            },
+        };
+
+        save_config(&path, &config).unwrap();
+        let loaded = load_config_from_path(&path, true).unwrap();
+
+        assert_eq!(loaded, config);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_config_creates_missing_parent_directory() {
+        let parent = std::env::temp_dir().join(format!(
+            "warden-bootstrap-config-test-missing-parent-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let path = parent.join("config.toml");
+        assert!(!parent.exists());
+
+        save_config(&path, &FileConfig::default()).unwrap();
+        assert!(load_config_from_path(&path, true).is_ok());
+
+        std::fs::remove_dir_all(&parent).ok();
     }
 
     #[test]

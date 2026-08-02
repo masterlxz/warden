@@ -5,13 +5,25 @@ interface SidebarProps {
   activeConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
+  onOpenSettings: () => void;
 }
 
-function Sidebar({ conversations, activeConversationId, onSelectConversation, onNewConversation }: SidebarProps) {
+function Sidebar({
+  conversations,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  onOpenSettings,
+}: SidebarProps) {
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <span className="sidebar-title">Warden</span>
+        <div className="sidebar-header-row">
+          <span className="sidebar-title">Warden</span>
+          <button type="button" className="settings-btn" aria-label="Settings" onClick={onOpenSettings}>
+            ⚙
+          </button>
+        </div>
         <button type="button" className="new-conversation-btn" onClick={onNewConversation}>
           + New conversation
         </button>

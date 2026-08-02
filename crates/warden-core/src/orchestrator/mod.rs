@@ -11,6 +11,7 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 /// Central coordinator: owns the model, the vault, and the registered tools.
 /// Channels (CLI, Telegram, WhatsApp, ...) call `handle_message` and don't
 /// know anything about which model or tools are behind it.
+#[derive(Clone)]
 pub struct Orchestrator {
     model: Arc<dyn ModelProvider>,
     vault: Arc<Vault>,

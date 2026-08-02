@@ -17,3 +17,20 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
 }
+
+export type ModelProvider = "gemini" | "openai";
+
+/** What `get_settings` returns, and also what the settings form holds — the shapes are
+ * identical so the fetched snapshot can be used directly as initial form state. Empty string
+ * means "not set" for every field, including the API keys (shown in the UI, masked with a
+ * reveal toggle, and directly editable). */
+export interface Settings {
+  provider: ModelProvider;
+  model: string;
+  vaultPath: string;
+  defaultModelGemini: string;
+  defaultModelOpenai: string;
+  geminiKey: string;
+  openaiKey: string;
+  tavilyKey: string;
+}

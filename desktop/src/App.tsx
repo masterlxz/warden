@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
+import SettingsView from "./components/SettingsView";
 import type { ChatMessage, Conversation } from "./types";
 
 function titleFromMessage(content: string): string {
@@ -15,6 +16,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [view, setView] = useState<"chat" | "settings">("chat");
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
@@ -66,15 +68,26 @@ function App() {
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
-        onSelectConversation={setActiveConversationId}
-        onNewConversation={() => setActiveConversationId(null)}
+        onSelectConversation={(id) => {
+          setActiveConversationId(id);
+          setView("chat");
+        }}
+        onNewConversation={() => {
+          setActiveConversationId(null);
+          setView("chat");
+        }}
+        onOpenSettings={() => setView("settings")}
       />
-      <ChatArea
-        activeConversation={activeConversation}
-        onSendMessage={handleSendMessage}
-        isSending={isSending}
-        sendError={sendError}
-      />
+      {view === "settings" ? (
+        <SettingsView />
+      ) : (
+        <ChatArea
+          activeConversation={activeConversation}
+          onSendMessage={handleSendMessage}
+          isSending={isSending}
+          sendError={sendError}
+        />
+      )}
     </div>
   );
 }
