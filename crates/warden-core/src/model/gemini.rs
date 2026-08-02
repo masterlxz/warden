@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use super::{Message, ModelProvider, Response, Role};
+use super::{Message, ModelProvider, Response, Role, ToolCall};
 use crate::tool::ToolSpec;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -23,9 +23,32 @@ impl GeminiProvider {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct Part {
-    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "functionCall")]
+    function_call: Option<FunctionCallPart>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "functionResponse")]
+    function_response: Option<FunctionResponsePart>,
+}
+
+#[derive(Serialize)]
+struct FunctionCallPart {
+    name: String,
+    args: Value,
+}
+
+#[derive(Serialize)]
+struct FunctionResponsePart {
+    name: String,
+    response: Value,
+}
+
+impl Part {
+    fn text(text: String) -> Self {
+        Self { text: Some(text), ..Default::default() }
+    }
 }
 
 #[derive(Serialize)]
@@ -76,7 +99,42 @@ struct ResponseContent {
 #[derive(Deserialize, Default)]
 struct ResponsePart {
     #[serde(default)]
-    text: String,
+    text: Option<String>,
+    #[serde(default, rename = "functionCall")]
+    function_call: Option<IncomingFunctionCall>,
+}
+
+#[derive(Deserialize)]
+struct IncomingFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: Value,
+}
+
+fn to_content(message: Message) -> Content {
+    match message.role {
+        Role::System => unreachable!("system messages are pulled out into system_instruction before this point"),
+        Role::User => Content { role: Some("user"), parts: vec![Part::text(message.content)] },
+        Role::Assistant if !message.tool_calls.is_empty() => Content {
+            role: Some("model"),
+            parts: message
+                .tool_calls
+                .into_iter()
+                .map(|tc| Part { function_call: Some(FunctionCallPart { name: tc.name, args: tc.arguments }), ..Default::default() })
+                .collect(),
+        },
+        Role::Assistant => Content { role: Some("model"), parts: vec![Part::text(message.content)] },
+        Role::Tool => Content {
+            role: Some("function"),
+            parts: vec![Part {
+                function_response: Some(FunctionResponsePart {
+                    name: message.tool_name.unwrap_or_default(),
+                    response: json!({ "content": message.content }),
+                }),
+                ..Default::default()
+            }],
+        },
+    }
 }
 
 #[async_trait]
@@ -86,12 +144,10 @@ impl ModelProvider for GeminiProvider {
         let mut contents = Vec::new();
 
         for message in messages {
-            match message.role {
-                Role::System => {
-                    system_instruction = Some(Content { role: None, parts: vec![Part { text: message.content }] });
-                }
-                Role::User => contents.push(Content { role: Some("user"), parts: vec![Part { text: message.content }] }),
-                Role::Assistant => contents.push(Content { role: Some("model"), parts: vec![Part { text: message.content }] }),
+            if message.role == Role::System {
+                system_instruction = Some(Content { role: None, parts: vec![Part::text(message.content)] });
+            } else {
+                contents.push(to_content(message));
             }
         }
 
@@ -128,14 +184,18 @@ impl ModelProvider for GeminiProvider {
         }
 
         let parsed: GenerateResponse = response.json().await?;
-        let content = parsed
-            .candidates
-            .into_iter()
-            .next()
-            .and_then(|c| c.content.parts.into_iter().next())
-            .map(|p| p.text)
-            .unwrap_or_default();
+        let parts = parsed.candidates.into_iter().next().map(|c| c.content.parts).unwrap_or_default();
 
-        Ok(Response { content })
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        for (i, part) in parts.into_iter().enumerate() {
+            if let Some(text) = part.text {
+                content.push_str(&text);
+            } else if let Some(call) = part.function_call {
+                tool_calls.push(ToolCall { id: format!("call_{i}"), name: call.name, arguments: call.args });
+            }
+        }
+
+        Ok(Response { content, tool_calls })
     }
 }

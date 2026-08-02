@@ -2,7 +2,7 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 8)
+> Última atualização: 2026-08-02 (Sessão 9)
 
 ---
 
@@ -135,6 +135,48 @@ usuário quiser voltar à implementação.
 **Próximo passo**: 1.6 — trait `Tool` já existe (`crates/warden-core/src/tool/mod.rs`), falta a
 primeira implementação concreta (`read_file`/`write_file`, provavelmente sobre o próprio `Vault`) e
 registrá-la no `Orchestrator` via `register_tool`.
+
+---
+
+### 2026-08-02 — Sessão 9
+
+- **Objetivo**: Etapa 1.6 — trait `Tool` (já existia) + primeiras tools concretas (`read_file`,
+  `write_file`) registradas no orchestrator.
+
+**O que foi feito**:
+
+- Percebido que só criar as structs de tool não bastava: sem um loop de tool-calling, o modelo nunca
+  teria como efetivamente chamá-las. Implementado o ciclo completo:
+  - `model::Message` ganhou `tool_calls: Vec<ToolCall>` e `tool_call_id`/`tool_name` (pra respostas de
+    tool), com construtores (`Message::system/user/assistant/assistant_tool_calls/tool_result`) no
+    lugar de literais de struct espalhados
+  - `model::Response` ganhou `tool_calls: Vec<ToolCall>`
+  - `OpenAiProvider`: serializa `tool_calls` do assistant e mensagens `role: "tool"` com
+    `tool_call_id`; faz parse de `tool_calls` da resposta (`function.arguments` vem como string JSON,
+    parseado pra `Value`)
+  - `GeminiProvider`: schema bem diferente — `functionCall` (nos `parts` do `model`) e
+    `functionResponse` (role `function`, chaveado por `name` já que Gemini não devolve um id real;
+    geramos um `call_{i}` sintético só pra uso interno). `Message::tool_name` existe justamente pra
+    isso, já que Gemini não usa `tool_call_id`
+  - `Orchestrator::handle_message` agora roda um loop (cap de `MAX_TOOL_ITERATIONS = 8`): chama o
+    modelo, se vier `tool_calls` executa cada uma via `run_tool` (procura a tool registrada pelo nome),
+    anexa o resultado como `Message::tool_result` e chama de novo; se vier só `content`, retorna. Erro
+    claro se estourar o limite de iterações (evita loop infinito de um modelo "preso")
+- Implementadas `ReadFileTool`/`WriteFileTool` (`crates/warden-core/src/tool/file_tools.rs`), ambas
+  sobre `Arc<Vault>` — schema JSON simples (`path` e `path`+`content`)
+- `Orchestrator::new` e `vault()` passaram a usar `Arc<Vault>` (antes era owned), pra permitir o mesmo
+  vault ser compartilhado entre o orchestrator e as tools sem clonar o conteúdo
+- `warden-cli`/`main.rs` registra as duas tools no orchestrator logo após criá-lo
+- Testes: `warden-core` ganhou dev-dependency `tokio` (pra `#[tokio::test]`). Cobertura nova —
+  round-trip `write_file`→`read_file`, erro claro faltando `path`, um `MockModel` que simula um
+  primeiro turno pedindo a tool `echo` e um segundo turno respondendo `"done"` (valida que o resultado
+  da tool chega de volta como `Message` de role `Tool`), e um teste de que o orchestrator desiste após
+  `MAX_TOOL_ITERATIONS` em vez de rodar pra sempre. `cargo test --workspace`: 7 testes, todos passando.
+  `cargo clippy --workspace --all-targets`: limpo
+- `PHASE.md` atualizado (1.6 concluída)
+
+**Próximo passo**: 1.7 — tool `web_search` (pesquisa na internet via API). Depois, 1.8 (sub-agente
+leve) e 1.9 (testes de integração ponta a ponta do pipeline via CLI).
 
 ---
 

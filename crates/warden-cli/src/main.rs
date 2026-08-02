@@ -8,6 +8,7 @@ use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::ModelProvider;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 
 #[derive(ValueEnum, Clone, Debug)]
 enum Provider {
@@ -51,8 +52,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let vault = Vault::new(cli.vault_path);
-    let orchestrator = Orchestrator::new(model_provider, vault);
+    let vault = Arc::new(Vault::new(cli.vault_path));
+    let mut orchestrator = Orchestrator::new(model_provider, vault.clone());
+    orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
+    orchestrator.register_tool(Arc::new(WriteFileTool::new(vault)));
 
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 
