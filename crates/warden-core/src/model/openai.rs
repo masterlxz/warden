@@ -1,0 +1,122 @@
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::{Message, ModelProvider, Response, Role};
+use crate::tool::ToolSpec;
+
+const API_URL: &str = "https://api.openai.com/v1/chat/completions";
+
+pub struct OpenAiProvider {
+    api_key: String,
+    model: String,
+    client: reqwest::Client,
+}
+
+impl OpenAiProvider {
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ChatTool>,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ChatTool {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatToolFunction,
+}
+
+#[derive(Serialize)]
+struct ChatToolFunction {
+    name: String,
+    description: String,
+    parameters: Value,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatResponseMessage {
+    content: Option<String>,
+}
+
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
+}
+
+#[async_trait]
+impl ModelProvider for OpenAiProvider {
+    async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: messages
+                .into_iter()
+                .map(|m| ChatMessage { role: role_str(m.role), content: m.content })
+                .collect(),
+            tools: tools
+                .into_iter()
+                .map(|t| ChatTool {
+                    kind: "function",
+                    function: ChatToolFunction {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters,
+                    },
+                })
+                .collect(),
+        };
+
+        let response = self
+            .client
+            .post(API_URL)
+            .bearer_auth(&self.api_key)
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("OpenAI API error ({status}): {body}");
+        }
+
+        let mut parsed: ChatResponse = response.json().await?;
+        let content = parsed
+            .choices
+            .first_mut()
+            .and_then(|c| c.message.content.take())
+            .unwrap_or_default();
+
+        Ok(Response { content })
+    }
+}

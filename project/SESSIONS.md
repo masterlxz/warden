@@ -2,7 +2,33 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-01 (Sessão 2)
+> Última atualização: 2026-08-02 (Sessão 3)
+
+---
+
+### 2026-08-02 — Sessão 3
+
+- **Objetivo**: Etapas 1.2 e 1.3 — primeiro `ModelProvider` real (OpenAI) + loop de conversa via terminal.
+
+**O que foi feito**:
+
+- Registrada uma visão nova do usuário antes de implementar (`CONTEXT.md`, `ROADMAP.md`, `PENDING.md` P8):
+  quer um canal Terminal completo estilo Claude Code (não focado em programação, foco em produtividade
+  de comandos), cross-platform (Linux/Windows/Mac), com a tool `shell` (Fase 5.5) acessível a partir de
+  **qualquer** canal, não só do terminal. Também confirmou interesse em "lançar agentes" — arquitetura
+  ainda em aberto, ligado a sub-agentes leves (1.8) e à ideia de sub-agentes autônomos do `ROADMAP.md`.
+- Implementado `OpenAiProvider` (`crates/warden-core/src/model/openai.rs`) — primeira implementação
+  concreta de `ModelProvider`, chama `/v1/chat/completions` via `reqwest` (rustls, sem depender de
+  OpenSSL do sistema — importa pro objetivo cross-platform)
+- `warden-cli` agora roda um loop de conversa real: lê `OPENAI_API_KEY` do ambiente, lê linha de stdin,
+  chama `Orchestrator::handle_message`, imprime a resposta; `exit`/`quit`/EOF encerram
+- Testado: erro claro quando `OPENAI_API_KEY` não está setada; loop completo testado com key inválida
+  (confirma que a request chega na API da OpenAI e erros são tratados sem derrubar o processo)
+- `PHASE.md` atualizado (1.2 e 1.3 concluídas)
+
+**Próximo passo**: 1.4/1.5 — plugar o `Vault` no orchestrator pra injetar contexto relevante no prompt
+(decisão pendente P5: grep simples vs fuzzy finder). P3 (formato do system prompt) segue em aberto —
+hoje só mensagens `user` são enviadas, sem persona configurável ainda.
 
 ---
 

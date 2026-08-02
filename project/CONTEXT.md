@@ -80,6 +80,8 @@ Interface de comunicação com o usuário:
 - Telegram (Bot API, HTTP nativo)
 - App nativo (desktop/mobile Tauri)
 - Extensão de navegador
+- Terminal (CLI interativo, estilo Claude Code — não é assistente de programação,
+  foco em produtividade geral de linha de comando; cross-platform Linux/Windows/Mac)
 
 ---
 

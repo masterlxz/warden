@@ -14,8 +14,8 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 
 **Etapas**:
 - [x] 1.1 — Setup do projeto Rust + estrutura de módulos (orchestrator, model, memory, tool)
-- [ ] 1.2 — Trait `ModelProvider` + implementação OpenAI (primeiro provedor)
-- [ ] 1.3 — Loop de conversa via stdin/stdout (CLI)
+- [x] 1.2 — Trait `ModelProvider` + implementação OpenAI (primeiro provedor)
+- [x] 1.3 — Loop de conversa via stdin/stdout (CLI)
 - [ ] 1.4 — Vault markdown local: ler/escrever arquivos `.md` em pasta configurável
 - [ ] 1.5 — Memória: buscar contexto relevante no vault (grep/ripgrep) e injetar no prompt
 - [ ] 1.6 — Trait `Tool` + primeira tool: `read_file`, `write_file`

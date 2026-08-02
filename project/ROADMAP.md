@@ -19,15 +19,32 @@ Ordem de implementação recomendada, baseada em dependências técnicas:
 
 ## Ideias de Expansão (Brainstorm — sem `/plan`)
 
+### Canal Terminal (estilo Claude Code)
+
+Confirmado pelo usuário (2026-08-02): terminal como canal completo de conversa,
+não só o loop de bootstrap da Fase 1.3. Interativo, no espírito do Claude Code,
+mas **não é assistente de programação** — o foco é produtividade geral de
+comandos de terminal (automatizar, explicar, compor comandos do dia a dia).
+
+- Cross-platform: Linux, Windows, Mac (shells diferentes — bash/zsh vs
+  PowerShell/cmd — importa pra tool `shell` da Fase 5.5, não só pro canal)
+- A expertise de terminal não é exclusiva do canal Terminal: o usuário quer que
+  o agente saiba/possa executar comandos **a partir de qualquer canal**
+  (Telegram, WhatsApp, desktop). O canal Terminal é só a UI mais natural pra
+  isso, a capacidade em si é a tool `shell` (Fase 5.5) exposta globalmente
+- Provável evolução do loop simples stdin/stdout (Fase 1.3) pra algo mais rico
+  (histórico, autocomplete, talvez TUI com `ratatui`) — ver P8 em `PENDING.md`
+
 ### Sub-agentes autônomos
 
 Agentes que criam outros agentes recursivamente para tarefas complexas.
-Precisa de:
+Usuário confirmou interesse em "lançar agentes" (2026-08-02) — arquitetura
+ainda em aberto, ver P8 em `PENDING.md`. Precisa de:
 - Fila de jobs
 - Controle de custo por sub-agente
 - Isolamento de tools por sub-agente
 - Critério de parada
-- __Fora do escopo v1__
+- __Fora do escopo v1__ — mas não mais só brainstorm, é algo que o usuário quer priorizar eventualmente
 
 ### Memória vetorial (RAG)
 

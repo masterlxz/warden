@@ -19,6 +19,7 @@
 | P4 | **Controle de custo/rate limit** — onde e como limitar chamadas de modelo por usuário/período | Visão original | 🟠 Média |
 | P5 | **Estratégia de busca no vault** — grep simples vs fuzzy finder vs embedding (Fase 4) | `PHASE.md` (Fase 1) | 🟡 Baixa |
 | P6 | **Estratégia de busca semântica** — embedding local (BERT.cpp) vs API externa (OpenAI) | `PHASE.md` (Fase 4) | 🟡 Baixa |
+| P8 | **Canal Terminal cross-platform + lançamento de agentes** — como estruturar um canal terminal completo (tipo Claude Code, não focado em programação) rodando em Linux/Windows/Mac; qual crate de TUI (se houver, ex. `ratatui`); como a tool `shell` (Fase 5.5) fica disponível a partir de qualquer canal, não só do terminal; e como "lançar agentes" se relaciona com sub-agentes leves (1.8) vs sub-agentes autônomos (fora de escopo v1) | `ROADMAP.md`, pedido do usuário 2026-08-02 | 🟠 Média |
 
 ### Funcionalidades Pendentes
 

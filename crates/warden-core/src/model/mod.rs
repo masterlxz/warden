@@ -2,6 +2,8 @@ use async_trait::async_trait;
 
 use crate::tool::ToolSpec;
 
+pub mod openai;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     System,
