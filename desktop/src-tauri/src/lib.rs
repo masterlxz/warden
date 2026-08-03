@@ -4,7 +4,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
-    bootstrap, default_config_path, default_model_for, load_config_from_path, save_config, ApiKeys, FileConfig,
+    bootstrap, default_config_path, default_conversations_dir, default_model_for, list_conversations as read_conversations,
+    load_config_from_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation, FileConfig,
     Overrides, Provider,
 };
 use warden_core::model::Message;
@@ -15,8 +16,10 @@ struct AppState {
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
-/// roles ever shown in the chat UI, since the frontend is what owns conversation history
-/// (there's no server-side session to persist it in yet).
+/// roles ever shown in the chat UI. Deliberately separate from `warden_bootstrap::Conversation`
+/// (which is what actually gets persisted, see `list_conversations`/`save_conversation` below):
+/// `send_message`'s `history` param only ever needs role+content, not the id/timestamps a
+/// persisted message carries.
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ChatRole {
@@ -131,6 +134,18 @@ fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Re
     Ok(())
 }
 
+#[tauri::command]
+fn list_conversations() -> Result<Vec<Conversation>, String> {
+    let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    read_conversations(&dir).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+fn save_conversation(conversation: Conversation) -> Result<(), String> {
+    let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    write_conversation(&dir, &conversation).map_err(|e| format!("{e:#}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).map_err(|e| format!("{e:#}"));
@@ -139,7 +154,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { orchestrator: Mutex::new(orchestrator) })
-        .invoke_handler(tauri::generate_handler![send_message, get_settings, save_settings])
+        .invoke_handler(tauri::generate_handler![
+            send_message,
+            get_settings,
+            save_settings,
+            list_conversations,
+            save_conversation
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

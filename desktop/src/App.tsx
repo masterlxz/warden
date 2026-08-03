@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import ChatArea from "./components/ChatArea";
@@ -20,21 +20,30 @@ function App() {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
+  useEffect(() => {
+    invoke<Conversation[]>("list_conversations")
+      .then(setConversations)
+      .catch((err) => console.error("failed to load conversation history:", err));
+  }, []);
+
   function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {
     setConversations((prev) => {
-      if (!prev.some((c) => c.id === conversationId)) {
-        const conversation: Conversation = {
-          id: conversationId,
-          title: titleFromMessage(titleSeed ?? message.content),
-          messages: [message],
-          createdAt: message.createdAt,
-          updatedAt: message.createdAt,
-        };
-        return [conversation, ...prev];
-      }
-      return prev.map((c) =>
-        c.id === conversationId ? { ...c, messages: [...c.messages, message], updatedAt: message.createdAt } : c
+      const existing = prev.find((c) => c.id === conversationId);
+      const conversation: Conversation = existing
+        ? { ...existing, messages: [...existing.messages, message], updatedAt: message.createdAt }
+        : {
+            id: conversationId,
+            title: titleFromMessage(titleSeed ?? message.content),
+            messages: [message],
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+          };
+
+      void invoke("save_conversation", { conversation }).catch((err) =>
+        console.error("failed to persist conversation:", err)
       );
+
+      return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
   }
 

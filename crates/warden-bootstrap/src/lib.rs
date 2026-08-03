@@ -71,6 +71,84 @@ pub fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("config.toml"))
 }
 
+/// Chat message roles as persisted to disk — mirrors the frontend's `ChatRole`
+/// (`desktop/src/types.ts`), the only two roles ever shown in the chat UI.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessage {
+    pub id: String,
+    pub role: ChatRole,
+    pub content: String,
+    pub created_at: i64,
+}
+
+/// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
+/// (`desktop/src/types.ts`) field for field, so a loaded value can be handed straight back to
+/// the UI with no reshaping at the IPC boundary.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    pub id: String,
+    pub title: String,
+    pub messages: Vec<ConversationMessage>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
+/// the config file — they live under the OS config dir, not the vault.
+pub fn default_conversations_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("conversations"))
+}
+
+/// Writes `conversation` as pretty JSON, one file per conversation named by id — an overwrite
+/// of the whole file each time, same as `save_config`, since a conversation is small and there's
+/// no concurrent writer to race with. Creates the directory if it doesn't exist yet.
+pub fn save_conversation(dir: &Path, conversation: &Conversation) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create conversations directory at {}", dir.display()))?;
+    let path = dir.join(format!("{}.json", conversation.id));
+    let contents = serde_json::to_string_pretty(conversation).context("failed to serialize conversation")?;
+    std::fs::write(&path, contents).with_context(|| format!("failed to write conversation file at {}", path.display()))
+}
+
+/// Lists every persisted conversation, newest-updated first. A directory that doesn't exist yet
+/// just means "no conversations saved" — not an error, mirroring `load_config_from_path`'s
+/// non-required case. A file that fails to parse is skipped rather than failing the whole list,
+/// so one corrupt conversation can't make every other one disappear from the sidebar.
+pub fn list_conversations(dir: &Path) -> anyhow::Result<Vec<Conversation>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read conversations directory at {}", dir.display()))
+        }
+    };
+
+    let mut conversations = Vec::new();
+    for entry in entries {
+        let path = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(conversation) = serde_json::from_str::<Conversation>(&contents) {
+                conversations.push(conversation);
+            }
+        }
+    }
+
+    conversations.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+    Ok(conversations)
+}
+
 /// Loads the config file. An explicit path that doesn't exist is an error (the caller asked
 /// for it by name); the default OS config path is optional — most users won't have one yet.
 pub fn load_config(explicit_path: Option<&str>) -> anyhow::Result<FileConfig> {
@@ -276,6 +354,85 @@ tavily = "tk"
         assert!(load_config_from_path(&path, true).is_ok());
 
         std::fs::remove_dir_all(&parent).ok();
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "warden-bootstrap-conversations-test-{name}-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))
+    }
+
+    fn sample_conversation(id: &str, updated_at: i64) -> Conversation {
+        Conversation {
+            id: id.to_string(),
+            title: format!("Conversation {id}"),
+            messages: vec![ConversationMessage {
+                id: "m1".to_string(),
+                role: ChatRole::User,
+                content: "hello".to_string(),
+                created_at: updated_at,
+            }],
+            created_at: updated_at,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn save_conversation_round_trips_through_list_conversations() {
+        let dir = temp_dir("round-trip");
+        let conversation = sample_conversation("c1", 100);
+
+        save_conversation(&dir, &conversation).unwrap();
+        let loaded = list_conversations(&dir).unwrap();
+
+        assert_eq!(loaded, vec![conversation]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_conversation_creates_missing_directory() {
+        let dir = temp_dir("missing-dir");
+        assert!(!dir.exists());
+
+        save_conversation(&dir, &sample_conversation("c1", 1)).unwrap();
+        assert!(dir.exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_conversations_on_missing_directory_returns_empty() {
+        let dir = temp_dir("does-not-exist");
+        assert_eq!(list_conversations(&dir).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn list_conversations_sorts_newest_updated_first() {
+        let dir = temp_dir("sorting");
+        save_conversation(&dir, &sample_conversation("old", 100)).unwrap();
+        save_conversation(&dir, &sample_conversation("new", 200)).unwrap();
+
+        let loaded = list_conversations(&dir).unwrap();
+
+        assert_eq!(loaded.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_conversations_skips_a_corrupt_file_instead_of_failing() {
+        let dir = temp_dir("corrupt");
+        save_conversation(&dir, &sample_conversation("good", 1)).unwrap();
+        std::fs::write(dir.join("corrupt.json"), "not valid json").unwrap();
+
+        let loaded = list_conversations(&dir).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "good");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

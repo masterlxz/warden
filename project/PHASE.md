@@ -112,7 +112,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 6.3 — Integração com o core (IPC Rust↔frontend)
 - [x] 6.4 — Canal nativo (chat direto no app)
 - [x] 6.5 — Configuração visual (modelo, API keys, canais)
-- [ ] 6.6 — Histórico de conversas
+- [x] 6.6 — Histórico de conversas
 - [ ] 6.7 — Renderização de markdown nas mensagens
 - [ ] 6.8 — Build Linux/Windows/macOS
 

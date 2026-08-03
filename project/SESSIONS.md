@@ -2,7 +2,53 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-02 (Sessão 18)
+> Última atualização: 2026-08-03 (Sessão 19)
+
+---
+
+### 2026-08-03 — Sessão 19
+
+- **Objetivo**: Etapa 6.6 — histórico de conversas persistente no app desktop.
+
+**O que foi feito**:
+
+- Antes de codar, exploração confirmou que não existia nenhum precedente de persistência de
+  histórico no projeto (nem o `warden-cli`, que só acumula um `Vec<Message>` em memória durante o
+  loop REPL) — 6.6 era a primeira implementação disso. Decisão de formato/local registrada em
+  `ARCHITECTURE.md`: JSON, um arquivo por conversa, em `~/.config/warden/conversations/<id>.json`
+  — mesmo `dirs::config_dir()` já usado pro `config.toml` (dado opaco de app, ao contrário do
+  vault markdown, que fica de propósito fora dessa pasta por ser humano-navegável)
+- `warden-bootstrap`: novo `Conversation`/`ConversationMessage`/`ChatRole` (`Serialize`+
+  `Deserialize`, `camelCase`, espelhando `desktop/src/types.ts` campo a campo — nenhum reshape na
+  fronteira IPC); `default_conversations_dir()`, `save_conversation` (mkdir -p + overwrite
+  completo do arquivo, mesmo padrão de `save_config`) e `list_conversations` (ordena por
+  `updated_at` decrescente; diretório ausente = lista vazia, não erro, mesma convenção de
+  `load_config_from_path` não-obrigatório; arquivo que falha o parse é **pulado**, não derruba a
+  lista inteira — decisão deliberada pra um JSON corrompido não sumir com todo o histórico da
+  sidebar). 5 testes novos (12 no total no crate)
+- `desktop/src-tauri`: dois comandos novos, `list_conversations`/`save_conversation`, wrappers
+  finos sobre as funções do `warden-bootstrap` (importadas com alias — `read_conversations`/
+  `write_conversation` — pra não colidir de nome com os comandos Tauri). Comentário do `ChatTurn`
+  atualizado (já não é mais verdade que "a fronteira do frontend é quem possui o histórico");
+  `ChatTurn` continua existindo separado de `ConversationMessage` de propósito — `send_message`
+  só precisa de role+content, não do id/timestamps que um registro persistido carrega
+- Frontend: `App.tsx` ganhou `useEffect` que chama `list_conversations` no mount (populando o
+  estado a partir do disco em vez de começar sempre vazio) e `appendMessage` passou a computar o
+  objeto `Conversation` atualizado explicitamente (antes só existia dentro do updater do
+  `setConversations`) pra poder chamar `save_conversation` com ele — fire-and-forget, erro só vai
+  pro console, não bloqueia o envio da mensagem (persistência falhando não deveria quebrar o chat
+  da sessão atual)
+- Verificação: `cargo build/test/clippy --workspace` limpos (30 testes: 12 warden-bootstrap + 5
+  CLI + 10 core + 3 pipeline); `npm run build` (tsc+vite) limpo; `npm run tauri dev` rodou ~40s+
+  sem crash nem erro no log após compilar (mesma limitação de sempre pra testar de verdade:
+  sem `xdotool`/`wtype` nesse Wayland pra simular clique/digitação). Fica pro usuário confirmar
+  visualmente: mandar mensagens, fechar o app, reabrir, e ver a conversa na sidebar com o
+  histórico intacto
+- `PHASE.md` (6.6 concluída), `ARCHITECTURE.md` (decisão de formato/local do histórico registrada)
+
+**Próximo passo**: Fase 6 só tem 6.7 (renderização de markdown nas mensagens) e 6.8 (build
+Linux/Windows/macOS) restando. Vale o usuário testar a 6.6 de verdade (e a 6.5, ainda pendente de
+confirmação da Sessão 18) antes de seguir.
 
 ---
 
