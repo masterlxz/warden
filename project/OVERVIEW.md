@@ -24,7 +24,7 @@ Fase 2 — Canal Telegram              [ ] Pendente
 Fase 3 — Canal WhatsApp              [ ] Pendente
 Fase 4 — Vault & Memória             [ ] Pendente
 Fase 5 — Tools & MCP                 [ ] Pendente
-Fase 6 — App Desktop Nativo          [ ] Pendente
+Fase 6 — App Desktop Nativo          [x] Concluída
 Fase 7 — App Mobile                  [ ] Pendente
 Fase 8 — Extensão de Navegador       [ ] Pendente
 Fase 9 — Rede de Nós & Tailscale     [ ] Pendente

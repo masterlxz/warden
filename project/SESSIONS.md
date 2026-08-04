@@ -2,7 +2,58 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-04 (Sessão 20)
+> Última atualização: 2026-08-04 (Sessão 21)
+
+---
+
+### 2026-08-04 — Sessão 21
+
+- **Objetivo**: Etapa 6.8 — build Linux/Windows/macOS. Última etapa da Fase 6 (App Desktop
+  Nativo).
+
+**O que foi feito**:
+
+- Build multi-plataforma de verdade pra um app Tauri não dá pra fazer local (sem SDK da Apple
+  nem toolchain Windows nesta máquina Arch) — o caminho é CI, cada OS buildando num runner
+  nativo. Antes de desenhar algo novo, explorados em paralelo (a) o próprio
+  `desktop/src-tauri/tauri.conf.json` do Warden e (b) o precedente do TruthID
+  (`truthid/.github/workflows/build.yml`), que já resolve exatamente esse problema pro mesmo
+  stack (Tauri v2). `GUIDELINES.md` pede consistência com os outros projetos — decisão foi
+  replicar o `build.yml` do TruthID quase literalmente, adaptado pros nomes/paths do Warden
+- Criado `.github/workflows/build.yml` — primeira automação de CI do repo. Dispara em tag `v*`,
+  matrix `ubuntu-22.04` (→ deb)/`windows-latest` (→ msi)/`macos-latest` (→ dmg), usa
+  `tauri-apps/tauri-action@v0` com `releaseDraft: true`, sem assinatura de código nem
+  notarização macOS (mesma decisão já tomada no TruthID). Única diferença real do original:
+  `npm ci` sem `--legacy-peer-deps` — testado local e confirmado que o `package.json` do Warden
+  não precisa da flag (mais simples que o do TruthID)
+- `tauri.conf.json` não precisou de nenhuma mudança — já está estruturalmente idêntico ao do
+  TruthID (`bundle.targets: "all"`, ícones já gerados em `icons/`)
+- **Verificação real, não só leitura de doc**: rodei `npx tauri build` de verdade nesta máquina
+  (o mesmo que o job `ubuntu-22.04` do workflow faz) — compilou o workspace inteiro em release
+  (~8min) e gerou `.deb`/`.rpm` válidos em `target/release/bundle/`. Prova de ponta a ponta que
+  o pipeline de build funciona. O bundle de `.AppImage` falhou (`failed to run linuxdeploy`) —
+  investigado a fundo em vez de só anotar como "não deu": não é FUSE ausente (`/dev/fuse`
+  existe, `--appimage-mount` monta normal), é o `strip` **embutido dentro do
+  `linuxdeploy-x86_64.AppImage`** (binutils de meados de 2024) que não reconhece a seção ELF
+  `.relr.dyn` (relocações RELR) presente nas bibliotecas de sistema desta máquina — Arch é
+  bleeding-edge e já compila com RELR habilitado por padrão, coisa que o Ubuntu 22.04 (o runner
+  real do CI) não faz do mesmo jeito. Ou seja: é uma incompatibilidade específica de **buildar
+  AppImage num host Arch**, não um problema do workflow, do `tauri.conf.json` ou do app — no
+  runner `ubuntu-22.04` do GitHub Actions (ambiente padrão, testado por um sem-número de
+  projetos Tauri) isso não deve reproduzir. Registrado aqui pra próxima sessão não perder tempo
+  redescobrindo isso caso volte a testar build local de AppImage nesta máquina
+- YAML do workflow validado com `ruby -ryaml` (não tinha `pyyaml`/`pip` disponível no python3
+  do sistema)
+- `project/ARCHITECTURE.md` (decisão de build/release registrada), `project/PHASE.md` (6.8
+  concluída — Fase 6 inteira concluída), `project/OVERVIEW.md` (tabela de status corrigida:
+  Fase 6 estava marcada `[ ] Pendente` há várias sessões, defasada desde que a fase começou)
+
+**Próximo passo**: Fase 6 (App Desktop Nativo) está com todas as etapas concluídas. A
+verificação completa do pipeline de release (legs Windows/macOS de verdade, e a criação de um
+GitHub Release draft) só acontece empurrando uma tag `v*` pro remoto — não fiz isso
+automaticamente por ser uma ação que afeta o repositório público (cria tag + dispara CI +
+publica release draft); fica pro usuário decidir quando. Escolher a próxima fase a atacar (2 a
+5, ainda todas pendentes, ou pular direto pra 7/8/9/10) é a decisão em aberto.
 
 ---
 

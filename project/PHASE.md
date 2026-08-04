@@ -114,7 +114,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 6.5 — Configuração visual (modelo, API keys, canais)
 - [x] 6.6 — Histórico de conversas
 - [x] 6.7 — Renderização de markdown nas mensagens
-- [ ] 6.8 — Build Linux/Windows/macOS
+- [x] 6.8 — Build Linux/Windows/macOS
 
 **Identidade visual** (usuário, 2026-08-02): estética parecida com a do TruthID, mas em roxo
 vibrante em vez de azul. Vale a partir da 6.2, quando a UI de verdade começa a ser construída — o
