@@ -2,7 +2,50 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-03 (Sessão 19)
+> Última atualização: 2026-08-04 (Sessão 20)
+
+---
+
+### 2026-08-04 — Sessão 20
+
+- **Objetivo**: Etapa 6.7 — renderização de markdown nas mensagens do chat desktop.
+
+**O que foi feito**:
+
+- Adicionadas `react-markdown` (v10) + `remark-gfm` (tabelas, strikethrough, etc. do GFM) ao
+  `desktop`. Decisão deliberada de **não** incluir syntax highlighting (ex. `rehype-highlight`) —
+  6.7 pede renderização de markdown, não highlighting de código; blocos `pre`/`code` ficam com
+  fonte monoespaçada e fundo próprio, sem parser de linguagem
+- `MessageBubble.tsx`: trocado o `<p>` de texto puro por `<ReactMarkdown remarkPlugins={[remarkGfm]}>`.
+  Componente customizado pro elemento `a` — intercepta o clique e abre o link no navegador padrão
+  via `openUrl` do `@tauri-apps/plugin-opener` (`event.preventDefault()` + `openUrl(href)`) em vez
+  de navegar a própria webview do app pra fora. A permissão `opener:default` já existia em
+  `capabilities/default.json` desde o scaffold inicial, só não tinha uso real ainda no frontend
+- `App.css`: `.message-bubble-content` deixou de ser um `<p>` com `white-space: pre-wrap` e virou
+  um container com regras pra cada elemento markdown (`p`, `ul`/`ol`/`li`, `h1`-`h4`, `code`/`pre`,
+  `blockquote`, `table`/`th`/`td`, `a`) — margens colapsadas no primeiro/último filho pra não sobrar
+  espaço extra na bolha. Estilos de código/link **duplicados por variante** (`--user`/`--assistant`)
+  porque a bolha do usuário é fundo sólido roxo com texto branco (link branco sublinhado, código com
+  `rgba(255,255,255,0.16)`) enquanto a do assistente usa os tokens de tema existentes
+  (`--color-surface-alt`, `--color-accent-dark`) — mesmo padrão dos outros componentes, que já
+  segue `prefers-color-scheme` automaticamente por herdar as CSS custom properties
+- Verificação real (não só `tsc`/build): como não dá pra digitar na janela Tauri nesse ambiente
+  (Wayland/KDE, sem `xdotool`/`wtype` — limitação conhecida das sessões anteriores), rodei
+  `npm run dev` (Vite puro, fora do Tauri) e dirigi um Chromium headless via Playwright
+  (instalado temporariamente, desinstalado no final — não ficou como dependência do projeto) pra
+  digitar uma mensagem markdown de verdade e tirar screenshot. Duas rodadas: (1) bolha do usuário
+  com heading, bold/italic, inline code, lista, code block, blockquote e link — sem mock de IPC,
+  só confirma que o `appendMessage` local (que já roda antes do `await invoke("send_message")`)
+  renderiza certo; (2) `window.__TAURI_INTERNALS__.invoke` mockado pra simular uma resposta do
+  assistente com tabela GFM, code block e link — bolha clara do assistente confirmada com bom
+  contraste. Ambos os screenshots mostraram o roxo/tema intactos e nenhum elemento markdown
+  quebrado. `cargo build/clippy --workspace` (sem mudança no lado Rust) e `npm run build` (tsc+vite)
+  limpos
+- `PHASE.md` atualizado (6.7 concluída)
+
+**Próximo passo**: só falta 6.8 (build Linux/Windows/macOS) pra fechar a Fase 6 inteira. Vale
+também o usuário confirmar visualmente a 6.7 rodando de verdade dentro do Tauri (não só via
+Playwright fora dele) quando for prático.
 
 ---
 

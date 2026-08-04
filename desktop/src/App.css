@@ -202,9 +202,87 @@ body {
 }
 
 .message-bubble-content {
-  margin: 0;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-bubble-content > :first-child {
+  margin-top: 0;
+}
+
+.message-bubble-content > :last-child {
+  margin-bottom: 0;
+}
+
+.message-bubble-content p,
+.message-bubble-content ul,
+.message-bubble-content ol,
+.message-bubble-content blockquote,
+.message-bubble-content pre,
+.message-bubble-content table,
+.message-bubble-content h1,
+.message-bubble-content h2,
+.message-bubble-content h3,
+.message-bubble-content h4 {
+  margin: 0 0 0.6em 0;
+}
+
+.message-bubble-content ul,
+.message-bubble-content ol {
+  padding-left: 1.25em;
+}
+
+.message-bubble-content li {
+  margin-bottom: 0.2em;
+}
+
+.message-bubble-content h1,
+.message-bubble-content h2,
+.message-bubble-content h3,
+.message-bubble-content h4 {
+  font-size: 1em;
+  font-weight: 700;
+}
+
+.message-bubble-content code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+
+.message-bubble-content pre {
+  padding: 0.7em 0.9em;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.message-bubble-content pre code {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.message-bubble-content blockquote {
+  padding-left: 0.8em;
+  border-left: 3px solid currentColor;
+  opacity: 0.85;
+}
+
+.message-bubble-content table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.message-bubble-content th,
+.message-bubble-content td {
+  border: 1px solid currentColor;
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+
+.message-bubble-content a {
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .message-bubble--user {
@@ -213,11 +291,29 @@ body {
   color: white;
 }
 
+.message-bubble--user .message-bubble-content code,
+.message-bubble--user .message-bubble-content pre {
+  background-color: rgba(255, 255, 255, 0.16);
+}
+
+.message-bubble--user .message-bubble-content a {
+  color: white;
+}
+
 .message-bubble--assistant {
   align-self: flex-start;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   color: var(--color-text);
+}
+
+.message-bubble--assistant .message-bubble-content code,
+.message-bubble--assistant .message-bubble-content pre {
+  background-color: var(--color-surface-alt);
+}
+
+.message-bubble--assistant .message-bubble-content a {
+  color: var(--color-accent-dark);
 }
 
 .chat-error-banner {
