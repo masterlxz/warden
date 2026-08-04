@@ -12,6 +12,7 @@ const emptySettings: Settings = {
   geminiKey: "",
   openaiKey: "",
   tavilyKey: "",
+  enableShell: false,
 };
 
 function ApiKeyField({
@@ -85,6 +86,7 @@ function SettingsView() {
           gemini_key: form.geminiKey,
           openai_key: form.openaiKey,
           tavily_key: form.tavilyKey,
+          enable_shell: form.enableShell,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -165,6 +167,23 @@ function SettingsView() {
           value={form.tavilyKey}
           onChange={(v) => setForm((f) => ({ ...f, tavilyKey: v }))}
         />
+
+        <label className="settings-field settings-checkbox-field">
+          <span className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              checked={form.enableShell}
+              onChange={(e) => {
+                const enableShell = e.currentTarget.checked;
+                setForm((f) => ({ ...f, enableShell }));
+              }}
+            />
+            <span className="settings-label">Enable shell tool</span>
+          </span>
+          <span className="settings-hint">
+            Lets the model run any command on this machine, with no sandboxing. Off by default.
+          </span>
+        </label>
 
         {error && <p className="settings-error-banner">{error}</p>}
         {savedAt && !error && <p className="settings-success-banner">Settings saved.</p>}

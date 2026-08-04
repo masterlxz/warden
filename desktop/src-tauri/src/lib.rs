@@ -73,6 +73,7 @@ struct SettingsSnapshot {
     gemini_key: String,
     openai_key: String,
     tavily_key: String,
+    enable_shell: bool,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +84,7 @@ struct SettingsFormPayload {
     gemini_key: String,
     openai_key: String,
     tavily_key: String,
+    enable_shell: bool,
 }
 
 #[tauri::command]
@@ -99,6 +101,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         gemini_key: config.api_keys.gemini.unwrap_or_default(),
         openai_key: config.api_keys.openai.unwrap_or_default(),
         tavily_key: config.api_keys.tavily.unwrap_or_default(),
+        enable_shell: config.enable_shell.unwrap_or(false),
     })
 }
 
@@ -119,6 +122,7 @@ fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Re
         provider: Some(provider),
         model: non_empty(payload.model),
         vault_path: non_empty(payload.vault_path),
+        enable_shell: Some(payload.enable_shell),
         api_keys: ApiKeys {
             gemini: non_empty(payload.gemini_key),
             openai: non_empty(payload.openai_key),

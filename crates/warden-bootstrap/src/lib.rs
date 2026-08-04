@@ -17,6 +17,7 @@ use warden_core::model::ModelProvider;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
+use warden_core::tool::shell::ShellTool;
 use warden_core::tool::web_search::WebSearchTool;
 use warden_core::tool::Tool;
 
@@ -35,6 +36,9 @@ pub struct FileConfig {
     pub provider: Option<Provider>,
     pub model: Option<String>,
     pub vault_path: Option<String>,
+    /// Opt-in gate for the `shell` tool (Phase 5.5) — off unless explicitly turned on, since it
+    /// lets the model run arbitrary commands on this machine with no sandboxing.
+    pub enable_shell: Option<bool>,
     #[serde(default)]
     pub api_keys: ApiKeys,
 }
@@ -177,6 +181,15 @@ pub fn resolve_secret(from_env: Option<String>, from_file: Option<String>) -> Op
     from_env.or(from_file)
 }
 
+/// Same precedence as `resolve_secret` (env wins over file), but for a boolean flag rather than
+/// a secret string — used for the `shell` tool's opt-in gate.
+pub fn resolve_flag(from_env: Option<String>, from_file: Option<bool>) -> bool {
+    match from_env {
+        Some(value) => matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes"),
+        None => from_file.unwrap_or(false),
+    }
+}
+
 /// Per-channel overrides (CLI flags today; a desktop settings UI later — see PHASE.md 6.5).
 #[derive(Default)]
 pub struct Overrides {
@@ -231,6 +244,15 @@ pub fn bootstrap(
         None => eprintln!(
             "note: TAVILY_API_KEY not set — web_search tool disabled (get a free key at https://tavily.com)\n"
         ),
+    }
+
+    if resolve_flag(std::env::var("WARDEN_ENABLE_SHELL").ok(), config.enable_shell) {
+        base_tools.push(Arc::new(ShellTool::new(vault.clone())));
+    } else {
+        eprintln!(
+            "note: shell tool disabled — set WARDEN_ENABLE_SHELL=1 (or enable_shell = true in config.toml) to \
+             enable it. It lets the model run arbitrary commands on this machine, with no sandboxing.\n"
+        );
     }
 
     let mut sub_orchestrator = Orchestrator::new(model_provider.clone(), vault.clone());
@@ -326,6 +348,7 @@ tavily = "tk"
             provider: Some(Provider::Openai),
             model: Some("gpt-4o-mini".to_string()),
             vault_path: Some("/tmp/some-vault".to_string()),
+            enable_shell: Some(true),
             api_keys: ApiKeys {
                 gemini: Some("gk".to_string()),
                 openai: Some("ok".to_string()),
@@ -443,5 +466,16 @@ tavily = "tk"
         );
         assert_eq!(resolve_secret(None, Some("from-file".to_string())), Some("from-file".to_string()));
         assert_eq!(resolve_secret(None, None), None);
+    }
+
+    #[test]
+    fn resolve_flag_prefers_env_over_file() {
+        assert!(resolve_flag(Some("1".to_string()), Some(false)));
+        assert!(resolve_flag(Some("true".to_string()), None));
+        assert!(!resolve_flag(Some("0".to_string()), Some(true)));
+        assert!(!resolve_flag(Some("nonsense".to_string()), Some(true)));
+        assert!(resolve_flag(None, Some(true)));
+        assert!(!resolve_flag(None, Some(false)));
+        assert!(!resolve_flag(None, None));
     }
 }

@@ -414,6 +414,23 @@ body {
   color: var(--color-text);
 }
 
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-checkbox-row input[type="checkbox"] {
+  accent-color: var(--color-accent);
+  width: 1.05em;
+  height: 1.05em;
+}
+
+.settings-hint {
+  font-size: 0.82em;
+  color: var(--color-text-muted);
+}
+
 .settings-input,
 .settings-select {
   flex: 1;

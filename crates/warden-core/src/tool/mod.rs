@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub mod delegate;
 pub mod file_tools;
+pub mod shell;
 pub mod web_search;
 
 #[derive(Debug, Clone)]

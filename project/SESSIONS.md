@@ -2,7 +2,75 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-04 (Sessão 21)
+> Última atualização: 2026-08-04 (Sessão 22)
+
+---
+
+### 2026-08-04 — Sessão 22
+
+- **Objetivo**: Etapa 5.5 — tool `shell`, escolhida como "ganho rápido" depois de fechar a
+  Fase 6 (a trait `Tool` já existia com dois exemplos reais, sem precisar do registry/MCP da
+  5.1/5.2).
+
+**O que foi feito**:
+
+- Investigação prévia (`PENDING.md` P8, `ROADMAP.md`, `ARCHITECTURE.md`, `GUIDELINES.md`, código
+  de `file_tools.rs`/`web_search.rs`) mostrou que o projeto não tinha **nenhuma** decisão de
+  segurança pra uma tool desse tipo — as tools de arquivo já não têm scoping real (path
+  traversal não é bloqueado), então não havia um modelo de sandboxing pra replicar, e uma tool
+  de shell é categoricamente mais arriscada. Perguntado ao usuário antes de implementar (não é
+  decisão que a IA deveria tomar sozinha): (1) opt-in desligada por padrão vs sempre ativa como
+  as outras tools — escolhido **opt-in**; (2) toggle na Settings UI do desktop já nesta sessão
+  vs só config.toml/env por enquanto — escolhido **incluir agora**, o que expandiu o escopo
+  pra tocar `desktop/src-tauri` e o frontend também
+- `crates/warden-core/src/tool/shell.rs` (novo) — `ShellTool`, mesma forma estrutural de
+  `file_tools.rs`: `spec()` com JSON Schema plano (primeiro caso do projeto com parâmetro
+  numérico, `timeout_ms`, não só string), `call()` com extração manual de args. Roda via
+  `sh -c` (Unix, `#[cfg(not(target_os = "windows"))]`) ou `cmd /C` (Windows) — cobre a
+  diferença já anotada no `ROADMAP.md`; PowerShell fica fora de escopo. `tokio::process::Command`
+  com `.kill_on_drop(true)` + `tokio::time::timeout` — timeout mata o processo e devolve
+  `{"timed_out": true}` em vez de erro, pro modelo conseguir reagir. `cwd` default = raiz do
+  vault (`Vault::root()`), overridável relativo ou absoluto, criado via `create_dir_all` se
+  não existir ainda. `stdout`/`stderr` truncados em ~20KB respeitando char boundary UTF-8, pra
+  não estourar o contexto do modelo com output gigante. `tokio` saiu de `dev-dependencies` pra
+  `dependencies` de verdade em `warden-core` (só era usado em `#[tokio::test]` antes), e o
+  workspace ganhou as features `"process"`/`"time"` na entrada compartilhada
+- `crates/warden-bootstrap/src/lib.rs`: `FileConfig` ganhou `enable_shell: Option<bool>`; nova
+  `resolve_flag(from_env, from_file) -> bool` espelha `resolve_secret` mas parseia o env var
+  como booleano (`"1"`/`"true"`/`"yes"`). Gate em `bootstrap()` no mesmo ponto do gate do
+  Tavily — liga se `resolve_flag(WARDEN_ENABLE_SHELL, config.enable_shell)`, senão `eprintln!`
+  explicando como ligar
+- Desktop: `SettingsSnapshot`/`SettingsFormPayload` (`src-tauri/src/lib.rs`),
+  `Settings` (`types.ts`) e `SettingsView.tsx` ganharam `enable_shell`/`enableShell` — checkbox
+  novo com aviso de risco embaixo ("lets the model run any command on this machine, with no
+  sandboxing"), `App.css` com estilo mínimo (`accent-color` roxo pra bater com o tema).
+  Salvar já dispara o `bootstrap()` de novo (mecanismo da 6.5, de graça) — ligar/desligar a
+  tool na Settings faz live-reload sem reiniciar o app
+- **Bug real encontrado e corrigido durante a verificação visual**: o primeiro `onChange` do
+  checkbox lia `e.currentTarget.checked` *dentro* do updater function passado pro `setForm`
+  (`setForm((f) => ({ ...f, enableShell: e.currentTarget.checked }))`) — mesmo padrão usado nos
+  outros campos de texto do formulário, mas pra checkbox isso quebrava com
+  `TypeError: Cannot read properties of null (reading 'checked')` assim que clicado de verdade
+  (só apareceu testando clique real via Playwright — `page.fill()` não reproduz, por isso não
+  foi pego só de olhar o código). Corrigido extraindo `e.currentTarget.checked` numa `const`
+  **antes** de chamar `setForm`, em vez de ler o evento de dentro do closure do updater
+- Verificação real: `cargo test --workspace` (18 testes novos/atualizados no `warden-core`,
+  incluindo um que mata de verdade um `sleep 5` com `timeout_ms: 50` e confere
+  `timed_out: true` — subprocess real, não mock; mais `resolve_flag` no `warden-bootstrap`),
+  `cargo clippy --workspace --all-targets` limpo, `npm run build` limpo. UI testada de verdade
+  via Chromium headless (Playwright, instalado e removido só pro teste, mesmo padrão da sessão
+  20): mock do `get_settings`/`save_settings`, screenshot antes/depois do clique no checkbox,
+  payload de `save_settings` conferido (`enable_shell: true`) — foi esse teste que pegou o bug
+  do `currentTarget` acima. Sem `GEMINI_API_KEY`/`OPENAI_API_KEY` configurada nesta máquina, não
+  deu pra testar o fluxo "modelo decide chamar a tool shell" de ponta a ponta com um modelo de
+  verdade — os testes unitários já prova que a tool em si funciona (processo real); fica pro
+  usuário confirmar com uma key configurada (`WARDEN_ENABLE_SHELL=1`)
+- `project/ARCHITECTURE.md` (decisão de segurança da 5.5 registrada), `project/PHASE.md` (5.5
+  concluída), `project/PENDING.md` (P8 atualizada — a tool em si não é mais o que falta ali,
+  só a arquitetura do canal Terminal dedicado)
+
+**Próximo passo**: escolher entre continuar na Fase 5 (5.1/5.2 registry+MCP client, que
+destravam P11/P13) ou atacar as Fases 2-4, ainda todas pendentes.
 
 ---
 

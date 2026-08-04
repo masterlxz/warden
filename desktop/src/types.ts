@@ -33,4 +33,7 @@ export interface Settings {
   geminiKey: string;
   openaiKey: string;
   tavilyKey: string;
+  /** Opt-in gate for the `shell` tool — off by default, since it lets the model run arbitrary
+   * commands on this machine with no sandboxing. */
+  enableShell: boolean;
 }

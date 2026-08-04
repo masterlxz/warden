@@ -93,7 +93,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [ ] 5.2 — MCP client: conectar em MCP servers externos
 - [ ] 5.3 — Tool `web_search` via MCP
 - [ ] 5.4 — Tool `browser` (via extensão — ver Fase 8)
-- [ ] 5.5 — Tool `shell` (executar comando no nó cliente)
+- [x] 5.5 — Tool `shell` (executar comando no nó cliente)
 - [ ] 5.6 — Tool `file_system` (ler/escrever arquivos no nó cliente)
 - [ ] 5.7 — Integração Google (Gmail, Drive, Calendar) via MCP servers existentes
 - [ ] 5.8 — Rate limiting e controle de custo por tool
