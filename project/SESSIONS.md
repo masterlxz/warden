@@ -2,7 +2,61 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-04 (Sessão 24)
+> Última atualização: 2026-08-04 (Sessão 25)
+
+---
+
+### 2026-08-04 — Sessão 25
+
+- **Objetivo**: Etapa 5.6 — Tool `file_system`. Continuação direta da sessão anterior (5.3),
+  em modo `/plan`.
+
+**O que foi feito**:
+
+- Antes de planejar, notada uma ambiguidade real no próprio texto do `PHASE.md`: 5.6 diz
+  "arquivos no **nó cliente**", diferente do escopo do `read_file`/`write_file` (Fase 1.6, só
+  vault). Investigando `memory/mod.rs`, confirmado que `Vault::read`/`write` fazem só
+  `root.join(path)` sem canonicalizar nem conter — path traversal não é bloqueado hoje nesses
+  dois tools (mesma lacuna já anotada de passagem na investigação de segurança do `shell` na
+  sessão 22, agora confirmada de novo no contexto certo)
+- Duas perguntas feitas ao usuário antes de codar: (1) 5.6 é uma capacidade **nova e separada**
+  (fora do vault) ou deveria **substituir** `read_file`/`write_file`? → **nova e separada**,
+  os dois tools do vault continuam como estão; (2) inclui UI na Settings pra gerenciar
+  diretórios permitidos já nesta sessão (o `tauri-plugin-dialog` já está registrado no app mas
+  sem nenhum uso real ainda), ou fica só `config.toml` como os `mcp_servers` genéricos da 5.2?
+  → **só config.toml** por enquanto
+- Durante o design (decisão técnica, não perguntada — aplicação direta da diretriz do projeto
+  contra abstração redundante): achado que o server MCP oficial de referência pra isso já
+  existe, `@modelcontextprotocol/server-filesystem` (`npx -y @modelcontextprotocol/server-
+  filesystem <dir1> [dir2...]`, confirmado no README oficial do repo `modelcontextprotocol/
+  servers`), e que isso já é 100% expressável hoje via o mecanismo genérico `[[mcp_servers]]`
+  da 5.2, sem precisar de nenhum campo de config novo (`file_system_allowed_dirs` seria
+  redundante — diferente do Tavily, que ganhou tratamento dedicado por ter um "segredo" único
+  e óbvio, `file_system` não tem equivalente natural pra virar config especial, é só uma lista
+  de diretórios). **Conclusão: 5.6 não precisou de nenhum código novo em `warden-bootstrap`/
+  `warden-core`** — só verificação real de que o server oficial funciona através do
+  `McpToolProvider`, e documentação de como habilitar
+- **Verificação real, de ponta a ponta**, via `examples/verify_filesystem_mcp.rs` descartável
+  em `warden-core` (removido depois, mesmo padrão da 5.3): conectou no server real via
+  `McpToolProvider::connect_stdio` de produção, listou **14 tools** (`read_file`,
+  `read_text_file`, `write_file`, `edit_file`, `create_directory`, `list_directory`,
+  `move_file`, `search_files`, `directory_tree`, `get_file_info`, etc. — bem mais rico que os
+  2 tools do vault), escreveu um arquivo de verdade dentro de um diretório temporário permitido
+  e leu de volta com sucesso (conteúdo bateu exato), e tentou escrever **fora** do diretório
+  permitido — rejeitado pelo próprio server (`"Access denied - path outside allowed
+  directories"`, confirmado com `Path::exists()` que o arquivo não foi criado). Prova concreta
+  de que essa capacidade, além de mais rica, é mais segura que o `read_file`/`write_file` atual
+- `project/PHASE.md` (5.6 concluída, com nota explicando que não há código novo — reuso
+  deliberado do mecanismo da 5.2), `project/ARCHITECTURE.md` (duas decisões novas: escopo
+  separado do vault, e reuso de `mcp_servers` em vez de campo de config dedicado — com o
+  exemplo de TOML pra habilitar, que hoje é a única documentação de como usar isso já que o
+  projeto ainda não tem um README de usuário)
+
+**Próximo passo**: Fase 5 segue com 5.4 (tool `browser`, depende da Fase 8/extensão — fora de
+ordem), 5.7 (integração Google via MCP servers — mais um caso provável de servers `npx`-based,
+ver P17 em `PENDING.md`), e 5.8 (rate limiting/custo por tool). Segue também em aberto Fases
+2-4 ou a UI de P11 (gerenciamento visual de servers MCP, que agora cobre tanto integrações
+custom quanto o próprio `file_system`).
 
 ---
 
