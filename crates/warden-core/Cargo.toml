@@ -7,6 +7,12 @@ edition.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
+rmcp = { version = "3", features = ["client", "transport-child-process"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# `transport-io` (plain stdio, used to play the *server* side against a real child process in
+# tests/mcp_stdio.rs) is dev-only — the shipped binary only ever needs the client side.
+rmcp = { version = "3", features = ["transport-io"] }

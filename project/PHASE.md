@@ -19,7 +19,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 1.4 — Vault markdown local: ler/escrever arquivos `.md` em pasta configurável
 - [x] 1.5 — Memória: buscar contexto relevante no vault (grep/ripgrep) e injetar no prompt
 - [x] 1.6 — Trait `Tool` + primeira tool: `read_file`, `write_file`
-- [x] 1.7 — Tool `web_search` (pesquisa na internet via API)
+- [x] 1.7 — Tool `web_search` (pesquisa na internet via API) — *implementação original (REST direto na API da Tavily) substituída pela versão via MCP na etapa 5.3*
 - [x] 1.8 — Sub-agente leve: delegar tarefa escopada pra outro modelo/contexto
 - [x] 1.9 — Testes de integração do pipeline completo (CLI)
 - [x] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
@@ -89,9 +89,9 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Stack**: Rust (core), qualquer linguagem para MCP servers
 
 **Etapas**:
-- [ ] 5.1 — Registry de tools (`ToolProvider` trait)
-- [ ] 5.2 — MCP client: conectar em MCP servers externos
-- [ ] 5.3 — Tool `web_search` via MCP
+- [x] 5.1 — Registry de tools (`ToolProvider` trait)
+- [x] 5.2 — MCP client: conectar em MCP servers externos
+- [x] 5.3 — Tool `web_search` via MCP
 - [ ] 5.4 — Tool `browser` (via extensão — ver Fase 8)
 - [x] 5.5 — Tool `shell` (executar comando no nó cliente)
 - [ ] 5.6 — Tool `file_system` (ler/escrever arquivos no nó cliente)

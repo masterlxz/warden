@@ -17,9 +17,9 @@ use warden_core::model::ModelProvider;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
+use warden_core::tool::mcp::McpToolProvider;
 use warden_core::tool::shell::ShellTool;
-use warden_core::tool::web_search::WebSearchTool;
-use warden_core::tool::Tool;
+use warden_core::tool::{Tool, ToolProvider};
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -41,6 +41,28 @@ pub struct FileConfig {
     pub enable_shell: Option<bool>,
     #[serde(default)]
     pub api_keys: ApiKeys,
+    /// External MCP servers to connect to on startup (Phase 5.2) — empty by default, same
+    /// "off unless configured" spirit as the shell tool. Each entry is spawned as a local child
+    /// process (stdio transport, the standard for local MCP servers); whatever tools it
+    /// advertises get registered alongside the built-in ones.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+}
+
+/// One external MCP server to connect to (TOML: `[[mcp_servers]]`). `command`/`args`/`env`
+/// mirror the shape every other MCP client config uses (e.g. Claude Desktop's `mcpServers`) —
+/// deliberately, so a user who already has MCP server configs from elsewhere can port them over
+/// close to verbatim.
+#[derive(Deserialize, Serialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerConfig {
+    /// Only used for logging/error messages — not sent to the server.
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -190,6 +212,21 @@ pub fn resolve_flag(from_env: Option<String>, from_file: Option<bool>) -> bool {
     }
 }
 
+/// Connects to one MCP server over stdio and registers whatever tools it advertises, or logs a
+/// warning and leaves `base_tools` untouched on failure — a misconfigured or unreachable server
+/// shouldn't take down the whole orchestrator, same graceful-degradation spirit as a missing
+/// `TAVILY_API_KEY`. Shared by the built-in Tavily connection and every user-configured entry in
+/// `config.mcp_servers` (Phase 5.2), which both need the exact same connect→list→extend flow.
+async fn register_mcp_server_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, command: &str, args: &[String], env: &[(String, String)]) {
+    match McpToolProvider::connect_stdio(name, command, args, env).await {
+        Ok(provider) => match provider.tools().await {
+            Ok(tools) => base_tools.extend(tools),
+            Err(err) => eprintln!("note: MCP server '{name}' connected but failed to list tools: {err:#}\n"),
+        },
+        Err(err) => eprintln!("note: MCP server '{name}' unavailable, skipping: {err:#}\n"),
+    }
+}
+
 /// Per-channel overrides (CLI flags today; a desktop settings UI later — see PHASE.md 6.5).
 #[derive(Default)]
 pub struct Overrides {
@@ -203,7 +240,7 @@ pub struct Overrides {
 /// sub-orchestrator). `default_vault_path` is the last-resort fallback when neither
 /// `overrides.vault_path` nor the config file specify one — deliberately caller-supplied since
 /// the right fallback differs per channel (a CLI user picks their own cwd; a GUI app can't).
-pub fn bootstrap(
+pub async fn bootstrap(
     explicit_config_path: Option<&str>,
     overrides: Overrides,
     default_vault_path: PathBuf,
@@ -240,9 +277,23 @@ pub fn bootstrap(
         vec![Arc::new(ReadFileTool::new(vault.clone())), Arc::new(WriteFileTool::new(vault.clone()))];
 
     match resolve_secret(std::env::var("TAVILY_API_KEY").ok(), config.api_keys.tavily) {
-        Some(tavily_key) => base_tools.push(Arc::new(WebSearchTool::new(tavily_key))),
+        Some(tavily_key) => {
+            // Tavily's own MCP server (not a hand-rolled REST call) — gives search plus
+            // extract/crawl/map for free, and doubles as real-world validation of the MCP
+            // client (Phase 5.2) against a third-party server, not just the hand-written one
+            // in warden-core's test suite. Trade-off accepted deliberately: this now needs
+            // Node.js/npx on PATH at runtime, which a pure-Rust REST call didn't.
+            register_mcp_server_tools(
+                &mut base_tools,
+                "tavily",
+                "npx",
+                &["-y".to_string(), "tavily-mcp".to_string()],
+                &[("TAVILY_API_KEY".to_string(), tavily_key)],
+            )
+            .await;
+        }
         None => eprintln!(
-            "note: TAVILY_API_KEY not set — web_search tool disabled (get a free key at https://tavily.com)\n"
+            "note: TAVILY_API_KEY not set — web search (via tavily-mcp) disabled (get a free key at https://tavily.com)\n"
         ),
     }
 
@@ -253,6 +304,11 @@ pub fn bootstrap(
             "note: shell tool disabled — set WARDEN_ENABLE_SHELL=1 (or enable_shell = true in config.toml) to \
              enable it. It lets the model run arbitrary commands on this machine, with no sandboxing.\n"
         );
+    }
+
+    for server in &config.mcp_servers {
+        let env: Vec<(String, String)> = server.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        register_mcp_server_tools(&mut base_tools, &server.name, &server.command, &server.args, &env).await;
     }
 
     let mut sub_orchestrator = Orchestrator::new(model_provider.clone(), vault.clone());
@@ -306,6 +362,42 @@ tavily = "tk"
         assert_eq!(config.api_keys.gemini.as_deref(), Some("gk"));
         assert_eq!(config.api_keys.openai.as_deref(), Some("ok"));
         assert_eq!(config.api_keys.tavily.as_deref(), Some("tk"));
+        assert!(config.mcp_servers.is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_mcp_servers_from_toml() {
+        let path = temp_toml_path("mcp-servers");
+        std::fs::write(
+            &path,
+            r#"
+[[mcp_servers]]
+name = "anchor"
+command = "npx"
+args = ["-y", "@anchor/mcp-server"]
+
+[mcp_servers.env]
+ANCHOR_API_KEY = "secret"
+
+[[mcp_servers]]
+name = "no-args-server"
+command = "some-mcp-server"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(path.to_str().unwrap())).unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 2);
+        assert_eq!(config.mcp_servers[0].name, "anchor");
+        assert_eq!(config.mcp_servers[0].command, "npx");
+        assert_eq!(config.mcp_servers[0].args, vec!["-y".to_string(), "@anchor/mcp-server".to_string()]);
+        assert_eq!(config.mcp_servers[0].env.get("ANCHOR_API_KEY").map(String::as_str), Some("secret"));
+        assert_eq!(config.mcp_servers[1].name, "no-args-server");
+        assert!(config.mcp_servers[1].args.is_empty());
+        assert!(config.mcp_servers[1].env.is_empty());
 
         std::fs::remove_file(&path).ok();
     }
@@ -354,6 +446,12 @@ tavily = "tk"
                 openai: Some("ok".to_string()),
                 tavily: Some("tk".to_string()),
             },
+            mcp_servers: vec![McpServerConfig {
+                name: "anchor".to_string(),
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "@anchor/mcp-server".to_string()],
+                env: std::collections::HashMap::from([("ANCHOR_API_KEY".to_string(), "secret".to_string())]),
+            }],
         };
 
         save_config(&path, &config).unwrap();

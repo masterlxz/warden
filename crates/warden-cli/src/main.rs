@@ -48,7 +48,8 @@ async fn main() -> anyhow::Result<()> {
         cli.config.as_deref(),
         Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path },
         PathBuf::from("vault"),
-    )?;
+    )
+    .await?;
 
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 

@@ -2,7 +2,163 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-04 (Sessão 22)
+> Última atualização: 2026-08-04 (Sessão 24)
+
+---
+
+### 2026-08-04 — Sessão 24
+
+- **Objetivo**: Etapa 5.3 — Tool `web_search` via MCP. Continuação direta da sessão anterior
+  (5.1/5.2), escolhida pelo usuário entre seguir na Fase 5 vs Fases 2-4.
+
+**O que foi feito**:
+
+- Antes de implementar, investigado o que "via MCP" realmente significava aqui: `web_search`
+  já existia desde a Fase 1.7, mas como uma tool Rust pura (`WebSearchTool`) chamando a API
+  REST da Tavily direto via `reqwest`, implementada ad-hoc antes do client MCP (5.2) existir.
+  Achado real via `WebSearch`/`WebFetch` (não assumido): a própria Tavily mantém um server MCP
+  oficial, `tavily-mcp` (https://docs.tavily.com/documentation/mcp — `npx -y tavily-mcp`, env
+  `TAVILY_API_KEY`, mesmo shape `command`/`args`/`env` que o `McpToolProvider` da 5.2 já
+  suporta). Como isso significava **substituir** algo que já funcionava (não só adicionar algo
+  novo), e o trade-off é real (passa a exigir Node.js/`npx` em runtime, algo que o Warden não
+  precisava antes), perguntado ao usuário entre três caminhos — substituir de vez, manter os
+  dois, ou pular pra 5.6. Escolhido: **substituir**
+- Removido `crates/warden-core/src/tool/web_search.rs` inteiro (`WebSearchTool` + seu teste)
+  e a entrada `pub mod web_search;` em `tool/mod.rs`. `reqwest` continua no `Cargo.toml` do
+  `warden-core` — ainda usado por `model/openai.rs`/`model/gemini.rs`, não só pelo que saiu
+- `crates/warden-bootstrap/src/lib.rs`: novo helper privado `register_mcp_server_tools`
+  (connect→list→extend→degradação graciosa) — extraído porque, com essa mudança, o padrão
+  passou a ter dois call sites reais e idênticos (o gate do Tavily e o loop de
+  `config.mcp_servers` da 5.2), não é abstração especulativa. O gate do Tavily
+  (`resolve_secret(TAVILY_API_KEY, ...)`) continua igual, só que agora, em vez de construir
+  `WebSearchTool` direto, chama `register_mcp_server_tools(..., "tavily", "npx", ["-y",
+  "tavily-mcp"], [("TAVILY_API_KEY", key)])`. Mensagem do branch `None` mantém a substring
+  `"TAVILY_API_KEY"` de propósito — o teste `warden-cli/tests/cli.rs::starts_up_and_exits_
+  cleanly_with_a_key_present` já checa isso no stderr e não precisou mudar
+- **Verificação real contra o server publicado de verdade**, não só o de teste da 5.2: sem
+  `TAVILY_API_KEY` de verdade nesta máquina (mesma limitação já registrada nas sessões
+  anteriores pra Gemini/OpenAI), primeiro confirmado com `npx tavily-mcp --list-tools` (flag
+  própria do pacote) que o server sobe e lista tools mesmo com key placeholder — listar não
+  exige key válida, só chamar. Depois, escrito um `examples/verify_tavily_mcp.rs` descartável
+  em `warden-core` (removido logo depois, não ficou no repo — dependeria de rede/`npx`, tornaria
+  o `cargo test` frágil em CI) chamando o próprio `McpToolProvider::connect_stdio` de produção
+  contra `npx -y tavily-mcp` de verdade: conectou, completou o handshake MCP e listou as 5
+  tools reais (`tavily_search`, `tavily_extract`, `tavily_crawl`, `tavily_map`,
+  `tavily_research`) com descrições — prova de ponta a ponta que o client MCP da 5.2 funciona
+  contra um server de terceiro publicado, não só contra o server escrito à mão pro teste
+- Verificação: `cargo build/clippy --workspace --all-targets` limpos; `cargo test --workspace`
+  verde (contagem de testes do `warden-core` caiu em 1 com a remoção de
+  `requires_query_argument`, o resto sem mudança)
+- `project/PHASE.md` (5.3 concluída; nota adicionada em 1.7 apontando que a implementação
+  original foi substituída), `project/ARCHITECTURE.md` (decisão da substituição REST→MCP
+  registrada, com o trade-off do Node.js explícito), `project/PENDING.md` (novo item P17 —
+  dependência de Node.js/`npx` em runtime, hoje só com erro cru do SO se ausente; vai ficar
+  mais relevante ainda na 5.7)
+
+**Próximo passo**: Fase 5 segue com 5.4 (tool `browser`, depende da Fase 8/extensão — fora de
+ordem, provavelmente pular por ora), 5.6 (`file_system` via MCP — hoje `read_file`/`write_file`
+já existem como tools Rust puras da Fase 1.6, mesma pergunta de "substituir vs manter" que
+surgiu aqui pode se repetir), 5.7 (integração Google via MCP servers — provavelmente outro
+server `npx`-based, caso real pro P17) e 5.8 (rate limiting). Segue também em aberto continuar
+Fases 2-4 ou a UI de P11 (gerenciamento visual de servers MCP), como já estava na sessão
+anterior.
+
+---
+
+### 2026-08-04 — Sessão 23
+
+- **Objetivo**: Etapas 5.1 e 5.2 — registry de tools (`ToolProvider` trait) + MCP client
+  (conectar em servers MCP externos). Escolhido pelo usuário entre continuar a Fase 5 vs
+  atacar Fases 2/4 vs outras pendências.
+
+**O que foi feito**:
+
+- `crates/warden-core/src/tool/mod.rs` ganhou a trait `ToolProvider` (`async fn tools(&self)
+  -> anyhow::Result<Vec<Arc<dyn Tool>>>`) — motivada pelo MCP: diferente de um `Tool` fixo
+  compilado no binário, conectar num server MCP só revela seu conjunto de tools em runtime
+  (`tools/list`, depois do handshake). `Orchestrator::register_provider` (novo método) chama
+  `tools()` e registra cada uma via `register_tool` já existente — é um snapshot no momento da
+  chamada, sem live-sync
+- Decisão de SDK: **`rmcp`** (crates.io, mantido pela org `modelcontextprotocol`) em vez de
+  implementar o handshake JSON-RPC do MCP na mão — protocolo já padronizado, reimplementar
+  seria retrabalho puro. Investigação da API feita direto no source baixado pelo cargo
+  (`~/.cargo/registry/src/.../rmcp-3.1.0`), já que é uma lib nova no projeto: `TokioChildProcess`
+  (transporte stdio/child-process), `().serve(transport)` pra abrir a sessão, `list_all_tools()`/
+  `call_tool()` no client
+- `crates/warden-core/src/tool/mcp.rs` (novo) — `McpToolProvider::connect_stdio(server_name,
+  command, args, env)`: spawna `command args...` como processo filho e faz o handshake MCP.
+  `env` é passado via `Command::envs` (escopado só ao processo filho, nunca muta o processo do
+  Warden) — mesmo shape que qualquer client MCP usa (`command`/`args`/`env`, igual ao
+  `mcpServers` do Claude Desktop), pensado pra portar configs existentes quase verbatim.
+  `ToolProvider::tools()` lista as tools do server e devolve cada uma envolvida num adapter
+  interno (`McpTool`) que implementa `Tool` encaminhando `call()` como `tools/call` pra sessão
+  compartilhada (`Arc<RunningService<RoleClient, ()>>`)
+- **Verificação real, não mockada**: `crates/warden-core/tests/mcp_stdio.rs` sobe um MCP server
+  de verdade (`EchoServer`, via `ServerHandler` do próprio `rmcp`) como processo filho de
+  verdade falando o protocolo stdio real — mesmo truque de self-re-exec que o próprio test
+  suite do `rmcp` usa (`test_stdio_response_concurrency.rs` upstream): o binário de teste
+  reinvoca a si mesmo com `--exact mcp_stdio_test_helper`, e essa segunda instância vira o lado
+  servidor da sessão. O teste conecta via `McpToolProvider::connect_stdio` de verdade, lista as
+  tools (`echo`), chama a tool e confere o resultado — é a mesma tool que o `warden-bootstrap`
+  vai chamar em produção, não um mock
+- **Bug de corrida real encontrado e corrigido durante a verificação**: a primeira versão do
+  teste passava a env var do helper via `std::env::set_var` no processo pai (mutando o processo
+  inteiro), não escopada ao filho. Rodando o binário de teste diretamente (fora do `cargo test`,
+  pra depurar um `error: io error when listing tests: Broken pipe` que aparecia sempre), ficou
+  claro que os dois `#[tokio::test]` do arquivo rodam **no mesmo processo**, em paralelo por
+  padrão — então a env var vazava pro teste `mcp_stdio_test_helper` mesmo quando ele deveria ser
+  um no-op, fazendo-o tentar virar servidor MCP em cima do stdio real do processo (que não é um
+  client MCP), falhando com "connection closed: initialize request". Corrigido adicionando
+  suporte a `env` de verdade em `connect_stdio` (passado via `Command::envs`, só pro filho) —
+  que também é uma feature real de produção (servers MCP frequentemente precisam de env vars,
+  ex. API keys), não só um ajuste de teste. O `error: io error when listing tests: Broken pipe`
+  em si **continua aparecendo** mesmo depois da correção, de forma determinística e inofensiva —
+  investigado a fundo: é o processo filho (que é o próprio binário de teste) tentando imprimir o
+  resumo do seu único teste no stdout (compartilhado como transporte MCP) bem na hora em que o
+  `Drop` do `McpToolProvider` mata o processo, perdendo a corrida contra o `kill_on_drop`. Não
+  afeta a troca JSON-RPC (já concluída nesse ponto) nem o resultado do teste (sempre verde,
+  confirmado em 5+ execuções seguidas) — documentado com comentário extenso no próprio arquivo
+  de teste em vez de resolvido com uma API de shutdown gracioso que nada mais no projeto
+  precisaria ainda
+- `crates/warden-core/Cargo.toml`: `rmcp` com features `client` + `transport-child-process` em
+  `[dependencies]` (o que vai pro binário real); `transport-io` só em `[dev-dependencies]`
+  (usado exclusivamente pelo lado servidor do teste acima)
+- `crates/warden-bootstrap/src/lib.rs`: `FileConfig` ganhou `mcp_servers: Vec<McpServerConfig>`
+  (`#[serde(default)]`, TOML como `[[mcp_servers]]` com `name`/`command`/`args`/`env`).
+  `bootstrap()` conecta em cada server configurado e registra as tools que ele expõe — falha
+  em conectar ou listar não derruba o app, só loga um aviso e pula aquele server (mesmo espírito
+  de degradação graciosa do `TAVILY_API_KEY`/shell). Isso fechou o caso concreto do usuário: o
+  lado Warden pra conectar no Anchor/TruthID via MCP (P11/P13) já está pronto, falta só esses
+  outros projetos exporem um server MCP
+- **Efeito colateral em cascata**: `bootstrap()` precisou virar `async fn` (spawnar processo +
+  aguardar handshake do MCP não dá pra fazer de forma síncrona). Isso tocou os três chamadores:
+  `warden-cli/src/main.rs` (trivial, `main` já era `#[tokio::main] async fn`); `desktop/src-tauri/
+  src/lib.rs` — `save_settings` virou `#[tauri::command] async fn` (mesmo padrão já usado por
+  `send_message`); `run()` (chamado *antes* do runtime do Tauri iniciar, então sem `.await`
+  disponível) precisou de `tauri::async_runtime::block_on(bootstrap(...))`. Aproveitando essa
+  passada em `save_settings`: como a tela de Settings não tem UI pra `mcp_servers` ainda (só
+  editável a mão no `config.toml` — é a parte de UI do P11, ainda em aberto), o handler agora
+  carrega o config existente antes de sobrescrever e propaga o `mcp_servers` dele, em vez de
+  resetar pra vazio a cada "Salvar" — sem isso, salvar qualquer outra configuração pela tela
+  apagaria silenciosamente servers MCP editados a mão
+- Verificação: `cargo build/clippy --workspace --all-targets` limpos; `cargo test --workspace`
+  verde (43 testes no total — 19 no `warden-core` incluindo o novo `register_provider_registers_
+  every_tool_it_yields`, 14 no `warden-bootstrap` incluindo `parses_mcp_servers_from_toml` e o
+  round-trip de `save_config` agora cobrindo `mcp_servers`, mais os 2 do `mcp_stdio.rs` contra
+  processo real)
+- `project/PHASE.md` (5.1 e 5.2 concluídas), `project/ARCHITECTURE.md` (4 decisões novas: registry
+  dinâmico, SDK `rmcp`, transporte stdio, formato de config de servers), `project/PENDING.md`
+  (P11 e P13 atualizadas — o lado Warden do client MCP está pronto, falta UI em P11 e os
+  projetos externos exporem MCP em P13)
+
+**Próximo passo**: decisão em aberto entre continuar a Fase 5 (5.3 `web_search` via MCP — hoje é
+direto via API Tavily, não MCP; 5.6 `file_system` via MCP; 5.7 integração Google via MCP servers
+existentes — provavelmente o próximo caso de uso real de `mcp_servers`; 5.8 rate limiting) vs
+atacar as Fases 2-4 (Telegram, WhatsApp, Vault+IPFS, todas ainda pendentes) vs a UI de P11
+(tela de gerenciamento de servers MCP na Settings do desktop). Vale também o usuário testar de
+verdade conectando num server MCP real (ex. `npx -y @modelcontextprotocol/server-filesystem
+<dir>` ou o próprio Anchor/TruthID se já tiverem um) — a verificação desta sessão usou um server
+MCP real, mas escrito à mão como parte do teste, não um server de terceiro rodando via `npx`.
 
 ---
 

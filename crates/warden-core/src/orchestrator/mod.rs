@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::memory::Vault;
 use crate::model::{Message, ModelProvider, ToolCall};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolProvider};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
 /// giving up, so a model stuck requesting tools can't loop forever.
@@ -25,6 +25,16 @@ impl Orchestrator {
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
         self.tools.push(tool);
+    }
+
+    /// Registers every tool a `ToolProvider` currently exposes (e.g. an MCP server's
+    /// `tools/list`). Snapshot at call time — a provider whose tool set changes later needs to
+    /// be re-registered to pick up the change, there's no live sync.
+    pub async fn register_provider(&mut self, provider: &dyn ToolProvider) -> anyhow::Result<()> {
+        for tool in provider.tools().await? {
+            self.register_tool(tool);
+        }
+        Ok(())
     }
 
     pub fn vault(&self) -> &Arc<Vault> {
@@ -167,5 +177,25 @@ mod tests {
 
         let result = orchestrator.handle_message(&[], "loop forever").await;
         assert!(result.is_err());
+    }
+
+    struct TwoToolProvider;
+
+    #[async_trait]
+    impl ToolProvider for TwoToolProvider {
+        async fn tools(&self) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
+            Ok(vec![Arc::new(EchoTool), Arc::new(EchoTool)])
+        }
+    }
+
+    #[tokio::test]
+    async fn register_provider_registers_every_tool_it_yields() {
+        let model = Arc::new(MockModel { calls: AtomicUsize::new(0) });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+
+        orchestrator.register_provider(&TwoToolProvider).await.unwrap();
+
+        let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
+        assert_eq!(result, "done");
     }
 }

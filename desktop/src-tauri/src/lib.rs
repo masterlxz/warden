@@ -106,7 +106,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Result<(), String> {
+async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Result<(), String> {
     fn non_empty(s: String) -> Option<String> {
         let trimmed = s.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -118,6 +118,12 @@ fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Re
         other => return Err(format!("unknown provider: {other}")),
     };
 
+    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    // MCP servers (Phase 5.2) have no settings-screen UI yet (see PENDING.md P11) — only
+    // hand-editable via config.toml. Carry whatever's already there forward instead of
+    // defaulting to empty, so hitting Save here doesn't silently wipe a hand-edited server list.
+    let mcp_servers = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?.mcp_servers;
+
     let config = FileConfig {
         provider: Some(provider),
         model: non_empty(payload.model),
@@ -128,12 +134,12 @@ fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Re
             openai: non_empty(payload.openai_key),
             tavily: non_empty(payload.tavily_key),
         },
+        mcp_servers,
     };
 
-    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
 
-    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).map_err(|e| format!("{e:#}"));
+    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
     *state.orchestrator.lock().unwrap() = new_orchestrator;
     Ok(())
 }
@@ -152,7 +158,8 @@ fn save_conversation(conversation: Conversation) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).map_err(|e| format!("{e:#}"));
+    let orchestrator = tauri::async_runtime::block_on(bootstrap(None, Overrides::default(), desktop_default_vault_path()))
+        .map_err(|e| format!("{e:#}"));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
