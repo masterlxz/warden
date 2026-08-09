@@ -2,7 +2,44 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 32)
+> Última atualização: 2026-08-09 (Sessão 33)
+
+---
+
+### 2026-08-09 — Sessão 33
+
+- **Objetivo**: Usuário testou a UX rica do terminal (Sessão 31/32) de verdade e reportou "ainda
+  tá horrivel, não mudou nada o visual" — bug real, investigar e corrigir.
+
+**O que foi feito**:
+
+- Investigado com um pseudo-terminal real (`pty` do Python, já que o Bash tool não aloca TTY, e
+  `Stdio::piped()` num teste não conta como TTY) — confirmou que o caminho interativo (rustyline,
+  histórico, spinner) já estava disparando corretamente, então não era um bug de wiring/binário
+  desatualizado
+- Usuário confirmou o sintoma exato: "tipo essas coisas até funcionam, mas visualmente só tem o
+  sinal de maior" — histórico e spinner funcionam, mas nenhuma cor aparece
+- **Causa raiz**: `MadSkin::default()` do `termimad` só estiliza sintaxe markdown (negrito,
+  itálico, headers) — texto corrido puro, que é a maior parte de uma resposta de LLM, sai sem
+  nenhuma cor. E nenhum elemento da "moldura" (prompt `> `, banner, label da resposta, spinner)
+  tinha sido colorido — só a linha de tokens usava `owo-colors` (Sessão 31)
+- Corrigido em `crates/warden-cli/src/interactive.rs`:
+  - `response_skin()` novo: customiza o `MadSkin` com cores explícitas via
+    `termimad::crossterm::style::Color` (negrito amarelo, itálico magenta, headers e bullets
+    ciano, código inline verde)
+  - Banner de abertura ganhou "Warden" em verde negrito + subtítulo esmaecido
+  - Prompt colorido: `>` ciano negrito (testado — `rustyline` aceita ANSI no prompt sem quebrar
+    a edição de linha)
+  - Cada resposta ganhou um label "● Warden" em verde negrito antes do texto renderizado (mesmo
+    espírito visual do bullet do Claude Code)
+  - Spinner "Thinking..." agora esmaecido em vez de texto puro
+- Reinstalado (`cargo install --path crates/warden-cli --force`) e verificado de ponta a ponta
+  com uma pergunta real (`liste 3 frutas em markdown`) via pty real — confirmado visualmente: cores
+  aplicadas em todos os elementos, bullets da lista em ciano, resposta rendendo formatada
+
+**Próximo passo**: Usuário testar de novo no terminal dele e confirmar se a UX agora está no nível
+esperado (estilo Claude Code/Codex/Kimi Code). Revogar a API key exposta no chat (pendência da
+Sessão 32, ainda não confirmada como feita).
 
 ---
 
