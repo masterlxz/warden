@@ -95,7 +95,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [ ] 5.4 — Tool `browser` (via extensão — ver Fase 8)
 - [x] 5.5 — Tool `shell` (executar comando no nó cliente)
 - [x] 5.6 — Tool `file_system` (ler/escrever arquivos no nó cliente) — *sem código novo: realizada via o mecanismo genérico `[[mcp_servers]]` da 5.2, apontando pro server oficial `@modelcontextprotocol/server-filesystem`; ver `ARCHITECTURE.md`*
-- [ ] 5.7 — Integração Google (Gmail, Drive, Calendar) via MCP servers existentes
+- [x] 5.7 — Integração Google (Gmail, Drive, Calendar) via MCP servers existentes — *sem código novo, mesmo mecanismo genérico `[[mcp_servers]]` da 5.2/5.6; server escolhido `@aaronsb/google-workspace-mcp` (`npx`); ver `ARCHITECTURE.md`*
 - [ ] 5.8 — Rate limiting e controle de custo por tool
 
 ---

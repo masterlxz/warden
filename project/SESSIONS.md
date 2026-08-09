@@ -2,7 +2,49 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-04 (Sessão 25)
+> Última atualização: 2026-08-09 (Sessão 26)
+
+---
+
+### 2026-08-09 — Sessão 26
+
+- **Objetivo**: Etapa 5.7 — Integração Google (Gmail/Drive/Calendar) via MCP servers existentes.
+
+**O que foi feito**:
+
+- Pesquisado o estado atual do ecossistema MCP pra Google: o server oficial de referência
+  (`@modelcontextprotocol/server-gdrive`) está **arquivado**, sem manutenção — não existe mais
+  opção oficial, diferente da Tavily (5.3) e do filesystem (5.6)
+- Comparados os principais candidatos da comunidade por estrelas/atividade real no GitHub (via
+  API, não só busca): `taylorwilsdon/google_workspace_mcp` (uvx/Python, 2987★, ativo, o mais
+  completo — 120+ tools/12 serviços) vs `aaronsb/google-workspace-mcp` (npx/Node.js, 164★,
+  ativo, 11 tools/7 serviços) vs `dguido/google-workspace-mcp` (**arquivado**, 38★) vs outros
+  com pouquíssima tração (`danielrosehill` 1★, `j3k0` 32★)
+- Pergunta feita ao usuário antes de codar (trade-off real, não óbvio): cobertura máxima
+  (`taylorwilsdon`, mas introduz `uv`/Python como segundo runtime obrigatório) vs consistência
+  de runtime (`aaronsb`, `npx`, mesmo runtime já aceito pro Tavily/filesystem, ver P17 em
+  `PENDING.md`) → usuário escolheu **`aaronsb/google-workspace-mcp` (npx)**
+- Confirmado, lendo `warden-bootstrap/src/lib.rs`, que o mecanismo genérico `[[mcp_servers]]`
+  (name/command/args/env) já cobre esse caso sem nenhum código novo — mesma conclusão da 5.6
+- **Verificação real, de ponta a ponta**, via `examples/verify_google_workspace_mcp.rs`
+  descartável (removido depois, mesmo padrão da 5.3/5.6): conectado via
+  `McpToolProvider::connect_stdio` de produção, **sem** `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+  setadas — o server sobe e responde `tools/list` normalmente mesmo sem credenciais (só falha
+  depois, ao chamar uma tool de verdade), listou os 11 tools reais (`manage_email`,
+  `manage_calendar`, `manage_drive`, `manage_docs`, `manage_sheets`, `manage_tasks`,
+  `manage_meet`, `manage_accounts`, etc.)
+- `project/PHASE.md` (5.7 concluída, sem código novo — mesma nota da 5.6), `project/
+  ARCHITECTURE.md` (duas decisões novas: qual server e por quê, e reuso de `mcp_servers` com o
+  exemplo de TOML pra habilitar + nota de que o setup OAuth no Google Cloud Console é 100% do
+  lado do usuário, não automatizável pelo Warden), `project/PENDING.md` (P17 atualizada — 5.7
+  confirmou a hipótese de mais uma dependência `npx`, e documentou por que foi escolhida de
+  propósito em vez de evitada)
+
+**Próximo passo**: Fase 5 segue com 5.4 (tool `browser`, depende da Fase 8/extensão — fora de
+ordem) e 5.8 (rate limiting/custo por tool, ligado a P4). Segue em aberto a UI de P11
+(gerenciamento visual de servers MCP — cobre agora `file_system` e Google também) e a
+documentação de setup do usuário pra credenciais OAuth do Google (ainda só existe em
+`ARCHITECTURE.md`, o projeto não tem README de usuário ainda).
 
 ---
 
