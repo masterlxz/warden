@@ -129,10 +129,10 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     };
 
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    // MCP servers (Phase 5.2) have no settings-screen UI yet (see PENDING.md P11) — only
-    // hand-editable via config.toml. Carry whatever's already there forward instead of
-    // defaulting to empty, so hitting Save here doesn't silently wipe a hand-edited server list.
-    let mcp_servers = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?.mcp_servers;
+    // MCP servers (Phase 5.2) and the Telegram bot token (Fase 2) have no settings-screen UI yet
+    // (see PENDING.md P11) — only hand-editable via config.toml. Carry whatever's already there
+    // forward instead of defaulting to empty, so hitting Save here doesn't silently wipe them.
+    let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
     let config = FileConfig {
         provider: Some(provider),
@@ -143,8 +143,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
             gemini: non_empty(payload.gemini_key),
             openai: non_empty(payload.openai_key),
             tavily: non_empty(payload.tavily_key),
+            telegram_bot_token: existing.api_keys.telegram_bot_token,
         },
-        mcp_servers,
+        mcp_servers: existing.mcp_servers,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

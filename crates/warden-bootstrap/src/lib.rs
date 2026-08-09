@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use warden_core::memory::Vault;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
-use warden_core::model::{ModelProvider, Usage};
-use warden_core::orchestrator::Orchestrator;
+use warden_core::model::{Message, ModelProvider, Usage};
+use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
@@ -71,6 +71,9 @@ pub struct ApiKeys {
     pub gemini: Option<String>,
     pub openai: Option<String>,
     pub tavily: Option<String>,
+    /// Bot token from @BotFather (Fase 2) — only read by `warden-telegram`, not by `bootstrap()`
+    /// itself, since a Telegram bot token isn't a model/tool secret the orchestrator needs.
+    pub telegram_bot_token: Option<String>,
 }
 
 /// The model name used when neither an override nor the config file specify one.
@@ -177,6 +180,103 @@ pub fn list_conversations(dir: &Path) -> anyhow::Result<Vec<Conversation>> {
 
     conversations.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
     Ok(conversations)
+}
+
+/// Loads a single conversation by id, or `None` if no file exists for it yet — the "one
+/// conversation" counterpart to `list_conversations`' "missing directory means empty" case.
+/// Channels that thread conversations by a stable external id (Telegram's `chat_id`, Fase 2;
+/// WhatsApp's later) use this instead of `list_conversations`, which would mean reading every
+/// other conversation's file on every incoming message.
+pub fn load_conversation(dir: &Path, id: &str) -> anyhow::Result<Option<Conversation>> {
+    let path = dir.join(format!("{id}.json"));
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let conversation = serde_json::from_str(&contents)
+                .with_context(|| format!("failed to parse conversation file at {}", path.display()))?;
+            Ok(Some(conversation))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("failed to read conversation file at {}", path.display())),
+    }
+}
+
+/// Telegram conversations are kept in their own directory rather than mixed into
+/// `default_conversations_dir()` — that one is what the desktop sidebar lists in full, and a
+/// Telegram chat (keyed by numeric `chat_id`, no client-side title) isn't meant to show up
+/// there. A unified cross-channel conversation view is a bigger product question left for later.
+pub fn default_telegram_conversations_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("conversations-telegram"))
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+}
+
+/// A short, unique-enough id for a `ConversationMessage` — no `uuid` dependency needed just for
+/// this, nanosecond-resolution timestamps are already how this crate's own tests get uniqueness
+/// (see `temp_dir`/`temp_toml_path` below).
+fn message_id() -> String {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().to_string()
+}
+
+/// Same truncation the frontend's `titleFromMessage` (`desktop/src/App.tsx`) uses for a new
+/// conversation's title: collapse whitespace, cut to 40 chars with an ellipsis.
+fn title_from(content: &str) -> String {
+    let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > 40 {
+        format!("{}…", collapsed.chars().take(40).collect::<String>())
+    } else {
+        collapsed
+    }
+}
+
+fn to_message(message: &ConversationMessage) -> Message {
+    match message.role {
+        ChatRole::User => Message::user(message.content.clone()),
+        ChatRole::Assistant => Message::assistant(message.content.clone()),
+    }
+}
+
+/// Runs one turn of a conversation threaded by a stable external id: loads its prior history (or
+/// starts a fresh `Conversation`, titled from `title_seed`), calls `orchestrator.handle_message`,
+/// appends both the user and assistant messages (with token usage on the assistant one, Fase 5.8)
+/// and persists the result under `conversations_dir` before returning the model's answer. Shared
+/// by every channel that threads conversations this way — Telegram today, WhatsApp later.
+/// `warden-cli`'s REPL and the desktop app don't use this: the CLI has no persistence at all, and
+/// desktop's frontend already does its own read/append/save around the IPC boundary.
+pub async fn handle_turn(
+    orchestrator: &Orchestrator,
+    conversations_dir: &Path,
+    conversation_id: &str,
+    title_seed: &str,
+    user_input: &str,
+) -> anyhow::Result<MessageOutcome> {
+    let mut conversation = load_conversation(conversations_dir, conversation_id)?.unwrap_or_else(|| {
+        let now = now_millis();
+        Conversation { id: conversation_id.to_string(), title: title_from(title_seed), messages: Vec::new(), created_at: now, updated_at: now }
+    });
+
+    let history: Vec<Message> = conversation.messages.iter().map(to_message).collect();
+    let outcome = orchestrator.handle_message(&history, user_input).await?;
+
+    conversation.messages.push(ConversationMessage {
+        id: message_id(),
+        role: ChatRole::User,
+        content: user_input.to_string(),
+        created_at: now_millis(),
+        usage: None,
+    });
+    conversation.messages.push(ConversationMessage {
+        id: message_id(),
+        role: ChatRole::Assistant,
+        content: outcome.content.clone(),
+        created_at: now_millis(),
+        usage: outcome.usage,
+    });
+    conversation.updated_at = now_millis();
+
+    save_conversation(conversations_dir, &conversation)?;
+    Ok(outcome)
 }
 
 /// Loads the config file. An explicit path that doesn't exist is an error (the caller asked
@@ -449,6 +549,7 @@ command = "some-mcp-server"
                 gemini: Some("gk".to_string()),
                 openai: Some("ok".to_string()),
                 tavily: Some("tk".to_string()),
+                telegram_bot_token: Some("tt".to_string()),
             },
             mcp_servers: vec![McpServerConfig {
                 name: "anchor".to_string(),

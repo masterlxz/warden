@@ -36,14 +36,14 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Stack**: Rust (reqwest + Bot API) ou TypeScript
 
 **Etapas**:
-- [ ] 2.1 — Setup do bot Telegram (token, webhook/polling)
-- [ ] 2.2 — Implementar trait `Channel` para Telegram
-- [ ] 2.3 — Receber mensagens e rotear para o orquestrador
-- [ ] 2.4 — Enviar respostas de volta
-- [ ] 2.5 — Suporte a markdown/markdownV2 nas mensagens
-- [ ] 2.6 — Comandos básicos: /start, /help
-- [ ] 2.7 — Gerenciamento de conversas (thread por chat)
-- [ ] 2.8 — Testes de integração
+- [x] 2.1 — Setup do bot Telegram (token via `TELEGRAM_BOT_TOKEN`/config, long polling escolhido — ver `ARCHITECTURE.md`)
+- [x] 2.2 — *Sem trait `Channel`* — decisão explícita do usuário; no lugar, função reutilizável `warden_bootstrap::handle_turn` (ver `ARCHITECTURE.md`). Trait de verdade fica pra quando o WhatsApp (Fase 3) existir
+- [x] 2.3 — Receber mensagens e rotear para o orquestrador (`crates/warden-telegram/src/telegram.rs::run_bot`/`process_updates`/`handle_update`)
+- [x] 2.4 — Enviar respostas de volta (`TelegramClient::send_message`, com split automático a cada 4096 caracteres)
+- [x] 2.5 — *Texto puro, sem `parse_mode`* — decisão explícita do usuário. MarkdownV2 de verdade (conversor CommonMark→MarkdownV2) fica pra depois — ver `ARCHITECTURE.md`
+- [x] 2.6 — Comandos básicos: /start, /help (resposta fixa, sem chamar o orchestrator)
+- [x] 2.7 — Gerenciamento de conversas (thread por `chat_id`, via `handle_turn`/`load_conversation`, diretório próprio `conversations-telegram/`)
+- [x] 2.8 — Testes de integração (hermáticos em `telegram.rs` via `ScriptedTelegramApi`, mais smoke tests de processo em `tests/telegram.rs`)
 
 ---
 

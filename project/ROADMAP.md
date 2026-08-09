@@ -13,7 +13,7 @@ Ordem de implementação recomendada:
 
 1. **Orquestrador CLI + 1 modelo + vault local** (Fase 1) — base de tudo ✅ concluída
 2. **App Desktop** (Fase 6) — interface nativa de chat, valor mais visível pro usuário agora
-3. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples
+3. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples ✅ concluída
 4. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys
 5. **Vault espelhado em IPFS** (Fase 4) — redundância da memória
 6. **Tools & MCP** (Fase 5) — extensibilidade (parte já implementada ad-hoc na Fase 1: `read_file`,
@@ -42,6 +42,17 @@ comandos de terminal (automatizar, explicar, compor comandos do dia a dia).
   isso, a capacidade em si é a tool `shell` (Fase 5.5) exposta globalmente
 - Provável evolução do loop simples stdin/stdout (Fase 1.3) pra algo mais rico
   (histórico, autocomplete, talvez TUI com `ratatui`) — ver P8 em `PENDING.md`
+
+### Visão unificada de conversas entre canais
+
+Levantado durante a implementação do canal Telegram (Fase 2, sessão 2026-08-09): hoje cada
+canal que persiste conversas usa seu próprio diretório (desktop em `~/.config/warden/
+conversations/`, Telegram em `~/.config/warden/conversations-telegram/`, ver `ARCHITECTURE.md`)
+— evita misturar dado sem título humano-legível (chat_id do Telegram) no sidebar do desktop, mas
+significa que "a mesma conversa" não existe entre canais: falar com o Warden pelo Telegram e
+depois abrir o desktop não mostra o mesmo histórico. Se isso incomodar na prática, vale desenhar
+uma visão de conversas realmente unificada entre canais — não resolvido ainda, é uma pergunta de
+produto maior que a Fase 2 não tentou responder.
 
 ### Sub-agentes autônomos
 

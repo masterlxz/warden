@@ -2,7 +2,70 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 27)
+> Última atualização: 2026-08-09 (Sessão 28)
+
+---
+
+### 2026-08-09 — Sessão 28
+
+- **Objetivo**: Fase 2 — Canal Telegram, em modo `/plan`.
+
+**O que foi feito**:
+
+- Duas perguntas feitas ao usuário antes de planejar: (1) `PHASE.md` (etapa 2.2) pede uma trait
+  `Channel`, mas investigação confirmou que nem `warden-cli` nem o desktop compartilham hoje
+  nenhuma abstração de canal — cada um só chama `bootstrap()` e monta seu próprio loop. Trait com
+  um único implementador validaria pouco → usuário escolheu **sem trait ainda**, com uma função
+  reutilizável de "turn" no lugar, revisitar quando o WhatsApp (Fase 3) der um segundo exemplo
+  real; (2) formatação MarkdownV2 nas respostas (etapa 2.5) tem regra de escape própria que
+  quebra a chamada inteira da API se sair errado → usuário escolheu **texto puro** por enquanto
+- Pesquisa da Bot API do Telegram (long polling via `getUpdates`, limite de 4096 caracteres por
+  `sendMessage`, autenticação via token na URL) e exploração do código (`Orchestrator` é `Clone`
+  barato, `bootstrap()` é a única abstração compartilhada hoje, `Conversation`/
+  `ConversationMessage`/`save_conversation`/`list_conversations` já são genéricos o bastante pra
+  reusar sem mudança)
+- Implementado: novo crate binário `crates/warden-telegram` (`warden-telegram`), mesmo padrão do
+  `warden-cli` (clap derive, `bootstrap()`, vault default `~/Warden/vault` como o desktop já usa
+  pra processos sem cwd previsível); `crates/warden-bootstrap` ganhou `load_conversation` (versão
+  "uma conversa só" do `list_conversations` existente), `handle_turn` (a função reutilizável
+  decidida na pergunta 1 — carrega histórico, chama o orchestrator, persiste, pronta pro WhatsApp
+  reusar depois) e `default_telegram_conversations_dir` (diretório próprio, não mistura com o que
+  o sidebar do desktop lista — ver nota nova em `ROADMAP.md`); `ApiKeys` ganhou
+  `telegram_bot_token`
+- Bug real encontrado e corrigido de passagem: `save_settings` (desktop) já tinha o padrão de
+  "carregar o config existente e preservar campos sem UI" pra `mcp_servers`, mas não fazia isso
+  pro `telegram_bot_token` novo — sem a correção, salvar as Settings do desktop apagaria
+  silenciosamente um token hand-editado no `config.toml`. Corrigido reusando o mesmo `existing`
+  já carregado
+- `crates/warden-telegram/src/telegram.rs`: trait fina `TelegramApi` (`get_updates`/
+  `send_message`) implementada de verdade por `TelegramClient` contra a API real, e mockável em
+  teste por `ScriptedTelegramApi` — mesmo espírito do `ModelProvider`/`ScriptedModel` já usado em
+  `pipeline.rs`, sem introduzir `wiremock`/dependência nova só pra isso. `run_bot`/
+  `process_updates`/`handle_update` genéricos sobre `impl TelegramApi`; `/start`/`/help`
+  respondem sem chamar o orchestrator; mensagem longa é dividida em pedaços ≤4096 bytes
+  respeitando fronteira de char (mesma técnica de `tool/shell.rs::truncate`); erro de rede no
+  polling loga e tenta de novo em 5s em vez de derrubar o processo
+- Testado: 5 testes hermáticos em `telegram.rs` (turno completo com persistência, offset avança
+  sem reprocessar, `/start`/`/help` não chama o orchestrator, split de mensagem longa em 2
+  pedaços, split respeita fronteira de char UTF-8) + 4 smoke tests de processo em `tests/
+  telegram.rs` (falha clara sem `TELEGRAM_BOT_TOKEN`, falha clara sem `GEMINI_API_KEY` já com o
+  token presente, token lido do config file, `--config` apontando pra arquivo inexistente) —
+  todos os cenários falham antes de qualquer chamada de rede real, mesmo espírito do `cli.rs`.
+  `cargo build --workspace`/`cargo test --workspace` limpos (51 testes no total)
+- **Sem `TELEGRAM_BOT_TOKEN` real disponível neste ambiente** — não deu pra validar o long
+  polling de verdade (mandar uma mensagem real pro bot e ver a resposta chegar); fica como
+  verificação manual pendente pro usuário, criar um bot via `@BotFather` é rápido
+- `project/PHASE.md` (Fase 2 completa, 2.1-2.8, com notas nas etapas 2.2 e 2.5 sobre o escopo
+  reduzido), `project/OVERVIEW.md` (status geral), `project/ARCHITECTURE.md` (5 decisões novas:
+  sem trait Channel, cliente HTTP testável via trait fina, texto puro, diretório de conversas
+  separado, long polling vs webhook), `project/ROADMAP.md` (item 3 marcado concluído, nova nota
+  de brainstorm sobre visão unificada de conversas entre canais)
+
+**Próximo passo**: Fase 2 concluída. Seguem pendentes: Fase 3 (WhatsApp — primeira candidata a
+reusar `handle_turn`/dar o segundo exemplo real pra decidir se vale uma trait `Channel` de
+verdade), Fase 4 (Vault & IPFS), 5.4 (tool `browser`, depende da Fase 8). Verificação manual
+pendente: rodar `warden-telegram` com um `TELEGRAM_BOT_TOKEN` real e confirmar o long polling
+funcionando de ponta a ponta.
 
 ---
 
