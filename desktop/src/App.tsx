@@ -4,7 +4,7 @@ import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
-import type { ChatMessage, Conversation } from "./types";
+import type { ChatMessage, Conversation, Usage } from "./types";
 
 function titleFromMessage(content: string): string {
   const collapsed = content.trim().replace(/\s+/g, " ");
@@ -58,12 +58,13 @@ function App() {
     setSendError(null);
     setIsSending(true);
     try {
-      const reply = await invoke<string>("send_message", { history, content });
+      const reply = await invoke<{ content: string; usage?: Usage }>("send_message", { history, content });
       appendMessage(conversationId, {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: reply,
+        content: reply.content,
         createdAt: Date.now(),
+        usage: reply.usage,
       });
     } catch (err) {
       setSendError(String(err));

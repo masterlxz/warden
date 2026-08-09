@@ -213,6 +213,12 @@ body {
   margin-bottom: 0;
 }
 
+.message-bubble-usage {
+  margin-top: 0.35em;
+  font-size: 0.82em;
+  color: var(--color-text-muted);
+}
+
 .message-bubble-content p,
 .message-bubble-content ul,
 .message-bubble-content ol,

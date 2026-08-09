@@ -33,6 +33,9 @@ function MessageBubble({ message }: MessageBubbleProps) {
           {message.content}
         </ReactMarkdown>
       </div>
+      {message.role === "assistant" && message.usage && (
+        <div className="message-bubble-usage">{message.usage.totalTokens} tokens</div>
+      )}
     </div>
   );
 }

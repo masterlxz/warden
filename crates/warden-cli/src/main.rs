@@ -72,10 +72,16 @@ async fn main() -> anyhow::Result<()> {
         }
 
         match orchestrator.handle_message(&history, input).await {
-            Ok(response) => {
-                println!("{response}\n");
+            Ok(outcome) => {
+                println!("{}\n", outcome.content);
+                if let Some(usage) = outcome.usage {
+                    println!(
+                        "  ({} prompt + {} completion = {} tokens)\n",
+                        usage.prompt_tokens, usage.completion_tokens, usage.total_tokens
+                    );
+                }
                 history.push(Message::user(input));
-                history.push(Message::assistant(response));
+                history.push(Message::assistant(outcome.content));
             }
             Err(err) => eprintln!("error: {err:#}\n"),
         }

@@ -2,7 +2,56 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 26)
+> Última atualização: 2026-08-09 (Sessão 27)
+
+---
+
+### 2026-08-09 — Sessão 27
+
+- **Objetivo**: Etapa 5.8 — "Rate limiting e controle de custo por tool", em modo `/plan`.
+
+**O que foi feito**:
+
+- Pergunta feita ao usuário antes de planejar (a etapa mistura dois mecanismos distintos): tracking
+  de uso vs tracking + teto rígido de custo vs rate limiting por tool vs os dois → usuário escolheu
+  **só tracking de uso**, sem limites/bloqueios ainda
+- Duas rodadas de exploração (agentes `Explore`) confirmaram: (1) `Orchestrator::handle_message` é
+  o único chokepoint por onde toda chamada de modelo passa — ponto certo pra capturar uso sem
+  duplicar lógica por canal; (2) nem `OpenAiProvider` nem `GeminiProvider` liam o `usage`/
+  `usageMetadata` que as APIs já devolvem — 100% descartado hoje, e o repo inteiro não tinha
+  nenhum rastro de tracking de custo/token (`grep` vazio); (3) persistência de conversa
+  (`ConversationMessage`) só existe no desktop, a CLI não persiste nada
+- Implementado: novo tipo `Usage` (`warden_core::model`, `prompt_tokens`/`completion_tokens`/
+  `total_tokens`, serde camelCase) e `Response.usage: Option<Usage>`; `OpenAiProvider` e
+  `GeminiProvider` agora parseiam o campo de uso real de cada API; `Orchestrator::handle_message`
+  passou a devolver `MessageOutcome{content, usage}` em vez de `String` cru, somando o uso das
+  até 8 chamadas de modelo que uma única mensagem pode disparar; `ConversationMessage` ganhou
+  `#[serde(default)] usage: Option<Usage>` (default garante que conversas já salvas em disco sem
+  esse campo continuam carregando); desktop (`send_message`) e frontend (`types.ts`/`App.tsx`)
+  atualizados pra propagar `usage` até um badge discreto de tokens em `MessageBubble.tsx` (só na
+  mensagem do assistente); CLI ecoa uma linha de tokens após a resposta (sem persistir, já que a
+  CLI nunca persistiu conversa)
+- Gap encontrado e aceito conscientemente (documentado no código e como pendência nova, P18 em
+  `PENDING.md`): `DelegateTool` chama `handle_message` recursivamente num sub-orchestrator, mas
+  `Tool::call` só devolve `serde_json::Value` — o uso do sub-agente não sobe pro total da
+  conversa pai. Fechar isso mudaria a trait `Tool` inteira, fora do escopo mínimo desta sessão
+- Ajuste mecânico em todos os testes que quebraram com a mudança de assinatura (~12 literais
+  `Response{...}` em `orchestrator/mod.rs`, `tool/delegate.rs` e `tests/pipeline.rs`, mais os
+  `assert_eq!` que comparavam `handle_message(...)` direto contra `String`)
+- Verificado: `cargo build --workspace` e `cargo test --workspace` limpos (42 testes, todos
+  mockados — os nomes de campo das APIs OpenAI/Gemini são parte pública estável, não um mecanismo
+  de terceiro a provar como nas sessões 5.3/5.6/5.7), `npx tsc --noEmit` limpo no frontend. **Sem
+  chave de API real disponível neste ambiente** — não deu pra confirmar números de token reais
+  ponta a ponta; fica como verificação manual pendente pro usuário
+- `project/PHASE.md` (5.8 concluída, com nota do escopo reduzido), `project/ARCHITECTURE.md`
+  (duas decisões novas: escopo e implementação), `project/PENDING.md` (P4 estreitada pro que
+  resta — rate limiting/teto de gasto de verdade —, P18 nova registrando o gap do `DelegateTool`)
+
+**Próximo passo**: Fase 5 fica só com 5.4 (tool `browser`, depende da Fase 8) em aberto — 5.1,
+5.2, 5.3, 5.5, 5.6, 5.7 e 5.8 concluídas. P4 (rate limiting/teto de gasto de verdade) e P18
+(uso do delegate) seguem como trabalho futuro se o usuário quiser fechar esse escopo depois.
+Verificação manual pendente: rodar `warden`/app desktop com uma API key real e conferir a linha/
+badge de tokens aparecendo de verdade.
 
 ---
 

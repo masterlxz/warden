@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Message, ModelProvider, Response, Role, ToolCall};
+use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
 const API_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -73,6 +73,15 @@ struct ChatToolFunction {
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -177,6 +186,11 @@ impl ModelProvider for OpenAiProvider {
         }
 
         let parsed: ChatResponse = response.json().await?;
+        let usage = parsed.usage.map(|u| Usage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+        });
         let message = parsed.choices.into_iter().next().map(|c| c.message);
 
         let content = message.as_ref().and_then(|m| m.content.clone()).unwrap_or_default();
@@ -193,6 +207,6 @@ impl ModelProvider for OpenAiProvider {
             })
             .unwrap_or_default();
 
-        Ok(Response { content, tool_calls })
+        Ok(Response { content, tool_calls, usage })
     }
 }

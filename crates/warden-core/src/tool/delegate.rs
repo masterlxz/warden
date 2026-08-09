@@ -57,8 +57,10 @@ impl Tool for DelegateTool {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required 'task' argument"))?;
 
+        // Sub-agent's token usage is dropped here, not rolled up into the parent conversation's
+        // total — Tool::call only returns serde_json::Value, not a MessageOutcome.
         let result = self.orchestrator.handle_message(&[], task).await?;
-        Ok(json!({ "result": result }))
+        Ok(json!({ "result": result.content }))
     }
 }
 
@@ -80,7 +82,7 @@ mod tests {
     #[async_trait]
     impl ModelProvider for FixedAnswerModel {
         async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
-            Ok(Response { content: self.answer.clone(), tool_calls: Vec::new() })
+            Ok(Response { content: self.answer.clone(), tool_calls: Vec::new(), usage: None })
         }
     }
 

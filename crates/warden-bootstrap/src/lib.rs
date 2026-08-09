@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use warden_core::memory::Vault;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
-use warden_core::model::ModelProvider;
+use warden_core::model::{ModelProvider, Usage};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
@@ -113,6 +113,10 @@ pub struct ConversationMessage {
     pub role: ChatRole,
     pub content: String,
     pub created_at: i64,
+    /// Token usage for this message's model call(s), when the provider reported it (Fase 5.8).
+    /// `#[serde(default)]` so conversations saved before this field existed still load.
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 /// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
@@ -493,6 +497,7 @@ command = "some-mcp-server"
                 role: ChatRole::User,
                 content: "hello".to_string(),
                 created_at: updated_at,
+                usage: None,
             }],
             created_at: updated_at,
             updated_at,

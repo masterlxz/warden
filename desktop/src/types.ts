@@ -3,11 +3,18 @@
  * render in the chat UI. */
 export type ChatRole = "user" | "assistant";
 
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: number;
+  usage?: Usage;
 }
 
 export interface Conversation {

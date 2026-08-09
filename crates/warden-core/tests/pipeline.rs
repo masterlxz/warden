@@ -64,6 +64,7 @@ async fn vault_context_and_read_file_tool_round_trip() {
                         name: "read_file".to_string(),
                         arguments: json!({ "path": "notes/dentist.md" }),
                     }],
+                    usage: None,
                 }
             }
             1 => {
@@ -71,7 +72,7 @@ async fn vault_context_and_read_file_tool_round_trip() {
                 assert_eq!(last.role, Role::Tool);
                 assert!(last.content.contains("Dentist appointment on Friday at 3pm"));
 
-                Response { content: "Your dentist appointment is Friday at 3pm.".to_string(), tool_calls: Vec::new() }
+                Response { content: "Your dentist appointment is Friday at 3pm.".to_string(), tool_calls: Vec::new(), usage: None }
             }
             other => panic!("unexpected extra call to the model: {other}"),
         },
@@ -82,7 +83,7 @@ async fn vault_context_and_read_file_tool_round_trip() {
     orchestrator.register_tool(Arc::new(WriteFileTool::new(vault)));
 
     let result = orchestrator.handle_message(&[], "When is my dentist appointment?").await.unwrap();
-    assert_eq!(result, "Your dentist appointment is Friday at 3pm.");
+    assert_eq!(result.content, "Your dentist appointment is Friday at 3pm.");
 }
 
 #[tokio::test]
@@ -99,14 +100,15 @@ async fn delegate_task_round_trip_through_full_wiring() {
                     name: "delegate_task".to_string(),
                     arguments: json!({ "task": "say hi" }),
                 }],
+                usage: None,
             },
-            1 => Response { content: "sub says hi".to_string(), tool_calls: Vec::new() },
+            1 => Response { content: "sub says hi".to_string(), tool_calls: Vec::new(), usage: None },
             2 => {
                 let last = messages.last().unwrap();
                 assert_eq!(last.role, Role::Tool);
                 assert!(last.content.contains("sub says hi"));
 
-                Response { content: "delegation complete".to_string(), tool_calls: Vec::new() }
+                Response { content: "delegation complete".to_string(), tool_calls: Vec::new(), usage: None }
             }
             other => panic!("unexpected extra call to the model: {other}"),
         },
@@ -127,7 +129,7 @@ async fn delegate_task_round_trip_through_full_wiring() {
     orchestrator.register_tool(Arc::new(DelegateTool::new(sub_orchestrator)));
 
     let result = orchestrator.handle_message(&[], "please delegate").await.unwrap();
-    assert_eq!(result, "delegation complete");
+    assert_eq!(result.content, "delegation complete");
 }
 
 #[tokio::test]
@@ -144,7 +146,7 @@ async fn prior_turns_are_sent_to_the_model_on_the_next_call() {
             assert!(has_prior_user_turn, "expected prior user turn to be sent as history");
             assert!(has_prior_assistant_turn, "expected prior assistant turn to be sent as history");
 
-            Response { content: "Your name is Fabio.".to_string(), tool_calls: Vec::new() }
+            Response { content: "Your name is Fabio.".to_string(), tool_calls: Vec::new(), usage: None }
         },
     });
 
@@ -153,5 +155,5 @@ async fn prior_turns_are_sent_to_the_model_on_the_next_call() {
         vec![Message::user("my name is Fabio"), Message::assistant("Hi Fabio, nice to meet you!")];
 
     let result = orchestrator.handle_message(&history, "what's my name?").await.unwrap();
-    assert_eq!(result, "Your name is Fabio.");
+    assert_eq!(result.content, "Your name is Fabio.");
 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::tool::ToolSpec;
@@ -66,10 +67,23 @@ impl Message {
     }
 }
 
+/// Token accounting from one `chat` call, when the provider reports it. Shared between the
+/// providers (which parse it out of their own response shape) and `warden_bootstrap::
+/// ConversationMessage` (which persists it) — `camelCase` on the wire so it matches the rest of
+/// bootstrap's persisted JSON convention.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Response {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<Usage>,
 }
 
 /// Abstraction implemented by each AI provider (OpenAI, Anthropic, Gemini, local).

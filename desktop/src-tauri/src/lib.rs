@@ -50,11 +50,21 @@ fn desktop_default_vault_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join("Warden").join("vault")
 }
 
+/// What `send_message` hands back over IPC — the frontend's `ChatMessage.usage` (`desktop/src/
+/// types.ts`) mirrors this field for field.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SendMessageResult {
+    content: String,
+    usage: Option<warden_core::model::Usage>,
+}
+
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, history: Vec<ChatTurn>, content: String) -> Result<String, String> {
+async fn send_message(state: State<'_, AppState>, history: Vec<ChatTurn>, content: String) -> Result<SendMessageResult, String> {
     let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
     let history: Vec<Message> = history.into_iter().map(Into::into).collect();
-    orchestrator.handle_message(&history, &content).await.map_err(|e| format!("{e:#}"))
+    let outcome = orchestrator.handle_message(&history, &content).await.map_err(|e| format!("{e:#}"))?;
+    Ok(SendMessageResult { content: outcome.content, usage: outcome.usage })
 }
 
 /// What the settings screen reads. API keys are returned in plain text (the user's own explicit

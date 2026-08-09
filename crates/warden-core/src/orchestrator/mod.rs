@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::memory::Vault;
-use crate::model::{Message, ModelProvider, ToolCall};
+use crate::model::{Message, ModelProvider, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
@@ -11,6 +11,17 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 /// Central coordinator: owns the model, the vault, and the registered tools.
 /// Channels (CLI, Telegram, WhatsApp, ...) call `handle_message` and don't
 /// know anything about which model or tools are behind it.
+/// What `handle_message` hands back to the caller: the final answer, plus the summed token
+/// usage across every `chat` call made along the way (a single message can trigger several,
+/// one per round of tool calls). `None` only when the provider never reported usage at all —
+/// not the case for OpenAI/Gemini today, but kept optional since `ModelProvider` doesn't
+/// guarantee it.
+#[derive(Debug, Clone)]
+pub struct MessageOutcome {
+    pub content: String,
+    pub usage: Option<Usage>,
+}
+
 #[derive(Clone)]
 pub struct Orchestrator {
     model: Arc<dyn ModelProvider>,
@@ -44,7 +55,7 @@ impl Orchestrator {
     /// `history` is the prior turns of this conversation (user/assistant pairs, oldest first),
     /// as tracked by the caller — the orchestrator itself is stateless across calls. Pass `&[]`
     /// for a fresh conversation or a one-off sub-agent task.
-    pub async fn handle_message(&self, history: &[Message], user_input: &str) -> anyhow::Result<String> {
+    pub async fn handle_message(&self, history: &[Message], user_input: &str) -> anyhow::Result<MessageOutcome> {
         let mut messages = Vec::new();
 
         let hits = self.vault.search(user_input, 8).unwrap_or_default();
@@ -64,11 +75,21 @@ impl Orchestrator {
 
         let tool_specs = self.tools.iter().map(|t| t.spec()).collect::<Vec<_>>();
 
+        let mut usage = Usage::default();
+        let mut has_usage = false;
+
         for _ in 0..MAX_TOOL_ITERATIONS {
             let response = self.model.chat(messages.clone(), tool_specs.clone()).await?;
 
+            if let Some(u) = response.usage {
+                usage.prompt_tokens += u.prompt_tokens;
+                usage.completion_tokens += u.completion_tokens;
+                usage.total_tokens += u.total_tokens;
+                has_usage = true;
+            }
+
             if response.tool_calls.is_empty() {
-                return Ok(response.content);
+                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage) });
             }
 
             messages.push(Message::assistant_tool_calls(response.tool_calls.clone()));
@@ -118,12 +139,13 @@ mod tests {
                 Ok(Response {
                     content: String::new(),
                     tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "echo".to_string(), arguments: json!({ "text": "hi" }) }],
+                    usage: None,
                 })
             } else {
                 let last = messages.last().expect("tool result should have been appended");
                 assert_eq!(last.role, Role::Tool);
                 assert!(last.content.contains("hi"));
-                Ok(Response { content: "done".to_string(), tool_calls: Vec::new() })
+                Ok(Response { content: "done".to_string(), tool_calls: Vec::new(), usage: None })
             }
         }
     }
@@ -155,7 +177,7 @@ mod tests {
         orchestrator.register_tool(Arc::new(EchoTool));
 
         let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
-        assert_eq!(result, "done");
+        assert_eq!(result.content, "done");
     }
 
     struct AlwaysToolCallModel;
@@ -166,6 +188,7 @@ mod tests {
             Ok(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCall { id: "call_x".to_string(), name: "echo".to_string(), arguments: json!({}) }],
+                usage: None,
             })
         }
     }
@@ -196,6 +219,6 @@ mod tests {
         orchestrator.register_provider(&TwoToolProvider).await.unwrap();
 
         let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
-        assert_eq!(result, "done");
+        assert_eq!(result.content, "done");
     }
 }

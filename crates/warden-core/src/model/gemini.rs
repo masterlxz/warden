@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{Message, ModelProvider, Response, Role, ToolCall};
+use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -83,6 +83,18 @@ struct GenerateRequest {
 struct GenerateResponse {
     #[serde(default)]
     candidates: Vec<Candidate>,
+    #[serde(default, rename = "usageMetadata")]
+    usage_metadata: Option<UsageMetadata>,
+}
+
+#[derive(Deserialize)]
+struct UsageMetadata {
+    #[serde(rename = "promptTokenCount", default)]
+    prompt_token_count: u32,
+    #[serde(rename = "candidatesTokenCount", default)]
+    candidates_token_count: u32,
+    #[serde(rename = "totalTokenCount", default)]
+    total_token_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +196,11 @@ impl ModelProvider for GeminiProvider {
         }
 
         let parsed: GenerateResponse = response.json().await?;
+        let usage = parsed.usage_metadata.map(|u| Usage {
+            prompt_tokens: u.prompt_token_count,
+            completion_tokens: u.candidates_token_count,
+            total_tokens: u.total_token_count,
+        });
         let parts = parsed.candidates.into_iter().next().map(|c| c.content.parts).unwrap_or_default();
 
         let mut content = String::new();
@@ -196,6 +213,6 @@ impl ModelProvider for GeminiProvider {
             }
         }
 
-        Ok(Response { content, tool_calls })
+        Ok(Response { content, tool_calls, usage })
     }
 }
