@@ -21,7 +21,7 @@ Stack planejada:
 ```
 Fase 1 — Fundação & Orquestrador    [x] Concluída
 Fase 2 — Canal Telegram              [x] Concluída
-Fase 3 — Canal WhatsApp              [ ] Pendente
+Fase 3 — Canal WhatsApp              [x] Concluída
 Fase 4 — Vault & Memória             [ ] Pendente
 Fase 5 — Tools & MCP                 [ ] Pendente
 Fase 6 — App Desktop Nativo          [x] Concluída

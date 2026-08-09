@@ -54,14 +54,27 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Stack**: Node.js (Baileys), IPC com core Rust via socket local
 
 **Etapas**:
-- [ ] 3.1 — Setup do sidecar Node.js com Baileys
-- [ ] 3.2 — Autenticação via QR code (whatsapp-web.js style)
-- [ ] 3.3 — IPC entre sidecar e core Rust (stdin/stdout ou socket)
-- [ ] 3.4 — Receber mensagens e rotear para o orquestrador
-- [ ] 3.5 — Enviar respostas de volta
-- [ ] 3.6 — Gerenciamento de sessão (reconnect, keepalive)
-- [ ] 3.7 — Tratamento de mídia (imagem, áudio, documento)
-- [ ] 3.8 — Testes de integração
+- [x] 3.1 — Setup do sidecar Node.js com Baileys (`sidecar/whatsapp/`, primeiro código JS que o
+  próprio projeto escreve e versiona — até aqui Node só era usado via `npx` contra pacotes de
+  terceiros; `baileys` fixado na linha estável `^6.7.24`, não na pre-release `7.0.0-rc*`)
+- [x] 3.2 — Autenticação via QR code — `useMultiFileAuthState`, QR renderizado por
+  `qrcode-terminal` **no stderr** do sidecar (canal separado do stdin/stdout usado pra IPC — ver
+  `ARCHITECTURE.md`, um bug real de poluir o stdout foi encontrado e corrigido durante a
+  verificação de ponta a ponta desta sessão)
+- [x] 3.3 — IPC entre sidecar e core Rust — **stdin/stdout, JSON-lines** (decisão explícita do
+  usuário entre as duas opções do `PHASE.md`; sem socket local). Ver `ARCHITECTURE.md`
+- [x] 3.4 — Receber mensagens e rotear para o orquestrador (`crates/warden-whatsapp/src/
+  sidecar.rs::run_bot`/`handle_event`, reusando `warden_bootstrap::handle_turn` da Fase 2)
+- [x] 3.5 — Enviar respostas de volta (`WhatsAppSidecar::send`, comando `{"type":"send",...}`)
+- [x] 3.6 — Gerenciamento de sessão (reconnect, keepalive) — reconexão via `DisconnectReason`
+  fica inteiramente dentro do script Node (`connection.update`, reconecta a menos que
+  `loggedOut`); o Rust só vê eventos de alto nível `connected`/`disconnected`
+- [x] 3.7 — *Só degradação graciosa* — mensagem sem texto legível (imagem/áudio/documento) recebe
+  uma resposta fixa, sem chamar o orchestrator. Suporte multimodal de verdade (`ModelProvider`/
+  `Message` entendendo mídia) é mudança de model-layer, fora do escopo desta fase — ver `PENDING.md`
+- [x] 3.8 — Testes de integração (hermáticos em `sidecar.rs` via `ScriptedSidecar`, mais smoke
+  tests de processo em `tests/whatsapp.rs`; sem teste do lado do script Node — repo não tem
+  toolchain de teste JS fora do frontend do desktop)
 
 ---
 

@@ -208,6 +208,12 @@ pub fn default_telegram_conversations_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("conversations-telegram"))
 }
 
+/// Same reasoning as `default_telegram_conversations_dir` — WhatsApp chats are keyed by JID, not
+/// a client-side title, and shouldn't show up in the desktop sidebar's `default_conversations_dir`.
+pub fn default_whatsapp_conversations_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("conversations-whatsapp"))
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }

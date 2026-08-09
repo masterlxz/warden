@@ -1,0 +1,12 @@
+{
+  "name": "warden-whatsapp-sidecar",
+  "private": true,
+  "type": "module",
+  "description": "Baileys glue script for Warden's WhatsApp channel (Fase 3) — talks to warden-whatsapp over stdin/stdout JSON-lines.",
+  "main": "index.mjs",
+  "dependencies": {
+    "baileys": "^7.0.0-rc14",
+    "pino": "^10.3.1",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

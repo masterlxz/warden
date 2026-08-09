@@ -2,7 +2,64 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 28)
+> Última atualização: 2026-08-09 (Sessão 29)
+
+---
+
+### 2026-08-09 — Sessão 29
+
+- **Objetivo**: Fase 3 — Canal WhatsApp, em modo `/plan`.
+
+**O que foi feito**:
+
+- Duas perguntas de escopo feitas antes de planejar: (1) transporte IPC entre o sidecar Node
+  (Baileys) e o core Rust — `PHASE.md` deixava em aberto "stdin/stdout ou socket", e não existia
+  nenhum precedente de IPC customizado no repo (só o `TokioChildProcess` do MCP, específico do
+  protocolo MCP) → usuário escolheu **stdin/stdout, JSON-lines**; (2) tratamento de mídia (etapa
+  3.7) — suporte multimodal de verdade tocaria `ModelProvider`/`Message` (mudança de model-layer)
+  → usuário escolheu **só degradação graciosa**
+- Pesquisa da Bot API/lib do WhatsApp: confirmado `baileys` (fork mantido por `WhiskeySockets`,
+  o `adiwajshing/Baileys` original está arquivado) como a lib certa; API real (`makeWASocket`,
+  `useMultiFileAuthState`, `connection.update`/`DisconnectReason`, `messages.upsert`,
+  `sock.sendMessage`) confirmada via README/exemplo oficial
+- Implementado: `sidecar/whatsapp/` — **primeiro código JS que o próprio projeto escreve e
+  versiona** (até aqui todo uso de Node era via `npx` contra pacotes de terceiros). `package.json`
+  + `index.mjs` puro (ESM, sem TypeScript/build step); `baileys` fixado na tag estável `^6.7.24`
+  (não a pre-release `7.0.0-rc*`, hoje o `latest` no npm)
+- Novo crate `crates/warden-whatsapp`, mesmo padrão do `warden-telegram`: trait `WhatsAppSidecar`
+  (`&mut self`, diferente da `TelegramApi` que é `&self` — ler linha a linha de um stream é
+  estado), `ChildSidecar` implementa de verdade sobre `tokio::process`/`tokio::io` (nova feature
+  `io-util` do tokio, só nesta crate — primeira vez que o workspace precisa dela), `run_bot`/
+  `handle_event` reusando `warden_bootstrap::handle_turn` da Fase 2 (novo
+  `default_whatsapp_conversations_dir`, mesmo padrão do Telegram)
+- **Dois bugs reais encontrados e corrigidos via verificação de ponta a ponta contra os
+  servidores reais do WhatsApp** (não mockado): (1) `qrcode-terminal.generate()` sem callback
+  escreve o QR via `console.log` — ou seja, no **stdout**, corrompendo o protocolo JSON-lines
+  usado pra IPC — corrigido passando um callback que escreve em `process.stderr` explicitamente,
+  confirmado depois com stdout/stderr capturados separadamente (0 bytes no stdout, QR limpo no
+  stderr); (2) um smoke test (`fails_clearly_when_node_is_not_on_path`) travou a suíte inteira —
+  `env_clear()` sozinho não impede o Linux de achar `node` (glibc cai pra um path default tipo
+  `/bin:/usr/bin` quando `PATH` está totalmente ausente, não só vazio) — corrigido setando `PATH`
+  pra um diretório que garantidamente não existe
+- Verificado de ponta a ponta de verdade: `cargo run -p warden-whatsapp` com uma `GEMINI_API_KEY`
+  fake sobe o orchestrator, spawna o sidecar real, o sidecar conecta nos servidores do WhatsApp e
+  gera um QR de pareamento real — faltou só alguém escanear com o celular pra completar o pareamento
+- P20 (trait `Channel`, deixada em aberto na Fase 2) fechada nesta sessão: com dois canais reais
+  agora, confirmado que o que é compartilhável já está em `handle_turn`, os loops de recebimento
+  em si continuam diferentes o bastante pra uma trait não valer a pena
+- Testado: `cargo build --workspace`/`cargo test --workspace` limpos, 57 testes no total (6 novos
+  desta sessão: 3 hermáticos em `sidecar.rs` via `ScriptedSidecar` + 3 smoke tests de processo)
+- `project/PHASE.md` (Fase 3 completa, 3.1-3.8), `project/OVERVIEW.md`/`ROADMAP.md` (status),
+  `project/ARCHITECTURE.md` (5 decisões novas: IPC, protocolo, código JS no repo, mídia, P20
+  fechada), `project/PENDING.md` (P20 movida pra Resolvidas, P21 nova pro suporte multimodal —
+  registrando também que o Telegram hoje ignora mídia **silenciosamente**, pior que a degradação
+  graciosa nova do WhatsApp)
+
+**Próximo passo**: Fases 2 e 3 concluídas. Setup manual pendente pro usuário: `npm install` em
+`sidecar/whatsapp/` (já feito nesta sessão pra verificação, mas roda numa sandbox — o ambiente
+real do usuário precisa do próprio `npm install`), depois `warden-whatsapp` + escanear o QR com o
+celular pra validar uma conversa de verdade ponta a ponta. Seguem pendentes: Fase 4 (Vault &
+IPFS), 5.4 (tool `browser`, depende da Fase 8), P21 (multimodal, nova).
 
 ---
 

@@ -1,0 +1,19 @@
+[package]
+name = "warden-whatsapp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "warden-whatsapp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap = { version = "4", features = ["derive"] }
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+warden-bootstrap = { path = "../warden-bootstrap" }
+warden-core = { path = "../warden-core" }

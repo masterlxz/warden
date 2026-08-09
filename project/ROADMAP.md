@@ -14,7 +14,7 @@ Ordem de implementação recomendada:
 1. **Orquestrador CLI + 1 modelo + vault local** (Fase 1) — base de tudo ✅ concluída
 2. **App Desktop** (Fase 6) — interface nativa de chat, valor mais visível pro usuário agora
 3. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples ✅ concluída
-4. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys
+4. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys ✅ concluída
 5. **Vault espelhado em IPFS** (Fase 4) — redundância da memória
 6. **Tools & MCP** (Fase 5) — extensibilidade (parte já implementada ad-hoc na Fase 1: `read_file`,
    `write_file`, `web_search`, `delegate_task`)
