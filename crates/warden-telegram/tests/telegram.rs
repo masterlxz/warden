@@ -6,17 +6,26 @@
 
 use std::process::Command;
 
-fn warden_telegram_command() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-telegram"));
-    cmd.env_clear();
-    cmd
-}
-
 fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{prefix}-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     ))
+}
+
+/// `env_clear()` alone doesn't fully isolate `dirs::config_dir()` from the real machine: with
+/// `HOME` unset, the underlying `home` crate falls back to a libc/getpwuid lookup of the real
+/// user's home directory, which can point at a real `~/.config/warden/config.toml` a user has
+/// actually created — same gap that made `warden-cli`'s tests flaky, fixed there the same way
+/// (see `crates/warden-cli/tests/cli.rs`). Here it's worse than a wrong pass/fail: a leaked real
+/// Gemini key lets `bootstrap()` succeed, so the process reaches `run_bot`'s poll loop with a
+/// fake Telegram token — which retries forever (by design, see `telegram.rs::run_bot`) instead
+/// of exiting, hanging the test.
+fn warden_telegram_command() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-telegram"));
+    cmd.env_clear();
+    cmd.env("HOME", unique_temp_path("warden-telegram-test-home"));
+    cmd
 }
 
 #[test]

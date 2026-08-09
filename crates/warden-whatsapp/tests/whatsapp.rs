@@ -6,17 +6,26 @@
 
 use std::process::Command;
 
-fn warden_whatsapp_command() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-whatsapp"));
-    cmd.env_clear();
-    cmd
-}
-
 fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{prefix}-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     ))
+}
+
+/// `env_clear()` alone doesn't fully isolate `dirs::config_dir()` from the real machine: with
+/// `HOME` unset, the underlying `home` crate falls back to a libc/getpwuid lookup of the real
+/// user's home directory, which can point at a real `~/.config/warden/config.toml` a user has
+/// actually created — same gap fixed the same way in `warden-cli`'s and `warden-telegram`'s
+/// tests. Here it's the worst case of the three: a leaked real Gemini key lets `bootstrap()`
+/// succeed, so `fails_clearly_without_a_gemini_key` would actually spawn the real Node sidecar
+/// and block forever on `recv_event()` waiting for an event that never comes, instead of failing
+/// fast.
+fn warden_whatsapp_command() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-whatsapp"));
+    cmd.env_clear();
+    cmd.env("HOME", unique_temp_path("warden-whatsapp-test-home"));
+    cmd
 }
 
 #[test]

@@ -77,9 +77,14 @@ pub struct ApiKeys {
 }
 
 /// The model name used when neither an override nor the config file specify one.
+///
+/// These go stale as providers retire old models — `gemini-2.5-flash` (the original default,
+/// Sessão 1) started 404ing for new API keys as of Sessão 32 ("no longer available to new
+/// users"), confirming the risk flagged in `SESSIONS.md` back then. If a default here starts
+/// erroring again, check the provider's current model list before assuming it's a code bug.
 pub fn default_model_for(provider: Provider) -> &'static str {
     match provider {
-        Provider::Gemini => "gemini-2.5-flash",
+        Provider::Gemini => "gemini-3.5-flash",
         Provider::Openai => "gpt-4o-mini",
     }
 }

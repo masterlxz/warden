@@ -7,9 +7,16 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// `env_clear()` alone doesn't fully isolate `dirs::config_dir()` from the real machine: with
+/// `HOME` unset, the underlying `home` crate falls back to a libc/getpwuid lookup of the real
+/// user's home directory, which can point at a real `~/.config/warden/config.toml` a user has
+/// actually created (bit us for real once already — a machine with a real config file made
+/// `fails_clearly_without_a_gemini_key` find that file's key and pass bootstrap instead of
+/// failing). Pointing `HOME` at a fresh empty directory closes that gap for good.
 fn warden_command() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden"));
     cmd.env_clear();
+    cmd.env("HOME", unique_temp_path("warden-cli-test-home"));
     cmd
 }
 

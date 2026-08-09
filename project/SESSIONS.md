@@ -2,7 +2,96 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 30)
+> Última atualização: 2026-08-09 (Sessão 32)
+
+---
+
+### 2026-08-09 — Sessão 32
+
+- **Objetivo**: Dois bugs reais encontrados pelo usuário rodando o `warden` de verdade depois da
+  Sessão 31 (UX do terminal).
+
+**O que foi feito**:
+
+- **Bug 1 — modelo Gemini default desatualizado**: usuário criou `~/.config/warden/config.toml`
+  de verdade com uma chave real e rodou `warden` — erro 404 da API, `gemini-2.5-flash` "no longer
+  available to new users". Isso já tinha sido sinalizado como risco na Sessão 1 (`SESSIONS.md`:
+  "vale confirmar em aistudio.google.com se ainda é o correto"). Corrigido `default_model_for`
+  (`crates/warden-bootstrap/src/lib.rs`) pra `gemini-3.5-flash` (geração atual confirmada via
+  busca — Gemini 3.x é a linha viva em 2026-08, 2.5 vira fallback pago sendo desligado em
+  outubro); comentário novo no código explicando que esses defaults ficam velhos e por quê
+- **Nota de segurança**: usuário colou a própria API key real em texto puro no chat — fica salva
+  no histórico da conversa. Recomendado revogar/gerar uma nova em aistudio.google.com
+- **Bug 2 — bug real de isolamento de teste, achado ao rodar a suíte completa depois da correção
+  do modelo**: `fails_clearly_without_a_gemini_key` (`warden-cli/tests/cli.rs`) começou a **passar
+  quando devia falhar** — `env_clear()` sozinho não isola `dirs::config_dir()` do `HOME` real: com
+  `HOME` ausente, o crate `home` cai pra uma busca via libc/getpwuid do diretório real do usuário,
+  então o teste acabou lendo o `config.toml` de verdade que o usuário tinha acabado de criar (com
+  a chave real) em vez de falhar por falta de chave. Corrigido setando `HOME` explicitamente pra
+  um diretório temporário único em `warden_command()`. **O mesmo gap existia em `warden-telegram/
+  tests/telegram.rs` e `warden-whatsapp/tests/whatsapp.rs`** (nunca notado antes porque nenhuma
+  das duas sessões anteriores tinha um `config.toml` real no ambiente pra vazar) — pior ainda
+  nesses dois: uma chave Gemini real vazada faz o `bootstrap()` ter sucesso, aí o processo chega
+  no loop de verdade (`run_bot`) com um token/sidecar fake — no Telegram isso significa retry
+  infinito a cada 5s (por design, nunca desiste), no WhatsApp significa bloquear pra sempre
+  esperando um evento do sidecar que nunca chega. Confirmado travando de verdade rodando a suíte
+  completa (processo preso em `fails_clearly_without_a_gemini_key_once_the_token_is_present` por
+  mais de 60s) antes da correção; corrigido nos três arquivos de teste com o mesmo padrão
+- Testado: `cargo build --workspace`/`cargo test --workspace` limpos, 57 testes, suíte completa
+  agora roda rápido de novo (sem travar)
+- `~/.cargo/bin/warden` reinstalado via `cargo install --path crates/warden-cli` pra pegar os
+  dois fixes (modelo novo + UX da Sessão 31, que o usuário ainda não tinha testado de verdade
+  porque a instalação anterior era de antes dessas mudanças)
+- `project/PENDING.md`/`ARCHITECTURE.md` **não** atualizados nesta sessão — são bugfixes
+  pontuais, não decisões de arquitetura novas; o registro fica só aqui no log de sessões
+
+**Próximo passo**: Usuário revogar a API key exposta no chat e gerar uma nova. Testar `warden` de
+novo com o modelo corrigido e a UX nova (histórico, spinner, markdown) juntos pela primeira vez.
+
+---
+
+### 2026-08-09 — Sessão 31
+
+- **Objetivo**: UX de terminal do `warden-cli` estilo Claude Code/Codex, em modo `/plan` —
+  pedido do usuário depois de instalar e testar o `warden` de verdade via `cargo install`.
+
+**O que foi feito**:
+
+- Pergunta de escopo feita antes de planejar: entre 3 níveis (cores+markdown+histórico / + streaming
+  de resposta real / TUI completo com `ratatui`) — usuário escolheu o primeiro, mais contido
+- Achado de investigação que virou a decisão de design central: os 4 testes de processo de
+  `tests/cli.rs` rodam com stdin/stdout pipados, não um TTY de verdade — `rustyline` em modo raw
+  não funciona direito nesse cenário. Resolvido com `std::io::IsTerminal` (já na std, sem
+  dependência nova): stdin não-TTY cai no loop simples de sempre (`run_plain`), preservando os 4
+  testes sem tocar neles
+- Implementado: novo módulo `crates/warden-cli/src/interactive.rs`, usado só quando
+  `io::stdin().is_terminal()` — `rustyline::DefaultEditor` (histórico de linha persistido em
+  `~/.config/warden/cli_history.txt`, Ctrl+C cancela a linha em vez de derrubar o processo,
+  Ctrl+D encerra), `indicatif::ProgressBar` como spinner "Thinking..." enquanto o modelo responde,
+  `termimad::MadSkin` renderizando a resposta como markdown de verdade (negrito, listas, code
+  block) em vez de `println!` cru
+- Durante a implementação, uma suposição do plano se mostrou errada ao verificar o `Cargo.toml`
+  real do `termimad@0.35`: ele não depende mais de `crossterm` diretamente (usa `crokey`/`coolor`
+  agora) — a ideia original de "reusar crossterm como transitiva do termimad" pra colorir a linha
+  de uso de tokens não se sustentava. Corrigido na hora, trocado por `owo-colors`, uma dependência
+  dedicada e mínima
+- Verificado de ponta a ponta com um TTY de verdade (não só os testes com pipe): usado `script`
+  (aloca um pseudo-terminal real) pra confirmar que o caminho rico realmente roda — prompt,
+  spinner animando (frames reais capturados no log), histórico. Um primeiro teste deu timeout
+  porque as duas linhas de input foram despejadas rápido demais no pty antes do processo estar
+  pronto pra ler a segunda — não é bug de verdade, confirmado repetindo com um `sleep` entre as
+  linhas: `exit` encerra limpo (exit code 0)
+- Testado: `cargo build --workspace`/`cargo test --workspace` limpos, 57 testes (os 5 de
+  `warden-cli` continuam passando sem nenhuma alteração neles, confirmando que a detecção de TTY
+  funcionou como planejado)
+- `project/PENDING.md` (P8 atualizada — primeiro passo de UX dado, streaming/TUI completo
+  seguem em aberto), `project/ARCHITECTURE.md` (3 decisões novas: nível de ambição, libs
+  escolhidas incluindo a correção do `owo-colors`, detecção de TTY)
+
+**Próximo passo**: Verificação manual pendente pro usuário — rodar `warden` de verdade com uma
+API key real, confirmar visualmente o histórico (seta pra cima), o spinner e o markdown
+renderizado. P8 segue com streaming de resposta real e TUI completo como possíveis próximos
+passos se fizerem falta na prática.
 
 ---
 

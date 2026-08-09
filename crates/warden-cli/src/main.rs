@@ -1,9 +1,12 @@
-use std::io::{self, Write};
+mod interactive;
+
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
 use warden_core::model::Message;
+use warden_core::orchestrator::Orchestrator;
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -40,6 +43,13 @@ struct Cli {
     config: Option<String>,
 }
 
+/// Where `interactive::run` persists readline history across sessions — opaque app data, same
+/// `dirs::config_dir()` convention as `default_config_path`/`default_conversations_dir` in
+/// `warden-bootstrap`.
+fn history_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("cli_history.txt"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -51,6 +61,17 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    // Readline-style editing needs a real terminal — piped stdin (scripted use, the process-level
+    // tests in tests/cli.rs) falls back to the plain loop below, unchanged from before this
+    // module existed.
+    if io::stdin().is_terminal() {
+        interactive::run(&orchestrator, history_path().as_deref()).await
+    } else {
+        run_plain(&orchestrator).await
+    }
+}
+
+async fn run_plain(orchestrator: &Orchestrator) -> anyhow::Result<()> {
     println!("Warden — talk to it below (Ctrl+D or 'exit' to quit).\n");
 
     let stdin = io::stdin();
