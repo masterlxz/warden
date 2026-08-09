@@ -2,7 +2,37 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 29)
+> Última atualização: 2026-08-09 (Sessão 30)
+
+---
+
+### 2026-08-09 — Sessão 30
+
+- **Objetivo**: Correção rápida — feedback real do usuário depois de rodar a Fase 3 (Sessão 29)
+  na própria máquina: o QR code aparecia visivelmente esticado no terminal — uma câmera comum
+  conseguia ler, mas o scanner do próprio WhatsApp não reconhecia.
+
+**O que foi feito**:
+
+- Causa raiz: `qrcode-terminal` usa o truque de meio-bloco Unicode (▀▄) pra "comprimir" o QR
+  verticalmente, assumindo uma proporção de fonte de terminal específica (~2:1 altura:largura).
+  Quando essa suposição não bate com a fonte real do terminal, o QR sai distorcido — tolerável
+  pra um leitor de QR genérico (mais robusto), não pro scanner específico do WhatsApp
+- Trocado `qrcode-terminal` por `qrcode` (`QRCode.toFile`) em `sidecar/whatsapp/index.mjs`: gera
+  um PNG de verdade (512×512, pixels quadrados, sem depender de fonte nenhuma) em
+  `<authDir>/qr.png`, com o caminho logado no stderr do sidecar (mesma separação de canal já
+  usada antes — nunca no stdout, que é o protocolo JSON-lines)
+- Verificado de ponta a ponta de novo: `node --check` limpo, rodada real contra os servidores do
+  WhatsApp confirma PNG válido gerado (`file` confirma 512×512 RGBA8), stdout continua em 0 bytes
+- Também corrigida uma imprecisão factual encontrada nos docs da Sessão 29: `ARCHITECTURE.md`/
+  `PHASE.md`/`SESSIONS.md` diziam que `baileys` tinha sido fixado na tag estável `^6.7.24` — na
+  verdade essa era só a intenção original, nunca chegou a instalar de verdade (bloqueado pelo
+  fetch de dependência git do `libsignal` no ambiente de verificação); o que de fato foi testado,
+  commitado e agora confirmado rodando na máquina real do usuário é `^7.0.0-rc14`. Corrigido nos
+  três arquivos pra refletir o que realmente está no `package.json`
+
+**Próximo passo**: Usuário vai rodar `npm install` de novo (troca de dependência) e escanear o
+novo QR em PNG pra validar o pareamento de verdade.
 
 ---
 
@@ -24,8 +54,11 @@
   `sock.sendMessage`) confirmada via README/exemplo oficial
 - Implementado: `sidecar/whatsapp/` — **primeiro código JS que o próprio projeto escreve e
   versiona** (até aqui todo uso de Node era via `npx` contra pacotes de terceiros). `package.json`
-  + `index.mjs` puro (ESM, sem TypeScript/build step); `baileys` fixado na tag estável `^6.7.24`
-  (não a pre-release `7.0.0-rc*`, hoje o `latest` no npm)
+  + `index.mjs` puro (ESM, sem TypeScript/build step). Intenção inicial era fixar `baileys` na
+  tag estável `^6.7.24`, mas seu `libsignal` é resolvido via `git+https://...` e o ambiente de
+  verificação bloqueia fetch de dependência git — trocado por `^7.0.0-rc14` (`libsignal` normal
+  do registry), que de fato instalou e conectou; trade-off (pre-release pré-1.0) registrado em
+  `ARCHITECTURE.md`
 - Novo crate `crates/warden-whatsapp`, mesmo padrão do `warden-telegram`: trait `WhatsAppSidecar`
   (`&mut self`, diferente da `TelegramApi` que é `&self` — ler linha a linha de um stream é
   estado), `ChildSidecar` implementa de verdade sobre `tokio::process`/`tokio::io` (nova feature

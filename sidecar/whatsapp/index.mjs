@@ -4,18 +4,23 @@
 //              {"type":"disconnected","loggedOut":bool}
 //              {"type":"message","chatId":"...","senderName":"...","text":"..."|null}
 //   Rust -> sidecar (stdin):  {"type":"send","chatId":"...","text":"..."}
-// The QR code (first-run pairing) is rendered straight to stderr via qrcode-terminal — a
-// separate stream from the stdout channel above, so it never corrupts the JSON protocol. The
-// parent process just inherits this sidecar's stderr so the user sees the QR appear directly.
+// The QR code (first-run pairing) is written as a PNG next to the auth state and the file path
+// logged to stderr — not rendered as terminal ASCII art. A terminal QR needs the half-block
+// Unicode trick to look square, which depends on the terminal font's exact character aspect
+// ratio; when that assumption is off the code renders visibly stretched, and while a generic
+// camera QR reader tolerates that distortion, WhatsApp's own in-app scanner does not. A real PNG
+// has no such dependency. Either way this stays off stdout, which is the JSON-lines IPC channel
+// to the Rust parent — printing anything else there would corrupt the protocol.
 // Reconnect logic (WhatsApp-level, via DisconnectReason) stays entirely in this script; Rust
 // only ever sees the high-level "connected"/"disconnected" events.
 
 import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 
 import { DisconnectReason, fetchLatestBaileysVersion, makeWASocket, useMultiFileAuthState } from "baileys";
 import pino from "pino";
-import qrcodeTerminal from "qrcode-terminal";
+import QRCode from "qrcode";
 
 const authDir = process.env.WARDEN_WHATSAPP_AUTH_DIR;
 if (!authDir) {
@@ -55,10 +60,14 @@ async function connect() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      // A callback makes qrcode-terminal hand back the rendered string instead of printing it
-      // via console.log — console.log writes to stdout, which is the JSON-lines IPC channel to
-      // the Rust parent; printing the QR there would corrupt the protocol. stderr is safe.
-      qrcodeTerminal.generate(qr, { small: true }, (rendered) => process.stderr.write(`${rendered}\n`));
+      const qrPath = path.join(authDir, "qr.png");
+      QRCode.toFile(qrPath, qr, { width: 512 })
+        .then(() => {
+          console.error(
+            `QR code saved to ${qrPath} — open it in an image viewer and scan with WhatsApp (Settings > Linked Devices > Link a Device).`
+          );
+        })
+        .catch((err) => console.error("failed to generate QR code image:", err));
     }
 
     if (connection === "open") {

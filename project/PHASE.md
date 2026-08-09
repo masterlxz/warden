@@ -56,9 +56,10 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 **Etapas**:
 - [x] 3.1 — Setup do sidecar Node.js com Baileys (`sidecar/whatsapp/`, primeiro código JS que o
   próprio projeto escreve e versiona — até aqui Node só era usado via `npx` contra pacotes de
-  terceiros; `baileys` fixado na linha estável `^6.7.24`, não na pre-release `7.0.0-rc*`)
-- [x] 3.2 — Autenticação via QR code — `useMultiFileAuthState`, QR renderizado por
-  `qrcode-terminal` **no stderr** do sidecar (canal separado do stdin/stdout usado pra IPC — ver
+  terceiros; `baileys@^7.0.0-rc14` — ver `ARCHITECTURE.md` pro porquê de não ser a linha `6.x` estável)
+- [x] 3.2 — Autenticação via QR code — `useMultiFileAuthState`, QR gerado como **PNG** pelo pacote
+  `qrcode` (não `qrcode-terminal`) dentro do diretório de auth, caminho logado no stderr do
+  sidecar (canal separado do stdin/stdout usado pra IPC — ver
   `ARCHITECTURE.md`, um bug real de poluir o stdout foi encontrado e corrigido durante a
   verificação de ponta a ponta desta sessão)
 - [x] 3.3 — IPC entre sidecar e core Rust — **stdin/stdout, JSON-lines** (decisão explícita do
