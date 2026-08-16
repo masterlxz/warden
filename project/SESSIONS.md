@@ -2,7 +2,31 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-09 (Sessão 33)
+> Última atualização: 2026-08-15 (Sessão 34)
+
+---
+
+### 2026-08-15 — Sessão 34
+
+- **Objetivo**: Confirmar de vez a UX interativa corrigida na Sessão 33 (o usuário ainda não tinha
+  testado depois do fix de cores) — nada mudou no repo entre 2026-08-09 e hoje.
+
+**O que foi feito**:
+
+- Rodado `warden` de verdade via pty real (Python `pty` + `select`, já que o Bash tool não aloca
+  TTY) com a pergunta "liste 3 frutas em markdown", capturando o stream bruto de bytes/ANSI de
+  ponta a ponta
+- Confirmado visualmente no dump bruto: banner "Warden" verde negrito, prompt `>` ciano negrito,
+  spinner braille com "Thinking..." esmaecido animando entre frames, label de resposta "● Warden"
+  verde negrito, bullets da lista em ciano (`\x1b[38;5;14m`), linha de contagem de tokens
+  esmaecida — todos os elementos da Sessão 33 presentes e funcionando juntos num fluxo real
+  (pergunta → spinner → resposta formatada → `exit` limpo)
+- Nenhuma mudança de código necessária — sessão de confirmação/QA, não de implementação
+
+**Próximo passo**: Pendência que segue em aberto e é só do usuário (fora do meu alcance):
+revogar/gerar nova a API key Gemini que foi colada em texto puro no chat da Sessão 32. Depois
+disso, ou já decidir seguir para a Fase 4 (Vault & Memória — espelho IPFS, cifra, versionamento,
+busca semântica), que é a próxima fase não iniciada do roadmap.
 
 ---
 
