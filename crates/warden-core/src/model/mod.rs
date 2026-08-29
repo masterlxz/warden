@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::tool::ToolSpec;
 
+pub mod anthropic;
 pub mod gemini;
 pub mod openai;
 

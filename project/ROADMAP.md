@@ -2,6 +2,23 @@
 
 ## Sequenciamento Sugerido
 
+> **Atualizado em 2026-08-29 (Sessão 35)** — nova re-priorização do usuário, por cima da de
+> 2026-08-02 abaixo. Objetivo explícito: "fazer isso aqui ser o melhor agente pessoal possível".
+> Ordem pedida: (1) polir o **App Desktop** agora — UX geral, gerenciamento de API keys
+> (salvar/apagar) e suporte a múltiplos provedores (Ollama local + as principais empresas que
+> ainda faltam, ex. Anthropic — hoje só Gemini/OpenAI existem, ver `ARCHITECTURE.md`); (2) voltar
+> a expandir **Tools & MCP** (Fase 5) — maximizar quantas coisas o agente consegue acessar via
+> servers MCP; (3) **App Mobile** (Fase 7); (4) depois disso, os caminhos que ficaram pra trás:
+> **Canal Terminal/CLI** (melhorar a UX, que o usuário ainda considera "feia" mesmo depois do
+> polish da Sessão 31/33 — ver P8 em `PENDING.md`), desenhar um **app servidor** de verdade (Fase
+> 9), e **Vault & Memória** (Fase 4) — que muda de figura: o usuário já não quer IPFS, e sim
+> **Arweave**, seguindo o pivô que o próprio TruthID já fez (confirmado nesta sessão:
+> `docs/docs/sdk/dart.md` do TruthID usa carteira Arweave por identidade e ponteiro `ar://`, não
+> mais CID IPFS — vale estudar a fundo a arquitetura de vault do TruthID antes de desenhar a do
+> Warden, ver pendência nova em `PENDING.md`); (5) por fim, **conexão com o TruthID** (Fase 10,
+> autenticação unificada) segue confirmada como importante. Os números das fases em `PHASE.md`
+> não mudaram — só a ordem de execução abaixo.
+
 > **Atualizado em 2026-08-02** — decisão do usuário: priorizar o App Desktop (Fase 6) logo
 > depois da Fase 1, antes dos canais de mensageria (Telegram/WhatsApp) e do resto da Fase
 > 4/5. Motivo: interface de chat de verdade importa mais agora do que canais externos, e
@@ -9,19 +26,23 @@
 > topologia servidor↔cliente, que só entra na Fase 9; ver P14 em `PENDING.md`). Os números das
 > fases em `PHASE.md` não mudaram — só a ordem de execução abaixo.
 
-Ordem de implementação recomendada:
+Ordem de implementação recomendada (atualizada 2026-08-29, ver nota acima):
 
 1. **Orquestrador CLI + 1 modelo + vault local** (Fase 1) — base de tudo ✅ concluída
-2. **App Desktop** (Fase 6) — interface nativa de chat, valor mais visível pro usuário agora
-3. **Canal Telegram** (Fase 2) — primeiro canal externo, mais simples ✅ concluída
-4. **Canal WhatsApp** (Fase 3) — sidecar Node via Baileys ✅ concluída
-5. **Vault espelhado em IPFS** (Fase 4) — redundância da memória
-6. **Tools & MCP** (Fase 5) — extensibilidade (parte já implementada ad-hoc na Fase 1: `read_file`,
-   `write_file`, `web_search`, `delegate_task`)
-7. **Rede de nós + Tailscale** (Fase 9) — execução remota de tools
-8. **Extensão de Navegador** (Fase 8) — canal + tool de browser
-9. **App Mobile** (Fase 7) — cliente móvel
-10. **Integração TruthID** (Fase 10) — autenticação unificada
+2. **App Desktop** (Fase 6) — interface nativa de chat ✅ concluída — **agora em polish**: UX,
+   gerenciamento de API keys (CRUD de verdade, não só campo de texto), múltiplos provedores
+   (Ollama, Anthropic, outros)
+3. **Canal Telegram** (Fase 2) ✅ concluída
+4. **Canal WhatsApp** (Fase 3) ✅ concluída
+5. **Tools & MCP** (Fase 5) — quase completa (falta só 5.4, bloqueada pela Fase 8) — **próximo
+   foco depois do Desktop**: maximizar integrações via servers MCP existentes
+6. **App Mobile** (Fase 7) — cliente móvel, depois do MCP
+7. **Canal Terminal/CLI** — revisitar UX (P8), usuário ainda insatisfeito
+8. **Rede de nós + Tailscale / app servidor** (Fase 9) — execução remota de tools
+9. **Vault & Memória** (Fase 4) — repensar com Arweave em vez de IPFS, estudando a arquitetura
+   real do TruthID primeiro
+10. **Extensão de Navegador** (Fase 8) — canal + tool de browser
+11. **Integração TruthID** (Fase 10) — autenticação unificada, confirmada como importante
 
 ---
 

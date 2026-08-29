@@ -2,7 +2,77 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-15 (Sessão 34)
+> Última atualização: 2026-08-29 (Sessão 35)
+
+---
+
+### 2026-08-29 — Sessão 35
+
+- **Objetivo**: Usuário voltou depois de duas semanas com uma re-priorização grande do roadmap
+  ("bora fazer isso aqui ser o melhor agente pessoal possível") — nova ordem: Desktop (UX,
+  gerenciamento de API keys, múltiplos provedores) → MCP → Mobile → CLI/servidor/vault(Arweave) →
+  TruthID. Escopo desta sessão, confirmado explicitamente pelo usuário: focar só no primeiro item,
+  registrar o resto como pendência.
+
+**O que foi feito**:
+
+- Re-priorização registrada em `ROADMAP.md` (nova ordem de sequenciamento, 2026-08-29) e novas
+  pendências em `PENDING.md`: P22 (múltiplos provedores), P23 (gerenciamento de API keys),
+  P24 (Fase 4 precisa repensar IPFS→Arweave — confirmado nesta sessão que o **TruthID** já migrou
+  pra Arweave, via leitura de `~/Documents/workspace/truthid/docs/docs/sdk/dart.md`: carteira por
+  identidade, ponteiro `ar://` em vez de CID IPFS), e P8 atualizada (usuário reafirma que a UX do
+  CLI "tava feio pra krl" mesmo após o polish das Sessões 31/33 — fica pra depois do Desktop/MCP)
+- Duas perguntas de escopo feitas antes de implementar (trade-off real, não óbvio): (1) arquitetura
+  de múltiplos provedores — enum fechado com mais braços (`Provider::Anthropic`/`Provider::Ollama`)
+  vs um **registry** de entradas configuráveis → usuário escolheu **registry**, no espírito do
+  `[[mcp_servers]]` já existente; (2) quais provedores entram — Anthropic+Ollama dedicados vs
+  Anthropic dedicado + um tipo genérico "OpenAI-compatível" (cobre Ollama e qualquer outro server
+  que fale o mesmo protocolo, tipo Groq/OpenRouter/DeepSeek) → usuário escolheu a **genérica**
+- Implementado (`warden-core`): novo `AnthropicProvider` (`model/anthropic.rs`) — Messages API
+  própria (system como campo top-level, `tool_use`/`tool_result` como content blocks, `max_tokens`
+  fixo em 4096 sem config própria ainda); `OpenAiProvider` ganhou `base_url` configurável
+  (`with_base_url`, default continua a OpenAI oficial) — cobre Ollama/OpenRouter/Groq/etc. de
+  graça, sem implementação dedicada por empresa
+- Implementado (`warden-bootstrap`): `Provider` ganhou `Anthropic`/`OpenaiCompatible`;
+  `ProviderConfig { id, kind, api_key, base_url, model }` novo; `FileConfig` ganhou
+  `providers: Vec<ProviderConfig>` + `active_provider: Option<String>`. Nova
+  `resolve_model_provider`: usa o registry quando não-vazio (erro claro se `active_provider` não
+  bater com nenhum `id`), senão sintetiza uma entrada a partir dos campos antigos
+  (`provider`/`api_keys.gemini`/`api_keys.openai` + env vars `GEMINI_API_KEY`/`OPENAI_API_KEY`) —
+  os campos antigos continuam no struct só como fallback (deprecated, `deny_unknown_fields`
+  obrigava manter em vez de quebrar `config.toml` já existentes, inclusive o real do usuário desde
+  a Sessão 32). `default_model_for` virou `Option<&str>` (`None` pra `OpenaiCompatible`, sem
+  default universal). 9 testes novos cobrindo registry/fallback/erros claros
+- Desktop: `SettingsSnapshot`/`SettingsFormPayload` (`src-tauri/src/lib.rs`) reescritos pro shape
+  de lista (`providers: Vec<ProviderPayload>` + `active_provider`), com validação de nome
+  vazio/duplicado no backend; `get_settings` expõe `default_models` (por kind) pro placeholder do
+  campo Model. `SettingsView.tsx` ganhou uma seção "Model providers": cards com nome/tipo (select)/
+  API key (mascarada, reveal toggle)/Base URL (só pra `openai_compatible`)/Model, rádio "Active",
+  botão apagar, "+ Add provider" — tudo editado localmente e salvo de uma vez, mesmo padrão do
+  resto da tela (não introduziu CRUD granular via IPC)
+- Ajustes mecânicos em cascata: `Overrides` ganhou `provider_id` (reservado pra quando um canal
+  quiser selecionar por id de registry, nenhum ainda usa); `warden-cli`/`warden-telegram`/
+  `warden-whatsapp` (`main.rs`) só precisaram de `..Default::default()` no literal de `Overrides`
+- Verificado: `cargo build/test/clippy --workspace --all-targets` limpos (23 testes novos/
+  atualizados só no `warden-bootstrap`, resto sem quebra — nenhum teste de CLI/Telegram/WhatsApp
+  precisou mudar, confirmando que o fallback preservou o comportamento de zero-config via env var
+  exatamente como antes), `npx tsc --noEmit`/`npm run build` limpos no frontend. **UI testada de
+  ponta a ponta de verdade** via Playwright headless contra o dev server real (mesmo padrão da
+  Sessão 22, instalado e removido só pro teste): adicionar 2 provedores, trocar tipo pra
+  `openai_compatible` (Base URL aparece dinamicamente), marcar um como ativo, salvar — payload
+  conferido byte a byte no formato exato que o Rust espera (`kind: "openai_compatible"`,
+  `active_provider` certo), zero erros de console, apagar o provedor não-ativo preserva o ativo
+  corretamente. Screenshot conferida visualmente (tema roxo consistente com o resto do app)
+- `project/ARCHITECTURE.md` (4 decisões novas: arquitetura registry, quais provedores, compat
+  com config antigo, UI do desktop), `project/PHASE.md` (nota de polish na Fase 6),
+  `project/OVERVIEW.md` (status Fase 5/6 corrigido — Fase 5 estava marcada "Pendente" mas só falta
+  a 5.4, bloqueada pela Fase 8), `project/PENDING.md` (P22/P23 resolvidas, P24 nova, P8 atualizada)
+
+**Próximo passo**: Próximo item da nova ordem do roadmap é **Tools & MCP** (Fase 5) — voltar a
+expandir quantas coisas o agente consegue acessar via servers MCP existentes. Depois disso, App
+Mobile (Fase 7), e só então CLI/app servidor/Vault(Arweave)/TruthID, nessa ordem — ver
+`ROADMAP.md`. Pendência do próprio usuário, ainda sem confirmação: revogar a API key Gemini
+exposta em texto puro na Sessão 32.
 
 ---
 

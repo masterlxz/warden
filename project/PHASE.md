@@ -136,6 +136,13 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 vibrante em vez de azul. Vale a partir da 6.2, quando a UI de verdade começa a ser construída — o
 scaffold da 6.1 ainda é só o boilerplate padrão do template Tauri+React+Vite, sem branding.
 
+**Polish pós-conclusão (Sessão 35, 2026-08-29)**: re-priorização do usuário — voltar ao Desktop
+antes de seguir pro resto do roadmap (ver `ROADMAP.md`). Settings ganhou um registry de
+provedores de verdade (Gemini/OpenAI/Anthropic/qualquer servidor OpenAI-compatível como Ollama —
+ver P22/P23 em `PENDING.md`, resolvidas, e as decisões correspondentes em `ARCHITECTURE.md`).
+Próximo passo dentro deste polish: nenhum item novo de UX geral foi pedido ainda além disso —
+revisitar se o usuário sinalizar mais pontos específicos.
+
 ---
 
 ### Fase 7 — App Mobile

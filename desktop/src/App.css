@@ -521,3 +521,85 @@ body {
   color: var(--color-accent-dark);
   font-size: 0.9em;
 }
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 1em;
+  color: var(--color-text);
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  padding: 1rem;
+  transition: border-color 0.2s;
+}
+
+.provider-card-active {
+  border-color: var(--color-accent);
+}
+
+.provider-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.provider-active-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.provider-active-toggle input[type="radio"] {
+  accent-color: var(--color-accent);
+}
+
+.provider-name-input {
+  flex: 1;
+  font-weight: 600;
+}
+
+.provider-delete-btn {
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.95em;
+  padding: 0.5em 0.6em;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.provider-delete-btn:hover {
+  background-color: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}

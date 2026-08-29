@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
     let orchestrator = bootstrap(
         cli.config.as_deref(),
-        Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path },
+        Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path, ..Default::default() },
         default_vault_path(),
     )
     .await?;

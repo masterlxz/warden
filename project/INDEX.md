@@ -1,6 +1,6 @@
 # Warden — Estado do Projeto
 
-> Última atualização: 2026-08-15 (Sessão 34)
+> Última atualização: 2026-08-29 (Sessão 35)
 
 ---
 

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use warden_core::memory::Vault;
+use warden_core::model::anthropic::AnthropicProvider;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::{Message, ModelProvider, Usage};
@@ -22,10 +23,33 @@ use warden_core::tool::shell::ShellTool;
 use warden_core::tool::{Tool, ToolProvider};
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Provider {
     Gemini,
     Openai,
+    Anthropic,
+    /// Any other server that speaks the OpenAI chat-completions wire format — Ollama
+    /// (local, no real key needed), OpenRouter, Groq, DeepSeek, etc. `ProviderConfig::base_url`
+    /// is required for this kind; there's no single sensible default endpoint.
+    OpenaiCompatible,
+}
+
+/// One configured model provider (Sessão 35's provider registry) — the desktop Settings screen
+/// lets the user add/edit/delete any number of these, each independently selectable as the
+/// active one. Kept as a flat list rather than a map so ordering is stable for display and `id`
+/// collisions are the user's problem to fix (mirrors `McpServerConfig`'s shape/spirit).
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    /// User-chosen, unique among `providers` — referenced by `FileConfig::active_provider`.
+    pub id: String,
+    pub kind: Provider,
+    pub api_key: Option<String>,
+    /// Only meaningful (and required) for `Provider::OpenaiCompatible`.
+    pub base_url: Option<String>,
+    /// Falls back to `default_model_for(kind)` when unset — `None` for `OpenaiCompatible`,
+    /// which has no universal default (depends entirely on what's hosted there).
+    pub model: Option<String>,
 }
 
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
@@ -33,7 +57,12 @@ pub enum Provider {
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
+    /// Deprecated as of Sessão 35's provider registry (`providers`/`active_provider` below) —
+    /// kept only so a `config.toml` written before that still parses instead of erroring on an
+    /// unknown field. `bootstrap()` reads this only as a fallback when `providers` is empty; a
+    /// save from the new desktop Settings UI always clears it back to `None`.
     pub provider: Option<Provider>,
+    /// Same deprecation as `provider` above.
     pub model: Option<String>,
     pub vault_path: Option<String>,
     /// Opt-in gate for the `shell` tool (Phase 5.5) — off unless explicitly turned on, since it
@@ -41,6 +70,13 @@ pub struct FileConfig {
     pub enable_shell: Option<bool>,
     #[serde(default)]
     pub api_keys: ApiKeys,
+    /// The provider registry (Sessão 35). Empty means "not migrated to the registry yet" —
+    /// `bootstrap()` falls back to `provider`/`api_keys.gemini`/`api_keys.openai` in that case.
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+    /// `id` of the `providers` entry to use. Ignored (and unnecessary) while `providers` is
+    /// empty and the legacy fallback is in play.
+    pub active_provider: Option<String>,
     /// External MCP servers to connect to on startup (Phase 5.2) — empty by default, same
     /// "off unless configured" spirit as the shell tool. Each entry is spawned as a local child
     /// process (stdio transport, the standard for local MCP servers); whatever tools it
@@ -76,16 +112,21 @@ pub struct ApiKeys {
     pub telegram_bot_token: Option<String>,
 }
 
-/// The model name used when neither an override nor the config file specify one.
+/// The model name used when neither an override nor the config file specify one. `None` for
+/// `Provider::OpenaiCompatible` — there's no universal default across arbitrary OpenAI-compatible
+/// servers (an Ollama model tag, an OpenRouter slug, ...), so that kind always requires an
+/// explicit `model` in its `ProviderConfig`.
 ///
 /// These go stale as providers retire old models — `gemini-2.5-flash` (the original default,
 /// Sessão 1) started 404ing for new API keys as of Sessão 32 ("no longer available to new
 /// users"), confirming the risk flagged in `SESSIONS.md` back then. If a default here starts
 /// erroring again, check the provider's current model list before assuming it's a code bug.
-pub fn default_model_for(provider: Provider) -> &'static str {
+pub fn default_model_for(provider: Provider) -> Option<&'static str> {
     match provider {
-        Provider::Gemini => "gemini-3.5-flash",
-        Provider::Openai => "gpt-4o-mini",
+        Provider::Gemini => Some("gemini-3.5-flash"),
+        Provider::Openai => Some("gpt-4o-mini"),
+        Provider::Anthropic => Some("claude-sonnet-4-5"),
+        Provider::OpenaiCompatible => None,
     }
 }
 
@@ -345,9 +386,105 @@ async fn register_mcp_server_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &s
 /// Per-channel overrides (CLI flags today; a desktop settings UI later — see PHASE.md 6.5).
 #[derive(Default)]
 pub struct Overrides {
+    /// Legacy single-provider-kind override (the CLI's `--provider gemini|openai`) — only
+    /// consulted by `resolve_model_provider`'s fallback path, when `config.providers` is empty.
     pub provider: Option<Provider>,
+    /// Registry-aware override: the `id` of a `config.providers` entry to use instead of
+    /// `config.active_provider`. No CLI flag sets this yet (registry management is desktop-only
+    /// so far, see PENDING.md P22) — reserved for when one does.
+    pub provider_id: Option<String>,
     pub model: Option<String>,
     pub vault_path: Option<String>,
+}
+
+/// Builds the one `ModelProvider` the orchestrator will use, from a resolved `ProviderConfig` —
+/// shared by both the registry path and the legacy-fallback path in `resolve_model_provider`.
+fn build_model_provider(provider: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
+    let model = model_override.or_else(|| provider.model.clone()).or_else(|| default_model_for(provider.kind).map(str::to_string)).ok_or_else(|| {
+        anyhow::anyhow!("provider '{}' ({:?}) has no model configured and no default exists for this kind", provider.id, provider.kind)
+    })?;
+
+    Ok(match provider.kind {
+        Provider::Gemini => {
+            let api_key = provider.api_key.clone().with_context(|| {
+                format!(
+                    "provider '{}' (gemini) has no API key configured — set GEMINI_API_KEY, or its api_key in config.toml \
+                     / the desktop Settings screen (get a free key at https://aistudio.google.com/apikey)",
+                    provider.id
+                )
+            })?;
+            Arc::new(GeminiProvider::new(api_key, model))
+        }
+        Provider::Openai => {
+            let api_key = provider.api_key.clone().with_context(|| {
+                format!(
+                    "provider '{}' (openai) has no API key configured — set OPENAI_API_KEY, or its api_key in config.toml \
+                     / the desktop Settings screen",
+                    provider.id
+                )
+            })?;
+            Arc::new(OpenAiProvider::new(api_key, model))
+        }
+        Provider::Anthropic => {
+            let api_key = provider
+                .api_key
+                .clone()
+                .with_context(|| format!("provider '{}' (anthropic) has no API key configured — get one at https://console.anthropic.com", provider.id))?;
+            Arc::new(AnthropicProvider::new(api_key, model))
+        }
+        Provider::OpenaiCompatible => {
+            let base_url = provider
+                .base_url
+                .clone()
+                .with_context(|| format!("provider '{}' (openai_compatible) has no base_url configured — e.g. http://localhost:11434/v1 for Ollama", provider.id))?;
+            // Most local/self-hosted OpenAI-compatible servers (Ollama included) don't check the
+            // key at all — an empty string is a valid "no key" for them.
+            Arc::new(OpenAiProvider::with_base_url(provider.api_key.clone().unwrap_or_default(), model, base_url))
+        }
+    })
+}
+
+/// Resolves which `ModelProvider` to build, in order: an explicit `overrides.provider_id` or
+/// `config.active_provider` naming an entry in `config.providers` (the registry, Sessão 35);
+/// otherwise, when `config.providers` is empty, a single provider synthesized from the older
+/// `overrides.provider`/`config.provider`/`config.api_keys` fields plus the `GEMINI_API_KEY`/
+/// `OPENAI_API_KEY` env vars — exactly the resolution `bootstrap()` did before the registry
+/// existed, so a `config.toml` (or a bare env var, as most tests use) never on-boarded to the
+/// registry keeps working unchanged.
+fn resolve_model_provider(config: &FileConfig, overrides: &Overrides) -> anyhow::Result<Arc<dyn ModelProvider>> {
+    if !config.providers.is_empty() {
+        let active_id = overrides
+            .provider_id
+            .clone()
+            .or_else(|| config.active_provider.clone())
+            .ok_or_else(|| anyhow::anyhow!("providers are configured but no `active_provider` is set — pick one of: {}", config.providers.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")))?;
+        let provider = config
+            .providers
+            .iter()
+            .find(|p| p.id == active_id)
+            .ok_or_else(|| anyhow::anyhow!("active_provider '{active_id}' not found among configured providers"))?;
+        return build_model_provider(provider, overrides.model.clone());
+    }
+
+    let kind = overrides.provider.or(config.provider).unwrap_or(Provider::Gemini);
+    let (id, api_key_from_config) = match kind {
+        Provider::Gemini => ("gemini", config.api_keys.gemini.clone()),
+        Provider::Openai => ("openai", config.api_keys.openai.clone()),
+        // Anthropic/OpenaiCompatible have no legacy single-slot field to fall back to — they only
+        // exist via the registry, so picking one here with no `providers` configured is a no-op
+        // that will fail clearly in `build_model_provider` (no api_key/base_url).
+        Provider::Anthropic => ("anthropic", None),
+        Provider::OpenaiCompatible => ("openai_compatible", None),
+    };
+    let env_var = match kind {
+        Provider::Gemini => Some("GEMINI_API_KEY"),
+        Provider::Openai => Some("OPENAI_API_KEY"),
+        Provider::Anthropic | Provider::OpenaiCompatible => None,
+    };
+    let api_key = resolve_secret(env_var.and_then(|v| std::env::var(v).ok()), api_key_from_config);
+
+    let synthesized = ProviderConfig { id: id.to_string(), kind, api_key, base_url: None, model: config.model.clone() };
+    build_model_provider(&synthesized, overrides.model.clone())
 }
 
 /// Loads config, resolves provider/model/vault/API keys (override > config file > env >
@@ -361,30 +498,13 @@ pub async fn bootstrap(
     default_vault_path: PathBuf,
 ) -> anyhow::Result<Orchestrator> {
     let config = load_config(explicit_config_path)?;
+    let model_provider = resolve_model_provider(&config, &overrides)?;
 
-    let provider = overrides.provider.or(config.provider).unwrap_or(Provider::Gemini);
-    let model_override = overrides.model.or(config.model);
     let vault_path = overrides
         .vault_path
         .map(PathBuf::from)
         .or_else(|| config.vault_path.map(PathBuf::from))
         .unwrap_or(default_vault_path);
-
-    let model_provider: Arc<dyn ModelProvider> = match provider {
-        Provider::Gemini => {
-            let api_key = resolve_secret(std::env::var("GEMINI_API_KEY").ok(), config.api_keys.gemini).context(
-                "GEMINI_API_KEY not set (env var or config file) — get a free key at https://aistudio.google.com/apikey",
-            )?;
-            let model = model_override.unwrap_or_else(|| default_model_for(Provider::Gemini).to_string());
-            Arc::new(GeminiProvider::new(api_key, model))
-        }
-        Provider::Openai => {
-            let api_key = resolve_secret(std::env::var("OPENAI_API_KEY").ok(), config.api_keys.openai)
-                .context("OPENAI_API_KEY not set (env var or config file) — export it before running warden")?;
-            let model = model_override.unwrap_or_else(|| default_model_for(Provider::Openai).to_string());
-            Arc::new(OpenAiProvider::new(api_key, model))
-        }
-    };
 
     let vault = Arc::new(Vault::new(vault_path));
 
@@ -562,6 +682,14 @@ command = "some-mcp-server"
                 tavily: Some("tk".to_string()),
                 telegram_bot_token: Some("tt".to_string()),
             },
+            providers: vec![ProviderConfig {
+                id: "ollama-local".to_string(),
+                kind: Provider::OpenaiCompatible,
+                api_key: None,
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                model: Some("llama3.1".to_string()),
+            }],
+            active_provider: Some("ollama-local".to_string()),
             mcp_servers: vec![McpServerConfig {
                 name: "anchor".to_string(),
                 command: "npx".to_string(),
@@ -692,5 +820,111 @@ command = "some-mcp-server"
         assert!(resolve_flag(None, Some(true)));
         assert!(!resolve_flag(None, Some(false)));
         assert!(!resolve_flag(None, None));
+    }
+
+    /// `Arc<dyn ModelProvider>` isn't `Debug`, so `Result::unwrap_err` (which requires the `Ok`
+    /// side to be `Debug` too) doesn't work directly on `resolve_model_provider`'s return type.
+    fn expect_err<T>(result: anyhow::Result<T>) -> String {
+        match result {
+            Ok(_) => panic!("expected an error"),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    fn provider_entry(id: &str, kind: Provider) -> ProviderConfig {
+        ProviderConfig { id: id.to_string(), kind, api_key: Some("a-key".to_string()), base_url: None, model: Some("a-model".to_string()) }
+    }
+
+    #[test]
+    fn resolve_model_provider_uses_the_registry_active_provider() {
+        let config = FileConfig {
+            providers: vec![provider_entry("gemini-personal", Provider::Gemini)],
+            active_provider: Some("gemini-personal".to_string()),
+            ..Default::default()
+        };
+
+        assert!(resolve_model_provider(&config, &Overrides::default()).is_ok());
+    }
+
+    #[test]
+    fn resolve_model_provider_override_provider_id_wins_over_active_provider() {
+        let config = FileConfig {
+            providers: vec![provider_entry("a", Provider::Gemini), provider_entry("b", Provider::Openai)],
+            active_provider: Some("a".to_string()),
+            ..Default::default()
+        };
+        let overrides = Overrides { provider_id: Some("b".to_string()), ..Default::default() };
+
+        assert!(resolve_model_provider(&config, &overrides).is_ok());
+    }
+
+    #[test]
+    fn resolve_model_provider_errors_when_active_provider_is_unset() {
+        let config = FileConfig { providers: vec![provider_entry("a", Provider::Gemini)], ..Default::default() };
+
+        let err = expect_err(resolve_model_provider(&config, &Overrides::default()));
+        assert!(err.contains("no `active_provider` is set"), "error was: {err}");
+    }
+
+    #[test]
+    fn resolve_model_provider_errors_when_active_provider_id_is_unknown() {
+        let config = FileConfig {
+            providers: vec![provider_entry("a", Provider::Gemini)],
+            active_provider: Some("does-not-exist".to_string()),
+            ..Default::default()
+        };
+
+        let err = expect_err(resolve_model_provider(&config, &Overrides::default()));
+        assert!(err.contains("does-not-exist"), "error was: {err}");
+    }
+
+    #[test]
+    fn resolve_model_provider_openai_compatible_requires_a_base_url() {
+        let mut entry = provider_entry("ollama", Provider::OpenaiCompatible);
+        entry.base_url = None;
+        let config = FileConfig { providers: vec![entry], active_provider: Some("ollama".to_string()), ..Default::default() };
+
+        let err = expect_err(resolve_model_provider(&config, &Overrides::default()));
+        assert!(err.contains("base_url"), "error was: {err}");
+    }
+
+    #[test]
+    fn resolve_model_provider_openai_compatible_works_without_an_api_key() {
+        let mut entry = provider_entry("ollama", Provider::OpenaiCompatible);
+        entry.api_key = None;
+        entry.base_url = Some("http://localhost:11434/v1".to_string());
+        let config = FileConfig { providers: vec![entry], active_provider: Some("ollama".to_string()), ..Default::default() };
+
+        assert!(resolve_model_provider(&config, &Overrides::default()).is_ok());
+    }
+
+    #[test]
+    fn resolve_model_provider_falls_back_to_the_legacy_single_provider_fields_when_the_registry_is_empty() {
+        let config = FileConfig {
+            provider: Some(Provider::Openai),
+            api_keys: ApiKeys { openai: Some("legacy-key".to_string()), ..Default::default() },
+            ..Default::default()
+        };
+
+        assert!(resolve_model_provider(&config, &Overrides::default()).is_ok());
+    }
+
+    #[test]
+    fn resolve_model_provider_legacy_fallback_errors_clearly_with_no_key_anywhere() {
+        // Anthropic has no legacy env-var/config-file slot to fall back to, so this is
+        // deterministic regardless of the ambient environment (unlike Gemini/OpenAI, whose
+        // legacy fallback also consults GEMINI_API_KEY/OPENAI_API_KEY from the real process env).
+        let overrides = Overrides { provider: Some(Provider::Anthropic), ..Default::default() };
+
+        let err = expect_err(resolve_model_provider(&FileConfig::default(), &overrides));
+        assert!(err.contains("anthropic"), "error was: {err}");
+    }
+
+    #[test]
+    fn default_model_for_has_no_universal_default_for_openai_compatible() {
+        assert_eq!(default_model_for(Provider::OpenaiCompatible), None);
+        assert!(default_model_for(Provider::Gemini).is_some());
+        assert!(default_model_for(Provider::Openai).is_some());
+        assert!(default_model_for(Provider::Anthropic).is_some());
     }
 }

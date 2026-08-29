@@ -5,19 +5,31 @@ use serde_json::Value;
 use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
-const API_URL: &str = "https://api.openai.com/v1/chat/completions";
+const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 pub struct OpenAiProvider {
     api_key: String,
     model: String,
+    /// Root of the API, without a trailing slash — `chat()` appends `/chat/completions`. Lets
+    /// this same provider talk to any OpenAI-compatible server (Ollama, OpenRouter, Groq, ...)
+    /// by pointing it elsewhere instead of hardcoding OpenAI's own endpoint.
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_base_url(api_key, model, DEFAULT_BASE_URL)
+    }
+
+    /// For any OpenAI-compatible server that isn't OpenAI itself — e.g. Ollama
+    /// (`http://localhost:11434/v1`), which needs no real API key.
+    pub fn with_base_url(api_key: impl Into<String>, model: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into();
         Self {
             api_key: api_key.into(),
             model: model.into(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -173,7 +185,7 @@ impl ModelProvider for OpenAiProvider {
 
         let response = self
             .client
-            .post(API_URL)
+            .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .json(&request)
             .send()
