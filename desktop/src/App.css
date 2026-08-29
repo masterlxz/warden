@@ -603,3 +603,25 @@ body {
   background-color: color-mix(in srgb, var(--color-danger) 12%, transparent);
   color: var(--color-danger);
 }
+
+.settings-textarea {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.mcp-quick-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.env-var-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.env-var-row .settings-input:first-child {
+  flex: 0 0 40%;
+}

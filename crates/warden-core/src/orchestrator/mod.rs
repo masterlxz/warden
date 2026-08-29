@@ -52,6 +52,13 @@ impl Orchestrator {
         &self.vault
     }
 
+    /// Every tool currently registered — used by `warden-mcp-server` to re-expose this
+    /// orchestrator's whole capability set (vault access, shell if enabled, whatever MCP servers
+    /// were connected in `bootstrap()`, ...) as its own MCP server for third-party clients.
+    pub fn tools(&self) -> &[Arc<dyn Tool>] {
+        &self.tools
+    }
+
     /// `history` is the prior turns of this conversation (user/assistant pairs, oldest first),
     /// as tracked by the caller — the orchestrator itself is stateless across calls. Pass `&[]`
     /// for a fresh conversation or a one-off sub-agent task.

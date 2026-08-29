@@ -114,6 +114,13 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
   só captura e persistência de tokens (`Usage`), sem rate limiting nem teto de gasto configurável
   — isso continua em aberto, ver `PENDING.md` P4)*
 
+**P11 resolvida (Sessão 35, 2026-08-29)** — as duas direções da tela de gerenciamento de MCP:
+(a) UI de verdade no desktop pra adicionar/editar/apagar servers MCP, com 4 presets de
+"quick add" (Filesystem, Google Workspace, Notion, GitHub via Docker); (b) novo binário
+`warden-mcp-server`, expõe as tools do orchestrator como um server MCP de verdade sobre stdio
+pra qualquer client de terceiro (Claude Desktop, etc.) se conectar. Ver `ARCHITECTURE.md` e
+`PENDING.md` (P25 nova: client MCP só fala stdio, bloqueou um preset de Slack).
+
 ---
 
 ### Fase 6 — App Desktop Nativo

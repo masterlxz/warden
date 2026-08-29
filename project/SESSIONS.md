@@ -68,11 +68,51 @@
   `project/OVERVIEW.md` (status Fase 5/6 corrigido — Fase 5 estava marcada "Pendente" mas só falta
   a 5.4, bloqueada pela Fase 8), `project/PENDING.md` (P22/P23 resolvidas, P24 nova, P8 atualizada)
 
-**Próximo passo**: Próximo item da nova ordem do roadmap é **Tools & MCP** (Fase 5) — voltar a
-expandir quantas coisas o agente consegue acessar via servers MCP existentes. Depois disso, App
-Mobile (Fase 7), e só então CLI/app servidor/Vault(Arweave)/TruthID, nessa ordem — ver
-`ROADMAP.md`. Pendência do próprio usuário, ainda sem confirmação: revogar a API key Gemini
-exposta em texto puro na Sessão 32.
+**Continuação da mesma sessão — Fase 5 (Tools & MCP)**: usuário escolheu (múltipla escolha, as
+3 opções oferecidas) atacar de uma vez a UI de gerenciamento de servers MCP, pré-configurar mais
+integrações populares, e Warden como server MCP — os dois lados de P11 em `PENDING.md`.
+
+- Pesquisa real (WebSearch) antes de decidir presets, mesmo rigor das integrações Google/Tavily/
+  filesystem: **Notion** limpo (`@notionhq/notion-mcp-server`, oficial, `npx`, ativo — entra);
+  **GitHub** — pacote npm oficial (`@modelcontextprotocol/server-github`) está **arquivado**
+  (mesmo destino do Google Drive na Sessão 26), substituto ativo roda via **Docker**, não `npx`;
+  **Slack** — pacote npm oficial descontinuado, substituto é hospedado remotamente pela própria
+  Slack (HTTP/OAuth, fora do alcance do client MCP hoje, só stdio). Pergunta feita ao usuário:
+  aceitar Docker como segundo runtime opcional (só quem quiser GitHub) vs só Notion agora →
+  escolhido **Notion + GitHub via Docker**; Slack ficou de fora (P25 nova em `PENDING.md`)
+- Implementado — **P11a (client MCP, UI)**: nova seção "MCP servers" na tela de Settings
+  (`SettingsView.tsx`), cards com nome/comando/argumentos (textarea, um por linha)/variáveis de
+  ambiente (linhas dinâmicas chave/valor), 4 botões de "quick add" (Filesystem/Google
+  Workspace/Notion/GitHub via Docker) além de "+ Custom". Backend (`desktop/src-tauri/src/
+  lib.rs`): `McpServerConfig` reusado direto como tipo de IPC (campos já de uma palavra só, sem
+  remapeamento), validação de nome/comando vazio, `save_settings` passou a usar o payload como
+  fonte de verdade (parou de só carregar-e-devolver o `mcp_servers` existente)
+- Implementado — **P11b (Warden como server MCP)**: `Orchestrator` ganhou `tools() -> &[Arc<dyn
+  Tool>]` (getter novo, mesmo espírito do `vault()` já existente); novo crate/binário
+  `crates/warden-mcp-server` — chama `bootstrap()` normal (mesmo conjunto de tools que qualquer
+  canal teria) e re-expõe via `ServerHandler` do próprio `rmcp` (mesma API server-side já provada
+  em `warden-core/tests/mcp_stdio.rs`, agora em produção pela primeira vez — `rmcp` ganhou
+  `server`+`transport-io` como dependência real). `list_tools` traduz `ToolSpec`→formato MCP,
+  `call_tool` despacha pro `Tool::call` já existente
+- Verificado de ponta a ponta de verdade, não mockado: **client MCP real conectando no
+  `warden-mcp-server` real** via subprocesso (`crates/warden-mcp-server/tests/mcp_server.rs`,
+  2 testes novos — lista as 3 tools reais e faz um round-trip `write_file`→`read_file` de
+  verdade; e confirma que falha claro sem API key configurada), mesmo cuidado de isolamento de
+  `HOME` da Sessão 32 (senão o teste vazaria pro config real da máquina). UI de MCP servers
+  testada via Playwright headless (mesmo padrão usado pros provedores mais cedo nesta sessão):
+  quick-add Notion + servidor custom, edição de env vars, payload conferido byte a byte, zero
+  erros de console, screenshot conferida visualmente
+- `cargo build/test/clippy --workspace --all-targets` limpos (2 testes novos no
+  `warden-mcp-server`, resto sem quebra), `npx tsc --noEmit` limpo
+- `project/ARCHITECTURE.md` (5 decisões novas: UI de servers MCP, presets pesquisados, GitHub via
+  Docker, Warden-como-server e seu transporte), `project/PHASE.md` (nota em Fase 5: P11
+  resolvida), `project/PENDING.md` (P11 resolvida nas duas direções, P25 nova — client MCP só
+  stdio, bloqueou Slack)
+
+**Próximo passo**: Próximo item da nova ordem do roadmap (ver `ROADMAP.md`) é **App Mobile**
+(Fase 7). Depois disso, CLI/app servidor/Vault(Arweave)/TruthID, nessa ordem. Pendência do
+próprio usuário, ainda sem confirmação: revogar a API key Gemini exposta em texto puro na
+Sessão 32.
 
 ---
 

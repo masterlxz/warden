@@ -45,6 +45,18 @@ export interface ProviderEntry {
   model: string;
 }
 
+/** One external MCP server (Phase 5.2) to connect to on startup — mirrors
+ * `warden_bootstrap::McpServerConfig` field for field (no camelCase remapping needed, every
+ * field is already a single word). `command`/`args`/`env` are the same shape any MCP client
+ * config uses (e.g. Claude Desktop's `mcpServers`). */
+export interface McpServer {
+  /** Only used for display/error messages — not sent to the server. */
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
 /** What `get_settings` returns, and also what the settings form holds — the shapes are
  * identical so the fetched snapshot can be used directly as initial form state. */
 export interface Settings {
@@ -59,4 +71,5 @@ export interface Settings {
   /** Default model per provider kind (`"gemini"`/`"openai"`/`"anthropic"`), shown as the Model
    * field's placeholder — no entry for `openaiCompatible`. */
   defaultModels: Record<string, string>;
+  mcpServers: McpServer[];
 }

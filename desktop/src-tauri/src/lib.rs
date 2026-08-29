@@ -6,7 +6,7 @@ use tauri::State;
 use warden_bootstrap::{
     bootstrap, default_config_path, default_conversations_dir, default_model_for, list_conversations as read_conversations,
     load_config_from_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation, FileConfig,
-    Overrides, Provider, ProviderConfig,
+    McpServerConfig, Overrides, Provider, ProviderConfig,
 };
 use warden_core::model::Message;
 use warden_core::orchestrator::Orchestrator;
@@ -95,6 +95,11 @@ struct SettingsSnapshot {
     /// (`"gemini"`/`"openai"`/`"anthropic"`) — shown as the Model field's placeholder. No entry
     /// for `openai_compatible`, which has no universal default (see `default_model_for`).
     default_models: std::collections::HashMap<String, String>,
+    /// External MCP servers (Phase 5.2) — `McpServerConfig`'s own fields (`name`/`command`/
+    /// `args`/`env`) are already single-word, so it round-trips over IPC as-is with no dedicated
+    /// payload type (unlike `ProviderPayload`, which needed one for the `camelCase` API key
+    /// field names).
+    mcp_servers: Vec<McpServerConfig>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +109,7 @@ struct SettingsFormPayload {
     vault_path: String,
     tavily_key: String,
     enable_shell: bool,
+    mcp_servers: Vec<McpServerConfig>,
 }
 
 fn default_models_by_kind() -> std::collections::HashMap<String, String> {
@@ -135,6 +141,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         tavily_key: config.api_keys.tavily.unwrap_or_default(),
         enable_shell: config.enable_shell.unwrap_or(false),
         default_models: default_models_by_kind(),
+        mcp_servers: config.mcp_servers,
     })
 }
 
@@ -158,10 +165,23 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         providers.push(ProviderConfig { id, kind: p.kind, api_key: non_empty(p.api_key), base_url: non_empty(p.base_url), model: non_empty(p.model) });
     }
 
+    let mut mcp_servers = Vec::with_capacity(payload.mcp_servers.len());
+    for s in payload.mcp_servers {
+        let name = s.name.trim().to_string();
+        let command = s.command.trim().to_string();
+        if name.is_empty() {
+            return Err("every MCP server needs a name".to_string());
+        }
+        if command.is_empty() {
+            return Err(format!("MCP server '{name}' needs a command"));
+        }
+        mcp_servers.push(McpServerConfig { name, command, args: s.args, env: s.env });
+    }
+
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    // MCP servers (Phase 5.2) and the Telegram bot token (Fase 2) have no settings-screen UI yet
-    // (see PENDING.md P11) — only hand-editable via config.toml. Carry whatever's already there
-    // forward instead of defaulting to empty, so hitting Save here doesn't silently wipe them.
+    // The Telegram bot token (Fase 2) has no settings-screen UI yet (see PENDING.md P11) — only
+    // hand-editable via config.toml. Carry it forward instead of defaulting to empty, so hitting
+    // Save here doesn't silently wipe it.
     let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
     let config = FileConfig {
@@ -176,7 +196,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         api_keys: ApiKeys { gemini: None, openai: None, tavily: non_empty(payload.tavily_key), telegram_bot_token: existing.api_keys.telegram_bot_token },
         providers,
         active_provider: non_empty(payload.active_provider),
-        mcp_servers: existing.mcp_servers,
+        mcp_servers,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
