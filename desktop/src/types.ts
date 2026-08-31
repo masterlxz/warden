@@ -45,16 +45,33 @@ export interface ProviderEntry {
   model: string;
 }
 
-/** One external MCP server (Phase 5.2) to connect to on startup — mirrors
+/** One external MCP server (Phase 5.2/P25) to connect to on startup — mirrors
  * `warden_bootstrap::McpServerConfig` field for field (no camelCase remapping needed, every
- * field is already a single word). `command`/`args`/`env` are the same shape any MCP client
- * config uses (e.g. Claude Desktop's `mcpServers`). */
-export interface McpServer {
+ * field is already a single word). It's an untagged union on the Rust side, discriminated purely
+ * by which fields are present (`command` vs `url`) — mirrored here the same way rather than with
+ * a synthetic `transport` tag, since that's the actual wire shape. */
+export interface McpServerStdio {
   /** Only used for display/error messages — not sent to the server. */
   name: string;
+  /** Same shape any MCP client config uses (e.g. Claude Desktop's `mcpServers`). */
   command: string;
   args: string[];
   env: Record<string, string>;
+}
+
+export interface McpServerHttp {
+  /** Only used for display/error messages — not sent to the server. */
+  name: string;
+  url: string;
+  /** Sent on every request — typically just `{ Authorization: "Bearer <token>" }` for a server
+   * that authenticates that way (there's no OAuth flow here, just a static header). */
+  headers: Record<string, string>;
+}
+
+export type McpServer = McpServerStdio | McpServerHttp;
+
+export function isMcpServerHttp(server: McpServer): server is McpServerHttp {
+  return "url" in server;
 }
 
 /** What `get_settings` returns, and also what the settings form holds — the shapes are

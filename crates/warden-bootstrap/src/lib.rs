@@ -85,20 +85,48 @@ pub struct FileConfig {
     pub mcp_servers: Vec<McpServerConfig>,
 }
 
-/// One external MCP server to connect to (TOML: `[[mcp_servers]]`). `command`/`args`/`env`
-/// mirror the shape every other MCP client config uses (e.g. Claude Desktop's `mcpServers`) —
-/// deliberately, so a user who already has MCP server configs from elsewhere can port them over
-/// close to verbatim.
-#[derive(Deserialize, Serialize, Default, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct McpServerConfig {
-    /// Only used for logging/error messages — not sent to the server.
-    pub name: String,
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: std::collections::HashMap<String, String>,
+/// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
+/// speaks client-side — a local process over stdio (the original, still the common case: every
+/// other MCP client's config uses this same `command`/`args`/`env` shape, e.g. Claude Desktop's
+/// `mcpServers`, so a config from elsewhere ports over close to verbatim) or a remote server over
+/// streamable HTTP (added for PENDING.md P25 — some servers, e.g. Slack's official one, are
+/// hosted-only and were unreachable before this).
+///
+/// `#[serde(untagged)]` rather than an explicit `transport` tag: it lets every `config.toml`
+/// written before this (`command`/`args`/`env`, no tag at all) keep parsing unchanged — the
+/// `Stdio` variant *is* that exact old shape. A new HTTP entry is distinguished purely by having
+/// `url` instead of `command`, which is also the only field distinction the desktop Settings UI
+/// needs to render one or the other.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum McpServerConfig {
+    Stdio {
+        /// Only used for logging/error messages — not sent to the server.
+        name: String,
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+    },
+    Http {
+        /// Only used for logging/error messages — not sent to the server.
+        name: String,
+        url: String,
+        /// Sent on every request — typically just `Authorization: Bearer <token>` for a server
+        /// that authenticates that way (see `McpToolProvider::connect_http`'s doc comment for why
+        /// this is a static header rather than a full OAuth client).
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
+}
+
+impl McpServerConfig {
+    pub fn name(&self) -> &str {
+        match self {
+            McpServerConfig::Stdio { name, .. } | McpServerConfig::Http { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -368,13 +396,14 @@ pub fn resolve_flag(from_env: Option<String>, from_file: Option<bool>) -> bool {
     }
 }
 
-/// Connects to one MCP server over stdio and registers whatever tools it advertises, or logs a
-/// warning and leaves `base_tools` untouched on failure — a misconfigured or unreachable server
-/// shouldn't take down the whole orchestrator, same graceful-degradation spirit as a missing
+/// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
+/// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
+/// take down the whole orchestrator, same graceful-degradation spirit as a missing
 /// `TAVILY_API_KEY`. Shared by the built-in Tavily connection and every user-configured entry in
-/// `config.mcp_servers` (Phase 5.2), which both need the exact same connect→list→extend flow.
-async fn register_mcp_server_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, command: &str, args: &[String], env: &[(String, String)]) {
-    match McpToolProvider::connect_stdio(name, command, args, env).await {
+/// `config.mcp_servers` (Phase 5.2/P25), regardless of which transport actually produced
+/// `connect_result` — both need the exact same list→extend flow once connected.
+async fn register_mcp_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, connect_result: anyhow::Result<McpToolProvider>) {
+    match connect_result {
         Ok(provider) => match provider.tools().await {
             Ok(tools) => base_tools.extend(tools),
             Err(err) => eprintln!("note: MCP server '{name}' connected but failed to list tools: {err:#}\n"),
@@ -518,14 +547,14 @@ pub async fn bootstrap(
             // client (Phase 5.2) against a third-party server, not just the hand-written one
             // in warden-core's test suite. Trade-off accepted deliberately: this now needs
             // Node.js/npx on PATH at runtime, which a pure-Rust REST call didn't.
-            register_mcp_server_tools(
-                &mut base_tools,
+            let connect = McpToolProvider::connect_stdio(
                 "tavily",
                 "npx",
                 &["-y".to_string(), "tavily-mcp".to_string()],
                 &[("TAVILY_API_KEY".to_string(), tavily_key)],
             )
             .await;
+            register_mcp_tools(&mut base_tools, "tavily", connect).await;
         }
         None => eprintln!(
             "note: TAVILY_API_KEY not set — web search (via tavily-mcp) disabled (get a free key at https://tavily.com)\n"
@@ -542,8 +571,18 @@ pub async fn bootstrap(
     }
 
     for server in &config.mcp_servers {
-        let env: Vec<(String, String)> = server.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        register_mcp_server_tools(&mut base_tools, &server.name, &server.command, &server.args, &env).await;
+        let name = server.name();
+        let connect = match server {
+            McpServerConfig::Stdio { command, args, env, .. } => {
+                let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                McpToolProvider::connect_stdio(name, command, args, &env).await
+            }
+            McpServerConfig::Http { url, headers, .. } => {
+                let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                McpToolProvider::connect_http(name, url, &headers).await
+            }
+        };
+        register_mcp_tools(&mut base_tools, name, connect).await;
     }
 
     let mut sub_orchestrator = Orchestrator::new(model_provider.clone(), vault.clone());
@@ -626,13 +665,56 @@ command = "some-mcp-server"
         let config = load_config(Some(path.to_str().unwrap())).unwrap();
 
         assert_eq!(config.mcp_servers.len(), 2);
-        assert_eq!(config.mcp_servers[0].name, "anchor");
-        assert_eq!(config.mcp_servers[0].command, "npx");
-        assert_eq!(config.mcp_servers[0].args, vec!["-y".to_string(), "@anchor/mcp-server".to_string()]);
-        assert_eq!(config.mcp_servers[0].env.get("ANCHOR_API_KEY").map(String::as_str), Some("secret"));
-        assert_eq!(config.mcp_servers[1].name, "no-args-server");
-        assert!(config.mcp_servers[1].args.is_empty());
-        assert!(config.mcp_servers[1].env.is_empty());
+        assert_eq!(config.mcp_servers[0].name(), "anchor");
+        match &config.mcp_servers[0] {
+            McpServerConfig::Stdio { command, args, env, .. } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, &vec!["-y".to_string(), "@anchor/mcp-server".to_string()]);
+                assert_eq!(env.get("ANCHOR_API_KEY").map(String::as_str), Some("secret"));
+            }
+            McpServerConfig::Http { .. } => panic!("expected a Stdio entry, got Http"),
+        }
+        assert_eq!(config.mcp_servers[1].name(), "no-args-server");
+        match &config.mcp_servers[1] {
+            McpServerConfig::Stdio { args, env, .. } => {
+                assert!(args.is_empty());
+                assert!(env.is_empty());
+            }
+            McpServerConfig::Http { .. } => panic!("expected a Stdio entry, got Http"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_http_mcp_server_from_toml() {
+        // No `transport` tag needed (see the untagged-enum doc comment on `McpServerConfig`) —
+        // a `url` field (instead of `command`) is what selects the `Http` variant.
+        let path = temp_toml_path("mcp-http-server");
+        std::fs::write(
+            &path,
+            r#"
+[[mcp_servers]]
+name = "slack"
+url = "https://mcp.slack.com/mcp"
+
+[mcp_servers.headers]
+Authorization = "Bearer secret-token"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(path.to_str().unwrap())).unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 1);
+        assert_eq!(config.mcp_servers[0].name(), "slack");
+        match &config.mcp_servers[0] {
+            McpServerConfig::Http { url, headers, .. } => {
+                assert_eq!(url, "https://mcp.slack.com/mcp");
+                assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer secret-token"));
+            }
+            McpServerConfig::Stdio { .. } => panic!("expected an Http entry, got Stdio"),
+        }
 
         std::fs::remove_file(&path).ok();
     }
@@ -690,12 +772,19 @@ command = "some-mcp-server"
                 model: Some("llama3.1".to_string()),
             }],
             active_provider: Some("ollama-local".to_string()),
-            mcp_servers: vec![McpServerConfig {
-                name: "anchor".to_string(),
-                command: "npx".to_string(),
-                args: vec!["-y".to_string(), "@anchor/mcp-server".to_string()],
-                env: std::collections::HashMap::from([("ANCHOR_API_KEY".to_string(), "secret".to_string())]),
-            }],
+            mcp_servers: vec![
+                McpServerConfig::Stdio {
+                    name: "anchor".to_string(),
+                    command: "npx".to_string(),
+                    args: vec!["-y".to_string(), "@anchor/mcp-server".to_string()],
+                    env: std::collections::HashMap::from([("ANCHOR_API_KEY".to_string(), "secret".to_string())]),
+                },
+                McpServerConfig::Http {
+                    name: "slack".to_string(),
+                    url: "https://mcp.slack.com/mcp".to_string(),
+                    headers: std::collections::HashMap::from([("Authorization".to_string(), "Bearer secret-token".to_string())]),
+                },
+            ],
         };
 
         save_config(&path, &config).unwrap();

@@ -95,8 +95,9 @@ struct SettingsSnapshot {
     /// (`"gemini"`/`"openai"`/`"anthropic"`) — shown as the Model field's placeholder. No entry
     /// for `openai_compatible`, which has no universal default (see `default_model_for`).
     default_models: std::collections::HashMap<String, String>,
-    /// External MCP servers (Phase 5.2) — `McpServerConfig`'s own fields (`name`/`command`/
-    /// `args`/`env`) are already single-word, so it round-trips over IPC as-is with no dedicated
+    /// External MCP servers (Phase 5.2/P25) — `McpServerConfig`'s own fields, for either
+    /// transport (`name`/`command`/`args`/`env` for stdio, `name`/`url`/`headers` for HTTP), are
+    /// already single-word, so the untagged enum round-trips over IPC as-is with no dedicated
     /// payload type (unlike `ProviderPayload`, which needed one for the `camelCase` API key
     /// field names).
     mcp_servers: Vec<McpServerConfig>,
@@ -167,15 +168,30 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
 
     let mut mcp_servers = Vec::with_capacity(payload.mcp_servers.len());
     for s in payload.mcp_servers {
-        let name = s.name.trim().to_string();
-        let command = s.command.trim().to_string();
-        if name.is_empty() {
-            return Err("every MCP server needs a name".to_string());
-        }
-        if command.is_empty() {
-            return Err(format!("MCP server '{name}' needs a command"));
-        }
-        mcp_servers.push(McpServerConfig { name, command, args: s.args, env: s.env });
+        mcp_servers.push(match s {
+            McpServerConfig::Stdio { name, command, args, env } => {
+                let name = name.trim().to_string();
+                let command = command.trim().to_string();
+                if name.is_empty() {
+                    return Err("every MCP server needs a name".to_string());
+                }
+                if command.is_empty() {
+                    return Err(format!("MCP server '{name}' needs a command"));
+                }
+                McpServerConfig::Stdio { name, command, args, env }
+            }
+            McpServerConfig::Http { name, url, headers } => {
+                let name = name.trim().to_string();
+                let url = url.trim().to_string();
+                if name.is_empty() {
+                    return Err("every MCP server needs a name".to_string());
+                }
+                if url.is_empty() {
+                    return Err(format!("MCP server '{name}' needs a URL"));
+                }
+                McpServerConfig::Http { name, url, headers }
+            }
+        });
     }
 
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;

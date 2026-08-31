@@ -2,7 +2,59 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-29 (Sessão 35)
+> Última atualização: 2026-08-31 (Sessão 36)
+
+---
+
+### 2026-08-31 — Sessão 36
+
+- **Objetivo**: Usuário voltou pedindo pra continuar o roadmap; ofereci 3 opções (P25 — transporte
+  HTTP no client MCP; mais presets MCP; avançar pra Fase 7/Mobile) e ele escolheu **P25**.
+
+**O que foi feito**:
+
+- `crates/warden-core/src/tool/mcp.rs`: `McpToolProvider::connect_http(name, url, headers)` novo,
+  ao lado do `connect_stdio` já existente — mesma interface `ToolProvider`/`Tool` depois de
+  conectado. Implementado com `StreamableHttpClientTransport::from_config(...)` do `rmcp`
+  (feature `transport-streamable-http-client-reqwest` + `reqwest`), headers customizados via
+  `HashMap<HeaderName, HeaderValue>` (nova dependência direta em `http = "1"`, workspace-level)
+- Descoberto no processo: o `rmcp` v3.1 depende da sua **própria** cópia de `reqwest 0.13`
+  (major diferente do `reqwest 0.12` que o resto do Warden usa), e a única feature `rustls` desse
+  `reqwest 0.13` liga `aws-lc-rs` (C compilado via `cmake`) em vez do `ring` puro-Rust que o
+  `reqwest 0.12` ainda usa — trade-off aceito (registrado em `ARCHITECTURE.md`) em vez de
+  reimplementar o transporte HTTP na mão só pra evitar isso
+- `crates/warden-bootstrap/src/lib.rs`: `McpServerConfig` virou um enum `#[serde(untagged)]`
+  (`Stdio{name,command,args,env}` / `Http{name,url,headers}`) — discriminado pela presença de
+  `command` vs `url`, sem precisar de uma tag `transport` nova, então todo `config.toml` escrito
+  desde a 5.2 continua parseando sem tocar em nada. `register_mcp_tools` (renomeado de
+  `register_mcp_server_tools`) agora recebe o `Result<McpToolProvider, _>` já pronto em vez de
+  parâmetros de conexão, compartilhado pelos dois transportes e pelo Tavily
+- `desktop/src-tauri/src/lib.rs`: `save_settings` valida cada `McpServerConfig` por variante
+  (nome+comando pra Stdio, nome+URL pra Http). `desktop/src/types.ts` ganhou `McpServerStdio`/
+  `McpServerHttp`/`isMcpServerHttp` (união discriminada pela mesma presença de campo do lado
+  Rust, sem tag sintética). `SettingsView.tsx`: `McpServerCard` ganhou um select "Transport" que
+  troca a forma do objeto; `KeyValueListField` novo extrai a lista chave/valor repetida (antes só
+  em env vars, agora também em headers). Novo preset "Slack (hosted — needs a bearer token)" com
+  a URL confirmada via pesquisa (`https://mcp.slack.com/mcp`) e aviso de que o endpoint real exige
+  OAuth completo, que este client não implementa (só headers estáticos) — P25 fica **parcialmente**
+  resolvida, registrada nova pendência P26 pra isso
+- **Verificado de ponta a ponta com um server real, não mockado** (mesmo rigor da Sessão 35):
+  `crates/warden-core/tests/mcp_http.rs` novo — um server MCP de verdade (`axum` + `rmcp`
+  server-side) bindado numa porta local de verdade, com middleware de auth que exige um header
+  específico. Dois testes: conecta/lista/chama uma tool de ponta a ponta com o header certo; e
+  confirma que a conexão **falha** sem o header — prova de que os headers customizados realmente
+  chegam no server, não só são aceitos e descartados client-side. Dev-dependencies novas:
+  `axum = "0.8"`, `tokio-util = "0.7"`, features `server`/`macros`/`transport-streamable-http-server`
+  do `rmcp` (todas dev-only, o binário shipado não ganha peso)
+- `cargo build/test/clippy --workspace --all-targets` limpos (2 testes novos em `warden-core`, 2 em
+  `warden-bootstrap` — `parses_http_mcp_server_from_toml`/round-trip do `save_config`, resto sem
+  quebra); `npx tsc --noEmit`/`npm run build` limpos no frontend
+- `project/ARCHITECTURE.md` (5 decisões novas: API HTTP em si, trade-off de dependência
+  `aws-lc-rs`, formato de config, modelo de autenticação, UI do desktop), `project/PHASE.md`
+  (nota P25 resolvida na Fase 5), `project/PENDING.md` (P25 resolvida parcialmente, P26 nova)
+
+**Próximo passo**: usuário não indicou ainda — as opções que ficaram de fora desta escolha
+(mais presets MCP, Fase 7/Mobile) continuam válidas, junto com o resto do `ROADMAP.md`.
 
 ---
 

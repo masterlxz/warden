@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isMcpServerHttp } from "../types";
 import type { McpServer, ProviderEntry, ProviderKind, Settings } from "../types";
 
 const emptySettings: Settings = {
@@ -21,8 +22,8 @@ const PROVIDER_KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
 ];
 
 /** Known-good starting points for popular integrations — researched 2026-08-29 (Sessão 35; see
- * ARCHITECTURE.md for why GitHub goes through Docker and Slack isn't offered at all here). Env
- * values are left blank on purpose — the user fills in their own secret after picking a preset. */
+ * ARCHITECTURE.md for why GitHub goes through Docker). Env/header values are left blank on
+ * purpose — the user fills in their own secret after picking a preset. */
 const MCP_PRESETS: { label: string; server: McpServer }[] = [
   { label: "Filesystem", server: { name: "filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"], env: {} } },
   { label: "Google Workspace", server: { name: "google_workspace", command: "npx", args: ["-y", "@aaronsb/google-workspace-mcp"], env: { GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "" } } },
@@ -30,6 +31,17 @@ const MCP_PRESETS: { label: string; server: McpServer }[] = [
   {
     label: "GitHub (via Docker)",
     server: { name: "github", command: "docker", args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" } },
+  },
+  {
+    // Verified endpoint (2026-08-31, Sessão 36 / P25): https://mcp.slack.com/mcp, Streamable
+    // HTTP. Slack's own docs say this authenticates via a full OAuth flow, which this app
+    // doesn't drive — only a static header is supported (see `McpServerHttp` in types.ts). This
+    // preset works as-is only if you already have a bearer token from elsewhere (e.g. minted by
+    // another OAuth-capable MCP client pointed at the same endpoint); otherwise connecting will
+    // fail with an auth error. Still offered because "bring your own token" is a real, if
+    // narrower, way to unblock this — see PENDING.md P25.
+    label: "Slack (hosted — needs a bearer token)",
+    server: { name: "slack", url: "https://mcp.slack.com/mcp", headers: { Authorization: "Bearer " } },
   },
 ];
 
@@ -168,6 +180,70 @@ function ProviderCard({
   );
 }
 
+/** Editor for a `Record<string, string>` shown as key/value rows — shared by env vars (stdio
+ * servers) and headers (HTTP servers), the only two places this shape shows up. */
+function KeyValueListField({
+  label,
+  addLabel,
+  keyPlaceholder,
+  entries,
+  onChange,
+}: {
+  label: string;
+  addLabel: string;
+  keyPlaceholder: string;
+  entries: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  const list = Object.entries(entries);
+
+  function updateEntry(index: number, key: string, value: string) {
+    const next = list.map((entry, i) => (i === index ? ([key, value] as [string, string]) : entry));
+    onChange(Object.fromEntries(next));
+  }
+
+  function addEntry() {
+    // A blank key is a valid (if temporary) React list item — it's the value being edited that
+    // matters; a truly empty key just gets dropped on save the same way an empty provider name
+    // would be, so nothing needs deduping here.
+    onChange({ ...entries, "": "" });
+  }
+
+  function removeEntry(index: number) {
+    onChange(Object.fromEntries(list.filter((_, i) => i !== index)));
+  }
+
+  return (
+    <div className="settings-field">
+      <span className="settings-label">{label}</span>
+      {list.map(([key, value], i) => (
+        <div className="env-var-row" key={i}>
+          <input
+            className="settings-input"
+            type="text"
+            placeholder={keyPlaceholder}
+            value={key}
+            onChange={(e) => updateEntry(i, e.currentTarget.value, value)}
+          />
+          <input
+            className="settings-input"
+            type="password"
+            placeholder="value"
+            value={value}
+            onChange={(e) => updateEntry(i, key, e.currentTarget.value)}
+          />
+          <button type="button" className="provider-delete-btn" onClick={() => removeEntry(i)} aria-label={`Remove ${key || "this entry"}`}>
+            ✕
+          </button>
+        </div>
+      ))}
+      <button type="button" className="settings-browse-btn" onClick={addEntry}>
+        + {addLabel}
+      </button>
+    </div>
+  );
+}
+
 function McpServerCard({
   server,
   onChange,
@@ -177,30 +253,19 @@ function McpServerCard({
   onChange: (next: McpServer) => void;
   onDelete: () => void;
 }) {
-  const envEntries = Object.entries(server.env);
+  const isHttp = isMcpServerHttp(server);
+
+  function setTransport(next: "stdio" | "http") {
+    if (next === (isHttp ? "http" : "stdio")) return;
+    onChange(next === "http" ? { name: server.name, url: "", headers: {} } : { name: server.name, command: "", args: [], env: {} });
+  }
 
   function updateArgs(text: string) {
     const args = text
       .split("\n")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
-    onChange({ ...server, args });
-  }
-
-  function updateEnvEntry(index: number, key: string, value: string) {
-    const entries = envEntries.map((entry, i) => (i === index ? ([key, value] as [string, string]) : entry));
-    onChange({ ...server, env: Object.fromEntries(entries) });
-  }
-
-  function addEnvVar() {
-    // A blank key is a valid (if temporary) React list item — it's the value being edited that
-    // matters; a truly empty key just gets dropped on save the same way an empty provider name
-    // would be, so nothing needs deduping here.
-    onChange({ ...server, env: { ...server.env, "": "" } });
-  }
-
-  function removeEnvVar(index: number) {
-    onChange({ ...server, env: Object.fromEntries(envEntries.filter((_, i) => i !== index)) });
+    onChange({ ...server, args } as McpServer);
   }
 
   return (
@@ -225,54 +290,66 @@ function McpServerCard({
       </div>
 
       <label className="settings-field">
-        <span className="settings-label">Command</span>
-        <input
-          className="settings-input"
-          type="text"
-          placeholder="npx"
-          value={server.command}
-          onChange={(e) => onChange({ ...server, command: e.currentTarget.value })}
-        />
+        <span className="settings-label">Transport</span>
+        <select className="settings-select" value={isHttp ? "http" : "stdio"} onChange={(e) => setTransport(e.currentTarget.value as "stdio" | "http")}>
+          <option value="stdio">Local command (stdio)</option>
+          <option value="http">Remote URL (HTTP)</option>
+        </select>
       </label>
 
-      <label className="settings-field">
-        <span className="settings-label">Arguments (one per line)</span>
-        <textarea
-          className="settings-input settings-textarea"
-          rows={3}
-          placeholder={"-y\n@notionhq/notion-mcp-server"}
-          value={server.args.join("\n")}
-          onChange={(e) => updateArgs(e.currentTarget.value)}
-        />
-      </label>
-
-      <div className="settings-field">
-        <span className="settings-label">Environment variables</span>
-        {envEntries.map(([key, value], i) => (
-          <div className="env-var-row" key={i}>
+      {isHttp ? (
+        <>
+          <label className="settings-field">
+            <span className="settings-label">URL</span>
             <input
               className="settings-input"
               type="text"
-              placeholder="KEY"
-              value={key}
-              onChange={(e) => updateEnvEntry(i, e.currentTarget.value, value)}
+              placeholder="https://mcp.example.com/mcp"
+              value={server.url}
+              onChange={(e) => onChange({ ...server, url: e.currentTarget.value })}
             />
+          </label>
+          <KeyValueListField
+            label="Headers"
+            addLabel="Add header"
+            keyPlaceholder="Authorization"
+            entries={server.headers}
+            onChange={(headers) => onChange({ ...server, headers })}
+          />
+        </>
+      ) : (
+        <>
+          <label className="settings-field">
+            <span className="settings-label">Command</span>
             <input
               className="settings-input"
-              type="password"
-              placeholder="value"
-              value={value}
-              onChange={(e) => updateEnvEntry(i, key, e.currentTarget.value)}
+              type="text"
+              placeholder="npx"
+              value={server.command}
+              onChange={(e) => onChange({ ...server, command: e.currentTarget.value })}
             />
-            <button type="button" className="provider-delete-btn" onClick={() => removeEnvVar(i)} aria-label={`Remove ${key || "this variable"}`}>
-              ✕
-            </button>
-          </div>
-        ))}
-        <button type="button" className="settings-browse-btn" onClick={addEnvVar}>
-          + Add variable
-        </button>
-      </div>
+          </label>
+
+          <label className="settings-field">
+            <span className="settings-label">Arguments (one per line)</span>
+            <textarea
+              className="settings-input settings-textarea"
+              rows={3}
+              placeholder={"-y\n@notionhq/notion-mcp-server"}
+              value={server.args.join("\n")}
+              onChange={(e) => updateArgs(e.currentTarget.value)}
+            />
+          </label>
+
+          <KeyValueListField
+            label="Environment variables"
+            addLabel="Add variable"
+            keyPlaceholder="KEY"
+            entries={server.env}
+            onChange={(env) => onChange({ ...server, env })}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -330,7 +407,9 @@ function SettingsView() {
   function addMcpPreset(preset: McpServer) {
     // Deep-clone so editing one card never mutates the shared MCP_PRESETS constant, and dedupe
     // the name against whatever's already in the list (same spirit as nextProviderId).
-    const server: McpServer = { ...preset, args: [...preset.args], env: { ...preset.env } };
+    const server: McpServer = isMcpServerHttp(preset)
+      ? { ...preset, headers: { ...preset.headers } }
+      : { ...preset, args: [...preset.args], env: { ...preset.env } };
     let name = server.name;
     let n = 2;
     while (form.mcpServers.some((s) => s.name === name)) {
@@ -370,9 +449,9 @@ function SettingsView() {
       setError("Every MCP server needs a name.");
       return;
     }
-    const commandlessServer = form.mcpServers.find((s) => s.command.trim() === "");
-    if (commandlessServer) {
-      setError(`MCP server '${commandlessServer.name}' needs a command.`);
+    const incompleteServer = form.mcpServers.find((s) => (isMcpServerHttp(s) ? s.url.trim() === "" : s.command.trim() === ""));
+    if (incompleteServer) {
+      setError(`MCP server '${incompleteServer.name}' needs a ${isMcpServerHttp(incompleteServer) ? "URL" : "command"}.`);
       return;
     }
 

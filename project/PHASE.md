@@ -121,6 +121,13 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 pra qualquer client de terceiro (Claude Desktop, etc.) se conectar. Ver `ARCHITECTURE.md` e
 `PENDING.md` (P25 nova: client MCP só fala stdio, bloqueou um preset de Slack).
 
+**P25 resolvida (Sessão 36, 2026-08-31)** — client MCP ganhou transporte HTTP
+(`McpToolProvider::connect_http`), ao lado do `connect_stdio` já existente; `[[mcp_servers]]`
+aceita tanto entradas `command`/`args`/`env` (stdio) quanto `url`/`headers` (HTTP), e a UI de
+Settings do desktop ganhou um seletor de transporte por server. Verificado de ponta a ponta
+contra um server HTTP real (não mockado). Resolvida só parcialmente — falta um client OAuth
+pra cobrir servers (Slack incluso) que não aceitam um token estático, ver `PENDING.md` P26.
+
 ---
 
 ### Fase 6 — App Desktop Nativo
