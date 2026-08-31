@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SendIcon } from "./Icons";
 
 interface MessageInputProps {
   onSend: (content: string) => void;
@@ -23,38 +24,36 @@ function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
   }
 
   return (
-    <form
-      className="chat-input-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        submit();
-      }}
-    >
-      <textarea
-        ref={textareaRef}
-        className="chat-input-textarea"
-        aria-label="Message"
-        placeholder="Type a message…"
-        value={draft}
-        onChange={(e) => setDraft(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
+    <div className="chat-input-dock">
+      <form
+        className="chat-input-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
         }}
-        disabled={disabled}
-        rows={1}
-      />
-      <button
-        type="submit"
-        className="chat-send-btn"
-        aria-label="Send message"
-        disabled={disabled || draft.trim() === ""}
       >
-        Send
-      </button>
-    </form>
+        <textarea
+          ref={textareaRef}
+          className="chat-input-textarea"
+          aria-label="Message"
+          placeholder="Message Warden…"
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          disabled={disabled}
+          rows={1}
+        />
+        <button type="submit" className="chat-send-btn" aria-label="Send message" disabled={disabled || draft.trim() === ""}>
+          <SendIcon size={17} />
+        </button>
+      </form>
+      <p className="chat-input-hint">Warden can make mistakes. Check important info.</p>
+    </div>
   );
 }
 

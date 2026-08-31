@@ -87,6 +87,7 @@ function App() {
           setView("chat");
         }}
         onOpenSettings={() => setView("settings")}
+        view={view}
       />
       {view === "settings" ? (
         <SettingsView />

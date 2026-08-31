@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ChatMessage } from "../types";
+import { LogoMark } from "./Icons";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -26,16 +27,33 @@ function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 }
 
 function MessageBubble({ message }: MessageBubbleProps) {
-  return (
-    <div className={`message-bubble message-bubble--${message.role}`}>
-      <div className="message-bubble-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
-          {message.content}
-        </ReactMarkdown>
+  if (message.role === "assistant") {
+    return (
+      <div className="message-row message-row--assistant">
+        <div className="message-avatar">
+          <LogoMark size={18} />
+        </div>
+        <div className="message-assistant-body">
+          <div className="message-bubble-content">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+              {message.content}
+            </ReactMarkdown>
+          </div>
+          {message.usage && <div className="message-bubble-usage">{message.usage.totalTokens} tokens</div>}
+        </div>
       </div>
-      {message.role === "assistant" && message.usage && (
-        <div className="message-bubble-usage">{message.usage.totalTokens} tokens</div>
-      )}
+    );
+  }
+
+  return (
+    <div className="message-row message-row--user">
+      <div className="message-bubble message-bubble--user">
+        <div className="message-bubble-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+            {message.content}
+          </ReactMarkdown>
+        </div>
+      </div>
     </div>
   );
 }

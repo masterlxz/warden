@@ -2,7 +2,46 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-31 (Sessão 38)
+> Última atualização: 2026-08-31 (Sessão 39)
+
+---
+
+### 2026-08-31 — Sessão 39
+
+- **Objetivo**: Usuário pediu pra subir o app desktop e depois reformular a UI — "não tá com cara
+  de IA, parece mais um chat basicão", pedindo puxar mais pro estilo ChatGPT. Sinalizou também
+  (pra depois, não nesta sessão) anexo de arquivo/imagem e envio de áudio.
+
+**O que foi feito**:
+
+- `npm run tauri dev` rodado em background — janela nativa de verdade aberta na tela do usuário
+  (precisou de `cargo clean` numa sessão anterior por espaço em disco, então essa foi a primeira
+  compilação do zero; ~3min)
+- Restyle completo do chat, mantendo a identidade roxa e o sistema `--color-*` light/dark já
+  existentes (ver `ARCHITECTURE.md` pro detalhamento): mensagens do assistente sem caixa (texto
+  solto + avatar circular novo, a marca "escudo" do Warden), coluna de conversa centralizada,
+  composer virou pílula flutuante com botão de enviar circular, indicador de "pensando" novo
+  (não existia nenhum feedback de carregamento antes), sidebar com marca no topo e Settings
+  movido pro rodapé, empty-state virou hero centralizado com logo + saudação. Ícones SVG à mão
+  novos em `components/Icons.tsx` (`LogoMark`, `PlusIcon`, `SettingsIcon`, `SendIcon`) — sem
+  adicionar uma lib de ícones nova. Título da janela (`index.html`) trocado do boilerplate padrão
+  do template Tauri+React+Vite pra "Warden" (nunca tinha sido tocado)
+- Verificado via screenshot Playwright headless contra o próprio dev server do Tauri
+  (`localhost:1420`, mesma URL que a janela nativa carrega) — layout/CSS em claro e escuro; e um
+  HTML estático à parte reaproveitando o `App.css` de verdade pra validar bolha/avatar/markdown/
+  indicador de "pensando" com conteúdo real, já que `invoke()`/IPC não funciona fora do webview
+  nativo (headless Chromium não tem isso). A janela nativa que o usuário já tinha aberta atualiza
+  sozinha via Vite HMR — fica pra ele confirmar visualmente o resultado final ali. `npx tsc
+  --noEmit`/`npm run build` limpos
+- Escopo deliberadamente **não** incluído (usuário pediu "depois"): anexo de arquivo/imagem e
+  envio de áudio — registrado como pendência nova `P28` em `PENDING.md` (não implementado, exige
+  suporte multimodal em `ModelProvider`/`Message` do `warden-core`, já uma lacuna maior ligada a
+  P21). Nenhum botão de anexo "morto" foi adicionado no composer só de placeholder
+- `project/ARCHITECTURE.md` (2 decisões novas), `project/PENDING.md` (P28 nova)
+
+**Próximo passo**: usuário confirma visualmente na janela aberta se o resultado bate com o que ele
+tinha em mente; se sim, pode fazer sentido puxar P28 (anexos/áudio) em seguida, já que foi o
+próximo item que ele mesmo sinalizou.
 
 ---
 
