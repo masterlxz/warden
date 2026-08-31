@@ -128,6 +128,15 @@ Settings do desktop ganhou um seletor de transporte por server. Verificado de po
 contra um server HTTP real (não mockado). Resolvida só parcialmente — falta um client OAuth
 pra cobrir servers (Slack incluso) que não aceitam um token estático, ver `PENDING.md` P26.
 
+**P26 resolvida (Sessão 37, 2026-08-31)** — client MCP ganhou um client OAuth de verdade
+(discovery, Dynamic Client Registration, PKCE, renovação automática), quase inteiramente
+provido pela feature `auth` do próprio `rmcp` (3.1.4). Novo módulo `tool/mcp_oauth.rs`:
+`connect_http_oauth` (headless, todo `bootstrap()`) e `authorize_interactively` (interativo,
+botão "Connect" da Settings). `McpServerConfig::Http` ganhou `oauth: bool`. Verificado de ponta
+a ponta contra um server OAuth real local (`tests/mcp_oauth.rs`) — discovery, DCR, troca PKCE,
+persistência em disco e reconexão headless, tudo passou de primeira. Ver `ARCHITECTURE.md` e
+`PENDING.md` pros detalhes e pro que ainda falta (teste contra o Slack real).
+
 ---
 
 ### Fase 6 — App Desktop Nativo

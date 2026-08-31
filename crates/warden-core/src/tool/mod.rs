@@ -6,6 +6,7 @@ use serde_json::Value;
 pub mod delegate;
 pub mod file_tools;
 pub mod mcp;
+pub mod mcp_oauth;
 pub mod shell;
 
 #[derive(Debug, Clone)]

@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
     bootstrap, default_config_path, default_conversations_dir, default_model_for, list_conversations as read_conversations,
-    load_config_from_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation, FileConfig,
-    McpServerConfig, Overrides, Provider, ProviderConfig,
+    load_config_from_path, oauth_credential_store_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation,
+    FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig,
 };
 use warden_core::model::Message;
 use warden_core::orchestrator::Orchestrator;
@@ -180,7 +180,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 }
                 McpServerConfig::Stdio { name, command, args, env }
             }
-            McpServerConfig::Http { name, url, headers } => {
+            McpServerConfig::Http { name, url, headers, oauth } => {
                 let name = name.trim().to_string();
                 let url = url.trim().to_string();
                 if name.is_empty() {
@@ -189,7 +189,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 if url.is_empty() {
                     return Err(format!("MCP server '{name}' needs a URL"));
                 }
-                McpServerConfig::Http { name, url, headers }
+                McpServerConfig::Http { name, url, headers, oauth }
             }
         });
     }
@@ -222,6 +222,44 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     Ok(())
 }
 
+/// Whether an OAuth-authenticated MCP server (PENDING.md P26) already has a token on disk.
+/// No network call — matches the "no dedicated health-check system" scope every other MCP
+/// server transport has today; a truly expired/unrefreshable token is only surfaced the next
+/// time `bootstrap()` actually tries to connect.
+#[tauri::command]
+fn mcp_oauth_status(name: String) -> bool {
+    oauth_credential_store_path(&name).is_file()
+}
+
+/// Runs the interactive OAuth authorization flow for one HTTP MCP server (Settings' "Connect"
+/// button) — opens the system browser via `tauri_plugin_opener`, waits for the redirect, and
+/// persists the resulting token. Safe to call again on an already-connected server: it
+/// short-circuits without touching the browser (see `authorize_interactively`'s doc comment).
+#[tauri::command]
+async fn mcp_oauth_connect(state: State<'_, AppState>, name: String, url: String) -> Result<(), String> {
+    let credential_store_path = oauth_credential_store_path(&name);
+    warden_core::tool::mcp_oauth::authorize_interactively(&name, &url, &credential_store_path, |auth_url| {
+        let _ = tauri_plugin_opener::open_url(auth_url, None::<&str>);
+    })
+    .await
+    .map_err(|e| format!("{e:#}"))?;
+
+    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
+    *state.orchestrator.lock().unwrap() = new_orchestrator;
+    Ok(())
+}
+
+/// Forgets a server's stored OAuth token (Settings' "Disconnect" button) — its next connection
+/// attempt starts a fresh authorization instead of trying to reuse or refresh the old one.
+#[tauri::command]
+async fn mcp_oauth_disconnect(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    warden_core::tool::mcp_oauth::forget_credentials(&oauth_credential_store_path(&name)).await.map_err(|e| format!("{e:#}"))?;
+
+    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
+    *state.orchestrator.lock().unwrap() = new_orchestrator;
+    Ok(())
+}
+
 #[tauri::command]
 fn list_conversations() -> Result<Vec<Conversation>, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
@@ -248,7 +286,10 @@ pub fn run() {
             get_settings,
             save_settings,
             list_conversations,
-            save_conversation
+            save_conversation,
+            mcp_oauth_status,
+            mcp_oauth_connect,
+            mcp_oauth_disconnect
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

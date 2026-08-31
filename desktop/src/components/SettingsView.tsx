@@ -34,14 +34,10 @@ const MCP_PRESETS: { label: string; server: McpServer }[] = [
   },
   {
     // Verified endpoint (2026-08-31, Sessão 36 / P25): https://mcp.slack.com/mcp, Streamable
-    // HTTP. Slack's own docs say this authenticates via a full OAuth flow, which this app
-    // doesn't drive — only a static header is supported (see `McpServerHttp` in types.ts). This
-    // preset works as-is only if you already have a bearer token from elsewhere (e.g. minted by
-    // another OAuth-capable MCP client pointed at the same endpoint); otherwise connecting will
-    // fail with an auth error. Still offered because "bring your own token" is a real, if
-    // narrower, way to unblock this — see PENDING.md P25.
-    label: "Slack (hosted — needs a bearer token)",
-    server: { name: "slack", url: "https://mcp.slack.com/mcp", headers: { Authorization: "Bearer " } },
+    // HTTP, real OAuth (discovery + Dynamic Client Registration + browser consent — see
+    // PENDING.md P26). Click "Connect" on this card after saving to authorize it.
+    label: "Slack (hosted — OAuth)",
+    server: { name: "slack", url: "https://mcp.slack.com/mcp", headers: {}, oauth: true },
   },
 ];
 
@@ -244,6 +240,81 @@ function KeyValueListField({
   );
 }
 
+/** Connect/Disconnect UI for an OAuth-authenticated MCP server (PENDING.md P26) — status comes
+ * only from whether a token file exists locally (no network call, see `mcp_oauth_status`'s doc
+ * comment); a token that's actually expired/unrefreshable only surfaces the next time the
+ * orchestrator tries to use that server. Independent of the form's save state on purpose: a
+ * "Connect" click persists the token immediately, whether or not this card's been saved yet — a
+ * later Save (or the reconnect this panel already triggers) is what makes the orchestrator
+ * actually pick the server up. */
+function McpOAuthPanel({ name, url }: { name: string; url: string }) {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function refreshStatus() {
+    if (!name.trim()) {
+      setConnected(false);
+      return;
+    }
+    invoke<boolean>("mcp_oauth_status", { name })
+      .then(setConnected)
+      .catch(() => setConnected(false));
+  }
+
+  useEffect(refreshStatus, [name]);
+
+  async function handleConnect() {
+    setError(null);
+    setIsBusy(true);
+    try {
+      await invoke("mcp_oauth_connect", { name, url });
+      refreshStatus();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setError(null);
+    setIsBusy(true);
+    try {
+      await invoke("mcp_oauth_disconnect", { name });
+      refreshStatus();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  const canConnect = name.trim() !== "" && url.trim() !== "";
+
+  return (
+    <div className="settings-field">
+      <span className="settings-label">Authorization</span>
+      <div className="settings-key-field">
+        <span className={`mcp-oauth-status${connected ? " mcp-oauth-status-connected" : ""}`}>
+          {connected === null ? "Checking…" : connected ? "Connected" : "Not connected"}
+        </span>
+        {connected ? (
+          <button type="button" className="settings-browse-btn" onClick={handleDisconnect} disabled={isBusy}>
+            {isBusy ? "Disconnecting…" : "Disconnect"}
+          </button>
+        ) : (
+          <button type="button" className="settings-browse-btn" onClick={handleConnect} disabled={isBusy || !canConnect}>
+            {isBusy ? "Opening browser…" : "Connect"}
+          </button>
+        )}
+      </div>
+      {!canConnect && <span className="settings-hint">Name and URL are required before connecting.</span>}
+      {error && <p className="settings-error-banner">{error}</p>}
+    </div>
+  );
+}
+
 function McpServerCard({
   server,
   onChange,
@@ -257,7 +328,7 @@ function McpServerCard({
 
   function setTransport(next: "stdio" | "http") {
     if (next === (isHttp ? "http" : "stdio")) return;
-    onChange(next === "http" ? { name: server.name, url: "", headers: {} } : { name: server.name, command: "", args: [], env: {} });
+    onChange(next === "http" ? { name: server.name, url: "", headers: {}, oauth: false } : { name: server.name, command: "", args: [], env: {} });
   }
 
   function updateArgs(text: string) {
@@ -309,13 +380,28 @@ function McpServerCard({
               onChange={(e) => onChange({ ...server, url: e.currentTarget.value })}
             />
           </label>
-          <KeyValueListField
-            label="Headers"
-            addLabel="Add header"
-            keyPlaceholder="Authorization"
-            entries={server.headers}
-            onChange={(headers) => onChange({ ...server, headers })}
-          />
+
+          <label className="settings-field settings-checkbox-field">
+            <span className="settings-checkbox-row">
+              <input type="checkbox" checked={server.oauth} onChange={(e) => onChange({ ...server, oauth: e.currentTarget.checked })} />
+              <span className="settings-label">Requires OAuth (e.g. Slack)</span>
+            </span>
+            <span className="settings-hint">
+              Discovery, registration, and browser consent instead of a static token — connect below.
+            </span>
+          </label>
+
+          {server.oauth ? (
+            <McpOAuthPanel name={server.name} url={server.url} />
+          ) : (
+            <KeyValueListField
+              label="Headers"
+              addLabel="Add header"
+              keyPlaceholder="Authorization"
+              entries={server.headers}
+              onChange={(headers) => onChange({ ...server, headers })}
+            />
+          )}
         </>
       ) : (
         <>

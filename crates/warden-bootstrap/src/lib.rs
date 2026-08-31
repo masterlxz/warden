@@ -115,9 +115,15 @@ pub enum McpServerConfig {
         url: String,
         /// Sent on every request — typically just `Authorization: Bearer <token>` for a server
         /// that authenticates that way (see `McpToolProvider::connect_http`'s doc comment for why
-        /// this is a static header rather than a full OAuth client).
+        /// this is a static header rather than a full OAuth client). Ignored when `oauth` is true.
         #[serde(default)]
         headers: std::collections::HashMap<String, String>,
+        /// When true, connect via the OAuth flow (`tool/mcp_oauth.rs`, PENDING.md P26) instead of
+        /// `headers` — discovery, Dynamic Client Registration, browser consent, token refresh,
+        /// with the token persisted under `oauth_credential_store_path(name)`. Mutually exclusive
+        /// with `headers` (a server picks one auth mechanism or the other, not both).
+        #[serde(default)]
+        oauth: bool,
     },
 }
 
@@ -172,6 +178,18 @@ pub fn save_config(path: &Path, config: &FileConfig) -> anyhow::Result<()> {
 
 pub fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("config.toml"))
+}
+
+/// Where an OAuth-authenticated MCP server's persisted token lives (PENDING.md P26) — one JSON
+/// file per server, keyed by name. Names outside `[a-zA-Z0-9_-]` are sanitized to `_`; two server
+/// names that only differ by punctuation collide here, same "the user's problem to fix" stance
+/// already taken for other name-keyed config (see `ProviderConfig`'s doc comment).
+pub fn oauth_credential_store_path(server_name: &str) -> PathBuf {
+    let sanitized: String = server_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("warden").join("mcp_oauth").join(format!("{sanitized}.json"))
 }
 
 /// Chat message roles as persisted to disk — mirrors the frontend's `ChatRole`
@@ -577,6 +595,9 @@ pub async fn bootstrap(
                 let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 McpToolProvider::connect_stdio(name, command, args, &env).await
             }
+            McpServerConfig::Http { url, oauth, .. } if *oauth => {
+                warden_core::tool::mcp_oauth::connect_http_oauth(name, url, &oauth_credential_store_path(name)).await
+            }
             McpServerConfig::Http { url, headers, .. } => {
                 let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 McpToolProvider::connect_http(name, url, &headers).await
@@ -709,12 +730,45 @@ Authorization = "Bearer secret-token"
         assert_eq!(config.mcp_servers.len(), 1);
         assert_eq!(config.mcp_servers[0].name(), "slack");
         match &config.mcp_servers[0] {
-            McpServerConfig::Http { url, headers, .. } => {
+            McpServerConfig::Http { url, headers, oauth, .. } => {
                 assert_eq!(url, "https://mcp.slack.com/mcp");
                 assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer secret-token"));
+                assert!(!oauth, "oauth should default to false when the field is absent from the TOML");
             }
             McpServerConfig::Stdio { .. } => panic!("expected an Http entry, got Stdio"),
         }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_oauth_http_mcp_server_from_toml() {
+        let path = temp_toml_path("mcp-oauth-http-server");
+        std::fs::write(
+            &path,
+            r#"
+[[mcp_servers]]
+name = "slack"
+url = "https://mcp.slack.com/mcp"
+oauth = true
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(path.to_str().unwrap())).unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 1);
+        match &config.mcp_servers[0] {
+            McpServerConfig::Http { url, headers, oauth, .. } => {
+                assert_eq!(url, "https://mcp.slack.com/mcp");
+                assert!(headers.is_empty());
+                assert!(oauth);
+            }
+            McpServerConfig::Stdio { .. } => panic!("expected an Http entry, got Stdio"),
+        }
+
+        assert_eq!(oauth_credential_store_path("slack").file_name().unwrap(), "slack.json");
+        assert_eq!(oauth_credential_store_path("My Server!").file_name().unwrap(), "My_Server_.json");
 
         std::fs::remove_file(&path).ok();
     }
@@ -783,6 +837,7 @@ Authorization = "Bearer secret-token"
                     name: "slack".to_string(),
                     url: "https://mcp.slack.com/mcp".to_string(),
                     headers: std::collections::HashMap::from([("Authorization".to_string(), "Bearer secret-token".to_string())]),
+                    oauth: false,
                 },
             ],
         };

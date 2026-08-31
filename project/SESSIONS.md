@@ -2,7 +2,80 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-31 (Sessão 36)
+> Última atualização: 2026-08-31 (Sessão 37)
+
+---
+
+### 2026-08-31 — Sessão 37
+
+- **Objetivo**: Usuário voltou pedindo pra continuar; ofereci 3 opções (mais presets MCP, Fase
+  7/Mobile, fechar P26 — OAuth pro transporte HTTP do MCP) e ele escolheu **P26**.
+
+**O que foi feito**:
+
+- Investigação prévia (antes de planejar): `rmcp` v3.1.2+ (a versão travada no `Cargo.lock` era
+  3.1.0) já embute um client OAuth completo atrás da feature `auth` — discovery RFC 9728/8414,
+  Dynamic Client Registration, PKCE, renovação automática de token, e um adapter `AuthClient<C>`
+  que pluga direto no transporte streamable-HTTP já usado desde a Sessão 36. Isso mudou o escopo
+  da tarefa de "implementar OAuth" pra "encaixar o que o `rmcp` já resolve" — plano desenhado e
+  aprovado em `/home/masterlxz/.claude/plans/buzzing-churning-sun.md` antes de mexer em código
+- `cargo update -p rmcp` (3.1.0 → 3.1.4, sem tocar `Cargo.toml`, que já pedia só `"3"`); feature
+  `auth` adicionada em `crates/warden-core/Cargo.toml`, junto com uma segunda dependência
+  `reqwest` aliasada (`reqwest-oauth = { package = "reqwest", version = "0.13.2" }`) — só pra
+  poder nomear o tipo `reqwest::Client` que `AuthClient::new` exige, já que o `rmcp` não reexporta
+  esse tipo em nenhum caminho público (Cargo unifica com a cópia que o `rmcp` já trazia, não é uma
+  terceira versão no grafo). `tokio` do workspace ganhou as features `net`/`io-util` (pro listener
+  local do callback)
+- Novo módulo `crates/warden-core/src/tool/mcp_oauth.rs`: `connect_http_oauth` (caminho headless,
+  usado em todo `bootstrap()` — falha com mensagem clara e acionável se não houver token guardado,
+  tratado como qualquer outra falha de conexão MCP, não fatal) e `authorize_interactively`
+  (caminho interativo — abre o browser via uma closure que o chamador fornece, escuta um redirect
+  local numa porta TCP efêmera implementado à mão sobre `tokio::net::TcpListener` em vez de
+  promover `axum` a dependência de produção só pra uma request fire-and-forget, troca o código por
+  token, persiste). `FileCredentialStore` novo (mesmo módulo) implementa a trait `CredentialStore`
+  do `rmcp` sobre um arquivo JSON por server (`~/.config/warden/mcp_oauth/<nome-sanitizado>.json`,
+  texto puro — mesma postura de segurança que toda outra credencial do Warden hoje). `McpToolProvider`
+  ganhou um construtor `pub(crate) fn from_session` pra esse módulo poder produzir o mesmo tipo que
+  `connect_stdio`/`connect_http` já produzem sem duplicar `tools()`/`call()`
+- `crates/warden-bootstrap/src/lib.rs`: `McpServerConfig::Http` ganhou um campo `oauth: bool`
+  (`#[serde(default)]` — todo `config.toml` escrito desde a Sessão 36 continua parseando sem
+  mudança), novo helper `oauth_credential_store_path(name)`, e o loop de conexão do `bootstrap()`
+  passou a rotear pro `connect_http_oauth` quando `oauth` é `true`
+- Desktop: `McpServerHttp` (`types.ts`) ganhou `oauth: boolean`; `SettingsView.tsx` — checkbox
+  "Requires OAuth" no card HTTP (esconde os headers, mostra um painel de status/Connect/Disconnect
+  novo, `McpOAuthPanel`); preset do Slack trocou "cole seu bearer token" por `oauth: true`. Três
+  comandos Tauri novos em `desktop/src-tauri/src/lib.rs`: `mcp_oauth_status` (sem chamada de rede —
+  só confere se o arquivo de credencial existe), `mcp_oauth_connect` (roda o fluxo interativo,
+  abre o browser via `tauri_plugin_opener::open_url`, já existente desde antes pra links do chat),
+  `mcp_oauth_disconnect` (apaga a credencial)
+- **Verificado de ponta a ponta contra um server OAuth real, não mockado** (mesmo rigor das
+  Sessões 35/36): `crates/warden-core/tests/mcp_oauth.rs` novo — um único server `axum` de teste
+  faz o papel de protected resource *e* de authorization server ao mesmo tempo (mesma forma
+  auto-referente que o próprio `tests/test_client_credentials.rs` do `rmcp` usa pro grant mais
+  simples), com discovery, Dynamic Client Registration, `/authorize` e `/token` reais. O único
+  passo necessariamente falsificado é o `/authorize` aprovar sozinho em vez de mostrar uma tela de
+  consentimento pra um humano de verdade (nada automatizado clica "Allow") — tudo rio abaixo
+  disso roda de verdade: a troca PKCE, a persistência em arquivo, e a reconexão headless usando só
+  o token salvo. O `open_browser` do teste faz uma requisição HTTP real contra a URL de
+  autorização (em vez de abrir um browser de verdade), que segue o redirect do servidor de teste e
+  bate direto no listener local do próprio módulo — provando que o listener funciona de verdade,
+  não só o protocolo OAuth em volta dele. Passou de primeira. `cargo build/test/clippy --workspace
+  --all-targets` limpos (precisou de um `cargo clean` no meio do caminho — o `target/` sozinho
+  tinha crescido pra 33G e encheu a partição `/home`, 0 bytes livres; nada a ver com o código,
+  só acúmulo de builds anteriores); `npx tsc --noEmit`/`npm run build` limpos no frontend
+- `project/ARCHITECTURE.md` (6 decisões novas), `project/PHASE.md` (nota P26 resolvida na Fase 5),
+  `project/PENDING.md` (P26 resolvida)
+
+**Não verificado**: conexão contra o Slack real (`https://mcp.slack.com/mcp`) — exigiria um
+workspace Slack de verdade e um humano clicando "Allow" no browser, fora do alcance de uma sessão
+automatizada. Se o Slack não suportar Dynamic Client Registration na prática (só descobrível
+testando), falta expor um caminho de `client_id` pré-cadastrado na UI — `rmcp` já suporta isso
+(`AuthorizationRequest::with_preregistered_client`), só não foi conectado a nada ainda. Também sem
+teste de UI interativo (mesma limitação de Wayland/`xdotool` já registrada em sessões anteriores).
+
+**Próximo passo**: usuário não indicou ainda — pedir pra ele testar "Connect" contra o Slack real
+seria o próximo passo natural pra fechar de vez esse fio solto; fora isso, as opções que ficaram de
+fora desta escolha (mais presets MCP, Fase 7/Mobile) continuam válidas.
 
 ---
 

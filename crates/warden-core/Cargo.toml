@@ -8,7 +8,14 @@ anyhow.workspace = true
 async-trait.workspace = true
 http.workspace = true
 reqwest.workspace = true
-rmcp = { version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+rmcp = { version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
+# Needed only to construct a `reqwest::Client` value to hand to rmcp's OAuth `AuthClient`
+# (tool/mcp_oauth.rs) — rmcp's `auth`/`reqwest` features don't re-export their internal
+# `reqwest::Client` type at any public path, so naming it requires depending on the exact same
+# reqwest major ourselves; Cargo unifies this with rmcp's own dependency into one compiled
+# instance. Same trade-off already accepted in Sessão 36 for the HTTP MCP transport (a second
+# reqwest major alongside our own `reqwest.workspace` 0.12), just extended — see ARCHITECTURE.md.
+reqwest-oauth = { package = "reqwest", version = "0.13.2" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

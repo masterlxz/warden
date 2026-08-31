@@ -64,8 +64,12 @@ export interface McpServerHttp {
   name: string;
   url: string;
   /** Sent on every request — typically just `{ Authorization: "Bearer <token>" }` for a server
-   * that authenticates that way (there's no OAuth flow here, just a static header). */
+   * that authenticates that way. Ignored when `oauth` is true. */
   headers: Record<string, string>;
+  /** When true, connect via the OAuth flow (PENDING.md P26) instead of `headers` — discovery,
+   * Dynamic Client Registration, browser consent, token refresh. Mutually exclusive with
+   * `headers`. Driven from Settings' "Connect"/"Disconnect" buttons, not typed by hand. */
+  oauth: boolean;
 }
 
 export type McpServer = McpServerStdio | McpServerHttp;

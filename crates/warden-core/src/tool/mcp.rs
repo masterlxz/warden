@@ -31,6 +31,15 @@ pub struct McpToolProvider {
 }
 
 impl McpToolProvider {
+    /// Wraps an already-running MCP session (any transport) as a `McpToolProvider`. Used by
+    /// `connect_stdio`/`connect_http` below and by `mcp_oauth::connect_http_oauth` (a third
+    /// transport-setup path — OAuth-authenticated streamable HTTP — that lives in its own module
+    /// since it pulls in the `rmcp` `auth` feature, but produces the exact same provider type;
+    /// `tools()`/`call()` don't care how the session was authenticated).
+    pub(crate) fn from_session(server_name: impl Into<String>, session: RunningService<RoleClient, ()>) -> Self {
+        Self { server_name: server_name.into(), session: Arc::new(session) }
+    }
+
     /// Spawns the server process and performs the MCP `initialize` handshake. Fails fast if the
     /// process can't be spawned or never completes the handshake — the caller (bootstrap) treats
     /// a failed connection as "this one server is unavailable", not a fatal startup error, same
