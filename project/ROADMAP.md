@@ -75,6 +75,28 @@ depois abrir o desktop não mostra o mesmo histórico. Se isso incomodar na prá
 uma visão de conversas realmente unificada entre canais — não resolvido ainda, é uma pergunta de
 produto maior que a Fase 2 não tentou responder.
 
+### Integração com Discord
+
+Confirmado pelo usuário (2026-08-31, Sessão 38): quer conectar com o Discord, sem urgência —
+"acho que vai ser útil no futuro". Registrado só como visão por enquanto, nenhuma implementação
+começada. Duas frentes independentes (ver P27 em `PENDING.md`), mesmo padrão já usado pro Slack:
+
+- **Warden como bot no Discord** — canal novo no espírito do Telegram/WhatsApp (Fases 2/3), mas
+  nenhum dos dois padrões existentes bate certinho: não é polling HTTP com offset (Telegram) nem
+  um sidecar Node/Baileys por WebSocket próprio (WhatsApp) — a Discord API usa seu próprio
+  protocolo de gateway (WebSocket com heartbeat/intents). Provavelmente um crate novo
+  (`warden-discord`?), histórico de conversa por canal/DM, mesma função `handle_turn`
+  reaproveitada do lado da lógica de conversa (ver P20 em `PENDING.md` — decisão já tomada de não
+  ter uma trait `Channel`, cada canal com seu próprio loop de recebimento)
+- **Discord como MCP server** — bem mais simples de ligar: mesmo mecanismo de preset "quick add"
+  já usado pro Slack/Notion/GitHub (`[[mcp_servers]]`, Fase 5.2/P11), plugando um MCP server de
+  Discord já existente no mercado (a checar qual — provavelmente `npx`-based, mesma família do
+  resto dos presets). O agente ganha acesso a ler/postar mensagens sob demanda, sem código novo
+  no Warden além de um preset a mais na UI
+
+Quando isso for retomado, vale perguntar ao usuário qual das duas frentes puxar primeiro — o
+próprio usuário já sinalizou (Sessão 38) que o MCP é o caminho mais rápido de ligar hoje.
+
 ### Sub-agentes autônomos
 
 Agentes que criam outros agentes recursivamente para tarefas complexas.

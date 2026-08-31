@@ -4,7 +4,7 @@
 > Toda pendência encontrada em qualquer arquivo do projeto deve ser registrada aqui com um ID único.
 > Ao resolver uma, marcar como `✅ Resolvida` com a sessão em que foi corrigida.
 >
-> Última atualização: 2026-08-31 (Sessão 37)
+> Última atualização: 2026-08-31 (Sessão 38)
 
 ---
 
@@ -34,6 +34,7 @@
 | P21 | **Sem suporte multimodal (imagem/áudio/documento)** — a Fase 3 (WhatsApp) trata mensagens de mídia só com degradação graciosa (resposta fixa, sem chamar o orchestrator), decisão explícita do usuário. Suporte de verdade exigiria mudar `ModelProvider`/`Message` (`warden-core`) pra multimodal — toca os dois providers (OpenAI, Gemini), não é mudança de canal. O Telegram (Fase 2) está pior ainda nesse ponto: mensagem sem `text` (foto/áudio/documento) é **silenciosamente ignorada** (`process_updates` só faz `continue`), nem a degradação graciosa que o WhatsApp ganhou — vale alinhar os dois quando isso for revisitado | `ARCHITECTURE.md` (decisão da Fase 3), sessão 2026-08-09 | 🟡 Baixa |
 | P22 | ~~**Suporte a múltiplos provedores de modelo**~~ | ✅ Resolvida — ver seção "Resolvidas" abaixo | Sessão 35 (2026-08-29) |
 | P23 | ~~**Gerenciamento de API keys no desktop é só um campo de texto por provedor**~~ | ✅ Resolvida — ver seção "Resolvidas" abaixo | Sessão 35 (2026-08-29) |
+| P27 | **Integração com Discord** — usuário quer, sem urgência ("acho que vai ser útil no futuro"). Duas frentes independentes, igual P11 foi pro MCP: (a) **Warden como bot no Discord** — novo canal no espírito do Telegram/WhatsApp (Fases 2/3): crate próprio (`warden-discord`?), gateway/websocket (não é polling HTTP como o Telegram nem sidecar Node como o WhatsApp — protocolo próprio da Discord API), histórico de conversa por canal/DM; (b) **Discord como MCP server** — mesmo mecanismo de preset já usado pro Slack/Notion/GitHub (`[[mcp_servers]]`), provavelmente via algum server MCP de Discord já pronto no mercado (`npx`-based, a checar), sem código novo no Warden. Usuário escolheu (Sessão 38) registrar as duas sem implementar nenhuma agora | `ROADMAP.md`, pedido do usuário 2026-08-31 | 🟡 Baixa |
 | P24 | **Fase 4 (Vault & Memória) precisa repensar IPFS → Arweave** — o `PHASE.md` (Fase 4) e `OVERVIEW.md` ainda descrevem espelho em IPFS (Filebase/Pinata). Usuário sinalizou (2026-08-29) que o **TruthID** — projeto irmão do mesmo ecossistema — já migrou de IPFS para **Arweave** (confirmado nesta sessão: `~/Documents/workspace/truthid/docs/docs/sdk/dart.md` usa carteira Arweave por identidade, publica bytes pagos pela própria carteira, e `cid` no SDK é hoje um ponteiro `ar://<tx_id>`, não mais um CID IPFS). Antes de desenhar a Fase 4 do Warden, vale estudar a arquitetura de vault do TruthID a fundo (que decisões de custo/persistência/pinning o Arweave implica, diferente do modelo de pinning do IPFS) | `ROADMAP.md`, pedido do usuário 2026-08-29 | 🟡 Baixa (só quando a Fase 4 for retomada) |
 
 ### Funcionalidades Pendentes

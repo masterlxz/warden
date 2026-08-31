@@ -2,7 +2,26 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-31 (Sessão 37)
+> Última atualização: 2026-08-31 (Sessão 38)
+
+---
+
+### 2026-08-31 — Sessão 38
+
+- **Objetivo**: Usuário pediu integração com Discord, sem urgência ("acho que vai ser útil no
+  futuro"). Perguntei o tipo (bot vs MCP server) e se era pra implementar já ou só registrar —
+  usuário escolheu **as duas frentes, só documentar por enquanto**, nada de código.
+
+**O que foi feito**:
+
+- Registrada a visão em `ROADMAP.md` (nova seção "Integração com Discord") e pendência nova
+  `P27` em `PENDING.md`, cobrindo as duas frentes: Warden como bot no Discord (canal novo, mesmo
+  espírito do Telegram/WhatsApp, mas protocolo de gateway/WebSocket próprio da Discord, diferente
+  dos dois padrões já existentes) e Discord como MCP server (mesmo mecanismo de preset já usado
+  pro Slack/Notion/GitHub — mais rápido de ligar, sem código novo)
+
+**Próximo passo**: usuário não indicou quando retomar — quando isso voltar à tona, vale perguntar
+qual das duas frentes puxar primeiro (o MCP é o caminho mais rápido).
 
 ---
 
