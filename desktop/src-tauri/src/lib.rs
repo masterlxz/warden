@@ -117,6 +117,38 @@ async fn send_message(
     Ok(SendMessageResult { content: outcome.content, usage: outcome.usage })
 }
 
+/// Filename handed to the Whisper API for a recorded clip — only the extension matters (the API
+/// infers format from it), derived from the mime type the composer's `MediaRecorder` picked.
+fn audio_filename_for_mime_type(mime_type: &str) -> &'static str {
+    match mime_type {
+        "audio/webm" => "audio.webm",
+        "audio/ogg" => "audio.ogg",
+        "audio/mp4" => "audio.mp4",
+        "audio/wav" => "audio.wav",
+        "audio/mpeg" => "audio.mp3",
+        _ => "audio.webm",
+    }
+}
+
+/// Transcribes a voice recording from the composer's mic button (P28 part 2) — always via a
+/// dedicated Whisper API key, independent of which chat provider is active, so voice input works
+/// the same regardless of whether Gemini/OpenAI/Anthropic is selected.
+#[tauri::command]
+async fn transcribe_audio(audio: AttachmentPayload) -> Result<String, String> {
+    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    let api_key = config
+        .api_keys
+        .whisper
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "Set a Whisper API key in Settings to enable voice input".to_string())?;
+
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio.data).map_err(|e| format!("{e:#}"))?;
+    let filename = audio_filename_for_mime_type(&audio.mime_type);
+
+    warden_core::transcribe::transcribe_audio(&api_key, bytes, filename).await.map_err(|e| format!("{e:#}"))
+}
+
 /// One entry of the provider registry (Sessão 35), as read/written by the Settings screen.
 /// API keys are returned in plain text (the user's own explicit choice for this app — shown
 /// masked with a reveal toggle client-side) rather than just a "configured" boolean, since the
@@ -140,6 +172,9 @@ struct SettingsSnapshot {
     active_provider: String,
     vault_path: String,
     tavily_key: String,
+    /// OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of which
+    /// provider is active for chat. Same "not set" = empty string convention as `tavily_key`.
+    whisper_key: String,
     enable_shell: bool,
     /// Default model per provider kind, keyed by the same string the frontend uses for `kind`
     /// (`"gemini"`/`"openai"`/`"anthropic"`) — shown as the Model field's placeholder. No entry
@@ -159,6 +194,7 @@ struct SettingsFormPayload {
     active_provider: String,
     vault_path: String,
     tavily_key: String,
+    whisper_key: String,
     enable_shell: bool,
     mcp_servers: Vec<McpServerConfig>,
 }
@@ -190,6 +226,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         active_provider: config.active_provider.unwrap_or_default(),
         vault_path: config.vault_path.unwrap_or_default(),
         tavily_key: config.api_keys.tavily.unwrap_or_default(),
+        whisper_key: config.api_keys.whisper.unwrap_or_default(),
         enable_shell: config.enable_shell.unwrap_or(false),
         default_models: default_models_by_kind(),
         mcp_servers: config.mcp_servers,
@@ -259,7 +296,13 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         model: None,
         vault_path: non_empty(payload.vault_path),
         enable_shell: Some(payload.enable_shell),
-        api_keys: ApiKeys { gemini: None, openai: None, tavily: non_empty(payload.tavily_key), telegram_bot_token: existing.api_keys.telegram_bot_token },
+        api_keys: ApiKeys {
+            gemini: None,
+            openai: None,
+            tavily: non_empty(payload.tavily_key),
+            telegram_bot_token: existing.api_keys.telegram_bot_token,
+            whisper: non_empty(payload.whisper_key),
+        },
         providers,
         active_provider: non_empty(payload.active_provider),
         mcp_servers,
@@ -334,6 +377,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_message,
             read_attachment,
+            transcribe_audio,
             get_settings,
             save_settings,
             list_conversations,

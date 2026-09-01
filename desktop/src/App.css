@@ -518,9 +518,50 @@ body {
   background-color: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
+.chat-mic-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  background-color: transparent;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.chat-mic-btn:hover:not(:disabled) {
+  color: var(--color-accent);
+  background-color: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.chat-mic-btn--recording {
+  color: white;
+  background-color: var(--color-danger);
+  animation: mic-pulse 1.4s ease-in-out infinite;
+}
+
+.chat-mic-btn--recording:hover:not(:disabled) {
+  color: white;
+  background-color: var(--color-danger);
+}
+
+@keyframes mic-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-danger) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-danger) 0%, transparent);
+  }
+}
+
 .chat-input-textarea:disabled,
 .chat-send-btn:disabled,
-.chat-attach-btn:disabled {
+.chat-attach-btn:disabled,
+.chat-mic-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

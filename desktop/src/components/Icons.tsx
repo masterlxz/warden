@@ -77,3 +77,12 @@ export function CloseIcon({ size = 14 }: { size?: number }) {
     </svg>
   );
 }
+
+export function MicIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10.5a7 7 0 0 0 14 0M12 17.5V22M8.5 22h7" />
+    </svg>
+  );
+}

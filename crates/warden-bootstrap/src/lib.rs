@@ -144,6 +144,12 @@ pub struct ApiKeys {
     /// Bot token from @BotFather (Fase 2) — only read by `warden-telegram`, not by `bootstrap()`
     /// itself, since a Telegram bot token isn't a model/tool secret the orchestrator needs.
     pub telegram_bot_token: Option<String>,
+    /// OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of the
+    /// active chat provider (same "own key, own capability" shape as `tavily` above), so voice
+    /// input works no matter which of the 3 chat providers is active. Only read directly by
+    /// desktop's `transcribe_audio` IPC command, not by `bootstrap()` — transcription isn't an
+    /// orchestrator `Tool`, it's a pre-processing step before `handle_message` ever runs.
+    pub whisper: Option<String>,
 }
 
 /// The model name used when neither an override nor the config file specify one. `None` for
@@ -823,6 +829,7 @@ oauth = true
                 openai: Some("ok".to_string()),
                 tavily: Some("tk".to_string()),
                 telegram_bot_token: Some("tt".to_string()),
+                whisper: Some("wk".to_string()),
             },
             providers: vec![ProviderConfig {
                 id: "ollama-local".to_string(),

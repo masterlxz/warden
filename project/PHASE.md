@@ -169,9 +169,15 @@ ver P22/P23 em `PENDING.md`, resolvidas, e as decisões correspondentes em `ARCH
 
 **Anexo de imagem no chat (Sessão 40, 2026-09-01)**: metade "imagem" de P28 resolvida — composer
 ganhou botão de anexo, `Message`/`ModelProvider` (`warden-core`) ganharam suporte multimodal real
-pros três providers. Ver `ARCHITECTURE.md` e `PENDING.md` (P28, só a parte de áudio segue em
-aberto). Próximo passo dentro deste polish: usuário confirma de ponta a ponta na janela real;
-depois disso, sem item novo de UX geral pendente além do que já está registrado em `PENDING.md`.
+pros três providers. Ver `ARCHITECTURE.md` e `PENDING.md`.
+
+**Input de voz no chat (Sessão 41, 2026-09-01)**: metade "input" de áudio de P28 resolvida —
+composer ganhou botão de microfone, transcrição via Whisper (chave dedicada, independente do
+provider de chat ativo). Ver `ARCHITECTURE.md` e `PENDING.md` (P28 fica só com TTS na resposta em
+aberto; P29/P30 são os testes de ponta a ponta ainda pendentes pros dois anexos). Próximo passo
+dentro deste polish: usuário confirma os dois de ponta a ponta na janela real (inclusive se
+`getUserMedia` funciona nesse WebKitGTK); depois disso, sem item novo de UX geral pendente além
+do que já está registrado em `PENDING.md`.
 
 ---
 

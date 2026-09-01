@@ -2,7 +2,52 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-01 (Sessão 40)
+> Última atualização: 2026-09-01 (Sessão 41)
+
+---
+
+### 2026-09-01 — Sessão 41
+
+- **Objetivo**: Continuar de onde a Sessão 40 parou (commit feito, P29 registrada). Usuário
+  escolheu puxar a metade "áudio" de P28 em seguida — escopada como só **input** de voz (TTS na
+  resposta fica pra depois) via **transcrição universal** (Whisper, sempre, independente de qual
+  dos 3 provedores de chat está ativo — não áudio nativo por provider, que deixaria Anthropic de
+  fora).
+
+**O que foi feito**:
+
+- `ApiKeys.whisper: Option<String>` novo (`crates/warden-bootstrap`) — chave dedicada, mesmo
+  padrão do `tavily`, independente do registry de providers de chat
+- Novo módulo solto `crates/warden-core/src/transcribe.rs` (não é `ModelProvider` nem `Tool` —
+  roda antes de `handle_message`, o modelo nunca invoca): `transcribe_audio(api_key, bytes,
+  filename)` faz `POST multipart/form-data` pra `/v1/audio/transcriptions` da OpenAI
+  (`model: "whisper-1"`), desserializa `{text}`. `reqwest` ganhou a feature `multipart`
+  (workspace `Cargo.toml`)
+- IPC do desktop: novo comando `transcribe_audio` (reaproveita `AttachmentPayload` da Sessão 40 —
+  mesma forma mime+base64), lê a chave Whisper do config, erro claro se não configurada.
+  `SettingsSnapshot`/`SettingsFormPayload` ganharam `whisper_key`
+- Settings: novo `ApiKeyField` "Whisper API key (voice input)" logo abaixo do Tavily
+- Composer: botão de microfone novo (`MicIcon`) ao lado do de anexo — grava via
+  `MediaRecorder`/`getUserMedia` (Web API padrão do browser, sem plugin/permissão Tauri nova),
+  escolhe o primeiro mime type suportado (webm/ogg/mp4), no stop converte pra base64 e chama
+  `transcribe_audio`; o texto transcrito cai no campo de mensagem pro usuário revisar antes de
+  mandar (não envia sozinho). Estado "gravando" com ícone vermelho pulsante
+  (`.chat-mic-btn--recording`, nova animação CSS)
+- Testes: 1 unitário novo (`transcribe.rs`, só desserialização da resposta `{"text": "..."}") —
+  sem infra de mock HTTP no projeto, mesmo padrão da Sessão 40 (P29)
+- Verificação: `cargo build/test/clippy --workspace` limpos (`warden-core` com 25 testes,
+  `warden-bootstrap` com 25); `npx tsc --noEmit`/`npm run build` limpos; layout do botão de
+  microfone (parado e "gravando") conferido via screenshot Playwright, mesmo método das sessões
+  anteriores. **Não testado**: chamada real ao Whisper (sem chave neste shell) nem se
+  `getUserMedia` de fato funciona neste WebKitGTK — o maior risco não confirmável de antemão,
+  registrado como `PENDING.md` P30 (com plano B documentado em `ARCHITECTURE.md`: captura nativa
+  via `cpal` se o mic do browser não funcionar)
+- `project/PENDING.md` (P28 fechada pra input, reaberta só pra TTS output; P30 nova),
+  `project/ARCHITECTURE.md` (6 decisões novas)
+
+**Próximo passo**: P30 (testar voz de ponta a ponta na janela real — inclusive se `getUserMedia`
+funciona nesse ambiente) e/ou P29 (mesmo teste pendente pro anexo de imagem, ainda não feito). Se
+`getUserMedia` não funcionar, avaliar o plano B (`cpal`) antes de considerar voz utilizável.
 
 ---
 

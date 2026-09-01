@@ -94,6 +94,9 @@ export interface Settings {
   activeProvider: string;
   vaultPath: string;
   tavilyKey: string;
+  /** OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of which
+   * provider is active for chat, so voice input works no matter which one is selected. */
+  whisperKey: string;
   /** Opt-in gate for the `shell` tool — off by default, since it lets the model run arbitrary
    * commands on this machine with no sandboxing. */
   enableShell: boolean;

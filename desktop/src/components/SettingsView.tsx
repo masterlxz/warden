@@ -9,6 +9,7 @@ const emptySettings: Settings = {
   activeProvider: "",
   vaultPath: "",
   tavilyKey: "",
+  whisperKey: "",
   enableShell: false,
   defaultModels: {},
   mcpServers: [],
@@ -549,6 +550,7 @@ function SettingsView() {
           active_provider: form.activeProvider,
           vault_path: form.vaultPath,
           tavily_key: form.tavilyKey,
+          whisper_key: form.whisperKey,
           enable_shell: form.enableShell,
           mcp_servers: form.mcpServers,
         },
@@ -646,6 +648,12 @@ function SettingsView() {
           label="Tavily API key (web search)"
           value={form.tavilyKey}
           onChange={(v) => setForm((f) => ({ ...f, tavilyKey: v }))}
+        />
+
+        <ApiKeyField
+          label="Whisper API key (voice input)"
+          value={form.whisperKey}
+          onChange={(v) => setForm((f) => ({ ...f, whisperKey: v }))}
         />
 
         <label className="settings-field settings-checkbox-field">
