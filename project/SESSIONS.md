@@ -64,7 +64,11 @@
 
 **Próximo passo**: P30 (testar voz de ponta a ponta na janela real, agora com a captura nativa —
 colar uma chave Whisper em Settings, clicar no microfone, falar, checar a transcrição) e/ou P29
-(mesmo teste pendente pro anexo de imagem, ainda não feito).
+(mesmo teste pendente pro anexo de imagem, ainda não feito). **Atualizado ainda na mesma
+sessão**: usuário avisou que uma chave da OpenAI não vai rolar tão cedo — os dois testes (P29,
+P30) ficam registrados como pendência de baixa prioridade, adiados sem data definida em vez de
+bloquear o trabalho. Se a chave da OpenAI não entrar nos planos a médio prazo, vale reconsiderar
+o Whisper como STT de P30 (ver nota de transcrição local em `PENDING.md`).
 
 ---
 
