@@ -48,11 +48,20 @@ function MessageBubble({ message }: MessageBubbleProps) {
   return (
     <div className="message-row message-row--user">
       <div className="message-bubble message-bubble--user">
-        <div className="message-bubble-content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
-            {message.content}
-          </ReactMarkdown>
-        </div>
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="message-bubble-attachments">
+            {message.attachments.map((attachment, index) => (
+              <img key={index} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt="" />
+            ))}
+          </div>
+        )}
+        {message.content && (
+          <div className="message-bubble-content">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+              {message.content}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
     </div>
   );

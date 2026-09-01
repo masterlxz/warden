@@ -8,7 +8,7 @@ use warden_bootstrap::{
     load_config_from_path, oauth_credential_store_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation,
     FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig,
 };
-use warden_core::model::Message;
+use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
 
 struct AppState {
@@ -27,19 +27,63 @@ enum ChatRole {
     Assistant,
 }
 
+/// Mirrors the frontend's `Attachment` (`desktop/src/types.ts`) — an inline image (P28),
+/// base64-encoded with no `data:...;base64,` prefix.
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentPayload {
+    mime_type: String,
+    data: String,
+}
+
+impl From<AttachmentPayload> for Attachment {
+    fn from(a: AttachmentPayload) -> Self {
+        Attachment { mime_type: a.mime_type, data: a.data }
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatTurn {
     role: ChatRole,
     content: String,
+    #[serde(default)]
+    attachments: Vec<AttachmentPayload>,
 }
 
 impl From<ChatTurn> for Message {
     fn from(turn: ChatTurn) -> Self {
         match turn.role {
-            ChatRole::User => Message::user(turn.content),
+            ChatRole::User => Message::user_with_attachments(turn.content, turn.attachments.into_iter().map(Into::into).collect()),
             ChatRole::Assistant => Message::assistant(turn.content),
         }
     }
+}
+
+/// Extensions this build accepts for an attached image — kept in sync with the file dialog
+/// filter the frontend opens (`MessageInput.tsx`). Anything else is rejected here rather than
+/// silently forwarded to a model provider that wouldn't know what to do with it.
+fn image_mime_type_for_extension(extension: &str) -> Option<&'static str> {
+    match extension.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+/// Reads a local image file picked from the attach button's file dialog and returns it
+/// base64-encoded, ready to hand back to `send_message` as an `AttachmentPayload` (P28).
+#[tauri::command]
+fn read_attachment(path: String) -> Result<AttachmentPayload, String> {
+    let path = PathBuf::from(path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    let mime_type = image_mime_type_for_extension(extension).ok_or_else(|| "Unsupported file type".to_string())?;
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("{e:#}"))?;
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+
+    Ok(AttachmentPayload { mime_type: mime_type.to_string(), data })
 }
 
 /// A markdown vault is meant to be human-browsable (like an Obsidian vault), unlike opaque
@@ -60,10 +104,16 @@ struct SendMessageResult {
 }
 
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, history: Vec<ChatTurn>, content: String) -> Result<SendMessageResult, String> {
+async fn send_message(
+    state: State<'_, AppState>,
+    history: Vec<ChatTurn>,
+    content: String,
+    attachments: Vec<AttachmentPayload>,
+) -> Result<SendMessageResult, String> {
     let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
     let history: Vec<Message> = history.into_iter().map(Into::into).collect();
-    let outcome = orchestrator.handle_message(&history, &content).await.map_err(|e| format!("{e:#}"))?;
+    let attachments: Vec<Attachment> = attachments.into_iter().map(Into::into).collect();
+    let outcome = orchestrator.handle_message_with_attachments(&history, &content, attachments).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult { content: outcome.content, usage: outcome.usage })
 }
 
@@ -283,6 +333,7 @@ pub fn run() {
         .manage(AppState { orchestrator: Mutex::new(orchestrator) })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            read_attachment,
             get_settings,
             save_settings,
             list_conversations,

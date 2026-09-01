@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -27,10 +27,23 @@ impl GeminiProvider {
 struct Part {
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "inlineData")]
+    inline_data: Option<InlineData>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "functionCall")]
     function_call: Option<FunctionCallPart>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "functionResponse")]
     function_response: Option<FunctionResponsePart>,
+}
+
+#[derive(Serialize)]
+struct InlineData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
+}
+
+fn attachment_part(attachment: Attachment) -> Part {
+    Part { inline_data: Some(InlineData { mime_type: attachment.mime_type, data: attachment.data }), ..Default::default() }
 }
 
 #[derive(Serialize)]
@@ -126,7 +139,11 @@ struct IncomingFunctionCall {
 fn to_content(message: Message) -> Content {
     match message.role {
         Role::System => unreachable!("system messages are pulled out into system_instruction before this point"),
-        Role::User => Content { role: Some("user"), parts: vec![Part::text(message.content)] },
+        Role::User => {
+            let mut parts: Vec<Part> = message.attachments.into_iter().map(attachment_part).collect();
+            parts.push(Part::text(message.content));
+            Content { role: Some("user"), parts }
+        }
         Role::Assistant if !message.tool_calls.is_empty() => Content {
             role: Some("model"),
             parts: message
@@ -214,5 +231,30 @@ impl ModelProvider for GeminiProvider {
         }
 
         Ok(Response { content, tool_calls, usage })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_user_message_has_a_single_text_part() {
+        let json = serde_json::to_value(to_content(Message::user("hi"))).unwrap();
+        let parts = json["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"], "hi");
+    }
+
+    #[test]
+    fn attachments_become_inline_data_parts_before_the_text_part() {
+        let message = Message::user_with_attachments("what's this?", vec![Attachment { mime_type: "image/webp".to_string(), data: "AAAA".to_string() }]);
+        let json = serde_json::to_value(to_content(message)).unwrap();
+
+        let parts = json["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "image/webp");
+        assert_eq!(parts[0]["inlineData"]["data"], "AAAA");
+        assert_eq!(parts[1]["text"], "what's this?");
     }
 }

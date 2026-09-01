@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -47,11 +47,37 @@ struct ChatRequest {
 struct ChatMessage {
     role: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OutgoingToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+}
+
+/// A message's `content` is normally just a string, but the chat-completions wire format also
+/// accepts an array of parts (text + images) for multimodal user turns (P28) — `untagged` picks
+/// whichever shape matches what's actually being sent.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Content {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Serialize)]
+struct ImageUrl {
+    url: String,
+}
+
+fn attachment_part(attachment: Attachment) -> ContentPart {
+    ContentPart::ImageUrl { image_url: ImageUrl { url: format!("data:{};base64,{}", attachment.mime_type, attachment.data) } }
 }
 
 #[derive(Serialize)]
@@ -133,7 +159,7 @@ fn to_chat_message(message: Message) -> ChatMessage {
     if message.role == Role::Tool {
         return ChatMessage {
             role: "tool",
-            content: Some(message.content),
+            content: Some(Content::Text(message.content)),
             tool_calls: None,
             tool_call_id: message.tool_call_id,
         };
@@ -142,7 +168,7 @@ fn to_chat_message(message: Message) -> ChatMessage {
     if message.role == Role::Assistant && !message.tool_calls.is_empty() {
         return ChatMessage {
             role: "assistant",
-            content: if message.content.is_empty() { None } else { Some(message.content) },
+            content: if message.content.is_empty() { None } else { Some(Content::Text(message.content)) },
             tool_calls: Some(
                 message
                     .tool_calls
@@ -161,7 +187,15 @@ fn to_chat_message(message: Message) -> ChatMessage {
         };
     }
 
-    ChatMessage { role: role_str(message.role), content: Some(message.content), tool_calls: None, tool_call_id: None }
+    let content = if message.attachments.is_empty() {
+        Content::Text(message.content)
+    } else {
+        let mut parts = vec![ContentPart::Text { text: message.content }];
+        parts.extend(message.attachments.into_iter().map(attachment_part));
+        Content::Parts(parts)
+    };
+
+    ChatMessage { role: role_str(message.role), content: Some(content), tool_calls: None, tool_call_id: None }
 }
 
 #[async_trait]
@@ -220,5 +254,29 @@ impl ModelProvider for OpenAiProvider {
             .unwrap_or_default();
 
         Ok(Response { content, tool_calls, usage })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_user_message_serializes_content_as_a_string() {
+        let json = serde_json::to_value(to_chat_message(Message::user("hi"))).unwrap();
+        assert_eq!(json["content"], "hi");
+    }
+
+    #[test]
+    fn attachments_turn_content_into_text_and_image_url_parts() {
+        let message = Message::user_with_attachments("what's this?", vec![Attachment { mime_type: "image/png".to_string(), data: "AAAA".to_string() }]);
+        let json = serde_json::to_value(to_chat_message(message)).unwrap();
+
+        let parts = json["content"].as_array().expect("content should be an array when attachments are present");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "what's this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA");
     }
 }

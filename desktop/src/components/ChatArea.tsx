@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
-import type { Conversation } from "../types";
+import type { Attachment, Conversation } from "../types";
 import { LogoMark } from "./Icons";
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
 
 interface ChatAreaProps {
   activeConversation: Conversation | undefined;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string, attachments: Attachment[]) => void;
   isSending: boolean;
   sendError: string | null;
 }

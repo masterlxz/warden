@@ -14,7 +14,7 @@ use warden_core::memory::Vault;
 use warden_core::model::anthropic::AnthropicProvider;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
-use warden_core::model::{Message, ModelProvider, Usage};
+use warden_core::model::{Attachment, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
@@ -212,6 +212,10 @@ pub struct ConversationMessage {
     /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// Images attached to this turn (P28, user messages only). `#[serde(default)]` so
+    /// conversations saved before this field existed still load.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 /// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
@@ -330,7 +334,7 @@ fn title_from(content: &str) -> String {
 
 fn to_message(message: &ConversationMessage) -> Message {
     match message.role {
-        ChatRole::User => Message::user(message.content.clone()),
+        ChatRole::User => Message::user_with_attachments(message.content.clone(), message.attachments.clone()),
         ChatRole::Assistant => Message::assistant(message.content.clone()),
     }
 }
@@ -363,6 +367,7 @@ pub async fn handle_turn(
         content: user_input.to_string(),
         created_at: now_millis(),
         usage: None,
+        attachments: Vec::new(),
     });
     conversation.messages.push(ConversationMessage {
         id: message_id(),
@@ -370,6 +375,7 @@ pub async fn handle_turn(
         content: outcome.content.clone(),
         created_at: now_millis(),
         usage: outcome.usage,
+        attachments: Vec::new(),
     });
     conversation.updated_at = now_millis();
 
@@ -882,6 +888,7 @@ oauth = true
                 content: "hello".to_string(),
                 created_at: updated_at,
                 usage: None,
+                attachments: Vec::new(),
             }],
             created_at: updated_at,
             updated_at,

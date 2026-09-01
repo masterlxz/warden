@@ -2,7 +2,58 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-08-31 (Sessão 39)
+> Última atualização: 2026-09-01 (Sessão 40)
+
+---
+
+### 2026-09-01 — Sessão 40
+
+- **Objetivo**: Retomar de onde a Sessão 39 parou. Usuário escolheu puxar P28 — anexo de
+  imagem no chat do desktop (metade de "imagem", sem áudio; metade "imagem" sem PDF/docs
+  genéricos, ambos escopo explícito do usuário).
+
+**O que foi feito**:
+
+- Multimodal de verdade em `warden-core`: `Attachment{mime_type, data}` novo, `Message` ganhou
+  `attachments: Vec<Attachment>` + construtor `user_with_attachments`. Os três providers
+  (`OpenAiProvider`, `AnthropicProvider`, `GeminiProvider`) passaram a codificar isso no formato
+  multimodal nativo de cada API — `image_url`/data-URI, bloco `image`/`base64`, `inlineData`,
+  respectivamente. `Orchestrator` ganhou `handle_message_with_attachments` (o `handle_message`
+  existente virou um wrapper fino chamando ele com `Vec::new()`) — CLI/Telegram/WhatsApp/
+  `DelegateTool` continuam exatamente como estavam, só o `send_message` do desktop usa o novo
+  método
+- IPC do desktop: `ChatTurn`/`send_message` ganharam `attachments`; novo comando
+  `read_attachment(path)` lê o arquivo escolhido no diálogo nativo (`@tauri-apps/plugin-dialog`,
+  já usado pro vault path), valida extensão (png/jpg/jpeg/webp/gif, rejeita o resto com
+  "Unsupported file type") e devolve base64 já pronto. `base64` virou dependência declarada
+  direto (`workspace.dependencies`, já era transitiva)
+- Persistência: `ConversationMessage.attachments` (`#[serde(default)]`, mesma retrocompatibilidade
+  do `usage` opcional) — a imagem sobrevive ao reload da conversa e volta pro modelo em qualquer
+  volta seguinte, não só na primeira mensagem
+- Frontend: `MessageInput.tsx` ganhou botão de anexo (`AttachIcon`/`CloseIcon` novos em
+  `Icons.tsx`) com preview de thumbnails removíveis acima do composer; `MessageBubble.tsx` mostra
+  a imagem na bolha do usuário; `App.tsx`/`ChatArea.tsx`/`types.ts` fiados ponta a ponta
+- Testes unitários novos nos três providers (`to_chat_message`/`to_anthropic_message`/
+  `to_content`), verificando via `serde_json::to_value` que o JSON de saída bate com o formato
+  esperado por cada API — nenhum provider tinha teste HTTP-mockado até agora (sem infra de mock
+  nesse nível no projeto), então ficou nesse nível em vez de introduzir uma
+- Verificação: `cargo build/test/clippy --workspace` limpos (6 testes novos, todos os outros
+  intactos); `npx tsc --noEmit`/`npm run build` limpos; layout do botão de anexo, preview de
+  thumbnail e bolha com imagem conferido via screenshot Playwright headless (claro e escuro,
+  mesmo método da Sessão 39 — dev server real pro composer vazio, HTML estático reaproveitando o
+  `App.css` de verdade pro preview/bolha com conteúdo). `npm run tauri dev` deixado rodando pro
+  usuário testar de ponta a ponta contra um provider real (nenhuma chave de API disponível neste
+  shell)
+- `project/PENDING.md` (P28 dividida: metade imagem resolvida, só áudio segue em aberto; **P29
+  nova** registrando o teste de ponta a ponta contra um provider real ainda pendente),
+  `project/ARCHITECTURE.md` (4 decisões novas)
+- Decisão do usuário nesta sessão: commitar o que já foi feito, registrar o teste de ponta a
+  ponta como pendência (P29) em vez de bloquear nele, e seguir com o resto da implementação
+  (áudio/PDF) numa sessão futura
+
+**Próximo passo**: P29 (testar anexo de imagem de ponta a ponta contra um provider real) e/ou
+seguir pra outra frente de P28 (áudio) ou outra pendência do backlog — a definir quando a
+próxima sessão retomar.
 
 ---
 

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
 use crate::tool::ToolSpec;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -29,8 +29,22 @@ impl AnthropicProvider {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
     Text { text: String },
+    Image { source: ImageSource },
     ToolUse { id: String, name: String, input: Value },
     ToolResult { tool_use_id: String, content: String },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct ImageSource {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: String,
+    data: String,
+}
+
+fn attachment_block(attachment: Attachment) -> ContentBlock {
+    ContentBlock::Image { source: ImageSource { kind: "base64", media_type: attachment.mime_type, data: attachment.data } }
 }
 
 #[derive(Serialize)]
@@ -102,7 +116,11 @@ fn to_anthropic_message(message: Message) -> AnthropicMessage {
                 .collect(),
         },
         Role::Assistant => AnthropicMessage { role: "assistant", content: vec![ContentBlock::Text { text: message.content }] },
-        Role::User => AnthropicMessage { role: "user", content: vec![ContentBlock::Text { text: message.content }] },
+        Role::User => {
+            let mut content: Vec<ContentBlock> = message.attachments.into_iter().map(attachment_block).collect();
+            content.push(ContentBlock::Text { text: message.content });
+            AnthropicMessage { role: "user", content }
+        }
     }
 }
 
@@ -160,5 +178,33 @@ impl ModelProvider for AnthropicProvider {
         }
 
         Ok(Response { content, tool_calls, usage })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_user_message_has_a_single_text_block() {
+        let json = serde_json::to_value(to_anthropic_message(Message::user("hi"))).unwrap();
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn attachments_become_image_blocks_before_the_text_block() {
+        let message = Message::user_with_attachments("what's this?", vec![Attachment { mime_type: "image/jpeg".to_string(), data: "AAAA".to_string() }]);
+        let json = serde_json::to_value(to_anthropic_message(message)).unwrap();
+
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/jpeg");
+        assert_eq!(content[0]["source"]["data"], "AAAA");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "what's this?");
     }
 }

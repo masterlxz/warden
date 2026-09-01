@@ -9,12 +9,20 @@ export interface Usage {
   totalTokens: number;
 }
 
+/** An inline image attached to a user message (P28) — base64 with no `data:...;base64,`
+ * prefix, mirrors `warden_core::model::Attachment` field for field. */
+export interface Attachment {
+  mimeType: string;
+  data: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: number;
   usage?: Usage;
+  attachments?: Attachment[];
 }
 
 export interface Conversation {

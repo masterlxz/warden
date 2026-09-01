@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::memory::Vault;
-use crate::model::{Message, ModelProvider, ToolCall, Usage};
+use crate::model::{Attachment, Message, ModelProvider, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
@@ -63,6 +63,17 @@ impl Orchestrator {
     /// as tracked by the caller — the orchestrator itself is stateless across calls. Pass `&[]`
     /// for a fresh conversation or a one-off sub-agent task.
     pub async fn handle_message(&self, history: &[Message], user_input: &str) -> anyhow::Result<MessageOutcome> {
+        self.handle_message_with_attachments(history, user_input, Vec::new()).await
+    }
+
+    /// Same as `handle_message`, but the current turn can carry image attachments (P28) —
+    /// only meaningful to providers/models that support multimodal input.
+    pub async fn handle_message_with_attachments(
+        &self,
+        history: &[Message],
+        user_input: &str,
+        attachments: Vec<Attachment>,
+    ) -> anyhow::Result<MessageOutcome> {
         let mut messages = Vec::new();
 
         let hits = self.vault.search(user_input, 8).unwrap_or_default();
@@ -78,7 +89,7 @@ impl Orchestrator {
         }
 
         messages.extend(history.iter().cloned());
-        messages.push(Message::user(user_input));
+        messages.push(Message::user_with_attachments(user_input, attachments));
 
         let tool_specs = self.tools.iter().map(|t| t.spec()).collect::<Vec<_>>();
 

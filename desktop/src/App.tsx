@@ -4,7 +4,7 @@ import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
-import type { ChatMessage, Conversation, Usage } from "./types";
+import type { Attachment, ChatMessage, Conversation, Usage } from "./types";
 
 function titleFromMessage(content: string): string {
   const collapsed = content.trim().replace(/\s+/g, " ");
@@ -47,18 +47,28 @@ function App() {
     });
   }
 
-  async function handleSendMessage(content: string) {
+  async function handleSendMessage(content: string, attachments: Attachment[] = []) {
     const conversationId = activeConversationId ?? crypto.randomUUID();
-    const history = (activeConversation?.messages ?? []).map(({ role, content }) => ({ role, content }));
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now() };
+    const history = (activeConversation?.messages ?? []).map(({ role, content, attachments }) => ({
+      role,
+      content,
+      attachments: attachments ?? [],
+    }));
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      createdAt: Date.now(),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
 
-    appendMessage(conversationId, userMessage, content);
+    appendMessage(conversationId, userMessage, content || "Image");
     if (activeConversationId === null) setActiveConversationId(conversationId);
 
     setSendError(null);
     setIsSending(true);
     try {
-      const reply = await invoke<{ content: string; usage?: Usage }>("send_message", { history, content });
+      const reply = await invoke<{ content: string; usage?: Usage }>("send_message", { history, content, attachments });
       appendMessage(conversationId, {
         id: crypto.randomUUID(),
         role: "assistant",

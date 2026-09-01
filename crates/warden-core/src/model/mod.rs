@@ -27,6 +27,16 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
+/// An inline image attached to a user message (P28, image-only for now — no generic file/PDF
+/// support, since that varies too much between providers, e.g. OpenAI needs a separate Files
+/// API upload). `data` is raw base64, without a `data:...;base64,` prefix.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub mime_type: String,
+    pub data: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Message {
     pub role: Role,
@@ -38,23 +48,29 @@ pub struct Message {
     /// Only set on `Role::Tool` messages: the name of the tool that ran
     /// (some providers, e.g. Gemini, key tool results by name rather than id).
     pub tool_name: Option<String>,
+    /// Only meaningful on `Role::User` messages — images attached to that turn (P28).
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None }
+        Self { role: Role::System, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None, attachments: Vec::new() }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None }
+        Self { role: Role::User, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None, attachments: Vec::new() }
+    }
+
+    pub fn user_with_attachments(content: impl Into<String>, attachments: Vec<Attachment>) -> Self {
+        Self { role: Role::User, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None, attachments }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None }
+        Self { role: Role::Assistant, content: content.into(), tool_calls: Vec::new(), tool_call_id: None, tool_name: None, attachments: Vec::new() }
     }
 
     pub fn assistant_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
-        Self { role: Role::Assistant, content: String::new(), tool_calls, tool_call_id: None, tool_name: None }
+        Self { role: Role::Assistant, content: String::new(), tool_calls, tool_call_id: None, tool_name: None, attachments: Vec::new() }
     }
 
     pub fn tool_result(tool_call: &ToolCall, content: impl Into<String>) -> Self {
@@ -64,6 +80,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call.id.clone()),
             tool_name: Some(tool_call.name.clone()),
+            attachments: Vec::new(),
         }
     }
 }

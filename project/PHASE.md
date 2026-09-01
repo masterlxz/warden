@@ -163,8 +163,15 @@ scaffold da 6.1 ainda é só o boilerplate padrão do template Tauri+React+Vite,
 antes de seguir pro resto do roadmap (ver `ROADMAP.md`). Settings ganhou um registry de
 provedores de verdade (Gemini/OpenAI/Anthropic/qualquer servidor OpenAI-compatível como Ollama —
 ver P22/P23 em `PENDING.md`, resolvidas, e as decisões correspondentes em `ARCHITECTURE.md`).
-Próximo passo dentro deste polish: nenhum item novo de UX geral foi pedido ainda além disso —
-revisitar se o usuário sinalizar mais pontos específicos.
+
+**Restyle do chat (Sessão 39, 2026-08-31)**: reformulação visual completa puxando pro estilo
+"AI product" (ChatGPT-like) — ver `ARCHITECTURE.md`.
+
+**Anexo de imagem no chat (Sessão 40, 2026-09-01)**: metade "imagem" de P28 resolvida — composer
+ganhou botão de anexo, `Message`/`ModelProvider` (`warden-core`) ganharam suporte multimodal real
+pros três providers. Ver `ARCHITECTURE.md` e `PENDING.md` (P28, só a parte de áudio segue em
+aberto). Próximo passo dentro deste polish: usuário confirma de ponta a ponta na janela real;
+depois disso, sem item novo de UX geral pendente além do que já está registrado em `PENDING.md`.
 
 ---
 

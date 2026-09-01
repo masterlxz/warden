@@ -61,3 +61,19 @@ export function SendIcon({ size = 18 }: { size?: number }) {
     </svg>
   );
 }
+
+export function AttachIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M18.5 6.5v9a4.5 4.5 0 0 1-9 0v-10a3 3 0 0 1 6 0v9a1.5 1.5 0 0 1-3 0v-8.5" />
+    </svg>
+  );
+}
+
+export function CloseIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
