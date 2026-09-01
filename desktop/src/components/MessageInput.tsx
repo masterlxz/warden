@@ -11,26 +11,6 @@ interface MessageInputProps {
   disabled?: boolean;
 }
 
-/** Candidates in preference order — the first one WebKitGTK/Chromium/Firefox actually supports
- * wins. Whisper accepts all of webm/ogg/mp4, so any of these works once picked. */
-const RECORDING_MIME_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4"];
-
-function pickRecordingMimeType(): string | undefined {
-  return RECORDING_MIME_CANDIDATES.find((type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type));
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      resolve(result.slice(result.indexOf(",") + 1));
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
 function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -39,8 +19,6 @@ function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -77,44 +55,23 @@ function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function startRecording() {
+  async function handleMicClick() {
     setRecordError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = pickRecordingMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        void handleRecordingStopped(recorder.mimeType || mimeType || "audio/webm");
-      };
-
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setIsRecording(true);
-    } catch (err) {
-      setRecordError(err instanceof Error ? err.message : String(err));
+    if (!isRecording) {
+      try {
+        await invoke("start_recording");
+        setIsRecording(true);
+      } catch (err) {
+        setRecordError(String(err));
+      }
+      return;
     }
-  }
 
-  function stopRecording() {
-    mediaRecorderRef.current?.stop();
     setIsRecording(false);
-  }
-
-  async function handleRecordingStopped(mimeType: string) {
-    const blob = new Blob(chunksRef.current, { type: mimeType });
-    chunksRef.current = [];
-    if (blob.size === 0) return;
-
     setIsTranscribing(true);
     try {
-      const data = await blobToBase64(blob);
-      const text = await invoke<string>("transcribe_audio", { audio: { mimeType, data } });
+      const audio = await invoke<Attachment>("stop_recording");
+      const text = await invoke<string>("transcribe_audio", { audio });
       const trimmed = text.trim();
       if (trimmed !== "") {
         setDraft((prev) => (prev.trim() === "" ? trimmed : `${prev} ${trimmed}`));
@@ -124,14 +81,6 @@ function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
       setRecordError(String(err));
     } finally {
       setIsTranscribing(false);
-    }
-  }
-
-  function handleMicClick() {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      void startRecording();
     }
   }
 

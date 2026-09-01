@@ -1,3 +1,5 @@
+mod recording;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -13,6 +15,8 @@ use warden_core::orchestrator::Orchestrator;
 
 struct AppState {
     orchestrator: Mutex<Result<Orchestrator, String>>,
+    /// Set between a `start_recording`/`stop_recording` pair (P28) — `None` otherwise.
+    recording: Mutex<Option<recording::ActiveRecording>>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -118,7 +122,8 @@ async fn send_message(
 }
 
 /// Filename handed to the Whisper API for a recorded clip — only the extension matters (the API
-/// infers format from it), derived from the mime type the composer's `MediaRecorder` picked.
+/// infers format from it). `stop_recording` always produces `audio/wav` (native capture, P28);
+/// the other cases are kept for robustness in case that ever changes.
 fn audio_filename_for_mime_type(mime_type: &str) -> &'static str {
     match mime_type {
         "audio/webm" => "audio.webm",
@@ -147,6 +152,30 @@ async fn transcribe_audio(audio: AttachmentPayload) -> Result<String, String> {
     let filename = audio_filename_for_mime_type(&audio.mime_type);
 
     warden_core::transcribe::transcribe_audio(&api_key, bytes, filename).await.map_err(|e| format!("{e:#}"))
+}
+
+/// Starts native mic capture for the composer's record button (P28) — see `recording` module's
+/// doc comment for why this doesn't use the browser's `getUserMedia` instead. Fails immediately
+/// if there's no microphone, rather than only once `stop_recording` is called.
+#[tauri::command]
+fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
+    let mut slot = state.recording.lock().unwrap();
+    if slot.is_some() {
+        return Err("Already recording".to_string());
+    }
+    *slot = Some(recording::start()?);
+    Ok(())
+}
+
+/// Stops the active recording and returns it as a WAV `AttachmentPayload`, ready to hand to
+/// `transcribe_audio`.
+#[tauri::command]
+fn stop_recording(state: State<'_, AppState>) -> Result<AttachmentPayload, String> {
+    let active = state.recording.lock().unwrap().take().ok_or_else(|| "Not recording".to_string())?;
+    let (samples, sample_rate) = active.stop()?;
+    let wav_bytes = recording::encode_wav(&samples, sample_rate)?;
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav_bytes);
+    Ok(AttachmentPayload { mime_type: "audio/wav".to_string(), data })
 }
 
 /// One entry of the provider registry (Sessão 35), as read/written by the Settings screen.
@@ -373,11 +402,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { orchestrator: Mutex::new(orchestrator) })
+        .manage(AppState { orchestrator: Mutex::new(orchestrator), recording: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             send_message,
             read_attachment,
             transcribe_audio,
+            start_recording,
+            stop_recording,
             get_settings,
             save_settings,
             list_conversations,

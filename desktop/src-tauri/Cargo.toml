@@ -25,6 +25,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64.workspace = true
 dirs.workspace = true
+# Native mic capture for voice input (P28) — sidesteps a known Tauri/wry limitation on Linux
+# where WebKitGTK denies every `getUserMedia` request by default (the app would need to hand-wire
+# WebKit's `permission-request` GObject signal itself, unsupported by Tauri: see
+# https://github.com/tauri-apps/tauri/issues/12547). Recording in the Rust backend instead avoids
+# the webview permission system entirely, and works the same on Windows/macOS too.
+cpal = "0.18"
+hound = "3.5"
 warden-bootstrap = { path = "../../crates/warden-bootstrap" }
 warden-core = { path = "../../crates/warden-core" }
 

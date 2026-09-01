@@ -27,27 +27,44 @@
   mesma forma mime+base64), lê a chave Whisper do config, erro claro se não configurada.
   `SettingsSnapshot`/`SettingsFormPayload` ganharam `whisper_key`
 - Settings: novo `ApiKeyField` "Whisper API key (voice input)" logo abaixo do Tavily
-- Composer: botão de microfone novo (`MicIcon`) ao lado do de anexo — grava via
-  `MediaRecorder`/`getUserMedia` (Web API padrão do browser, sem plugin/permissão Tauri nova),
-  escolhe o primeiro mime type suportado (webm/ogg/mp4), no stop converte pra base64 e chama
-  `transcribe_audio`; o texto transcrito cai no campo de mensagem pro usuário revisar antes de
-  mandar (não envia sozinho). Estado "gravando" com ícone vermelho pulsante
-  (`.chat-mic-btn--recording`, nova animação CSS)
+- Composer: botão de microfone novo (`MicIcon`) ao lado do de anexo. Texto transcrito cai no
+  campo de mensagem pro usuário revisar antes de mandar (não envia sozinho). Estado "gravando"
+  com ícone vermelho pulsante (`.chat-mic-btn--recording`, nova animação CSS)
 - Testes: 1 unitário novo (`transcribe.rs`, só desserialização da resposta `{"text": "..."}") —
   sem infra de mock HTTP no projeto, mesmo padrão da Sessão 40 (P29)
+- **Virada no meio da sessão**: a primeira implementação da gravação usava `MediaRecorder`/
+  `getUserMedia` do browser. O usuário testou na janela real e bateu direto no problema
+  registrado como risco em `PENDING.md` P30 — WebKitGTK nega `getUserMedia` por padrão no Linux
+  (`NotAllowedError`), porque o Tauri/wry nunca conecta o sinal `permission-request` que o WebKit
+  exige pra sequer perguntar (limitação conhecida, sem solução oficial do próprio time do Tauri —
+  issues [#12547](https://github.com/tauri-apps/tauri/issues/12547) e
+  [#8346](https://github.com/tauri-apps/tauri/issues/8346)). Perguntado ao usuário: hack
+  GTK-específico (conectar o sinal na mão, só resolve no Linux, abaixo do padrão de segurança do
+  próprio Tauri) vs captura nativa via `cpal` (cross-platform, já era o plano B documentado).
+  Usuário escolheu `cpal`. Implementado: novo módulo `desktop/src-tauri/src/recording.rs` — grava
+  numa thread OS dedicada (o `cpal::Stream` não é `Send` de forma confiável entre plataformas,
+  então nunca sai da thread que o criou), bloqueando num canal até `stop()` sinalizar; downmix de
+  qualquer formato (F32/I16/U16, qualquer nº de canais) pra mono `i16`; WAV via `hound`, devolvido
+  como o mesmo `AttachmentPayload` que a imagem já usa. Novos comandos IPC
+  `start_recording`/`stop_recording` substituem o `MediaRecorder` no frontend —
+  `transcribe_audio` não mudou nada (só passou a receber `audio/wav`)
+- **Imprevisto à parte**: o workspace ficou sem espaço em disco no meio da verificação
+  (`/home` 100% cheio, `target/` em 33G) — mesmo tipo de problema já visto na Sessão 39.
+  `cargo clean` (liberou os 33G) + rebuild do zero (~5min) resolveu; não é um problema do código
 - Verificação: `cargo build/test/clippy --workspace` limpos (`warden-core` com 25 testes,
-  `warden-bootstrap` com 25); `npx tsc --noEmit`/`npm run build` limpos; layout do botão de
-  microfone (parado e "gravando") conferido via screenshot Playwright, mesmo método das sessões
-  anteriores. **Não testado**: chamada real ao Whisper (sem chave neste shell) nem se
-  `getUserMedia` de fato funciona neste WebKitGTK — o maior risco não confirmável de antemão,
-  registrado como `PENDING.md` P30 (com plano B documentado em `ARCHITECTURE.md`: captura nativa
-  via `cpal` se o mic do browser não funcionar)
-- `project/PENDING.md` (P28 fechada pra input, reaberta só pra TTS output; P30 nova),
-  `project/ARCHITECTURE.md` (6 decisões novas)
+  `warden-bootstrap` com 25, ambos após o rebuild do zero); `npx tsc --noEmit`/`npm run build`
+  limpos (rodados de novo depois da virada pro `cpal`); layout do botão de microfone (parado e
+  "gravando") conferido via screenshot Playwright, mesmo método das sessões anteriores.
+  **Não testado ainda**: chamada real ao Whisper (sem chave neste shell) nem a captura de áudio
+  de ponta a ponta com a implementação `cpal` nova — registrado como `PENDING.md` P30 (atualizada
+  pra refletir a virada)
+- `project/PENDING.md` (P28 fechada pra input, reaberta só pra TTS output; P30 nova, depois
+  atualizada pra refletir a virada pro `cpal`), `project/ARCHITECTURE.md` (7 decisões, 1 revertida
+  no meio da sessão)
 
-**Próximo passo**: P30 (testar voz de ponta a ponta na janela real — inclusive se `getUserMedia`
-funciona nesse ambiente) e/ou P29 (mesmo teste pendente pro anexo de imagem, ainda não feito). Se
-`getUserMedia` não funcionar, avaliar o plano B (`cpal`) antes de considerar voz utilizável.
+**Próximo passo**: P30 (testar voz de ponta a ponta na janela real, agora com a captura nativa —
+colar uma chave Whisper em Settings, clicar no microfone, falar, checar a transcrição) e/ou P29
+(mesmo teste pendente pro anexo de imagem, ainda não feito).
 
 ---
 
