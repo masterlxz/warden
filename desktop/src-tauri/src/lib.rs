@@ -6,9 +6,10 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
-    bootstrap, default_config_path, default_conversations_dir, default_model_for, list_conversations as read_conversations,
-    load_config_from_path, oauth_credential_store_path, save_config, save_conversation as write_conversation, ApiKeys, Conversation,
-    FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig,
+    bootstrap, build_model_provider, default_config_path, default_conversations_dir, default_model_for,
+    list_conversations as read_conversations, load_config_from_path, oauth_credential_store_path, save_config,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
+    ProviderConfig,
 };
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
@@ -107,17 +108,41 @@ struct SendMessageResult {
     usage: Option<warden_core::model::Usage>,
 }
 
+/// `agent_id`/`provider_id` are the per-conversation selectors (closes P3) — the frontend sends
+/// an explicit `null` for either when not overriding, rather than omitting the key, so this stays
+/// unambiguous `Option<String>` deserialization. Both only ever affect this one call: `history`
+/// (built fresh from the conversation's stored messages each time) is what makes a mid-conversation
+/// switch apply "from here on" without needing to touch anything already said.
 #[tauri::command]
 async fn send_message(
     state: State<'_, AppState>,
     history: Vec<ChatTurn>,
     content: String,
     attachments: Vec<AttachmentPayload>,
+    agent_id: Option<String>,
+    provider_id: Option<String>,
 ) -> Result<SendMessageResult, String> {
-    let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
+    let mut orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
     let history: Vec<Message> = history.into_iter().map(Into::into).collect();
     let attachments: Vec<Attachment> = attachments.into_iter().map(Into::into).collect();
-    let outcome = orchestrator.handle_message_with_attachments(&history, &content, attachments).await.map_err(|e| format!("{e:#}"))?;
+
+    let mut persona = None;
+    if agent_id.is_some() || provider_id.is_some() {
+        let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+        let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+
+        if let Some(id) = &agent_id {
+            persona = config.agents.iter().find(|a| &a.id == id).map(|a| a.persona.clone());
+        }
+        if let Some(id) = &provider_id {
+            let provider = config.providers.iter().find(|p| &p.id == id).ok_or_else(|| format!("model provider '{id}' not found"))?;
+            let model = build_model_provider(provider, None).map_err(|e| format!("{e:#}"))?;
+            orchestrator = orchestrator.with_model(model);
+        }
+    }
+
+    let outcome =
+        orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult { content: outcome.content, usage: outcome.usage })
 }
 
@@ -211,6 +236,17 @@ struct ProviderPayload {
     model: String,
 }
 
+/// One entry of the agent registry (closes P3), as read/written by the Settings screen — same
+/// "flat list, `id` doubles as display name" shape as `ProviderPayload`. `provider_id` empty
+/// string means "no default model" (mirrors every other "not set" field in this file).
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AgentPayload {
+    id: String,
+    persona: String,
+    provider_id: String,
+}
+
 /// What the settings screen reads.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,6 +269,9 @@ struct SettingsSnapshot {
     /// payload type (unlike `ProviderPayload`, which needed one for the `camelCase` API key
     /// field names).
     mcp_servers: Vec<McpServerConfig>,
+    /// The agent registry (closes P3) — named personas a conversation can pick, alongside its
+    /// model.
+    agents: Vec<AgentPayload>,
 }
 
 #[derive(Deserialize)]
@@ -244,6 +283,7 @@ struct SettingsFormPayload {
     whisper_key: String,
     enable_shell: bool,
     mcp_servers: Vec<McpServerConfig>,
+    agents: Vec<AgentPayload>,
 }
 
 fn default_models_by_kind() -> std::collections::HashMap<String, String> {
@@ -277,6 +317,11 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         enable_shell: config.enable_shell.unwrap_or(false),
         default_models: default_models_by_kind(),
         mcp_servers: config.mcp_servers,
+        agents: config
+            .agents
+            .into_iter()
+            .map(|a| AgentPayload { id: a.id, persona: a.persona, provider_id: a.provider_id.unwrap_or_default() })
+            .collect(),
     })
 }
 
@@ -328,6 +373,19 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         });
     }
 
+    let mut agents = Vec::with_capacity(payload.agents.len());
+    let mut seen_agent_ids = std::collections::HashSet::new();
+    for a in payload.agents {
+        let id = a.id.trim().to_string();
+        if id.is_empty() {
+            return Err("every agent needs a name".to_string());
+        }
+        if !seen_agent_ids.insert(id.clone()) {
+            return Err(format!("duplicate agent name: {id}"));
+        }
+        agents.push(AgentConfig { id, persona: a.persona, provider_id: non_empty(a.provider_id) });
+    }
+
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     // The Telegram bot token (Fase 2) has no settings-screen UI yet (see PENDING.md P11) — only
     // hand-editable via config.toml. Carry it forward instead of defaulting to empty, so hitting
@@ -353,6 +411,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         providers,
         active_provider: non_empty(payload.active_provider),
         mcp_servers,
+        agents,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

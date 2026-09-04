@@ -52,6 +52,25 @@ pub struct ProviderConfig {
     pub model: Option<String>,
 }
 
+/// One named agent (a persona a conversation can pick, alongside its model) — closes P3
+/// (system-prompt/persona format). Same "flat list, `id` doubles as display name, collisions are
+/// the user's problem" shape as `ProviderConfig`, edited the same way from the desktop Settings
+/// screen.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// User-chosen, unique among `agents` — referenced by a `Conversation`'s `agent_id`.
+    pub id: String,
+    /// Free text, sent verbatim as a system-prompt message ahead of the vault context — no
+    /// structure/parsing imposed on it (the user's own explicit ask: just a text field describing
+    /// personality/behavior).
+    pub persona: String,
+    /// This agent's default model, referencing a `providers` entry by id. `None` means "use
+    /// whatever the conversation already has selected" — picking this agent in the desktop just
+    /// pre-fills the model selector with this when set, it isn't enforced afterward.
+    pub provider_id: Option<String>,
+}
+
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -83,6 +102,11 @@ pub struct FileConfig {
     /// advertises get registered alongside the built-in ones.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// The agent registry — named personas a conversation can pick, alongside its model (closes
+    /// P3). Empty by default; unlike `providers`, there's no "active" one — a conversation with
+    /// no `agent_id` just runs with no persona, the same behavior as before this existed.
+    #[serde(default)]
+    pub agents: Vec<AgentConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -238,6 +262,15 @@ pub struct Conversation {
     pub messages: Vec<ConversationMessage>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The agent/provider last selected for this conversation (the desktop's per-conversation
+    /// selectors), so reopening it restores the same choice. `#[serde(default)]` so conversations
+    /// saved before these existed still load — same retrocompatibility as `usage`/`attachments`
+    /// on `ConversationMessage`. `None` means "no override": no persona, and whatever
+    /// `active_provider` currently resolves to.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
 /// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
@@ -364,7 +397,15 @@ pub async fn handle_turn(
 ) -> anyhow::Result<MessageOutcome> {
     let mut conversation = load_conversation(conversations_dir, conversation_id)?.unwrap_or_else(|| {
         let now = now_millis();
-        Conversation { id: conversation_id.to_string(), title: title_from(title_seed), messages: Vec::new(), created_at: now, updated_at: now }
+        Conversation {
+            id: conversation_id.to_string(),
+            title: title_from(title_seed),
+            messages: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            agent_id: None,
+            provider_id: None,
+        }
     });
 
     let history: Vec<Message> = conversation.messages.iter().map(to_message).collect();
@@ -460,8 +501,10 @@ pub struct Overrides {
 }
 
 /// Builds the one `ModelProvider` the orchestrator will use, from a resolved `ProviderConfig` —
-/// shared by both the registry path and the legacy-fallback path in `resolve_model_provider`.
-fn build_model_provider(provider: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
+/// shared by both the registry path and the legacy-fallback path in `resolve_model_provider`, and
+/// (public since the per-conversation model selector) by the desktop's `send_message` to build a
+/// one-off model for a `provider_id` override without re-running `bootstrap()`.
+pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
     let model = model_override.or_else(|| provider.model.clone()).or_else(|| default_model_for(provider.kind).map(str::to_string)).ok_or_else(|| {
         anyhow::anyhow!("provider '{}' ({:?}) has no model configured and no default exists for this kind", provider.id, provider.kind)
     })?;
@@ -856,6 +899,11 @@ oauth = true
                     oauth: false,
                 },
             ],
+            agents: vec![AgentConfig {
+                id: "pirate".to_string(),
+                persona: "You are a pirate. Speak in pirate slang.".to_string(),
+                provider_id: Some("ollama-local".to_string()),
+            }],
         };
 
         save_config(&path, &config).unwrap();
@@ -902,6 +950,8 @@ oauth = true
             }],
             created_at: updated_at,
             updated_at,
+            agent_id: None,
+            provider_id: None,
         }
     }
 

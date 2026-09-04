@@ -31,6 +31,11 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
+  /** The agent/model last selected for this conversation (closes P3) — restores the same choice
+   * when reopening it. Absent means "no override": no persona, and whatever `activeProvider`
+   * currently resolves to. */
+  agentId?: string;
+  providerId?: string;
 }
 
 /** Mirrors `warden_bootstrap::Provider`. `openaiCompatible` covers any other server that speaks
@@ -86,6 +91,18 @@ export function isMcpServerHttp(server: McpServer): server is McpServerHttp {
   return "url" in server;
 }
 
+/** One named agent (closes P3) — a persona a conversation can pick, alongside its model. Same
+ * "flat list, `id` doubles as display name" shape as `ProviderEntry`. */
+export interface AgentEntry {
+  id: string;
+  /** Free text, sent verbatim as a system-prompt message — no structure imposed on it. */
+  persona: string;
+  /** This agent's default model, referencing a `ProviderEntry.id`. Empty string means "no
+   * default" — picking this agent just pre-fills the model selector with this when set, doesn't
+   * enforce it afterward. */
+  providerId: string;
+}
+
 /** What `get_settings` returns, and also what the settings form holds — the shapes are
  * identical so the fetched snapshot can be used directly as initial form state. */
 export interface Settings {
@@ -104,4 +121,5 @@ export interface Settings {
    * field's placeholder — no entry for `openaiCompatible`. */
   defaultModels: Record<string, string>;
   mcpServers: McpServer[];
+  agents: AgentEntry[];
 }

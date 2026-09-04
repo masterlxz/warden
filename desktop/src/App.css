@@ -204,6 +204,32 @@ body {
   background: var(--color-bg);
 }
 
+.chat-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-header-select {
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  padding: 0.35em 1.6em 0.35em 0.9em;
+  font-size: 0.85em;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  outline: none;
+  cursor: pointer;
+}
+
+.chat-header-select:focus,
+.chat-header-select:hover {
+  border-color: var(--color-accent);
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -756,6 +782,11 @@ body {
 .settings-input:focus,
 .settings-select:focus {
   border-color: var(--color-accent);
+}
+
+.settings-textarea {
+  resize: vertical;
+  line-height: 1.4;
 }
 
 .settings-key-field {

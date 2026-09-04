@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { McpServer, ProviderEntry, ProviderKind, Settings } from "../types";
+import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, Settings } from "../types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -13,6 +13,7 @@ const emptySettings: Settings = {
   enableShell: false,
   defaultModels: {},
   mcpServers: [],
+  agents: [],
 };
 
 const PROVIDER_KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
@@ -172,6 +173,78 @@ function ProviderCard({
           value={provider.model}
           onChange={(e) => onChange({ ...provider, model: e.currentTarget.value })}
         />
+      </label>
+    </div>
+  );
+}
+
+/** First name not already used by another agent — "agent-2", "agent-3", etc., same scheme as
+ * `nextProviderId`. */
+function nextAgentId(existing: AgentEntry[]): string {
+  let n = existing.length + 1;
+  while (existing.some((a) => a.id === `agent-${n}`)) {
+    n += 1;
+  }
+  return `agent-${n}`;
+}
+
+function AgentCard({
+  agent,
+  providers,
+  onChange,
+  onDelete,
+}: {
+  agent: AgentEntry;
+  providers: ProviderEntry[];
+  onChange: (next: AgentEntry) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="provider-card">
+      <div className="provider-card-header">
+        <input
+          className="settings-input provider-name-input"
+          type="text"
+          placeholder="Name (e.g. pirate)"
+          value={agent.id}
+          onChange={(e) => onChange({ ...agent, id: e.currentTarget.value })}
+        />
+        <button
+          type="button"
+          className="provider-delete-btn"
+          onClick={onDelete}
+          aria-label={`Delete ${agent.id || "this agent"}`}
+          title="Delete this agent"
+        >
+          🗑
+        </button>
+      </div>
+
+      <label className="settings-field">
+        <span className="settings-label">Personality</span>
+        <textarea
+          className="settings-input settings-textarea"
+          placeholder="Describe how this agent should behave, e.g. 'You are a terse, no-nonsense assistant who always answers in bullet points.'"
+          rows={3}
+          value={agent.persona}
+          onChange={(e) => onChange({ ...agent, persona: e.currentTarget.value })}
+        />
+      </label>
+
+      <label className="settings-field">
+        <span className="settings-label">Default model</span>
+        <select
+          className="settings-select"
+          value={agent.providerId}
+          onChange={(e) => onChange({ ...agent, providerId: e.currentTarget.value })}
+        >
+          <option value="">(use the conversation's active provider)</option>
+          {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.id}
+            </option>
+          ))}
+        </select>
       </label>
     </div>
   );
@@ -483,6 +556,18 @@ function SettingsView() {
     });
   }
 
+  function addAgent() {
+    setForm((f) => ({ ...f, agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "" }] }));
+  }
+
+  function updateAgent(index: number, next: AgentEntry) {
+    setForm((f) => ({ ...f, agents: f.agents.map((a, i) => (i === index ? next : a)) }));
+  }
+
+  function deleteAgent(index: number) {
+    setForm((f) => ({ ...f, agents: f.agents.filter((_, i) => i !== index) }));
+  }
+
   function addMcpServer(server: McpServer) {
     setForm((f) => ({ ...f, mcpServers: [...f.mcpServers, server] }));
   }
@@ -542,6 +627,18 @@ function SettingsView() {
       return;
     }
 
+    const namelessAgent = form.agents.find((a) => a.id.trim() === "");
+    if (namelessAgent) {
+      setError("Every agent needs a name.");
+      return;
+    }
+    const agentIds = form.agents.map((a) => a.id.trim());
+    const duplicateAgent = agentIds.find((id, i) => agentIds.indexOf(id) !== i);
+    if (duplicateAgent) {
+      setError(`Duplicate agent name: ${duplicateAgent}`);
+      return;
+    }
+
     setIsSaving(true);
     try {
       await invoke("save_settings", {
@@ -553,6 +650,7 @@ function SettingsView() {
           whisper_key: form.whisperKey,
           enable_shell: form.enableShell,
           mcp_servers: form.mcpServers,
+          agents: form.agents,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -598,6 +696,24 @@ function SettingsView() {
                 onDelete={() => deleteProvider(i)}
                 onSetActive={() => setForm((f) => ({ ...f, activeProvider: p.id }))}
               />
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Agents</h3>
+            <button type="button" className="settings-browse-btn" onClick={addAgent}>
+              + Add agent
+            </button>
+          </div>
+          <p className="settings-hint">
+            Give the agent a name and a personality — pick which one to use per conversation, alongside the model.
+          </p>
+          {form.agents.length === 0 && <p className="settings-hint">No agents configured yet — conversations use no persona by default.</p>}
+          <div className="provider-list">
+            {form.agents.map((a, i) => (
+              <AgentCard key={i} agent={a} providers={form.providers} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

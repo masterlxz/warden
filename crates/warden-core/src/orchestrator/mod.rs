@@ -52,6 +52,14 @@ impl Orchestrator {
         &self.vault
     }
 
+    /// Returns a copy of this orchestrator using a different model — cheap, since `model` is an
+    /// `Arc` and the rest of `Self` is `Clone` over `Arc`s/a `Vec<Arc<_>>`. Lets a caller (the
+    /// desktop's per-conversation model selector) swap the model for one call without re-running
+    /// `bootstrap()` (which would reconnect MCP servers, redo OAuth, etc.).
+    pub fn with_model(&self, model: Arc<dyn ModelProvider>) -> Self {
+        Self { model, ..self.clone() }
+    }
+
     /// Every tool currently registered — used by `warden-mcp-server` to re-expose this
     /// orchestrator's whole capability set (vault access, shell if enabled, whatever MCP servers
     /// were connected in `bootstrap()`, ...) as its own MCP server for third-party clients.
@@ -63,7 +71,7 @@ impl Orchestrator {
     /// as tracked by the caller — the orchestrator itself is stateless across calls. Pass `&[]`
     /// for a fresh conversation or a one-off sub-agent task.
     pub async fn handle_message(&self, history: &[Message], user_input: &str) -> anyhow::Result<MessageOutcome> {
-        self.handle_message_with_attachments(history, user_input, Vec::new()).await
+        self.handle_turn(history, user_input, Vec::new(), None).await
     }
 
     /// Same as `handle_message`, but the current turn can carry image attachments (P28) —
@@ -74,7 +82,28 @@ impl Orchestrator {
         user_input: &str,
         attachments: Vec<Attachment>,
     ) -> anyhow::Result<MessageOutcome> {
+        self.handle_turn(history, user_input, attachments, None).await
+    }
+
+    /// The general form both `handle_message` and `handle_message_with_attachments` wrap —
+    /// `system_prompt` is an agent's persona (a per-conversation concept, only the desktop's
+    /// `send_message` passes one; every other caller keeps getting `None`, unchanged behavior).
+    /// Ignored when empty/whitespace-only, so an agent with a blank persona field behaves like no
+    /// agent at all rather than sending a hollow system message.
+    pub async fn handle_turn(
+        &self,
+        history: &[Message],
+        user_input: &str,
+        attachments: Vec<Attachment>,
+        system_prompt: Option<&str>,
+    ) -> anyhow::Result<MessageOutcome> {
         let mut messages = Vec::new();
+
+        if let Some(persona) = system_prompt {
+            if !persona.trim().is_empty() {
+                messages.push(Message::system(persona.to_string()));
+            }
+        }
 
         let hits = self.vault.search(user_input, 8).unwrap_or_default();
         if !hits.is_empty() {
@@ -238,5 +267,53 @@ mod tests {
 
         let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
         assert_eq!(result.content, "done");
+    }
+
+    /// Echoes the first message's role/content back as its answer — lets a test assert on
+    /// exactly what `handle_turn` built without needing a separate recorder/mutex.
+    struct EchoesFirstMessageModel;
+
+    #[async_trait]
+    impl ModelProvider for EchoesFirstMessageModel {
+        async fn chat(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+            let first = messages.first().expect("at least one message");
+            Ok(Response { content: format!("{:?}:{}", first.role, first.content), tool_calls: Vec::new(), usage: None })
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_turn_prepends_the_persona_as_the_first_message() {
+        let orchestrator = Orchestrator::new(Arc::new(EchoesFirstMessageModel), temp_vault());
+
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), Some("You are a pirate.")).await.unwrap();
+        assert_eq!(result.content, "System:You are a pirate.");
+    }
+
+    #[tokio::test]
+    async fn handle_turn_ignores_a_blank_persona() {
+        let orchestrator = Orchestrator::new(Arc::new(EchoesFirstMessageModel), temp_vault());
+
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), Some("   ")).await.unwrap();
+        assert_eq!(result.content, "User:hi");
+    }
+
+    struct NamedModel {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl ModelProvider for NamedModel {
+        async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+            Ok(Response { content: self.name.to_string(), tool_calls: Vec::new(), usage: None })
+        }
+    }
+
+    #[tokio::test]
+    async fn with_model_swaps_the_model_used_without_touching_the_original() {
+        let orchestrator = Orchestrator::new(Arc::new(NamedModel { name: "a" }), temp_vault());
+        let swapped = orchestrator.with_model(Arc::new(NamedModel { name: "b" }));
+
+        assert_eq!(orchestrator.handle_message(&[], "hi").await.unwrap().content, "a");
+        assert_eq!(swapped.handle_message(&[], "hi").await.unwrap().content, "b");
     }
 }

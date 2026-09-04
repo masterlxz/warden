@@ -2,7 +2,62 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-03 (Sessão 42)
+> Última atualização: 2026-09-03 (Sessão 43)
+
+---
+
+### 2026-09-03 — Sessão 43
+
+- **Objetivo**: usuário pediu pra melhorar o app — perguntou como estava a gestão/criação de
+  memória hoje, e pediu pra poder criar múltiplos agentes nomeados com uma personalidade
+  configurável (texto livre), selecionáveis por conversa igual o modelo já podia ser selecionado
+  globalmente na Settings — e que o modelo também passasse a ser trocável por conversa, não só
+  globalmente. Fecha P3 (formato do prompt de sistema/persona), em aberto desde a Fase 1.
+
+**O que foi feito**:
+
+- Expliquei o estado atual da memória antes de implementar: o `Vault` é só uma pasta de markdown
+  em disco (compatível com Obsidian), busca por substring simples, duas tools (`read_file`/
+  `write_file`) que o modelo pode chamar — sem UI no desktop pra navegar/criar memórias
+  diretamente
+- Duas decisões de produto confirmadas com o usuário antes de implementar: agentes vivem no
+  `config.toml` como um registry (mesmo padrão dos providers, Sessão 35), não como arquivos no
+  vault; trocar agente/modelo no meio de uma conversa afeta só as mensagens daí pra frente
+- `crates/warden-core/src/orchestrator/mod.rs`: `handle_message`/`handle_message_with_attachments`
+  viraram wrappers finos de um `handle_turn` novo, mais geral, que aceita um `system_prompt:
+  Option<&str>` opcional (a persona do agente) — dá `push` dela como a primeira mensagem quando
+  não vazia, antes do contexto do vault. Zero mudança pros 3 canais existentes (CLI/Telegram/
+  WhatsApp) e pro `DelegateTool`. `Orchestrator` também ganhou `with_model(model) -> Self`,
+  barato (clona só bumps de `Arc`) — troca o modelo de uma chamada sem re-rodar `bootstrap()`
+  inteiro (que reconectaria MCP servers, refaria OAuth, etc.)
+- `crates/warden-bootstrap/src/lib.rs`: `AgentConfig { id, persona, provider_id }` novo,
+  `FileConfig.agents: Vec<AgentConfig>`; `Conversation` ganhou `agent_id`/`provider_id:
+  Option<String>` (`#[serde(default)]`, mesma retrocompatibilidade de `usage`/`attachments`) pra
+  lembrar a última seleção de cada conversa; `build_model_provider` (antes `fn` privada) virou
+  `pub` pro desktop poder construir um `ModelProvider` avulso a partir de um `provider_id`
+- IPC `send_message` (`desktop/src-tauri/src/lib.rs`) ganhou `agent_id`/`provider_id:
+  Option<String>` — só reconstrói o modelo quando `provider_id` de fato difere do provider ativo
+  (evita trabalho à toa no caso comum de não trocar nada). `get_settings`/`save_settings` ganharam
+  `agents: Vec<AgentPayload>`, com validação de nome vazio/duplicado (mesmo padrão de `providers`)
+- Frontend: nova seção "Agents" na Settings (`AgentCard` — nome, `<textarea>` de personalidade,
+  `<select>` de modelo padrão opcional — mirror de "Model providers"); nova barra `.chat-header`
+  no topo do `ChatArea` com dois `<select>` (Agent/Model); `App.tsx` busca `get_settings` no mount
+  e sempre que volta da tela de Settings, guarda a seleção corrente em estado, restaura a partir
+  de `Conversation.agentId`/`providerId` ao trocar de conversa (caindo pro default se o id salvo
+  não existir mais), e persiste a seleção atual a cada mensagem enviada
+- `cargo build/test/clippy --workspace` limpos — 3 testes novos em `orchestrator/mod.rs`
+  (`handle_turn_prepends_the_persona_as_the_first_message`, `handle_turn_ignores_a_blank_persona`,
+  `with_model_swaps_the_model_used_without_touching_the_original`) usando os mesmos mocks já
+  existentes no arquivo. `tsc`/`npm run build` limpos. Layout dos dois seletores na `.chat-header`
+  e do `AgentCard` na Settings conferido via screenshot de harness estático reaproveitando o
+  `App.css` de verdade, claro e escuro
+- `PENDING.md`: P3 fechado; nova pendência **P32** registrada pro teste de ponta a ponta contra
+  um provider real (mesma lacuna de P29/P30/P31 — sem chave de API no shell do agente)
+- `PHASE.md` (Fase 1 e Fase 6) e `ARCHITECTURE.md` atualizados com as decisões desta sessão
+
+**Próximo passo**: usuário confirmar de ponta a ponta na janela real (P32) — criar um agente,
+conversar, trocar de modelo/agente no meio da conversa. Sem outro item de UX geral pendente além
+do que já está em `PENDING.md`.
 
 ---
 

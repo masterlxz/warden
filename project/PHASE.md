@@ -24,8 +24,9 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 1.9 — Testes de integração do pipeline completo (CLI)
 - [x] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
 
-**Decisões pendentes**:
-- Formato do prompt de sistema (persona configurável)
+**Decisões pendentes**: nenhuma — a última, formato do prompt de sistema (persona configurável),
+foi resolvida na Sessão 43 (2026-09-03): agentes nomeados com persona em texto livre, registry no
+`config.toml`, ver `PENDING.md` (fecha P3) e Fase 6 abaixo pra UI.
 
 ---
 
@@ -183,6 +184,13 @@ fecha de vez (as três metades — imagem, input de voz, TTS — feitas). Ver `A
 `PENDING.md` (P29/P30/P31 seguem como os três testes de ponta a ponta ainda pendentes, todos
 bloqueados por falta de chave de API real no shell do agente). Sem item novo de UX geral pendente
 além do que já está registrado em `PENDING.md`.
+
+**Agentes nomeados + seletor por conversa (Sessão 43, 2026-09-03)**: fecha P3 (persona
+configurável, em aberto desde a Fase 1) — nova seção "Agents" na Settings (nome + personalidade
+em texto livre + modelo padrão opcional) e uma barra `.chat-header` nova no topo do chat com dois
+seletores (Agent/Model), escolhíveis por conversa e persistidos nela. Ver `ARCHITECTURE.md` e
+`PENDING.md` (P32 é o teste de ponta a ponta ainda pendente, mesma lacuna de chave de API real que
+P29/P30/P31).
 
 ---
 
