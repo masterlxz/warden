@@ -217,7 +217,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use warden_core::model::{Message, ModelProvider, Response};
+    use warden_core::model::{ChatStream, Message, ModelProvider, Response, response_stream};
     use warden_core::tool::ToolSpec;
 
     use super::*;
@@ -226,9 +226,9 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for EchoModel {
-        async fn chat(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
             let last_user = messages.iter().rev().find(|m| m.role == warden_core::model::Role::User).unwrap();
-            Ok(Response { content: format!("echo: {}", last_user.content), tool_calls: Vec::new(), usage: None })
+            Ok(response_stream(Response { content: format!("echo: {}", last_user.content), tool_calls: Vec::new(), usage: None }))
         }
     }
 

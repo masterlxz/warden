@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::memory::Vault;
-use crate::model::{Attachment, Message, ModelProvider, ToolCall, Usage};
+use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
@@ -85,6 +85,20 @@ impl Orchestrator {
         self.handle_turn(history, user_input, attachments, None).await
     }
 
+    /// Same as `handle_message`, but forwards every `StreamEvent` to `on_event` as it arrives —
+    /// the entry point a live UI (the CLI's ratatui-based interactive loop) uses to render
+    /// content as it streams in, instead of waiting for the whole turn to finish. Every other
+    /// caller (Telegram, WhatsApp, the desktop app, `DelegateTool`) keeps using `handle_message`,
+    /// which is just this with a no-op sink.
+    pub async fn handle_message_streaming(
+        &self,
+        history: &[Message],
+        user_input: &str,
+        on_event: impl FnMut(&StreamEvent) + Send,
+    ) -> anyhow::Result<MessageOutcome> {
+        self.handle_turn_streaming(history, user_input, Vec::new(), None, on_event).await
+    }
+
     /// The general form both `handle_message` and `handle_message_with_attachments` wrap —
     /// `system_prompt` is an agent's persona (a per-conversation concept, only the desktop's
     /// `send_message` passes one; every other caller keeps getting `None`, unchanged behavior).
@@ -96,6 +110,25 @@ impl Orchestrator {
         user_input: &str,
         attachments: Vec<Attachment>,
         system_prompt: Option<&str>,
+    ) -> anyhow::Result<MessageOutcome> {
+        self.handle_turn_streaming(history, user_input, attachments, system_prompt, |_| {}).await
+    }
+
+    /// The general, streaming-capable form every other `handle_*` method wraps. Each round of the
+    /// tool-call loop drives the model's `chat_stream` directly instead of the buffered `chat`,
+    /// forwarding every `StreamEvent` to `on_event` live — a non-streaming caller just passes a
+    /// no-op sink, so this is the one real implementation of the loop rather than two that could
+    /// drift apart. One new failure mode versus the old buffered-JSON world: a connection can now
+    /// drop *mid-stream*, after some content already arrived — that partial content is discarded
+    /// and the call still surfaces as a plain `Err`, exactly as a connection failure would have
+    /// looked before.
+    pub async fn handle_turn_streaming(
+        &self,
+        history: &[Message],
+        user_input: &str,
+        attachments: Vec<Attachment>,
+        system_prompt: Option<&str>,
+        mut on_event: impl FnMut(&StreamEvent) + Send,
     ) -> anyhow::Result<MessageOutcome> {
         let mut messages = Vec::new();
 
@@ -126,7 +159,8 @@ impl Orchestrator {
         let mut has_usage = false;
 
         for _ in 0..MAX_TOOL_ITERATIONS {
-            let response = self.model.chat(messages.clone(), tool_specs.clone()).await?;
+            let stream = self.model.chat_stream(messages.clone(), tool_specs.clone()).await?;
+            let response = crate::model::drain_chat_stream(stream, &mut on_event).await?;
 
             if let Some(u) = response.usage {
                 usage.prompt_tokens += u.prompt_tokens;
@@ -171,7 +205,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::model::{Response, Role};
+    use crate::model::{ChatStream, Response, Role, response_stream};
     use crate::tool::ToolSpec;
 
     struct MockModel {
@@ -180,19 +214,19 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for MockModel {
-        async fn chat(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
-                Ok(Response {
+                Ok(response_stream(Response {
                     content: String::new(),
                     tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "echo".to_string(), arguments: json!({ "text": "hi" }), thought_signature: None }],
                     usage: None,
-                })
+                }))
             } else {
                 let last = messages.last().expect("tool result should have been appended");
                 assert_eq!(last.role, Role::Tool);
                 assert!(last.content.contains("hi"));
-                Ok(Response { content: "done".to_string(), tool_calls: Vec::new(), usage: None })
+                Ok(response_stream(Response { content: "done".to_string(), tool_calls: Vec::new(), usage: None }))
             }
         }
     }
@@ -231,12 +265,12 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for AlwaysToolCallModel {
-        async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
-            Ok(Response {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            Ok(response_stream(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCall { id: "call_x".to_string(), name: "echo".to_string(), arguments: json!({}), thought_signature: None }],
                 usage: None,
-            })
+            }))
         }
     }
 
@@ -275,9 +309,9 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for EchoesFirstMessageModel {
-        async fn chat(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
             let first = messages.first().expect("at least one message");
-            Ok(Response { content: format!("{:?}:{}", first.role, first.content), tool_calls: Vec::new(), usage: None })
+            Ok(response_stream(Response { content: format!("{:?}:{}", first.role, first.content), tool_calls: Vec::new(), usage: None }))
         }
     }
 
@@ -303,8 +337,8 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for NamedModel {
-        async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
-            Ok(Response { content: self.name.to_string(), tool_calls: Vec::new(), usage: None })
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            Ok(response_stream(Response { content: self.name.to_string(), tool_calls: Vec::new(), usage: None }))
         }
     }
 
@@ -315,5 +349,65 @@ mod tests {
 
         assert_eq!(orchestrator.handle_message(&[], "hi").await.unwrap().content, "a");
         assert_eq!(swapped.handle_message(&[], "hi").await.unwrap().content, "b");
+    }
+
+    /// Emits its events directly (not via `response_stream`) so tests can assert on the exact
+    /// sequence `handle_turn_streaming` forwards to a live callback, not just the final result.
+    struct MultiDeltaModel;
+
+    #[async_trait]
+    impl ModelProvider for MultiDeltaModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![
+                Ok(StreamEvent::ContentDelta("Hel".to_string())),
+                Ok(StreamEvent::ContentDelta("lo".to_string())),
+                Ok(StreamEvent::Usage(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 })),
+            ];
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_message_streaming_forwards_every_event_in_order() {
+        let orchestrator = Orchestrator::new(Arc::new(MultiDeltaModel), temp_vault());
+        let observed = std::sync::Mutex::new(Vec::new());
+
+        let result = orchestrator.handle_message_streaming(&[], "hi", |event| observed.lock().unwrap().push(event.clone())).await.unwrap();
+
+        assert_eq!(result.content, "Hello");
+        assert_eq!(result.usage, Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }));
+
+        let observed = observed.into_inner().unwrap();
+        assert_eq!(observed.len(), 3);
+        assert!(matches!(&observed[0], StreamEvent::ContentDelta(s) if s == "Hel"));
+        assert!(matches!(&observed[1], StreamEvent::ContentDelta(s) if s == "lo"));
+        assert!(matches!(&observed[2], StreamEvent::Usage(_)));
+    }
+
+    /// A non-streaming caller (`handle_message`, no-op sink) must still get exactly the same
+    /// `MessageOutcome` as before streaming existed — proof the two paths haven't drifted apart.
+    #[tokio::test]
+    async fn handle_message_still_returns_the_full_accumulated_outcome() {
+        let orchestrator = Orchestrator::new(Arc::new(MultiDeltaModel), temp_vault());
+        let result = orchestrator.handle_message(&[], "hi").await.unwrap();
+        assert_eq!(result.content, "Hello");
+        assert_eq!(result.usage, Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }));
+    }
+
+    struct MidStreamErrorModel;
+
+    #[async_trait]
+    impl ModelProvider for MidStreamErrorModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![Ok(StreamEvent::ContentDelta("partial".to_string())), Err(anyhow::anyhow!("connection dropped"))];
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mid_stream_error_propagates_as_an_err() {
+        let orchestrator = Orchestrator::new(Arc::new(MidStreamErrorModel), temp_vault());
+        let result = orchestrator.handle_message(&[], "hi").await;
+        assert!(result.is_err());
     }
 }

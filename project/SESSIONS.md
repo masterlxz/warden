@@ -8,7 +8,9 @@
 
 ### 2026-09-04 — Sessão 46
 
-- **Objetivo**: usuário pediu um `/code-review high` focado no app desktop (`desktop/`).
+- **Objetivo**: usuário pediu um `/code-review high` focado no app desktop (`desktop/`); na
+  sequência, pediu pra retomar P8 — deixar o `warden-cli` "com cara de Claude Code, mas mais
+  bonitinho e menos focado em código".
 
 **O que foi feito**:
 
@@ -29,9 +31,53 @@
 - `PENDING.md`: nova pendência **P33**, já registrada direto em "Resolvidas" (achada e corrigida
   na mesma sessão)
 
-**Próximo passo**: nenhuma pendência de UX geral aberta além do que já estava em `PENDING.md`
-antes desta sessão (P24/P29/P30/P31). Usuário ainda não decidiu a próxima frente grande (Mobile
-vs. Terminal/CLI vs. outra coisa).
+**P8 — CLI com streaming real + `ratatui`**: perguntado o que "cara de Claude Code" envolvia
+concretamente, usuário confirmou querer os quatro itens juntos (caixa de input com borda, banner,
+streaming de resposta de verdade, barra de status com tempo decorrido) e, avisado do custo real
+(mudar `ModelProvider`/os 3 providers, reabrir a decisão de 2026-08-09 de não usar `ratatui`),
+escolheu ir fundo mesmo em vez da versão leve só-no-CLI. Plano desenhado com apoio de um agente de
+design (validou o desenho da trait e o mapeamento de eventos SSE por provider, inclusive a
+descoberta de que o `FunctionCall.args` do Gemini nunca chega picotado, ao contrário de
+OpenAI/Anthropic) antes de qualquer código.
+
+- `crates/warden-core/src/model/mod.rs`: `ModelProvider` ganhou `chat_stream` como único método
+  obrigatório; `chat()` virou um método **default** que drena o stream (`drain_chat_stream`,
+  `pub(crate)`, compartilhado com o orchestrator) — resultado prático: Telegram, WhatsApp, Desktop
+  (`send_message`) e `DelegateTool` **não mudaram nenhuma linha de código de produção**, só os 7
+  mocks de teste trocaram `chat` por `chat_stream` (mecânico, via `response_stream(Response) ->
+  ChatStream` novo). `StreamEvent` novo (`ContentDelta`/`ToolCallDelta`/`Usage`)
+- `openai.rs`/`anthropic.rs`/`gemini.rs`: streaming de verdade via SSE (`eventsource-stream` sobre
+  `reqwest::bytes_stream()`, `async-stream` pra montar cada `Stream`). Gotcha real corrigido:
+  OpenAI exige `stream_options.include_usage: true` ou o `usage` some em modo streaming; Anthropic
+  reporta usage partido em dois eventos (`message_start`/`message_delta`), combinados antes de
+  emitir. Gemini trocou pra `:streamGenerateContent?alt=sse` — como `args` é objeto JSON nativo no
+  wire (nunca string), o provider emite um `ToolCallDelta` inteiro de uma vez por function call,
+  sem precisar de nenhum caso especial no acumulador. Testes novos por provider (parsing de SSE
+  fabricado direto, sem HTTP) incluindo o teste de regressão da suposição do Gemini
+- `orchestrator/mod.rs`: `handle_turn` virou wrapper de `handle_turn_streaming` novo (uma só
+  implementação do loop de tool-calling, não duas que pudessem divergir); `handle_message_streaming`
+  novo é o único ponto de entrada que o CLI usa de verdade. Testes novos provam paridade com o
+  comportamento de antes de existir streaming, mais ordem dos eventos e erro no meio do stream
+- `crates/warden-cli/src/interactive.rs` reescrito: `ratatui` em modo `Viewport::Inline` (não
+  fullscreen — scrollback do terminal continua normal, ao contrário de um TUI de tela alternativa)
+  só pra caixa de input com borda e caixa de "pensando" (spinner + tempo decorrido + Ctrl+C pra
+  interromper); `rustyline` saiu, entrou um `LineEditor` próprio (cursor UTF-8-aware, histórico com
+  draft), testado isolado sem terminal nenhum (10 testes novos). Resposta impressa como texto puro
+  conforme chega assim que o primeiro delta aparece (sem markdown ao vivo — trade-off deliberado,
+  documentado em `ARCHITECTURE.md`). Ctrl+C aborta a chamada em andamento sem gravar resposta
+  parcial no histórico da conversa
+- `cargo build/test/clippy --workspace` limpos (48 testes no `warden-core`, 15 no `warden-cli`,
+  zero warning novo em nenhum crate, incluindo Desktop/Telegram/WhatsApp/MCP-server que não
+  precisaram de nenhuma mudança de código)
+- `PENDING.md`: P8 atualizado (não fechada — fica aberta a parte de "lançamento de agentes"), nova
+  pendência **P34** pro teste de ponta a ponta numa janela real (mesma limitação de sempre pra
+  automatizar terminal raw-mode a partir daqui). `ARCHITECTURE.md`: duas decisões novas
+
+**Próximo passo**: usuário confirmar visualmente numa janela real (P34) — abrir `cargo run -p
+warden-cli`, digitar, checar a caixa de borda, histórico ↑/↓, Ctrl+C interrompendo um streaming em
+andamento, e a transição da caixa de "pensando" pro texto da resposta chegando aos poucos. Sem
+outra pendência de UX geral aberta além do que já estava em `PENDING.md` antes desta sessão
+(P24/P29/P30/P31).
 
 ---
 

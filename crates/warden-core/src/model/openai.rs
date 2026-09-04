@@ -1,8 +1,11 @@
+use async_stream::try_stream;
 use async_trait::async_trait;
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
 use crate::tool::ToolSpec;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -41,6 +44,16 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatTool>,
+    stream: bool,
+    stream_options: StreamOptions,
+}
+
+/// Without `include_usage: true`, OpenAI's `stream: true` responses never carry a `usage` block
+/// at all — the token accounting `chat()`'s callers rely on (persisted by `warden-bootstrap`,
+/// shown in the CLI/Telegram footer) would silently become `None` for every streaming call.
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize)]
@@ -109,41 +122,87 @@ struct ChatToolFunction {
 }
 
 #[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-    #[serde(default)]
-    usage: Option<OpenAiUsage>,
-}
-
-#[derive(Deserialize)]
 struct OpenAiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
 }
 
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatResponseMessage,
+/// Shape of one SSE `data:` chunk under `stream: true`. `choices` is empty on the final
+/// usage-only chunk (only sent when `stream_options.include_usage` is set).
+#[derive(Deserialize, Default)]
+struct StreamChunk {
+    #[serde(default)]
+    choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
-struct ChatResponseMessage {
+struct StreamChoice {
+    delta: StreamDelta,
+}
+
+#[derive(Deserialize, Default)]
+struct StreamDelta {
+    #[serde(default)]
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<IncomingToolCall>,
+    tool_calls: Vec<StreamToolCall>,
 }
 
+/// `id`/`function.name` arrive once, on the first fragment for a given `index`; `function.
+/// arguments` arrives split across possibly many fragments at that same index, concatenated
+/// (never re-parsed) until the stream ends — see `ResponseAccumulator`.
 #[derive(Deserialize)]
-struct IncomingToolCall {
-    id: String,
-    function: IncomingFunctionCall,
+struct StreamToolCall {
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamFunctionCall>,
 }
 
-#[derive(Deserialize)]
-struct IncomingFunctionCall {
-    name: String,
-    arguments: String,
+#[derive(Deserialize, Default)]
+struct StreamFunctionCall {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// Maps one SSE `data:` payload to zero or more `StreamEvent`s. Split out from `chat_stream` so
+/// it can be unit-tested directly against canned chunk bodies, with no HTTP involved.
+fn map_stream_chunk(data: &str) -> anyhow::Result<Vec<StreamEvent>> {
+    let chunk: StreamChunk = serde_json::from_str(data)?;
+    let mut events = Vec::new();
+
+    if let Some(choice) = chunk.choices.into_iter().next() {
+        if let Some(content) = choice.delta.content {
+            if !content.is_empty() {
+                events.push(StreamEvent::ContentDelta(content));
+            }
+        }
+        for tc in choice.delta.tool_calls {
+            events.push(StreamEvent::ToolCallDelta {
+                index: tc.index,
+                id: tc.id,
+                name: tc.function.as_ref().and_then(|f| f.name.clone()),
+                arguments_delta: tc.function.and_then(|f| f.arguments),
+                thought_signature: None,
+            });
+        }
+    }
+
+    if let Some(usage) = chunk.usage {
+        events.push(StreamEvent::Usage(Usage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        }));
+    }
+
+    Ok(events)
 }
 
 fn role_str(role: Role) -> &'static str {
@@ -200,7 +259,7 @@ fn to_chat_message(message: Message) -> ChatMessage {
 
 #[async_trait]
 impl ModelProvider for OpenAiProvider {
-    async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+    async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let request = ChatRequest {
             model: self.model.clone(),
             messages: messages.into_iter().map(to_chat_message).collect(),
@@ -215,6 +274,8 @@ impl ModelProvider for OpenAiProvider {
                     },
                 })
                 .collect(),
+            stream: true,
+            stream_options: StreamOptions { include_usage: true },
         };
 
         let response = self
@@ -231,30 +292,18 @@ impl ModelProvider for OpenAiProvider {
             anyhow::bail!("OpenAI API error ({status}): {body}");
         }
 
-        let parsed: ChatResponse = response.json().await?;
-        let usage = parsed.usage.map(|u| Usage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        });
-        let message = parsed.choices.into_iter().next().map(|c| c.message);
-
-        let content = message.as_ref().and_then(|m| m.content.clone()).unwrap_or_default();
-        let tool_calls = message
-            .map(|m| {
-                m.tool_calls
-                    .into_iter()
-                    .map(|tc| ToolCall {
-                        id: tc.id,
-                        name: tc.function.name,
-                        arguments: serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null),
-                        thought_signature: None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(Response { content, tool_calls, usage })
+        Ok(Box::pin(try_stream! {
+            let mut frames = response.bytes_stream().eventsource();
+            while let Some(frame) = frames.next().await {
+                let frame = frame?;
+                if frame.data == "[DONE]" {
+                    break;
+                }
+                for event in map_stream_chunk(&frame.data)? {
+                    yield event;
+                }
+            }
+        }))
     }
 }
 
@@ -279,5 +328,50 @@ mod tests {
         assert_eq!(parts[0]["text"], "what's this?");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn a_content_delta_chunk_maps_to_one_content_delta_event() {
+        let events = map_stream_chunk(r#"{"choices":[{"delta":{"content":"Hel"}}]}"#).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], StreamEvent::ContentDelta(s) if s == "Hel"));
+    }
+
+    #[test]
+    fn an_empty_content_delta_produces_no_event() {
+        let events = map_stream_chunk(r#"{"choices":[{"delta":{}}]}"#).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn a_tool_call_delta_split_across_two_chunks_carries_id_and_name_only_on_the_first() {
+        let first = map_stream_chunk(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"search","arguments":""}}]}}]}"#).unwrap();
+        assert_eq!(first.len(), 1);
+        match &first[0] {
+            StreamEvent::ToolCallDelta { index, id, name, arguments_delta, .. } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id.as_deref(), Some("call_1"));
+                assert_eq!(name.as_deref(), Some("search"));
+                assert_eq!(arguments_delta.as_deref(), Some(""));
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+
+        let second = map_stream_chunk(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":1}"}}]}}]}"#).unwrap();
+        match &second[0] {
+            StreamEvent::ToolCallDelta { id, name, arguments_delta, .. } => {
+                assert_eq!(*id, None);
+                assert_eq!(*name, None);
+                assert_eq!(arguments_delta.as_deref(), Some(r#"{"q":1}"#));
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_usage_only_chunk_with_no_choices_maps_to_one_usage_event() {
+        let events = map_stream_chunk(r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], StreamEvent::Usage(u) if u.total_tokens == 15));
     }
 }

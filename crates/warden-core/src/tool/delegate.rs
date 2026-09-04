@@ -73,7 +73,7 @@ mod tests {
 
     use super::*;
     use crate::memory::Vault;
-    use crate::model::{Message, ModelProvider, Response};
+    use crate::model::{ChatStream, Message, ModelProvider, Response, response_stream};
 
     struct FixedAnswerModel {
         answer: String,
@@ -81,8 +81,8 @@ mod tests {
 
     #[async_trait]
     impl ModelProvider for FixedAnswerModel {
-        async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
-            Ok(Response { content: self.answer.clone(), tool_calls: Vec::new(), usage: None })
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            Ok(response_stream(Response { content: self.answer.clone(), tool_calls: Vec::new(), usage: None }))
         }
     }
 

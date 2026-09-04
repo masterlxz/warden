@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use warden_core::memory::Vault;
-use warden_core::model::{Message, ModelProvider, Response, Role, ToolCall};
+use warden_core::model::{ChatStream, Message, ModelProvider, Response, Role, ToolCall, response_stream};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
@@ -37,9 +37,9 @@ impl<F> ModelProvider for ScriptedModel<F>
 where
     F: Fn(usize, &[Message]) -> Response + Send + Sync,
 {
-    async fn chat(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+    async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok((self.step)(call, &messages))
+        Ok(response_stream((self.step)(call, &messages)))
     }
 }
 

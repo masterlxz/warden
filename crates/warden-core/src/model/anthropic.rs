@@ -1,8 +1,11 @@
+use async_stream::try_stream;
 use async_trait::async_trait;
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
 use crate::tool::ToolSpec;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -69,33 +72,108 @@ struct MessagesRequest {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<AnthropicTool>,
+    stream: bool,
 }
 
-#[derive(Deserialize, Default)]
-struct MessagesResponse {
-    #[serde(default)]
-    content: Vec<ResponseBlock>,
-    #[serde(default)]
-    usage: Option<AnthropicUsage>,
+/// One SSE event's `data:` payload, tagged by its own `type` field (mirrors the `event:` line,
+/// so there's no need to also thread `Event::event` through — see `map_stream_event`). Variants
+/// this integration doesn't act on (`ping`, block-stop markers) still need to parse successfully
+/// so an unremarkable event doesn't fail the whole stream.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamMessage {
+    MessageStart { message: MessageStartMessage },
+    ContentBlockStart { index: usize, content_block: StreamContentBlock },
+    ContentBlockDelta { index: usize, delta: StreamDelta },
+    ContentBlockStop,
+    MessageDelta { #[serde(default)] usage: Option<DeltaUsage> },
+    MessageStop,
+    Ping,
+    Error { error: StreamError },
 }
 
 #[derive(Deserialize)]
-struct AnthropicUsage {
+struct MessageStartMessage {
+    #[serde(default)]
+    usage: Option<StartUsage>,
+}
+
+#[derive(Deserialize)]
+struct StartUsage {
     #[serde(default)]
     input_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct DeltaUsage {
     #[serde(default)]
     output_tokens: u32,
 }
 
 #[derive(Deserialize)]
+struct StreamError {
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ResponseBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
-    /// Catches block types this integration doesn't act on (e.g. `thinking`,
-    /// `redacted_thinking`) instead of failing the whole response to parse.
+enum StreamContentBlock {
+    ToolUse { id: String, name: String },
+    /// Catches block types this integration doesn't act on at start time (e.g. plain `text`,
+    /// which needs no setup — its content arrives entirely via `content_block_delta`).
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamDelta {
+    TextDelta { text: String },
+    InputJsonDelta { partial_json: String },
+    #[serde(other)]
+    Other,
+}
+
+/// Maps one SSE `data:` payload to zero or more `StreamEvent`s. `input_tokens` threads across
+/// calls for one stream — Anthropic reports it once on `message_start` and only reports
+/// `output_tokens` later on `message_delta`, so the two halves of `Usage` have to be combined
+/// across two otherwise-unrelated events.
+fn map_stream_event(data: &str, input_tokens: &mut u32) -> anyhow::Result<Vec<StreamEvent>> {
+    let message: StreamMessage = serde_json::from_str(data)?;
+    let mut events = Vec::new();
+
+    match message {
+        StreamMessage::MessageStart { message } => {
+            if let Some(usage) = message.usage {
+                *input_tokens = usage.input_tokens;
+            }
+        }
+        StreamMessage::ContentBlockStart { index, content_block: StreamContentBlock::ToolUse { id, name } } => {
+            events.push(StreamEvent::ToolCallDelta { index, id: Some(id), name: Some(name), arguments_delta: None, thought_signature: None });
+        }
+        StreamMessage::ContentBlockStart { .. } => {}
+        StreamMessage::ContentBlockDelta { delta: StreamDelta::TextDelta { text }, .. } => {
+            events.push(StreamEvent::ContentDelta(text));
+        }
+        StreamMessage::ContentBlockDelta { index, delta: StreamDelta::InputJsonDelta { partial_json } } => {
+            events.push(StreamEvent::ToolCallDelta { index, id: None, name: None, arguments_delta: Some(partial_json), thought_signature: None });
+        }
+        StreamMessage::ContentBlockDelta { .. } => {}
+        StreamMessage::ContentBlockStop => {}
+        StreamMessage::MessageDelta { usage: Some(usage) } => {
+            events.push(StreamEvent::Usage(Usage {
+                prompt_tokens: *input_tokens,
+                completion_tokens: usage.output_tokens,
+                total_tokens: *input_tokens + usage.output_tokens,
+            }));
+        }
+        StreamMessage::MessageDelta { usage: None } => {}
+        StreamMessage::MessageStop | StreamMessage::Ping => {}
+        StreamMessage::Error { error } => anyhow::bail!("Anthropic stream error: {}", error.message),
+    }
+
+    Ok(events)
 }
 
 fn to_anthropic_message(message: Message) -> AnthropicMessage {
@@ -126,7 +204,7 @@ fn to_anthropic_message(message: Message) -> AnthropicMessage {
 
 #[async_trait]
 impl ModelProvider for AnthropicProvider {
-    async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+    async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system = None;
         let mut anthropic_messages = Vec::new();
         for message in messages {
@@ -143,6 +221,7 @@ impl ModelProvider for AnthropicProvider {
             system,
             messages: anthropic_messages,
             tools: tools.into_iter().map(|t| AnthropicTool { name: t.name, description: t.description, input_schema: t.parameters }).collect(),
+            stream: true,
         };
 
         let response = self
@@ -160,24 +239,16 @@ impl ModelProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API error ({status}): {body}");
         }
 
-        let parsed: MessagesResponse = response.json().await?;
-        let usage = parsed.usage.map(|u| Usage {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            total_tokens: u.input_tokens + u.output_tokens,
-        });
-
-        let mut content = String::new();
-        let mut tool_calls = Vec::new();
-        for block in parsed.content {
-            match block {
-                ResponseBlock::Text { text } => content.push_str(&text),
-                ResponseBlock::ToolUse { id, name, input } => tool_calls.push(ToolCall { id, name, arguments: input, thought_signature: None }),
-                ResponseBlock::Other => {}
+        Ok(Box::pin(try_stream! {
+            let mut input_tokens = 0u32;
+            let mut frames = response.bytes_stream().eventsource();
+            while let Some(frame) = frames.next().await {
+                let frame = frame?;
+                for event in map_stream_event(&frame.data, &mut input_tokens)? {
+                    yield event;
+                }
             }
-        }
-
-        Ok(Response { content, tool_calls, usage })
+        }))
     }
 }
 
@@ -206,5 +277,77 @@ mod tests {
         assert_eq!(content[0]["source"]["data"], "AAAA");
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content[1]["text"], "what's this?");
+    }
+
+    #[test]
+    fn a_text_delta_maps_to_one_content_delta_event() {
+        let mut input_tokens = 0;
+        let events = map_stream_event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#, &mut input_tokens).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], StreamEvent::ContentDelta(s) if s == "Hi"));
+    }
+
+    #[test]
+    fn a_tool_use_block_start_carries_id_and_name_with_no_arguments_yet() {
+        let mut input_tokens = 0;
+        let events = map_stream_event(r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"search","input":{}}}"#, &mut input_tokens).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCallDelta { index, id, name, arguments_delta, .. } => {
+                assert_eq!(*index, 1);
+                assert_eq!(id.as_deref(), Some("toolu_1"));
+                assert_eq!(name.as_deref(), Some("search"));
+                assert_eq!(*arguments_delta, None);
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_input_json_delta_carries_only_the_arguments_fragment() {
+        let mut input_tokens = 0;
+        let events = map_stream_event(r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}"#, &mut input_tokens).unwrap();
+        match &events[0] {
+            StreamEvent::ToolCallDelta { id, name, arguments_delta, .. } => {
+                assert_eq!(*id, None);
+                assert_eq!(*name, None);
+                assert_eq!(arguments_delta.as_deref(), Some(r#"{"q":"#));
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_is_combined_from_message_start_and_message_delta() {
+        let mut input_tokens = 0;
+        let start = map_stream_event(r#"{"type":"message_start","message":{"usage":{"input_tokens":25}}}"#, &mut input_tokens).unwrap();
+        assert!(start.is_empty());
+        assert_eq!(input_tokens, 25);
+
+        let delta = map_stream_event(r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}"#, &mut input_tokens).unwrap();
+        assert_eq!(delta.len(), 1);
+        match &delta[0] {
+            StreamEvent::Usage(usage) => {
+                assert_eq!(usage.prompt_tokens, 25);
+                assert_eq!(usage.completion_tokens, 15);
+                assert_eq!(usage.total_tokens, 40);
+            }
+            other => panic!("expected Usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ping_and_stop_events_produce_no_events_and_do_not_error() {
+        let mut input_tokens = 0;
+        assert!(map_stream_event(r#"{"type":"ping"}"#, &mut input_tokens).unwrap().is_empty());
+        assert!(map_stream_event(r#"{"type":"content_block_stop","index":0}"#, &mut input_tokens).unwrap().is_empty());
+        assert!(map_stream_event(r#"{"type":"message_stop"}"#, &mut input_tokens).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_error_event_bails_with_the_api_message() {
+        let mut input_tokens = 0;
+        let err = map_stream_event(r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#, &mut input_tokens).unwrap_err();
+        assert!(err.to_string().contains("Overloaded"));
     }
 }

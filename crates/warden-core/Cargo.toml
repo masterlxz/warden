@@ -5,7 +5,11 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-stream = "0.3"
 async-trait.workspace = true
+eventsource-stream = "0.2"
+futures-core = "0.3"
+futures-util = "0.3"
 http.workspace = true
 reqwest.workspace = true
 rmcp = { version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }

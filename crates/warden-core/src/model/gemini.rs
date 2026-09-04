@@ -1,8 +1,13 @@
+use async_stream::try_stream;
 use async_trait::async_trait;
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{Attachment, Message, ModelProvider, Response, Role, ToolCall, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
+#[cfg(test)]
+use super::ToolCall;
 use crate::tool::ToolSpec;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -176,9 +181,52 @@ fn to_content(message: Message) -> Content {
     }
 }
 
+/// Maps one SSE `data:` payload (same `GenerateResponse` shape as the non-streaming API, per
+/// `alt=sse` chunk) to zero or more `StreamEvent`s. `call_index` threads a running counter across
+/// the whole stream — Gemini's `FunctionCall.args` is a native JSON object on the wire, never a
+/// string, so unlike OpenAI/Anthropic it's structurally impossible for a call's arguments to
+/// arrive split across fragments; each function call shows up whole, in exactly one chunk, still
+/// needing a synthesized `id` the same way the non-streaming path did. `usage_metadata` is
+/// cumulative and typically repeated on every chunk — `ResponseAccumulator` just keeps the latest
+/// one it sees, so re-emitting it here each time it's present is harmless.
+fn map_stream_chunk(data: &str, call_index: &mut usize) -> anyhow::Result<Vec<StreamEvent>> {
+    let chunk: GenerateResponse = serde_json::from_str(data)?;
+    let mut events = Vec::new();
+
+    let parts = chunk.candidates.into_iter().next().map(|c| c.content.parts).unwrap_or_default();
+    for part in parts {
+        if let Some(text) = part.text {
+            if !text.is_empty() {
+                events.push(StreamEvent::ContentDelta(text));
+            }
+        }
+        if let Some(call) = part.function_call {
+            let index = *call_index;
+            *call_index += 1;
+            events.push(StreamEvent::ToolCallDelta {
+                index,
+                id: Some(format!("call_{index}")),
+                name: Some(call.name),
+                arguments_delta: Some(call.args.to_string()),
+                thought_signature: part.thought_signature,
+            });
+        }
+    }
+
+    if let Some(usage) = chunk.usage_metadata {
+        events.push(StreamEvent::Usage(Usage {
+            prompt_tokens: usage.prompt_token_count,
+            completion_tokens: usage.candidates_token_count,
+            total_tokens: usage.total_token_count,
+        }));
+    }
+
+    Ok(events)
+}
+
 #[async_trait]
 impl ModelProvider for GeminiProvider {
-    async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
+    async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system_instruction = None;
         let mut contents = Vec::new();
 
@@ -206,7 +254,7 @@ impl ModelProvider for GeminiProvider {
         };
 
         let request = GenerateRequest { contents, system_instruction, tools: gemini_tools };
-        let url = format!("{API_BASE}/{}:generateContent", self.model);
+        let url = format!("{API_BASE}/{}:streamGenerateContent?alt=sse", self.model);
 
         let response = self
             .client
@@ -222,30 +270,16 @@ impl ModelProvider for GeminiProvider {
             anyhow::bail!("Gemini API error ({status}): {body}");
         }
 
-        let parsed: GenerateResponse = response.json().await?;
-        let usage = parsed.usage_metadata.map(|u| Usage {
-            prompt_tokens: u.prompt_token_count,
-            completion_tokens: u.candidates_token_count,
-            total_tokens: u.total_token_count,
-        });
-        let parts = parsed.candidates.into_iter().next().map(|c| c.content.parts).unwrap_or_default();
-
-        let mut content = String::new();
-        let mut tool_calls = Vec::new();
-        for (i, part) in parts.into_iter().enumerate() {
-            if let Some(text) = part.text {
-                content.push_str(&text);
-            } else if let Some(call) = part.function_call {
-                tool_calls.push(ToolCall {
-                    id: format!("call_{i}"),
-                    name: call.name,
-                    arguments: call.args,
-                    thought_signature: part.thought_signature,
-                });
+        Ok(Box::pin(try_stream! {
+            let mut call_index = 0usize;
+            let mut frames = response.bytes_stream().eventsource();
+            while let Some(frame) = frames.next().await {
+                let frame = frame?;
+                for event in map_stream_chunk(&frame.data, &mut call_index)? {
+                    yield event;
+                }
             }
-        }
-
-        Ok(Response { content, tool_calls, usage })
+        }))
     }
 }
 
@@ -302,5 +336,46 @@ mod tests {
         let json = serde_json::to_value(to_content(message)).unwrap();
 
         assert!(json["parts"][0].get("thoughtSignature").is_none());
+    }
+
+    #[test]
+    fn a_text_chunk_maps_to_one_content_delta_event() {
+        let mut call_index = 0;
+        let events = map_stream_chunk(r#"{"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}"#, &mut call_index).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], StreamEvent::ContentDelta(s) if s == "Hel"));
+    }
+
+    /// Regression test for the design assumption this provider's streaming support leans on:
+    /// unlike OpenAI/Anthropic, a Gemini function call can never arrive split across fragments
+    /// (`args` is a native JSON object on the wire, not a concatenable string) — so a chunk
+    /// carrying a complete `functionCall` + its sibling `thoughtSignature` must map to exactly
+    /// one whole `ToolCallDelta`, with both fields populated in that single event.
+    #[test]
+    fn a_function_call_chunk_with_a_thought_signature_maps_to_one_whole_tool_call_delta() {
+        let mut call_index = 0;
+        let data = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"delegate_task","args":{"task":"say hi"}},"thoughtSignature":"opaque-blob"}]}}]}"#;
+        let events = map_stream_chunk(data, &mut call_index).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCallDelta { index, id, name, arguments_delta, thought_signature } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id.as_deref(), Some("call_0"));
+                assert_eq!(name.as_deref(), Some("delegate_task"));
+                assert_eq!(arguments_delta.as_deref(), Some(r#"{"task":"say hi"}"#));
+                assert_eq!(thought_signature.as_deref(), Some("opaque-blob"));
+            }
+            other => panic!("expected ToolCallDelta, got {other:?}"),
+        }
+        assert_eq!(call_index, 1);
+    }
+
+    #[test]
+    fn usage_metadata_maps_to_one_usage_event() {
+        let mut call_index = 0;
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}"#;
+        let events = map_stream_chunk(data, &mut call_index).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[1], StreamEvent::Usage(u) if u.total_tokens == 15));
     }
 }
