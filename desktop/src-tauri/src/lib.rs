@@ -383,7 +383,13 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         if !seen_agent_ids.insert(id.clone()) {
             return Err(format!("duplicate agent name: {id}"));
         }
-        agents.push(AgentConfig { id, persona: a.persona, provider_id: non_empty(a.provider_id) });
+        let provider_id = non_empty(a.provider_id);
+        if let Some(pid) = &provider_id {
+            if !providers.iter().any(|p| &p.id == pid) {
+                return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
+            }
+        }
+        agents.push(AgentConfig { id, persona: a.persona, provider_id });
     }
 
     let active_provider = non_empty(payload.active_provider);

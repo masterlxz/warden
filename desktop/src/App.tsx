@@ -66,7 +66,9 @@ function App() {
     // Pre-fills the model selector with the agent's default, if it has one — the user can still
     // change it afterward, this is just a convenience.
     const agent = settings.agents.find((a) => a.id === agentId);
-    if (agent?.providerId) setSelectedProviderId(agent.providerId);
+    if (agent?.providerId && settings.providers.some((p) => p.id === agent.providerId)) {
+      setSelectedProviderId(agent.providerId);
+    }
   }
 
   function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {

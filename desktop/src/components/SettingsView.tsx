@@ -565,7 +565,11 @@ function SettingsView() {
       const removed = f.providers[index];
       const providers = f.providers.filter((_, i) => i !== index);
       const activeProvider = f.activeProvider === removed.id ? (providers[0]?.id ?? "") : f.activeProvider;
-      return { ...f, providers, activeProvider };
+      // Same dangling-reference risk as the rename case in updateProvider: an agent whose
+      // default model was this provider must fall back to "no default" instead of keeping a
+      // providerId that no longer resolves to anything.
+      const agents = f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a));
+      return { ...f, providers, activeProvider, agents };
     });
   }
 

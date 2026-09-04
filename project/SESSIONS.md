@@ -2,7 +2,36 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-04 (Sessão 45)
+> Última atualização: 2026-09-04 (Sessão 46)
+
+---
+
+### 2026-09-04 — Sessão 46
+
+- **Objetivo**: usuário pediu um `/code-review high` focado no app desktop (`desktop/`).
+
+**O que foi feito**:
+
+- Rodado `/code-review high desktop` (fork em background) — achou uma lacuna real no mesmo
+  espírito do fix de P32 (Sessão 45): `updateProvider` já propaga rename de provider pro
+  `providerId` de agentes que o referenciam, mas `deleteProvider` não fazia o equivalente pro
+  caso de exclusão — só limpava `activeProvider`. `save_settings` (`lib.rs`) validava só
+  `active_provider` contra a lista de providers, nunca `agents[].provider_id`, deixando a
+  referência pendurada ser salva sem erro. O agente verificador do review achou um terceiro
+  ponto: `App.tsx::handleSelectAgent` aplicava `agent.providerId` sem o guard de existência já
+  usado em `App.tsx:60-61` pra restaurar provider de conversa
+- Aplicados os três fixes, espelhando o padrão já validado pro rename: `deleteProvider`
+  (`SettingsView.tsx`) zera `providerId` de agentes órfãos; `save_settings` (`lib.rs`) ganhou
+  validação de `agents[].provider_id`, recusando o Save com erro claro em vez de persistir
+  silencioso; `handleSelectAgent` (`App.tsx`) ganhou o mesmo guard de existência antes de aplicar
+  o provider padrão do agente
+- `cargo build/test/clippy --workspace` e `tsc`/`npm run build` (desktop) limpos
+- `PENDING.md`: nova pendência **P33**, já registrada direto em "Resolvidas" (achada e corrigida
+  na mesma sessão)
+
+**Próximo passo**: nenhuma pendência de UX geral aberta além do que já estava em `PENDING.md`
+antes desta sessão (P24/P29/P30/P31). Usuário ainda não decidiu a próxima frente grande (Mobile
+vs. Terminal/CLI vs. outra coisa).
 
 ---
 
