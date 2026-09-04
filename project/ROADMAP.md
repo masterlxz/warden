@@ -216,9 +216,20 @@ Permitir que terceiros escrevam plugins sem modificar o core:
 
 ### Voz
 
-- Entrada por voz (Speech-to-Text)
-- Resposta por voz (Text-to-Speech)
-- Chamada de voz via Telegram/WhatsApp
+- ✅ Entrada por voz (Speech-to-Text) — feito (P28, Sessão 41), via Whisper da OpenAI
+- ✅ Resposta por voz (Text-to-Speech) — feito (P28, Sessão 42), via `tts-1` da OpenAI
+- Chamada de voz via Telegram/WhatsApp — não iniciado
+- **Voz plugável além da OpenAI** (levantado pelo usuário 2026-09-04): hoje STT/TTS estão fixos
+  na OpenAI (`transcribe.rs`/`speech.rs`), independente de qual provider de chat está ativo —
+  diferente do registry de providers de chat, que já é trocável. Alternativas discutidas, sem
+  decisão de prioridade: **Gemini nativo** (já aceita áudio como entrada e tem TTS próprio —
+  reaproveitaria a chave do Gemini já cadastrada, sem precisar de conta OpenAI só pra voz);
+  **local via `whisper.cpp`** (STT sem chave/custo, mais privado — só cobre entrada, não existe
+  TTS local tão simples); **provedor dedicado de terceiros** (ex. ElevenLabs, quando qualidade de
+  voz sintetizada importa mais). Usuário optou por não implementar agora (2026-09-04) — registrar
+  como ideia de backlog. Se algum dia for retomado, o trabalho maior é abstrair uma trait de voz
+  de verdade (tipo `SpeechProvider`, plugável como `ModelProvider` já é) em vez de só trocar o
+  endpoint fixo
 
 ### Memória compartilhada entre múltiplos agentes
 
