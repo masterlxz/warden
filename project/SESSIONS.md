@@ -2,7 +2,50 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-01 (Sessão 41)
+> Última atualização: 2026-09-03 (Sessão 42)
+
+---
+
+### 2026-09-03 — Sessão 42
+
+- **Objetivo**: usuário pediu pra continuar o projeto; ofereci três frentes possíveis (App Mobile,
+  expandir MCP, ou fechar o TTS de P28) e ele escolheu fechar o TTS — a última das três metades de
+  P28 (Warden falar a resposta em voz).
+
+**O que foi feito**:
+
+- Duas decisões de produto confirmadas com o usuário antes de implementar: acionamento **manual**
+  por botão em cada mensagem (não autoplay), e **reaproveitar a chave `whisper`** já existente em
+  vez de pedir uma segunda API key (mesma conta OpenAI, dois endpoints de áudio)
+- Novo módulo `crates/warden-core/src/speech.rs`, espelhando `transcribe.rs`: `synthesize_speech`
+  faz `POST /v1/audio/speech` (`model: "tts-1"`, `voice: "alloy"`, fixos por enquanto) e devolve os
+  bytes crus do mp3 (sem envelope JSON, ao contrário da transcrição)
+- IPC novo `synthesize_speech` no desktop (`desktop/src-tauri/src/lib.rs`), mesma forma
+  `AttachmentPayload` mime+base64 de sempre, mesma validação de chave ausente que `transcribe_audio`
+  já tinha
+- `MessageBubble.tsx` ganhou um botão de áudio (`SpeakerIcon`/`StopIcon` novos em `Icons.tsx`)
+  junto da contagem de tokens, com três estados (idle/loading/playing) — toca via `<audio>` do
+  próprio browser; clicar durante a reprodução para e reseta pro início (toggle tocar/parar, não
+  play/pause)
+- Novo util `desktop/src/lib/stripMarkdown.ts` (regex simples, sem dependência nova) — sanitiza o
+  texto antes de mandar pro TTS, senão o `tts-1` lê a marcação markdown em voz alta
+- `SettingsView.tsx`: label do campo existente renomeado pra "OpenAI voice API key
+  (speech-to-text + text-to-speech)", deixando explícito que cobre as duas pontas agora — sem
+  campo novo
+- `cargo build/test/clippy --workspace` e `tsc`/`npm run build` limpos; sem teste unitário novo em
+  `speech.rs` (resposta é bytes crus, não há wire-shape JSON pra testar). Layout do botão nos dois
+  estados (idle e "tocando") conferido via screenshot de um harness estático reaproveitando o
+  `App.css` de verdade, claro e escuro (mesmo método das Sessões 39-41, já que `invoke()` não
+  existe fora do webview nativo do Tauri)
+- `PENDING.md`: P28 fechado de vez (as três metades feitas), nova pendência **P31** registrada
+  pro teste de ponta a ponta com uma chave de voz real (mesma lacuna que P29/P30)
+- `PHASE.md` (Fase 6) e `ARCHITECTURE.md` atualizados com as decisões desta sessão
+
+**Próximo passo**: nenhum item novo de UX geral pendente no Desktop além do que já está em
+`PENDING.md` — os três testes de ponta a ponta de voz/imagem (P29/P30/P31) seguem bloqueados por
+falta de chave de API real, sem prioridade imediata do usuário. Pelo `ROADMAP.md`, a próxima fase
+grande na ordem combinada é **App Mobile** (Fase 7), já que Tools & MCP (Fase 5) está quase
+completa.
 
 ---
 

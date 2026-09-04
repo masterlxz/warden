@@ -144,11 +144,14 @@ pub struct ApiKeys {
     /// Bot token from @BotFather (Fase 2) — only read by `warden-telegram`, not by `bootstrap()`
     /// itself, since a Telegram bot token isn't a model/tool secret the orchestrator needs.
     pub telegram_bot_token: Option<String>,
-    /// OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of the
-    /// active chat provider (same "own key, own capability" shape as `tavily` above), so voice
-    /// input works no matter which of the 3 chat providers is active. Only read directly by
-    /// desktop's `transcribe_audio` IPC command, not by `bootstrap()` — transcription isn't an
-    /// orchestrator `Tool`, it's a pre-processing step before `handle_message` ever runs.
+    /// OpenAI API key covering both ends of voice (P28 parts 2 and 3) — dedicated, independent
+    /// of the active chat provider (same "own key, own capability" shape as `tavily` above), so
+    /// voice works no matter which of the 3 chat providers is active. Named after the first
+    /// capability it enabled (Whisper transcription, Sessão 41); reused as-is for TTS (Sessão
+    /// 42, `/v1/audio/speech`) rather than adding a second key, since both are OpenAI audio
+    /// endpoints on the same account. Only read directly by desktop's `transcribe_audio`/
+    /// `synthesize_speech` IPC commands, not by `bootstrap()` — neither is an orchestrator
+    /// `Tool`, both run outside `handle_message` entirely (one before it, one after).
     pub whisper: Option<String>,
 }
 

@@ -154,6 +154,24 @@ async fn transcribe_audio(audio: AttachmentPayload) -> Result<String, String> {
     warden_core::transcribe::transcribe_audio(&api_key, bytes, filename).await.map_err(|e| format!("{e:#}"))
 }
 
+/// Synthesizes speech from an assistant message's text (P28 part 3, the per-message speaker
+/// button) — reuses the same Whisper API key as `transcribe_audio`, since both are OpenAI audio
+/// endpoints on the same account.
+#[tauri::command]
+async fn synthesize_speech(text: String) -> Result<AttachmentPayload, String> {
+    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    let api_key = config
+        .api_keys
+        .whisper
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| "Set a Whisper API key in Settings to enable text-to-speech".to_string())?;
+
+    let bytes = warden_core::speech::synthesize_speech(&api_key, &text).await.map_err(|e| format!("{e:#}"))?;
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+    Ok(AttachmentPayload { mime_type: "audio/mpeg".to_string(), data })
+}
+
 /// Starts native mic capture for the composer's record button (P28) — see `recording` module's
 /// doc comment for why this doesn't use the browser's `getUserMedia` instead. Fails immediately
 /// if there's no microphone, rather than only once `stop_recording` is called.
@@ -407,6 +425,7 @@ pub fn run() {
             send_message,
             read_attachment,
             transcribe_audio,
+            synthesize_speech,
             start_recording,
             stop_recording,
             get_settings,

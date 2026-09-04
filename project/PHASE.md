@@ -174,10 +174,15 @@ pros três providers. Ver `ARCHITECTURE.md` e `PENDING.md`.
 **Input de voz no chat (Sessão 41, 2026-09-01)**: metade "input" de áudio de P28 resolvida —
 composer ganhou botão de microfone, transcrição via Whisper (chave dedicada, independente do
 provider de chat ativo). Ver `ARCHITECTURE.md` e `PENDING.md` (P28 fica só com TTS na resposta em
-aberto; P29/P30 são os testes de ponta a ponta ainda pendentes pros dois anexos). Próximo passo
-dentro deste polish: usuário confirma os dois de ponta a ponta na janela real (inclusive se
-`getUserMedia` funciona nesse WebKitGTK); depois disso, sem item novo de UX geral pendente além
-do que já está registrado em `PENDING.md`.
+aberto; P29/P30 são os testes de ponta a ponta ainda pendentes pros dois anexos).
+
+**TTS na resposta (Sessão 42, 2026-09-03)**: última metade de P28 resolvida — cada resposta do
+assistente ganhou um botão de áudio (manual, não autoplay) que sintetiza fala via a mesma API de
+voz da OpenAI (`/v1/audio/speech`, chave `whisper` reaproveitada) e toca no próprio composer. P28
+fecha de vez (as três metades — imagem, input de voz, TTS — feitas). Ver `ARCHITECTURE.md` e
+`PENDING.md` (P29/P30/P31 seguem como os três testes de ponta a ponta ainda pendentes, todos
+bloqueados por falta de chave de API real no shell do agente). Sem item novo de UX geral pendente
+além do que já está registrado em `PENDING.md`.
 
 ---
 

@@ -332,10 +332,55 @@ body {
   margin-bottom: 0;
 }
 
-.message-bubble-usage {
+.message-bubble-footer {
   margin-top: 0.35em;
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.message-bubble-usage {
   font-size: 0.82em;
   color: var(--color-text-muted);
+}
+
+.message-speak-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  background-color: transparent;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.message-speak-btn:hover:not(:disabled) {
+  color: var(--color-accent);
+  background-color: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.message-speak-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.message-speak-btn--playing {
+  color: var(--color-accent);
+  animation: speak-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes speak-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 0%, transparent);
+  }
 }
 
 .message-bubble-content p,

@@ -86,3 +86,20 @@ export function MicIcon({ size = 18 }: { size?: number }) {
     </svg>
   );
 }
+
+export function SpeakerIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" strokeLinejoin="round" />
+      <path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" />
+    </svg>
+  );
+}
+
+export function StopIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}

@@ -651,7 +651,7 @@ function SettingsView() {
         />
 
         <ApiKeyField
-          label="Whisper API key (voice input)"
+          label="OpenAI voice API key (speech-to-text + text-to-speech)"
           value={form.whisperKey}
           onChange={(v) => setForm((f) => ({ ...f, whisperKey: v }))}
         />
