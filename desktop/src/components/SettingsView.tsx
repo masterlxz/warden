@@ -544,7 +544,20 @@ function SettingsView() {
   }
 
   function updateProvider(index: number, next: ProviderEntry) {
-    setForm((f) => ({ ...f, providers: f.providers.map((p, i) => (i === index ? next : p)) }));
+    setForm((f) => {
+      const prevId = f.providers[index]?.id;
+      const providers = f.providers.map((p, i) => (i === index ? next : p));
+      if (prevId === undefined || prevId === next.id) {
+        return { ...f, providers };
+      }
+      // Renaming a provider's id (the "Name" field doubles as its id, same scheme as
+      // nextProviderId) must carry the rename to whatever else in this form referenced the old
+      // id — otherwise "Active" and any agent's default model silently point at a name that no
+      // longer exists, and resolving it later fails with a raw "not found" error.
+      const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
+      const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
+      return { ...f, providers, activeProvider, agents };
+    });
   }
 
   function deleteProvider(index: number) {

@@ -172,7 +172,7 @@ impl ModelProvider for AnthropicProvider {
         for block in parsed.content {
             match block {
                 ResponseBlock::Text { text } => content.push_str(&text),
-                ResponseBlock::ToolUse { id, name, input } => tool_calls.push(ToolCall { id, name, arguments: input }),
+                ResponseBlock::ToolUse { id, name, input } => tool_calls.push(ToolCall { id, name, arguments: input, thought_signature: None }),
                 ResponseBlock::Other => {}
             }
         }

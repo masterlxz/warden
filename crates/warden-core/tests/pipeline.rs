@@ -63,6 +63,7 @@ async fn vault_context_and_read_file_tool_round_trip() {
                         id: "call_1".to_string(),
                         name: "read_file".to_string(),
                         arguments: json!({ "path": "notes/dentist.md" }),
+                        thought_signature: None,
                     }],
                     usage: None,
                 }
@@ -99,6 +100,7 @@ async fn delegate_task_round_trip_through_full_wiring() {
                     id: "call_1".to_string(),
                     name: "delegate_task".to_string(),
                     arguments: json!({ "task": "say hi" }),
+                    thought_signature: None,
                 }],
                 usage: None,
             },

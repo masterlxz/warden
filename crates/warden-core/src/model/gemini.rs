@@ -33,6 +33,10 @@ struct Part {
     function_call: Option<FunctionCallPart>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "functionResponse")]
     function_response: Option<FunctionResponsePart>,
+    /// Sibling of `functionCall` within the same part, not nested inside it — see
+    /// `ToolCall::thought_signature` for why this needs to round-trip at all.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "thoughtSignature")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +131,8 @@ struct ResponsePart {
     text: Option<String>,
     #[serde(default, rename = "functionCall")]
     function_call: Option<IncomingFunctionCall>,
+    #[serde(default, rename = "thoughtSignature")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -149,7 +155,11 @@ fn to_content(message: Message) -> Content {
             parts: message
                 .tool_calls
                 .into_iter()
-                .map(|tc| Part { function_call: Some(FunctionCallPart { name: tc.name, args: tc.arguments }), ..Default::default() })
+                .map(|tc| Part {
+                    function_call: Some(FunctionCallPart { name: tc.name, args: tc.arguments }),
+                    thought_signature: tc.thought_signature,
+                    ..Default::default()
+                })
                 .collect(),
         },
         Role::Assistant => Content { role: Some("model"), parts: vec![Part::text(message.content)] },
@@ -226,7 +236,12 @@ impl ModelProvider for GeminiProvider {
             if let Some(text) = part.text {
                 content.push_str(&text);
             } else if let Some(call) = part.function_call {
-                tool_calls.push(ToolCall { id: format!("call_{i}"), name: call.name, arguments: call.args });
+                tool_calls.push(ToolCall {
+                    id: format!("call_{i}"),
+                    name: call.name,
+                    arguments: call.args,
+                    thought_signature: part.thought_signature,
+                });
             }
         }
 
@@ -256,5 +271,36 @@ mod tests {
         assert_eq!(parts[0]["inlineData"]["mimeType"], "image/webp");
         assert_eq!(parts[0]["inlineData"]["data"], "AAAA");
         assert_eq!(parts[1]["text"], "what's this?");
+    }
+
+    /// Gemini's "thinking" models reject a follow-up request that's missing this on a
+    /// function-call part it previously returned it on (400 INVALID_ARGUMENT) — confirms it
+    /// round-trips as a sibling of `functionCall`, not nested inside it.
+    #[test]
+    fn a_tool_calls_thought_signature_is_echoed_back_as_a_sibling_of_function_call() {
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            name: "delegate_task".to_string(),
+            arguments: json!({ "task": "say hi" }),
+            thought_signature: Some("opaque-blob".to_string()),
+        };
+        let message = Message::assistant_tool_calls(vec![tool_call]);
+        let json = serde_json::to_value(to_content(message)).unwrap();
+
+        let parts = json["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["functionCall"]["name"], "delegate_task");
+        assert_eq!(parts[0]["thoughtSignature"], "opaque-blob");
+    }
+
+    /// When the provider never returned a signature (older/non-thinking models), nothing new
+    /// should appear on the wire — same shape as before this field existed.
+    #[test]
+    fn a_missing_thought_signature_is_omitted_from_the_wire_payload() {
+        let tool_call = ToolCall { id: "call_1".to_string(), name: "read_file".to_string(), arguments: json!({}), thought_signature: None };
+        let message = Message::assistant_tool_calls(vec![tool_call]);
+        let json = serde_json::to_value(to_content(message)).unwrap();
+
+        assert!(json["parts"][0].get("thoughtSignature").is_none());
     }
 }

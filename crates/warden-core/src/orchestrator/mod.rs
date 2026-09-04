@@ -185,7 +185,7 @@ mod tests {
             if call == 0 {
                 Ok(Response {
                     content: String::new(),
-                    tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "echo".to_string(), arguments: json!({ "text": "hi" }) }],
+                    tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "echo".to_string(), arguments: json!({ "text": "hi" }), thought_signature: None }],
                     usage: None,
                 })
             } else {
@@ -234,7 +234,7 @@ mod tests {
         async fn chat(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
             Ok(Response {
                 content: String::new(),
-                tool_calls: vec![ToolCall { id: "call_x".to_string(), name: "echo".to_string(), arguments: json!({}) }],
+                tool_calls: vec![ToolCall { id: "call_x".to_string(), name: "echo".to_string(), arguments: json!({}), thought_signature: None }],
                 usage: None,
             })
         }

@@ -25,6 +25,12 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    /// Gemini's "thinking" models (e.g. `gemini-3.x`) attach an opaque signature to a
+    /// function-call part and then require it echoed back on that same part in the next turn's
+    /// request — omitting it makes the API reject the request outright (400 INVALID_ARGUMENT)
+    /// once the conversation has more than one turn involving a tool call. Always `None` for
+    /// OpenAI/Anthropic, which have no equivalent concept.
+    pub thought_signature: Option<String>,
 }
 
 /// An inline image attached to a user message (P28, image-only for now — no generic file/PDF

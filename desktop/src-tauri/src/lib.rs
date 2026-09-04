@@ -386,6 +386,13 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         agents.push(AgentConfig { id, persona: a.persona, provider_id: non_empty(a.provider_id) });
     }
 
+    let active_provider = non_empty(payload.active_provider);
+    if let Some(active_id) = &active_provider {
+        if !providers.iter().any(|p| &p.id == active_id) {
+            return Err(format!("active provider '{active_id}' is not one of the configured providers"));
+        }
+    }
+
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     // The Telegram bot token (Fase 2) has no settings-screen UI yet (see PENDING.md P11) — only
     // hand-editable via config.toml. Carry it forward instead of defaulting to empty, so hitting
@@ -409,7 +416,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
             whisper: non_empty(payload.whisper_key),
         },
         providers,
-        active_provider: non_empty(payload.active_provider),
+        active_provider,
         mcp_servers,
         agents,
     };

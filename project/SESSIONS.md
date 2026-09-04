@@ -2,7 +2,79 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-03 (Sessão 43)
+> Última atualização: 2026-09-04 (Sessão 45)
+
+---
+
+### 2026-09-04 — Sessão 45
+
+- **Objetivo**: Continuar de onde a Sessão 44 parou — puxar P32 (teste de ponta a ponta dos
+  agentes nomeados + seletores por conversa da Sessão 43, ainda sem chave de API real disponível
+  até então). Usuário topou testar ao vivo.
+
+**O que foi feito**:
+
+- Subi o app desktop de verdade (`npm run tauri dev`, build limpo) pro usuário testar na janela
+  nativa. Confirmado de saída: não dá pra automatizar clique/teclado nela por aqui — é um cliente
+  Wayland nativo (KDE/KWin), `xdotool` (só XWayland) nem enxerga a janela — mesma limitação já
+  registrada em sessões anteriores. Teste ficou por conta do usuário, com acompanhamento aqui
+- Usuário cadastrou uma chave Gemini real em Settings e bateu em dois bugs reais em sequência,
+  ambos investigados e corrigidos na hora (detalhes em `ARCHITECTURE.md`):
+  1. **`active_provider` órfão** — renomear o "Name" de um provider em Settings edita `provider.id`
+     direto, mas nada sincronizava `activeProvider`/`agent.providerId` com o rename. O usuário criou
+     um provider (id automático `provider-1`), renomeou pra `gemini`, `active_provider` ficou preso
+     no nome antigo — `save_settings` aceitava sem validar, só quebrava depois ao mandar mensagem
+     (`active_provider 'provider-1' not found among configured providers`). Corrigido nos dois
+     lados: `SettingsView.tsx` (`updateProvider` agora propaga o rename) e `desktop/src-tauri/src/
+     lib.rs` (`save_settings` ganhou validação nova — recusa um `active_provider` que não bate com
+     nenhum provider da lista, com erro claro no Save em vez de só no envio)
+  2. **Gemini "thinking" rejeitando `functionCall` sem `thoughtSignature`** — depois do fix acima,
+     a mensagem chegou de verdade na API (confirmado por um 503 transiente do lado do Google, não
+     bug nosso), mas a segunda tentativa deu 400 INVALID_ARGUMENT assim que o modelo chamou
+     `delegate_task`: `gemini-3.5-flash` é um modelo "thinking" que anexa um `thoughtSignature`
+     opaco à `Part` de um `functionCall` e exige o mesmo valor de volta no turno seguinte — o
+     `ToolCall` compartilhado (`warden_core::model`) não carregava esse dado, então nenhuma
+     chamada de tool sobrevivia a mais de um turno contra o Gemini. Corrigido: `ToolCall` ganhou
+     `thought_signature: Option<String>` (sempre `None` pra OpenAI/Anthropic), `GeminiProvider`
+     captura o campo (`ResponsePart.thought_signature`, sibling de `functionCall`, não aninhado) e
+     reenvia no `Part` reconstruído em `to_content()`. 2 testes novos em `gemini.rs`
+- Usuário confirmou: reenviou a mensagem depois dos dois fixes, a resposta refletiu a persona do
+  agente "pirata" criado em Settings — P32 fechado
+- `cargo build/test/clippy --workspace` limpos (30 testes na lib de `warden-core`, incluindo os 2
+  novos do Gemini; nenhum teste quebrou apesar do campo novo em `ToolCall`, que exigiu atualizar 6
+  sites de construção — 3 em código de produção, 3 em mocks de teste/`pipeline.rs`); `tsc` limpo.
+  App recompilou sozinho via o watcher do `tauri dev` durante as edições
+- `project/PENDING.md` (P32 movido pra "Resolvidas", descrevendo os dois bugs achados no processo),
+  `project/ARCHITECTURE.md` (2 decisões/fixes novos), `project/SESSIONS.md` (esta entrada e a 44,
+  retroativa — o commit de backlog de voz da sessão anterior nunca tinha ganhado uma entrada aqui)
+
+**Próximo passo**: nenhuma pendência de UX geral aberta além do que já está em `PENDING.md`
+(P29/P30/P31 — testes de imagem/voz de ponta a ponta, adiados sem prioridade; P24 — Fase 4 precisa
+repensar IPFS→Arweave). Pelo `ROADMAP.md`, o próximo item grande na ordem combinada é **App Mobile**
+(Fase 7).
+
+---
+
+### 2026-09-04 — Sessão 44
+
+- **Objetivo**: Usuário perguntou se dava pra usar outros provedores além da OpenAI pra voz
+  (STT/TTS) — pergunta exploratória, não pedido de implementação.
+
+**O que foi feito**:
+
+- Expliquei o estado atual: `transcribe.rs`/`speech.rs` (Sessões 41/42) estão fixos na OpenAI
+  (Whisper/`tts-1`), independente de qual provider de chat está ativo — diferente do registry de
+  `ModelProvider`, que já é plugável
+- Levantadas as alternativas, sem decisão de prioridade: Gemini nativo (já aceita áudio de entrada
+  e tem TTS próprio, reaproveitaria a chave já cadastrada), `whisper.cpp` local (STT sem
+  custo/chave, mais privado, mas sem TTS local equivalente), provedor dedicado de terceiros (ex.
+  ElevenLabs, quando qualidade de síntese importa mais)
+- Usuário optou por não implementar agora — registrado como ideia de backlog em `ROADMAP.md`
+  ("Voz plugável além da OpenAI"), sem pendência nova em `PENDING.md` (é uma ideia levantada, não
+  uma lacuna encontrada numa feature já implementada)
+
+**Próximo passo**: nenhum, decisão foi só registrar. Usuário retomou pedindo pra continuar o
+projeto na sessão seguinte (Sessão 45).
 
 ---
 

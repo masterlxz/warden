@@ -248,6 +248,7 @@ impl ModelProvider for OpenAiProvider {
                         id: tc.id,
                         name: tc.function.name,
                         arguments: serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null),
+                        thought_signature: None,
                     })
                     .collect()
             })
