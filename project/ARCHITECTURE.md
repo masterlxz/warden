@@ -207,3 +207,41 @@ O orquestrador não sabe de onde veio a mensagem — só processa e responde.
 
 - **Invocação leve (v1)**: agente principal chama sub-agente escopado pra tarefa específica, contexto reduzido, devolve resultado, encerra. Implementado como `DelegateTool` (`crates/warden-core/src/tool/delegate.rs`, tool `delegate_task`) — internamente é só mais um `Orchestrator` completo (mesmo `model`, mesmo `vault`, subconjunto de tools escolhido pelo chamador, nunca incluindo outro `DelegateTool`), reaproveitando 100% do loop de tool-calling existente em vez de duplicar lógica
 - **Sub-agentes autônomos (fora de escopo v1)**: criam outros agentes recursivamente, precisam de fila de jobs, controle de custo, isolamento — fica pra depois
+
+---
+
+## Comandos de barra no `warden-cli` (`/models`, `/agents`) — Sessão 49
+
+Trazem pro terminal a mesma gestão de provedores/agentes que o desktop só tinha
+na Settings, escrevendo no mesmo `config.toml` — decisões que valem registrar:
+
+- **Estado de seleção é por sessão do processo, não persistido** — dois
+  `Option<String>` (`CliSession.provider_id`/`agent_id`) dentro de
+  `interactive.rs`, nunca guardando um `Arc<dyn ModelProvider>` ou persona
+  resolvidos. Antes de cada turno que tem alguma seleção ativa, o config é
+  **relido do disco na hora** (`resolve_turn_context`) — mesmo padrão que o
+  `send_message` do desktop já usava pra nunca cachear um objeto resolvido
+  entre chamadas, evitando ficar com uma referência obsoleta depois de um
+  rename/delete no meio da sessão. Quando nenhuma seleção está ativa, zero
+  leitura de disco extra por turno — comportamento idêntico ao de antes dessa
+  feature existir.
+- **Cascade de rename/delete de provider** (mesmas regras já validadas no
+  desktop, P32/P33) **não existia em Rust** — só no `SettingsView.tsx` do
+  frontend, que edita um rascunho local e só persiste no Save. Como o CLI
+  comita cada comando direto no disco (sem esse rascunho), a cascade virou
+  código de verdade em `warden-bootstrap` (`rename_provider_cascade`,
+  `remove_provider_references`) — puro, testável sem terminal, atualiza
+  `active_provider` e todo `agents[].provider_id` que apontava pro id
+  velho/removido. O CLI soma a isso limpar seu próprio estado de sessão em
+  memória quando apontava pro id afetado (o desktop não tem esse conceito).
+- **Wizard de múltiplos campos reaproveita o `LineEditor` existente**, não um
+  crate de formulário novo — `read_line`/`render_input_box` foram só
+  parametrizados (`drive_line_editor` extraído do loop de teclas, título da
+  caixa virou argumento) e ganharam um `read_field(title, initial)` que
+  pré-preenche o buffer (Enter sem editar aceita o valor atual/default,
+  `Ctrl+D` em campo vazio cancela o wizard inteiro).
+- **Limitações aceitas deliberadamente**: persona de agente é uma linha só
+  (sem textarea no editor hand-rolled); chave de API digitada no wizard não é
+  mascarada (some da tela no próximo `clear()`, nunca vai pro arquivo de
+  histórico); só o REPL interativo ganhou os comandos — `run_plain` (stdin via
+  pipe, só usado por teste) não.

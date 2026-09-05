@@ -213,6 +213,35 @@ pub fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("config.toml"))
 }
 
+/// Propagates a provider id rename to everything in `config` that referenced the old id —
+/// `active_provider` and every agent's `provider_id` — so renaming a provider from a caller that
+/// commits straight to disk (the CLI's `/models edit`, unlike the desktop's edit-then-Save form)
+/// can't leave a dangling reference the way P32 did before the desktop's `SettingsView.tsx` grew
+/// the same cascade in its local draft state.
+pub fn rename_provider_cascade(config: &mut FileConfig, old_id: &str, new_id: &str) {
+    if config.active_provider.as_deref() == Some(old_id) {
+        config.active_provider = Some(new_id.to_string());
+    }
+    for agent in &mut config.agents {
+        if agent.provider_id.as_deref() == Some(old_id) {
+            agent.provider_id = Some(new_id.to_string());
+        }
+    }
+}
+
+/// Clears every reference to a provider id that's about to be removed from `config` — same
+/// cascade as `rename_provider_cascade`, for the P33 case (deleting rather than renaming).
+pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
+    if config.active_provider.as_deref() == Some(removed_id) {
+        config.active_provider = None;
+    }
+    for agent in &mut config.agents {
+        if agent.provider_id.as_deref() == Some(removed_id) {
+            agent.provider_id = None;
+        }
+    }
+}
+
 /// Where an OAuth-authenticated MCP server's persisted token lives (PENDING.md P26) — one JSON
 /// file per server, keyed by name. Names outside `[a-zA-Z0-9_-]` are sanitized to `_`; two server
 /// names that only differ by punctuation collide here, same "the user's problem to fix" stance
@@ -1137,5 +1166,54 @@ oauth = true
         assert!(default_model_for(Provider::Gemini).is_some());
         assert!(default_model_for(Provider::Openai).is_some());
         assert!(default_model_for(Provider::Anthropic).is_some());
+    }
+
+    fn provider_config(id: &str) -> ProviderConfig {
+        ProviderConfig { id: id.to_string(), kind: Provider::Gemini, api_key: None, base_url: None, model: None }
+    }
+
+    fn agent_config(id: &str, provider_id: Option<&str>) -> AgentConfig {
+        AgentConfig { id: id.to_string(), persona: String::new(), provider_id: provider_id.map(str::to_string) }
+    }
+
+    #[test]
+    fn rename_provider_cascade_updates_active_provider_and_referencing_agents() {
+        let mut config = FileConfig {
+            providers: vec![provider_config("old-id")],
+            active_provider: Some("old-id".to_string()),
+            agents: vec![agent_config("a1", Some("old-id")), agent_config("a2", Some("someone-else"))],
+            ..Default::default()
+        };
+
+        rename_provider_cascade(&mut config, "old-id", "new-id");
+
+        assert_eq!(config.active_provider.as_deref(), Some("new-id"));
+        assert_eq!(config.agents[0].provider_id.as_deref(), Some("new-id"));
+        assert_eq!(config.agents[1].provider_id.as_deref(), Some("someone-else"));
+    }
+
+    #[test]
+    fn rename_provider_cascade_leaves_unrelated_references_untouched() {
+        let mut config = FileConfig { active_provider: Some("other".to_string()), agents: vec![agent_config("a1", None)], ..Default::default() };
+
+        rename_provider_cascade(&mut config, "old-id", "new-id");
+
+        assert_eq!(config.active_provider.as_deref(), Some("other"));
+        assert_eq!(config.agents[0].provider_id, None);
+    }
+
+    #[test]
+    fn remove_provider_references_clears_active_provider_and_referencing_agents() {
+        let mut config = FileConfig {
+            active_provider: Some("gone".to_string()),
+            agents: vec![agent_config("a1", Some("gone")), agent_config("a2", Some("stays"))],
+            ..Default::default()
+        };
+
+        remove_provider_references(&mut config, "gone");
+
+        assert_eq!(config.active_provider, None);
+        assert_eq!(config.agents[0].provider_id, None);
+        assert_eq!(config.agents[1].provider_id.as_deref(), Some("stays"));
     }
 }

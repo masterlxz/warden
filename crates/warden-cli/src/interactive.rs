@@ -43,7 +43,8 @@
 //! backend rather than relying on the terminal's own newline handling.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -57,8 +58,14 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
-use warden_core::model::{Message, StreamEvent};
+use warden_bootstrap::{
+    build_model_provider, default_model_for, load_config_from_path, remove_provider_references, rename_provider_cascade, save_config, AgentConfig,
+    FileConfig, Provider, ProviderConfig,
+};
+use warden_core::model::{Message, ModelProvider, StreamEvent};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
+
+use crate::commands::{self, Command, ParseOutcome};
 
 /// Height (in terminal rows) of the inline viewport used for both the input box and the
 /// "thinking" box — a single line of content plus its top/bottom border.
@@ -106,6 +113,13 @@ impl LineEditor {
 
     fn is_empty(&self) -> bool {
         self.buffer.is_empty()
+    }
+
+    /// Whether the cursor sits at the end of the buffer — the only position `drive_line_editor`
+    /// shows/accepts a tab-completion ghost suggestion at, since a suggestion computed from the
+    /// whole buffer wouldn't make sense to insert in the middle of already-typed text.
+    fn cursor_at_end(&self) -> bool {
+        self.cursor == self.buffer.len()
     }
 
     fn as_str(&self) -> String {
@@ -231,12 +245,20 @@ fn save_history(path: &Path, history: &[String]) {
     let _ = std::fs::write(path, history[start..].join("\n"));
 }
 
-fn render_input_box(frame: &mut ratatui::Frame, editor: &LineEditor) {
+/// `ghost` is the dim, non-editable completion suffix shown right after the typed text (see
+/// `drive_line_editor`'s doc comment) — `None` for a wizard field (`read_field`), which never
+/// suggests slash-commands since its buffer holds an id/persona/key, not a command.
+fn render_input_box(frame: &mut ratatui::Frame, editor: &LineEditor, title: &str, ghost: Option<&str>) {
     let area = frame.area();
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::default().fg(Color::Rgb(230, 126, 34))).title(" Warden ");
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::default().fg(accent_color())).title(title.to_string());
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(editor.as_str()), inner);
+
+    let mut spans = vec![Span::raw(editor.as_str())];
+    if let Some(suffix) = ghost {
+        spans.push(Span::styled(suffix.to_string(), Style::default().add_modifier(Modifier::DIM)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
 
     let cursor_col = inner.x + UnicodeWidthStr::width(editor.prefix().as_str()) as u16;
     frame.set_cursor_position((cursor_col, inner.y));
@@ -447,7 +469,7 @@ fn parse_inline(text: &str, base: Style) -> Vec<(String, Style)> {
         if chars[i] == '`' {
             if let Some(end) = find_marker(&chars, i + 1, '`', 1) {
                 flush!();
-                spans.push((chars[i + 1..end].iter().collect(), base.fg(Color::Rgb(230, 126, 34))));
+                spans.push((chars[i + 1..end].iter().collect(), base.fg(accent_color())));
                 i = end + 1;
                 continue;
             }
@@ -499,7 +521,7 @@ fn markdown_spans_for_line(line: &str, in_code_block: &mut bool) -> Option<Vec<(
             spans.extend(parse_inline(&content, Style::default()));
             spans
         }
-        LineKind::Code => vec![(content, Style::default().fg(Color::Rgb(230, 126, 34)))],
+        LineKind::Code => vec![(content, Style::default().fg(accent_color()))],
         LineKind::Plain => parse_inline(&content, Style::default()),
     })
 }
@@ -569,6 +591,14 @@ fn markdown_body_rows(text: &str) -> Vec<Vec<(String, Style)>> {
 /// no markdown parsing: what they typed is literal text, not something to interpret as markup.
 fn plain_body_rows(text: &str) -> Vec<Vec<(String, Style)>> {
     wrap_text(text, card_content_width() as u16).into_iter().map(|row| vec![(row, Style::default())]).collect()
+}
+
+/// Wraps each already-styled line to `card_content_width()` for a `/models`/`/agents` list card —
+/// same idea as `plain_body_rows`, but for a caller that already picked a style per line (e.g. a
+/// dimmed marker on the session-active entry) instead of plain text.
+fn list_body_rows(lines: Vec<(String, Style)>) -> Vec<Vec<(String, Style)>> {
+    let width = card_content_width();
+    lines.into_iter().flat_map(|(text, style)| wrap_spans(&[(text, style)], width)).collect()
 }
 
 /// One row of a card's bordered content — `"│ "`, the row's styled spans, then a right-aligned
@@ -641,16 +671,21 @@ fn insert_card(terminal: &mut CliTerminal, title: Vec<(String, Style)>, border_s
 /// doc comment for why this must be a bounded poll, never `EventStream`.
 const POLL_INTERVAL: Duration = Duration::from_millis(30);
 
-/// Drives the bordered input box until the user submits a line, quits, or stdin is closed (e.g.
-/// piped input running dry mid-session). Draws into the caller's long-lived `Terminal` (see `run`
-/// for why one is shared across the whole session rather than rebuilt per call) — by the time
-/// this returns, the box has been cleared, so whatever's printed next starts from a clean, normal
-/// line of scrollback.
-async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -> anyhow::Result<LineOutcome> {
-    let mut editor = LineEditor::new(line_history.clone());
-
+/// Drives one `LineEditor` to completion: redraws the bordered input box (titled `title`) every
+/// frame and applies key events to it, exactly like the main chat prompt — shared so a wizard
+/// field (`read_field`) gets the same editing keys (arrows, Ctrl+A/E/U/W, history recall if the
+/// editor was built with any) without duplicating this loop. By the time this returns, the box
+/// has been cleared, so whatever's printed next starts from a clean, normal line of scrollback.
+///
+/// `suggest_commands` gates the tab-completion ghost suggestion (`commands::ghost_suggestion`) —
+/// on for the main chat prompt (`read_line`), off for a wizard field (`read_field`), whose buffer
+/// holds an id/persona/key, never a slash-command. `Tab` accepts the currently shown ghost (if
+/// any), appending its suffix plus a trailing space — a no-op when there's nothing to accept
+/// (ambiguous, already complete, or the cursor isn't at the end of the buffer).
+async fn drive_line_editor(terminal: &mut CliTerminal, editor: &mut LineEditor, title: &str, suggest_commands: bool) -> anyhow::Result<LineOutcome> {
     loop {
-        terminal.draw(|frame| render_input_box(frame, &editor))?;
+        let ghost = if suggest_commands && editor.cursor_at_end() { commands::ghost_suggestion(&editor.as_str()) } else { None };
+        terminal.draw(|frame| render_input_box(frame, editor, title, ghost.as_deref()))?;
 
         if !event::poll(POLL_INTERVAL)? {
             continue;
@@ -661,17 +696,24 @@ async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -
                 (KeyCode::Enter, _) => {
                     let text = editor.submit();
                     terminal.clear()?;
-                    if !text.trim().is_empty() {
-                        line_history.push(text.clone());
-                    }
                     return Ok(LineOutcome::Submitted(text));
                 }
                 // Matches GNU readline: Ctrl+D only quits on an empty line, so it can't be
                 // mistaken for "discard what I just typed" — same reason rustyline's `Eof` never
-                // fired on a non-empty buffer before this module dropped it.
+                // fired on a non-empty buffer before this module dropped it. In a wizard
+                // (`read_field`), this same `Exit` outcome means "cancel this field/wizard"
+                // rather than "quit the REPL" — the caller decides which.
                 (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) && editor.is_empty() => {
                     terminal.clear()?;
                     return Ok(LineOutcome::Exit);
+                }
+                (KeyCode::Tab, _) => {
+                    if let Some(suffix) = &ghost {
+                        for c in suffix.chars() {
+                            editor.insert(c);
+                        }
+                        editor.insert(' ');
+                    }
                 }
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => editor.clear_line(),
                 (KeyCode::Char('a'), m) if m.contains(KeyModifiers::CONTROL) => editor.move_home(),
@@ -694,6 +736,31 @@ async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -
     }
 }
 
+async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -> anyhow::Result<LineOutcome> {
+    let mut editor = LineEditor::new(line_history.clone());
+    let outcome = drive_line_editor(terminal, &mut editor, " Warden ", true).await?;
+    if let LineOutcome::Submitted(text) = &outcome {
+        if !text.trim().is_empty() {
+            line_history.push(text.clone());
+        }
+    }
+    Ok(outcome)
+}
+
+/// Prompts for one wizard field (`/models add`, `/agents create`, ...): a bordered input box
+/// titled `title`, pre-filled with `initial` so pressing Enter with no edits accepts the current/
+/// default value verbatim. No history recall (a fresh `LineEditor` with an empty history list) —
+/// a one-off field isn't the kind of thing worth recalling later. `Ctrl+D` on an empty field
+/// returns `LineOutcome::Exit`, which the caller treats as "cancel this field/wizard", not "quit
+/// the REPL" (see `drive_line_editor`'s doc comment).
+async fn read_field(terminal: &mut CliTerminal, title: &str, initial: &str) -> anyhow::Result<LineOutcome> {
+    let mut editor = LineEditor::new(Vec::new());
+    for c in initial.chars() {
+        editor.insert(c);
+    }
+    drive_line_editor(terminal, &mut editor, title, false).await
+}
+
 /// Runs one full turn: spawns the streaming call, grows a live bordered preview (`render_card_
 /// preview`) as content arrives, then — once the reply is complete — turns it into a permanent
 /// message card (`insert_card`) with full markdown styling and a token-count footer. Returns
@@ -706,14 +773,20 @@ async fn run_turn(
     history: &[Message],
     input: &str,
     terminal: &mut CliTerminal,
+    model_override: Option<Arc<dyn ModelProvider>>,
+    system_prompt: Option<&str>,
 ) -> anyhow::Result<Option<MessageOutcome>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
-    let orchestrator = orchestrator.clone();
+    let orchestrator = match model_override {
+        Some(model) => orchestrator.with_model(model),
+        None => orchestrator.clone(),
+    };
     let history_owned = history.to_vec();
     let input_owned = input.to_string();
+    let system_prompt_owned = system_prompt.map(str::to_string);
     let handle = tokio::spawn(async move {
         orchestrator
-            .handle_message_streaming(&history_owned, &input_owned, move |event| {
+            .handle_turn_streaming(&history_owned, &input_owned, Vec::new(), system_prompt_owned.as_deref(), move |event| {
                 let _ = tx.send(event.clone());
             })
             .await
@@ -816,7 +889,452 @@ fn print_banner() {
     println!();
 }
 
-pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> anyhow::Result<()> {
+/// Per-session state for the slash-commands (`/models`, `/agents`) — lives only for the lifetime
+/// of one `run()` call, on top of (not persisted like) `config.toml` itself. Holds only chosen
+/// *ids*, never a resolved `Arc<dyn ModelProvider>` or persona string: `resolve_turn_context`
+/// re-reads the config fresh from disk before every turn that needs it, the same "never cache a
+/// resolved object across calls" pattern the desktop's `send_message` IPC command already uses to
+/// avoid staleness after a provider/agent is renamed or removed mid-session.
+struct CliSession {
+    config_path: Option<PathBuf>,
+    provider_id: Option<String>,
+    agent_id: Option<String>,
+}
+
+/// Reads `config.toml` fresh — never cached across turns/commands (see `CliSession`'s doc
+/// comment). A missing file (no path configured, or a path that doesn't exist yet — e.g. before
+/// the very first `/models add`) is treated as an empty config, not an error; a malformed file
+/// still surfaces as one.
+fn load_fresh_config(config_path: Option<&Path>) -> anyhow::Result<FileConfig> {
+    match config_path {
+        Some(path) => load_config_from_path(path, false),
+        None => Ok(FileConfig::default()),
+    }
+}
+
+/// Renders one card as a `/models`/`/agents` command's output (a list, a confirmation, or an
+/// error) — same card machinery (`insert_card`) and trailing spacer as the user/assistant/error
+/// cards in `run()`'s own loop, wrapped through `list_body_rows` so a long line never overflows
+/// the card's border.
+fn render_message_card(terminal: &mut CliTerminal, title: &str, style: Style, lines: Vec<(String, Style)>) -> anyhow::Result<()> {
+    insert_card(terminal, vec![(title.to_string(), style)], style, list_body_rows(lines), None)?;
+    terminal.insert_before(1, |_buf| {})?;
+    Ok(())
+}
+
+fn accent_style() -> Style {
+    Style::default().fg(accent_color())
+}
+
+fn error_style() -> Style {
+    Style::default().fg(Color::Red)
+}
+
+fn dim_style() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+
+/// Prompts one wizard field via `read_field`, translating `LineOutcome` into `Option<String>` —
+/// `None` means the user cancelled (`Ctrl+D` on an empty field), which every wizard step treats as
+/// "abandon the whole wizard", not just this field.
+async fn prompt_field(terminal: &mut CliTerminal, title: &str, initial: &str) -> anyhow::Result<Option<String>> {
+    match read_field(terminal, title, initial).await? {
+        LineOutcome::Submitted(text) => Ok(Some(text)),
+        LineOutcome::Exit => Ok(None),
+    }
+}
+
+type TurnContext = (Option<Arc<dyn ModelProvider>>, Option<String>);
+
+/// Resolves what this turn should actually use, given the session's `provider_id`/`agent_id`
+/// selections — a model override (only when it differs from whatever `run()`'s own `orchestrator`
+/// parameter already is) and a persona to pass as `system_prompt`. Reloads config fresh only when
+/// at least one selection is active; when neither is, returns `(None, None)` immediately with no
+/// disk access at all, so a session that never touches `/models`/`/agents` behaves exactly as
+/// before this feature existed. An explicit `/models use` always wins over an active agent's own
+/// `provider_id` (which only pre-fills when nothing more specific was chosen) — same precedence
+/// the desktop's chat header uses between its agent and provider selectors.
+fn resolve_turn_context(session: &CliSession) -> anyhow::Result<TurnContext> {
+    if session.provider_id.is_none() && session.agent_id.is_none() {
+        return Ok((None, None));
+    }
+
+    let config = load_fresh_config(session.config_path.as_deref())?;
+
+    let system_prompt = session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id)).map(|a| a.persona.clone());
+
+    let effective_provider_id = session.provider_id.clone().or_else(|| {
+        session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id)).and_then(|a| a.provider_id.clone())
+    });
+
+    let model_override = match effective_provider_id {
+        Some(provider_id) => {
+            let provider_config = config
+                .providers
+                .iter()
+                .find(|p| p.id == provider_id)
+                .ok_or_else(|| anyhow::anyhow!("provider '{provider_id}' não existe mais na configuração"))?;
+            Some(build_model_provider(provider_config, None)?)
+        }
+        None => None,
+    };
+
+    Ok((model_override, system_prompt))
+}
+
+async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
+    let style = Style::default();
+    let lines = [
+        "/exit, /quit — sair",
+        "/help — esta lista",
+        "/models — listar os modelos configurados",
+        "/models use <id> — usar um modelo pro resto da sessão",
+        "/models reset — voltar pro modelo com que o Warden foi iniciado",
+        "/models add — cadastrar um novo modelo",
+        "/models edit <id> — editar um modelo",
+        "/models remove <id> — remover um modelo",
+        "/agents — listar os agentes configurados",
+        "/agents use <id> | none — usar um agente (ou nenhum) pro resto da sessão",
+        "/agents create — criar um agente novo",
+        "/agents edit <id> — editar um agente",
+        "/agents remove <id> — remover um agente",
+    ]
+    .into_iter()
+    .map(|line| (line.to_string(), style))
+    .collect();
+    render_message_card(terminal, "ajuda", accent_style(), lines)
+}
+
+fn provider_display_model(provider: &ProviderConfig) -> String {
+    provider.model.clone().or_else(|| default_model_for(provider.kind).map(str::to_string)).unwrap_or_else(|| "?".to_string())
+}
+
+async fn cmd_models_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if config.providers.is_empty() {
+        return render_message_card(terminal, "modelos", accent_style(), vec![("nenhum provider configurado ainda — use /models add".to_string(), Style::default())]);
+    }
+    let active = session.provider_id.clone().or_else(|| config.active_provider.clone());
+    let lines = config
+        .providers
+        .iter()
+        .map(|p| {
+            let marker = if active.as_deref() == Some(p.id.as_str()) { " [ativo]" } else { "" };
+            (format!("{} ({}) — {}{}", p.id, commands::kind_label(p.kind), provider_display_model(p), marker), Style::default())
+        })
+        .collect();
+    render_message_card(terminal, "modelos", accent_style(), lines)
+}
+
+async fn cmd_models_use(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if !config.providers.iter().any(|p| p.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{id}' não encontrado — use /models pra ver a lista"), Style::default())]);
+    }
+    session.provider_id = Some(id.clone());
+    render_message_card(terminal, "modelos", accent_style(), vec![(format!("modelo ativo agora: {id}"), Style::default())])
+}
+
+async fn cmd_models_reset(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    session.provider_id = None;
+    render_message_card(terminal, "modelos", accent_style(), vec![("modelo voltou ao padrão com que o Warden foi iniciado".to_string(), Style::default())])
+}
+
+/// Loops a single wizard field until it parses as a valid `Provider` kind, re-prompting with an
+/// error card on an invalid entry. Returns `Ok(None)` if the user cancels.
+async fn prompt_provider_kind(terminal: &mut CliTerminal, initial: Provider) -> anyhow::Result<Option<Provider>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " kind: gemini | openai | anthropic | openai_compatible ", commands::kind_label(initial)).await? else {
+            return Ok(None);
+        };
+        match commands::parse_provider_kind(&input) {
+            Some(kind) => return Ok(Some(kind)),
+            None => render_message_card(terminal, "erro", error_style(), vec![("kind inválido — use gemini, openai, anthropic ou openai_compatible".to_string(), Style::default())])?,
+        }
+    }
+}
+
+/// Loops a single wizard field until it's a non-blank id that doesn't collide with an existing
+/// provider (other than `keep_if_same`, so editing a provider without renaming it doesn't trip
+/// the uniqueness check against itself). Returns `Ok(None)` if the user cancels.
+async fn prompt_provider_id(terminal: &mut CliTerminal, providers: &[ProviderConfig], initial: &str, keep_if_same: Option<&str>) -> anyhow::Result<Option<String>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " id (nome único do provider) ", initial).await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if candidate.is_empty() {
+            render_message_card(terminal, "erro", error_style(), vec![("id não pode ficar em branco".to_string(), Style::default())])?;
+        } else if Some(candidate.as_str()) != keep_if_same && providers.iter().any(|p| p.id == candidate) {
+            render_message_card(terminal, "erro", error_style(), vec![(format!("já existe um provider com id '{candidate}'"), Style::default())])?;
+        } else {
+            return Ok(Some(candidate));
+        }
+    }
+}
+
+async fn wizard_models_add(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+
+    let Some(kind) = prompt_provider_kind(terminal, Provider::Gemini).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+    };
+    let Some(id) = prompt_provider_id(terminal, &config.providers, "", None).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+    };
+    let Some(api_key) = prompt_field(terminal, " api key (em branco = nenhuma) ", "").await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+    };
+    let base_url = if kind == Provider::OpenaiCompatible {
+        let Some(input) = prompt_field(terminal, " base url (obrigatório pra openai_compatible) ", "").await? else {
+            return render_message_card(terminal, "modelos", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+        };
+        non_empty(input)
+    } else {
+        None
+    };
+    let Some(model_input) = prompt_field(terminal, " model ", default_model_for(kind).unwrap_or("")).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+    };
+
+    let had_active_provider = config.active_provider.is_some();
+    config.providers.push(ProviderConfig { id: id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input) });
+    if !had_active_provider {
+        config.active_provider = Some(id.clone());
+    }
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "modelos", accent_style(), vec![(format!("provider '{id}' cadastrado"), Style::default())])
+}
+
+async fn wizard_models_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(index) = config.providers.iter().position(|p| p.id == target_id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{target_id}' não encontrado"), Style::default())]);
+    };
+    let current = config.providers[index].clone();
+
+    let Some(kind) = prompt_provider_kind(terminal, current.kind).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(new_id) = prompt_provider_id(terminal, &config.providers, &current.id, Some(&current.id)).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(api_key) = prompt_field(terminal, " api key (em branco = nenhuma) ", current.api_key.as_deref().unwrap_or("")).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let base_url = if kind == Provider::OpenaiCompatible {
+        let Some(input) = prompt_field(terminal, " base url ", current.base_url.as_deref().unwrap_or("")).await? else {
+            return render_message_card(terminal, "modelos", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+        };
+        non_empty(input)
+    } else {
+        None
+    };
+    let model_default = current.model.clone().unwrap_or_else(|| default_model_for(kind).unwrap_or("").to_string());
+    let Some(model_input) = prompt_field(terminal, " model ", &model_default).await? else {
+        return render_message_card(terminal, "modelos", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+
+    let old_id = current.id.clone();
+    config.providers[index] = ProviderConfig { id: new_id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input) };
+    if new_id != old_id {
+        rename_provider_cascade(&mut config, &old_id, &new_id);
+        if session.provider_id.as_deref() == Some(old_id.as_str()) {
+            session.provider_id = Some(new_id.clone());
+        }
+    }
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "modelos", accent_style(), vec![(format!("provider '{new_id}' atualizado"), Style::default())])
+}
+
+async fn cmd_models_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let before = config.providers.len();
+    config.providers.retain(|p| p.id != id);
+    if config.providers.len() == before {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{id}' não encontrado"), Style::default())]);
+    }
+    remove_provider_references(&mut config, &id);
+    if session.provider_id.as_deref() == Some(id.as_str()) {
+        session.provider_id = None;
+    }
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "modelos", accent_style(), vec![(format!("provider '{id}' removido"), Style::default())])
+}
+
+async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if config.agents.is_empty() {
+        return render_message_card(terminal, "agentes", accent_style(), vec![("nenhum agente configurado ainda — use /agents create".to_string(), Style::default())]);
+    }
+    let lines = config
+        .agents
+        .iter()
+        .map(|a| {
+            let preview: String = a.persona.chars().take(48).collect();
+            let preview = if a.persona.chars().count() > 48 { format!("{preview}…") } else { preview };
+            let provider = a.provider_id.clone().unwrap_or_else(|| "-".to_string());
+            let marker = if session.agent_id.as_deref() == Some(a.id.as_str()) { " [ativo]" } else { "" };
+            (format!("{} ({}) — {}{}", a.id, provider, preview, marker), Style::default())
+        })
+        .collect();
+    render_message_card(terminal, "agentes", accent_style(), lines)
+}
+
+async fn cmd_agents_use(terminal: &mut CliTerminal, session: &mut CliSession, id: Option<String>) -> anyhow::Result<()> {
+    let Some(id) = id else {
+        session.agent_id = None;
+        return render_message_card(terminal, "agentes", accent_style(), vec![("nenhum agente ativo agora".to_string(), Style::default())]);
+    };
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if !config.agents.iter().any(|a| a.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{id}' não encontrado — use /agents pra ver a lista"), Style::default())]);
+    }
+    session.agent_id = Some(id.clone());
+    render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente ativo agora: {id}"), Style::default())])
+}
+
+/// Loops a single wizard field until it's a non-blank id that doesn't collide with an existing
+/// agent (other than `keep_if_same`). Returns `Ok(None)` if the user cancels.
+async fn prompt_agent_id(terminal: &mut CliTerminal, agents: &[AgentConfig], initial: &str, keep_if_same: Option<&str>) -> anyhow::Result<Option<String>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " id (nome único do agente) ", initial).await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if candidate.is_empty() {
+            render_message_card(terminal, "erro", error_style(), vec![("id não pode ficar em branco".to_string(), Style::default())])?;
+        } else if Some(candidate.as_str()) != keep_if_same && agents.iter().any(|a| a.id == candidate) {
+            render_message_card(terminal, "erro", error_style(), vec![(format!("já existe um agente com id '{candidate}'"), Style::default())])?;
+        } else {
+            return Ok(Some(candidate));
+        }
+    }
+}
+
+/// Loops a single wizard field until it's blank (= no default provider) or a real provider id.
+/// Returns `Ok(None)` if the user cancels the wizard (distinct from `Ok(Some(None))`, "no
+/// default provider chosen").
+async fn prompt_agent_provider_id(terminal: &mut CliTerminal, providers: &[ProviderConfig], initial: &str) -> anyhow::Result<Option<Option<String>>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " provider padrão (em branco = nenhum) ", initial).await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if candidate.is_empty() {
+            return Ok(Some(None));
+        } else if providers.iter().any(|p| p.id == candidate) {
+            return Ok(Some(Some(candidate)));
+        } else {
+            render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{candidate}' não existe — deixe em branco ou use /models pra ver a lista"), Style::default())])?;
+        }
+    }
+}
+
+async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+
+    let Some(id) = prompt_agent_id(terminal, &config.agents, "", None).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+    let Some(persona) = prompt_field(terminal, " persona (uma linha — como o agente deve se comportar) ", "").await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+    let Some(provider_id) = prompt_agent_provider_id(terminal, &config.providers, "").await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+
+    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id });
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
+}
+
+async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(index) = config.agents.iter().position(|a| a.id == target_id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{target_id}' não encontrado"), Style::default())]);
+    };
+    let current = config.agents[index].clone();
+
+    let Some(new_id) = prompt_agent_id(terminal, &config.agents, &current.id, Some(&current.id)).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(persona) = prompt_field(terminal, " persona ", &current.persona).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(provider_id) = prompt_agent_provider_id(terminal, &config.providers, current.provider_id.as_deref().unwrap_or("")).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+
+    let old_id = current.id.clone();
+    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id };
+    if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
+        session.agent_id = Some(new_id.clone());
+    }
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{new_id}' atualizado"), Style::default())])
+}
+
+async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let before = config.agents.len();
+    config.agents.retain(|a| a.id != id);
+    if config.agents.len() == before {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{id}' não encontrado"), Style::default())]);
+    }
+    if session.agent_id.as_deref() == Some(id.as_str()) {
+        session.agent_id = None;
+    }
+
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' removido"), Style::default())])
+}
+
+fn non_empty(text: String) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Saves `config` to `session.config_path`, surfacing "no config path available" (only possible
+/// if `dirs::config_dir()` itself returned `None` — no `$HOME`/`$XDG_CONFIG_HOME`) as the same
+/// kind of error card every other failure in a wizard gets, via `?` bubbling out of the caller.
+async fn save_config_or_report(session: &CliSession, config: &FileConfig) -> anyhow::Result<()> {
+    let path = session
+        .config_path
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("não foi possível localizar um arquivo de configuração pra salvar (sem diretório de config no sistema)"))?;
+    save_config(path, config)?;
+    Ok(())
+}
+
+async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    match command {
+        Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
+        Command::Help => cmd_help(terminal).await,
+        Command::ModelsList => cmd_models_list(terminal, session).await,
+        Command::ModelsUse(id) => cmd_models_use(terminal, session, id).await,
+        Command::ModelsReset => cmd_models_reset(terminal, session).await,
+        Command::ModelsAdd => wizard_models_add(terminal, session).await,
+        Command::ModelsEdit(id) => wizard_models_edit(terminal, session, id).await,
+        Command::ModelsRemove(id) => cmd_models_remove(terminal, session, id).await,
+        Command::AgentsList => cmd_agents_list(terminal, session).await,
+        Command::AgentsUse(id) => cmd_agents_use(terminal, session, id).await,
+        Command::AgentsCreate => wizard_agents_create(terminal, session).await,
+        Command::AgentsEdit(id) => wizard_agents_edit(terminal, session, id).await,
+        Command::AgentsRemove(id) => cmd_agents_remove(terminal, session, id).await,
+    }
+}
+
+pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let mut line_history = history_path.map(load_history).unwrap_or_default();
     let mut history: Vec<Message> = Vec::new();
 
@@ -830,6 +1348,8 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
     // position, which contends with reading key events — reused here means that query only ever
     // happens once, before the loop below starts reading any key at all).
     let mut terminal = new_inline_terminal()?;
+
+    let mut session = CliSession { config_path, provider_id: None, agent_id: None };
 
     loop {
         let input = match read_line(&mut line_history, &mut terminal).await? {
@@ -845,6 +1365,26 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
             break;
         }
 
+        match commands::parse_command(trimmed) {
+            ParseOutcome::NotACommand => {}
+            ParseOutcome::Recognized(Command::Exit) => break,
+            ParseOutcome::Recognized(command) => {
+                // A wizard/list command's own validation failures (unknown id, blank field, ...)
+                // already return `Ok(())` after rendering their own error card — this only
+                // catches a lower-level failure (config file unreadable, no config path at all)
+                // that bubbled up via `?`, rendering it the same way `run_turn`'s own `Err` arm
+                // does below, instead of ending the whole session over a recoverable mistake.
+                if let Err(err) = handle_command(command, &mut terminal, &mut session).await {
+                    render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
+                }
+                continue;
+            }
+            ParseOutcome::Unrecognized(raw) => {
+                render_message_card(&mut terminal, "erro", error_style(), vec![(format!("comando desconhecido: {raw} — digite /help pra ver os comandos disponíveis"), Style::default())])?;
+                continue;
+            }
+        }
+
         // Same card structure as the assistant's own reply (`insert_card`) — muted border/title
         // rather than a bright color, matching how understated an echoed prompt reads in a normal
         // chat UI (the color budget is reserved for the assistant's own markdown, not for
@@ -853,7 +1393,15 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
         insert_card(&mut terminal, vec![("você".to_string(), dim_style)], dim_style, plain_body_rows(trimmed), None)?;
         terminal.insert_before(1, |_buf| {})?;
 
-        match run_turn(orchestrator, &history, trimmed, &mut terminal).await {
+        let (model_override, system_prompt) = match resolve_turn_context(&session) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
+                continue;
+            }
+        };
+
+        match run_turn(orchestrator, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref()).await {
             Ok(Some(outcome)) => {
                 history.push(Message::user(trimmed));
                 history.push(Message::assistant(outcome.content));

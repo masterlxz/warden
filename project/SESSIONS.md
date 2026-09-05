@@ -2,7 +2,111 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-05 (Sessão 48)
+> Última atualização: 2026-09-05 (Sessão 49)
+
+---
+
+### 2026-09-05 — Sessão 49
+
+- **Objetivo**: usuário pediu comandos de barra (`/`) no `warden-cli`, no estilo Claude Code —
+  `/exit`, e principalmente `/models` (cadastrar/editar/remover/selecionar provedores de modelo) e
+  `/agents` (idem pra agentes nomeados/persona), trazendo pro terminal o máximo possível do que a
+  Settings do desktop já fazia. Planejado antes de implementar: 3 agentes de exploração em paralelo
+  (REPL/config atual, gestão de providers no desktop, gestão de agentes no desktop) + 1 agente de
+  design pra validar assinaturas exatas e viabilidade do wizard, plano revisado e aprovado pelo
+  usuário antes de codar.
+
+**O que foi feito**:
+
+- **`warden-bootstrap`**: duas funções novas e puras, `rename_provider_cascade`/
+  `remove_provider_references` — não existiam em Rust (a lógica de cascade P32/P33 só vivia no
+  `SettingsView.tsx` do frontend, que edita um rascunho local só persistido no Save). Como o CLI
+  comita cada comando direto no disco, a cascade virou código real, testável sem terminal (3 testes
+  novos)
+- **`crates/warden-cli/src/commands.rs`** (novo arquivo): parser puro de comando de barra —
+  `parse_command`/`Command`/`ParseOutcome`, mais `parse_provider_kind`/`kind_label` (não existia
+  `FromStr`/`Display` pra `Provider`). `/foo` desconhecido nunca cai pro chat como mensagem — vira
+  cartão de erro. 8 testes novos
+- **`interactive.rs`**: `render_input_box`/`read_line` refatorados pra reaproveitar um
+  `drive_line_editor` compartilhado (título da caixa parametrizado); `read_field(title, initial)`
+  novo, pré-preenche o buffer pro wizard (Enter aceita o valor atual/default, Ctrl+D cancela);
+  `run_turn` ganhou `model_override`/`system_prompt`, trocando `handle_message_streaming` por
+  `handle_turn_streaming` de verdade; `CliSession` novo guarda só os ids escolhidos
+  (`provider_id`/`agent_id`) pela sessão, nunca um objeto resolvido — `resolve_turn_context` relê o
+  config do disco na hora só quando alguma seleção está ativa (senão zero overhead). Implementados
+  os 13 comandos do plano: `/help`, `/models` (list/use/reset/add/edit/remove),
+  `/agents` (list/use/create/edit/remove), cada wizard reaproveitando `read_field` passo a passo
+- `cargo build/test/clippy --workspace` limpos — 26 testes em `warden-cli` (18 antigos + 8 novos de
+  `commands.rs`), 31 em `warden-bootstrap` (28 + 3 novos de cascade)
+- **Verificado via pty com harness próprio** (Python `pty`+parser VT mínimo, config/vault isolados
+  em scratchpad, sem tocar `~/.config/warden` real nem gastar cota do Gemini — os comandos de barra
+  não fazem chamada de modelo nenhuma): fluxo completo — `/help`, `/models` vazio, `/models add` de
+  dois providers (um `openai_compatible` testando o passo de `base_url`, um `gemini` testando os
+  defaults pré-preenchidos), listagem com marcador `[ativo]`, `/agents create` com `provider_id`
+  apontando pro primeiro, `/agents use`, **`/models edit` renomeando o provider ativo — confirmado
+  que `active_provider` e o `provider_id` do agente seguiram o rename** (cascade), **`/models
+  remove` do provider renomeado — confirmado que o `provider_id` do agente foi limpo** (cascade de
+  delete), e `/exit` encerrando o processo sozinho (status 0, sem precisar matar). `config.toml`
+  final inspecionado diretamente batendo com o esperado em cada etapa
+- `project/ARCHITECTURE.md` (decisões de design registradas), `project/PENDING.md` (P8 atualizado —
+  fecha o eixo "lançamento de agentes" pro lado leve/config-driven)
+
+**Ainda falta / limitações aceitas deliberadamente**: persona de agente é uma linha só (sem
+textarea no editor hand-rolled); chave de API no wizard não é mascarada; só o REPL interativo ganhou
+os comandos (`run_plain`, usado só por teste via pipe, não). Teste manual numa janela real de
+verdade (não só via pty) ainda não confirmado pelo usuário.
+
+**Continuação (ainda 2026-09-05, mesma Sessão 49)**: usuário trouxe vários pedidos de uma vez,
+pedindo pra quebrar em partes pequenas e resolver aos poucos — "por enquanto faz só a primeira
+parte, commita e da push, registra tudo isso no project". Pedidos, na ordem que vieram:
+
+1. **Tab-completion nos comandos de barra** — "apertar tab e completar /ex entende?", tipo Claude
+   Code — **implementado nesta continuação**, ver abaixo
+2. **`/usage`** — comando pra ver quanto foi gasto (tokens/custo) na sessão do CLI — **não
+   implementado, registrado como continuação de P4 em `PENDING.md`**
+3. **Página "home" no app desktop** com dashboards (tokens gastos, custo médio por token, quebra
+   por agente, modelos mais usados) e a própria IA com acesso a esses dados — usuário mesmo disse
+   "depois complementamos mais essa ideia" — **não implementado, registrado como continuação de P4
+   em `PENDING.md`**, precisa de mais definição antes de codar (de onde vêm os dados agregados,
+   se existe noção de "custo" em dinheiro ou só tokens, como a IA acessaria)
+4. **Trocar os laranjas por roxo no CLI**, pra bater com a identidade visual do app — **implementado
+   nesta continuação**, ver abaixo
+5. Pergunta direta: "o app vc já mudou pra preto com detalhes em roxo como pedi?" — **respondido,
+   não implementado** (não é pedido de código): conferido `desktop/src/App.css` — o tema escuro
+   hoje é um roxo bem escuro (`--color-bg: #14101f`), não preto puro, com acentos roxos
+   (`--color-accent: #a78bfa`/`#8b5cf6`); tema claro é lavanda claro (`#f8f6fc`). Não achei
+   nenhum pedido anterior registrado no `project/` por "preto" — resposta dada ao usuário, sem
+   mexer no código ainda (fica pro trabalho de desktop mencionado no pedido 3)
+
+**Implementado (itens 1 e 4)**:
+
+- **Tab-completion**: `commands.rs` ganhou `current_word`/`ghost_suggestion` — dado o que já foi
+  digitado depois de `/`, calcula candidatos contra o vocabulário fixo da gramática (nomes de
+  comando num nível, de subcomando no próximo) e, quando só sobra um candidato inequívoco, a
+  string que falta pra completar. Não tenta completar ids (provider/agent) — precisaria de acesso
+  ao config ao vivo, fora de escopo desta parte, registrado como possível segunda etapa
+- `interactive.rs`: `render_input_box` ganhou um parâmetro `ghost` — o texto que falta pra
+  completar aparece discreto (dim) logo depois do que foi digitado de verdade, na mesma caixa de
+  input (sem popup/lista separada). `drive_line_editor` ganhou `suggest_commands: bool` (`true`
+  só pro prompt principal do chat, `read_line`; `false` nos campos de wizard, `read_field`, que
+  guardam id/persona/chave, não comando) e a tecla `Tab` aceita a sugestão mostrada (insere o
+  sufixo + um espaço, pronto pra continuar digitando o argumento)
+- `cargo build/test/clippy --workspace` limpos — 32 testes em `warden-cli` (26 + 6 novos:
+  `current_word`/`ghost_suggestion`)
+- **Verificado via pty**: capturada a tela com `/ex` digitado — o texto completo `/exit` aparece
+  (confirma a sugestão fantasma renderizando); e um teste mais forte — `/ex` + Tab + Enter fez o
+  processo encerrar sozinho (status 0), confirmando que o Tab de fato completa e o texto resultante
+  (`/exit `) é interpretado como o comando de verdade, não só cosmético
+
+**Implementado (item 4 — cor)**:
+
+- As 3 últimas cores laranja do CLI (`Color::Rgb(230, 126, 34)`) — borda da caixa de input, código
+  inline no markdown, linha dentro de bloco de código cercado — trocadas por `accent_color()` (o
+  mesmo roxo `BRAND`/`#a78bfa` já usado nos cartões e no banner desde a Sessão 47/48). Zero laranja
+  restante no `warden-cli`
+
+**Ainda falta**: usuário ainda não testou numa janela real de verdade (nem o tab-completion nem a
+cor). `/usage` e o dashboard do desktop ficam pra próximas partes, conforme pedido.
 
 ---
 

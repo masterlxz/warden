@@ -1,3 +1,4 @@
+mod commands;
 mod interactive;
 
 use std::io::{self, IsTerminal, Write};
@@ -54,6 +55,11 @@ fn history_path() -> Option<PathBuf> {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Same path `bootstrap()`/`load_config` resolve internally — kept here too so the interactive
+    // REPL's `/models`/`/agents` commands know where to read/write, without `bootstrap()` needing
+    // to hand its own resolved path back out.
+    let config_path = cli.config.clone().map(PathBuf::from).or_else(warden_bootstrap::default_config_path);
+
     let orchestrator = bootstrap(
         cli.config.as_deref(),
         Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path, ..Default::default() },
@@ -65,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     // tests in tests/cli.rs) falls back to the plain loop below, unchanged from before this
     // module existed.
     if io::stdin().is_terminal() {
-        interactive::run(&orchestrator, history_path().as_deref()).await
+        interactive::run(&orchestrator, history_path().as_deref(), config_path).await
     } else {
         run_plain(&orchestrator).await
     }
