@@ -108,6 +108,39 @@ parte, commita e da push, registra tudo isso no project". Pedidos, na ordem que 
 **Ainda falta**: usuário ainda não testou numa janela real de verdade (nem o tab-completion nem a
 cor). `/usage` e o dashboard do desktop ficam pra próximas partes, conforme pedido.
 
+**Continuação (ainda 2026-09-05, mesma Sessão 49) — item 2, `/usage`**: usuário disse "bora
+continuar?" — próximo item da fila que ele mesmo definiu era o `/usage`.
+
+**Implementado**:
+
+- `commands.rs`: `Command::Usage`, `("usage", []) => Command::Usage` no parser, e `"usage"`
+  adicionado a `TOP_LEVEL_COMMANDS` (ganha tab-completion de graça pelo mecanismo já existente)
+- `interactive.rs`: `CliSession` ganhou `usage_total: Usage` e `turn_count: usize` — únicos campos
+  da struct sem equivalente no `config.toml` (o resto guarda só ids, relido do disco a cada turno;
+  uso é puramente de sessão, nunca persistido, reseta a cada `warden` novo). Acumulados em `run()`
+  logo depois de cada `Ok(Some(outcome))` de `run_turn` (mesmo `MessageOutcome.usage` que já
+  alimenta o rodapé de tokens da resposta — só passou a também somar num total). `cmd_usage` novo
+  renderiza um cartão com contagem de mensagens + tokens de prompt/resposta/total; estado vazio
+  ("nenhuma mensagem enviada ainda") antes do primeiro turno. Linha nova no `/help`
+- Decisão deliberada: **só tokens, sem `$`** — não existe tabela de preço por modelo no projeto
+  ainda (mesma lacuna já registrada em `PENDING.md` P4 pro dashboard do desktop); nem tenta
+  fazer conta de custo com dado que não existe
+- `cargo build/test/clippy --workspace` limpos (teste de parse do `/usage` adicionado dentro do
+  teste existente `exit_and_quit_and_help_parse_with_no_args`, contagem de testes do `warden-cli`
+  sem mudar — 32, já que foi extensão de um teste existente, não um novo)
+- **Verificado via pty** (harness Python com resposta a `ESC[6n`, já que o script anterior sem
+  isso batia no mesmo erro de "cursor position could not be read" descrito no doc comment do
+  módulo — faltava emular a query de posição do cursor que um terminal de verdade responde):
+  `/usage` antes de qualquer mensagem renderiza o cartão de estado vazio corretamente; `/ex` + Tab
+  + Enter ainda completa pra `/exit` e encerra o processo sozinho (confirma que adicionar `/usage`
+  não regrediu o tab-completion da Sessão 49 anterior)
+
+**Ainda falta**: acúmulo de tokens de verdade (duas mensagens reais, conferir que a soma bate) não
+testado — sem chave de API real disponível no shell do agente, só o roteamento e o estado vazio do
+comando foram confirmados via pty. Fica pro usuário confirmar numa janela real com uma chave
+configurada. Dashboard do desktop (item 3) segue sem implementar — precisa da definição que o
+usuário adiou.
+
 ---
 
 ### 2026-09-05 — Sessão 48

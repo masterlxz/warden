@@ -7,6 +7,7 @@ use warden_bootstrap::Provider;
 pub enum Command {
     Exit,
     Help,
+    Usage,
     ModelsList,
     ModelsUse(String),
     ModelsReset,
@@ -46,6 +47,7 @@ pub fn parse_command(input: &str) -> ParseOutcome {
     let command = match (head.to_ascii_lowercase().as_str(), rest.as_slice()) {
         ("exit", []) | ("quit", []) => Command::Exit,
         ("help", []) => Command::Help,
+        ("usage", []) => Command::Usage,
         ("models", []) => Command::ModelsList,
         ("models", ["use", id]) => Command::ModelsUse(id.to_string()),
         ("models", ["reset"]) => Command::ModelsReset,
@@ -86,7 +88,7 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "models", "agents"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
 
@@ -165,6 +167,7 @@ mod tests {
         assert!(matches!(assert_recognized("/exit"), Command::Exit));
         assert!(matches!(assert_recognized("/quit"), Command::Exit));
         assert!(matches!(assert_recognized("/help"), Command::Help));
+        assert!(matches!(assert_recognized("/usage"), Command::Usage));
     }
 
     #[test]

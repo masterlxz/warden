@@ -62,7 +62,7 @@ use warden_bootstrap::{
     build_model_provider, default_model_for, load_config_from_path, remove_provider_references, rename_provider_cascade, save_config, AgentConfig,
     FileConfig, Provider, ProviderConfig,
 };
-use warden_core::model::{Message, ModelProvider, StreamEvent};
+use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 
 use crate::commands::{self, Command, ParseOutcome};
@@ -889,16 +889,26 @@ fn print_banner() {
     println!();
 }
 
-/// Per-session state for the slash-commands (`/models`, `/agents`) — lives only for the lifetime
-/// of one `run()` call, on top of (not persisted like) `config.toml` itself. Holds only chosen
-/// *ids*, never a resolved `Arc<dyn ModelProvider>` or persona string: `resolve_turn_context`
-/// re-reads the config fresh from disk before every turn that needs it, the same "never cache a
-/// resolved object across calls" pattern the desktop's `send_message` IPC command already uses to
-/// avoid staleness after a provider/agent is renamed or removed mid-session.
+/// Per-session state for the slash-commands (`/models`, `/agents`, `/usage`) — lives only for the
+/// lifetime of one `run()` call, on top of (not persisted like) `config.toml` itself. `provider_id`/
+/// `agent_id` hold only chosen *ids*, never a resolved `Arc<dyn ModelProvider>` or persona string:
+/// `resolve_turn_context` re-reads the config fresh from disk before every turn that needs it, the
+/// same "never cache a resolved object across calls" pattern the desktop's `send_message` IPC
+/// command already uses to avoid staleness after a provider/agent is renamed or removed mid-session.
+/// `usage_total`/`turn_count` are the one piece of state here that's genuinely session-local (no
+/// config-file equivalent to re-read) — accumulated in `run()`'s loop after every completed turn.
 struct CliSession {
     config_path: Option<PathBuf>,
     provider_id: Option<String>,
     agent_id: Option<String>,
+    usage_total: Usage,
+    turn_count: usize,
+}
+
+fn add_usage(total: &mut Usage, delta: &Usage) {
+    total.prompt_tokens += delta.prompt_tokens;
+    total.completion_tokens += delta.completion_tokens;
+    total.total_tokens += delta.total_tokens;
 }
 
 /// Reads `config.toml` fresh — never cached across turns/commands (see `CliSession`'s doc
@@ -987,6 +997,7 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
     let lines = [
         "/exit, /quit — sair",
         "/help — esta lista",
+        "/usage — tokens gastos nesta sessão do terminal",
         "/models — listar os modelos configurados",
         "/models use <id> — usar um modelo pro resto da sessão",
         "/models reset — voltar pro modelo com que o Warden foi iniciado",
@@ -1003,6 +1014,23 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
     .map(|line| (line.to_string(), style))
     .collect();
     render_message_card(terminal, "ajuda", accent_style(), lines)
+}
+
+/// `/usage` — tokens spent so far in *this* terminal session (`CliSession.usage_total`, reset
+/// every process start, never persisted). Tokens only, no `$` figure: that would need a per-model
+/// price table this project doesn't have yet (see `PENDING.md` P4).
+async fn cmd_usage(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    if session.turn_count == 0 {
+        return render_message_card(terminal, "uso", accent_style(), vec![("nenhuma mensagem enviada ainda nesta sessão".to_string(), Style::default())]);
+    }
+    let usage = &session.usage_total;
+    let lines = vec![
+        (format!("{} mensagens nesta sessão", session.turn_count), Style::default()),
+        (format!("{} tokens de prompt", usage.prompt_tokens), Style::default()),
+        (format!("{} tokens de resposta", usage.completion_tokens), Style::default()),
+        (format!("{} tokens no total", usage.total_tokens), Style::default()),
+    ];
+    render_message_card(terminal, "uso", accent_style(), lines)
 }
 
 fn provider_display_model(provider: &ProviderConfig) -> String {
@@ -1320,6 +1348,7 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
     match command {
         Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
         Command::Help => cmd_help(terminal).await,
+        Command::Usage => cmd_usage(terminal, session).await,
         Command::ModelsList => cmd_models_list(terminal, session).await,
         Command::ModelsUse(id) => cmd_models_use(terminal, session, id).await,
         Command::ModelsReset => cmd_models_reset(terminal, session).await,
@@ -1349,7 +1378,7 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, confi
     // happens once, before the loop below starts reading any key at all).
     let mut terminal = new_inline_terminal()?;
 
-    let mut session = CliSession { config_path, provider_id: None, agent_id: None };
+    let mut session = CliSession { config_path, provider_id: None, agent_id: None, usage_total: Usage::default(), turn_count: 0 };
 
     loop {
         let input = match read_line(&mut line_history, &mut terminal).await? {
@@ -1403,6 +1432,10 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, confi
 
         match run_turn(orchestrator, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref()).await {
             Ok(Some(outcome)) => {
+                session.turn_count += 1;
+                if let Some(usage) = &outcome.usage {
+                    add_usage(&mut session.usage_total, usage);
+                }
                 history.push(Message::user(trimmed));
                 history.push(Message::assistant(outcome.content));
             }
