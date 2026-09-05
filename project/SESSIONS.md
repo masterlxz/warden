@@ -165,6 +165,33 @@ cartão — toda tentativa de hoje bateu em rate limit do Gemini antes de comple
 pra deixar assim por enquanto ("deixa assim por enquanto, só atualiza o project... e commita e da
 push") — retomar o teste de ponta a ponta quando o Gemini normalizar.
 
+**Continuação (ainda 2026-09-05, mesma Sessão 48)**: usuário, enquanto ainda esperava a cota do
+Gemini normalizar, notou que os cartões de mensagens pequenas ("oi", "ok") ficavam esticados até a
+borda do terminal igual um card de resposta longa — perguntou se dava pra encolher o cartão pro
+tamanho da própria mensagem.
+
+**Implementado**:
+
+- Extraída a lógica de largura de `insert_card` pra uma função pura nova, `card_width(title_width,
+  content_rows, max_width)` — calcula a largura pela linha mais longa do título/conteúdo, com piso
+  de 12 colunas e teto na largura real do terminal. Como o corpo já vem pré-quebrado por
+  `markdown_body_rows`/`plain_body_rows` respeitando o teto do terminal (`card_content_width()`),
+  encolher depois com base na linha mais larga de verdade nunca força re-quebra — só estreita
+- 2 testes novos (`card_width_shrinks_to_fit_a_short_message_instead_of_the_full_terminal`,
+  `card_width_grows_up_to_its_widest_row_but_never_past_max_width`) — 23 testes no crate no total.
+  `cargo build/test/clippy --workspace` limpos
+- **Verificado via pty**, dessa vez com um harness próprio em vez do de sessões anteriores (não
+  achei `pyte` instalado e o ambiente é Arch "externally managed" — sem `pip`, não instalei nada
+  sem pedir permissão): um emulador VT mínimo em Python (`pty.fork` + parser manual de `CSI`,
+  respondendo à query de posição do cursor `ESC[6n` que o `ratatui` faz, senão trava igual ao bug
+  já corrigido da Sessão 47) escrito no scratchpad da sessão, não commitado. Confirmado: "oi"
+  virou um cartão de ~12 colunas; o cartão de erro (JSON longo do 429 do Gemini, real, não mockado)
+  continua esticado até a borda — os dois lado a lado na mesma tela, exatamente o comportamento
+  esperado
+
+**Ainda falta**: mesma pendência de antes — nenhuma resposta completa (não-erro) vista no formato
+de cartão novo, por causa do rate limit do Gemini seguindo ativo.
+
 ---
 
 ### 2026-09-04 — Sessão 47

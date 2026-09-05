@@ -584,7 +584,18 @@ fn draw_card_row(buf: &mut Buffer, x0: u16, y: u16, width: u16, row: &[(String, 
     buf.set_string(x0 + width - 1, y, "│", border_style);
 }
 
-/// Renders one complete message "card" — a full-width bordered box with a titled top border,
+/// The card's own width: sized to fit its widest row (title or content), never wider than
+/// `max_width` (the terminal) and never narrower than a sane minimum. Body/footer rows are
+/// already wrapped to `card_content_width()` (a `max_width`-based cap, always `<= max_width - 4`),
+/// so shrinking to the widest one here can only ever narrow the card, never force a re-wrap — a
+/// short reply like "ok" gets a snug card instead of a bar stretched across the whole terminal.
+fn card_width(title_width: usize, content_rows: &[Vec<(String, Style)>], max_width: usize) -> u16 {
+    let widest_content: usize = content_rows.iter().map(|row| row.iter().map(|(t, _)| UnicodeWidthStr::width(t.as_str())).sum()).max().unwrap_or(0);
+    (widest_content + 4).max(title_width + 6).clamp(12, max_width.max(12)) as u16
+}
+
+/// Renders one complete message "card" — a bordered box sized to fit its own longest row (never
+/// wider than the terminal, never narrower than a sane minimum), with a titled top border,
 /// already-wrapped/styled body rows, an optional single footer row (e.g. token count, preceded by
 /// a blank spacer), and a bottom border — as one permanent block of history via `insert_before`.
 /// A card is only ever committed once its full content is known: `insert_before` commits are
@@ -592,15 +603,16 @@ fn draw_card_row(buf: &mut Buffer, x0: u16, y: u16, width: u16, row: &[(String, 
 /// still-streaming assistant reply is shown live in the pinned preview instead
 /// (`render_card_preview`) and only turned into a card once it's complete (see `run_turn`).
 fn insert_card(terminal: &mut CliTerminal, title: Vec<(String, Style)>, border_style: Style, body: Vec<Vec<(String, Style)>>, footer: Option<Vec<(String, Style)>>) -> anyhow::Result<()> {
-    let width = (terminal_width() as usize).max(8) as u16;
     let title_width: usize = title.iter().map(|(t, _)| UnicodeWidthStr::width(t.as_str())).sum();
-    let top_dashes = (width as usize).saturating_sub(4 + title_width);
 
     let mut content_rows = body;
     if let Some(footer_row) = footer {
         content_rows.push(Vec::new());
         content_rows.push(footer_row);
     }
+
+    let width = card_width(title_width, &content_rows, terminal_width() as usize);
+    let top_dashes = (width as usize).saturating_sub(4 + title_width);
     let height = content_rows.len() as u16 + 2;
 
     terminal.insert_before(height, move |buf| {
@@ -1044,5 +1056,21 @@ mod tests {
         assert!(rows.iter().all(|row| row.iter().map(|(t, _)| UnicodeWidthStr::width(t.as_str())).sum::<usize>() <= 5));
         let rejoined: String = rows.iter().flatten().map(|(t, _)| t.as_str()).collect();
         assert_eq!(rejoined, "supercalifragilistic");
+    }
+
+    #[test]
+    fn card_width_shrinks_to_fit_a_short_message_instead_of_the_full_terminal() {
+        let body = vec![vec![("ok".to_string(), Style::default())]];
+        assert_eq!(card_width(6, &body, 80), 12);
+    }
+
+    #[test]
+    fn card_width_grows_up_to_its_widest_row_but_never_past_max_width() {
+        let short_body = vec![vec![("hello there".to_string(), Style::default())]];
+        assert_eq!(card_width(6, &short_body, 80), 15);
+
+        let long_row = "x".repeat(200);
+        let long_body = vec![vec![(long_row, Style::default())]];
+        assert_eq!(card_width(6, &long_body, 80), 80);
     }
 }
