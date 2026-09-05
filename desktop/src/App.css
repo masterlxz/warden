@@ -891,6 +891,89 @@ body {
   color: var(--color-text);
 }
 
+.usage-error {
+  color: var(--color-danger);
+}
+
+/* Stat tiles: label (sentence case) + auto-compact value, per the dataviz skill's stat-tile
+   contract. Wraps at narrow widths instead of a fixed column count, same responsive approach as
+   the rest of this file. */
+.usage-stat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+.usage-stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 140px;
+  flex: 1 1 140px;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.usage-stat-value {
+  font-size: 1.6em;
+  font-weight: 600;
+  color: var(--color-accent-dark);
+  /* Proportional figures at display size (never tabular-nums here) — this is a hero-adjacent
+     stat value, not a column of numbers that needs vertical alignment. */
+}
+
+.usage-stat-label {
+  font-size: 0.82em;
+  color: var(--color-text-muted);
+}
+
+/* By-agent/by-provider breakdown: one accent bar per category, value at the tip. A single hue
+   throughout — every bar is the same series (total tokens) split by category, so color carries
+   no identity here; the row label does. */
+.usage-bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.usage-bar-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.usage-bar-label {
+  font-size: 0.88em;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-bar-track {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--color-surface-alt);
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  min-width: 4px;
+  border-radius: 5px;
+  background: var(--color-accent);
+}
+
+.usage-bar-value {
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
 .provider-list {
   display: flex;
   flex-direction: column;

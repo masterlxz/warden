@@ -45,6 +45,15 @@ export function PlusIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function ChartIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M4 20V10M11 20V4M18 20v-7" />
+      <path d="M3 20h18" />
+    </svg>
+  );
+}
+
 export function SettingsIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">

@@ -141,6 +141,75 @@ comando foram confirmados via pty. Fica pro usuário confirmar numa janela real 
 configurada. Dashboard do desktop (item 3) segue sem implementar — precisa da definição que o
 usuário adiou.
 
+**Continuação (ainda 2026-09-05, mesma Sessão 49) — item 3, dashboard de uso no desktop**: usuário
+disse "continua ent" — antes de codar, 3 perguntas pra fechar as decisões que a sessão anterior
+tinha deixado em aberto no `PENDING.md` P4 (todas resolvidas com a opção recomendada): fonte dos
+dados agregados = agregar sob demanda (sem novo índice persistido); custo em `$` = não, só tokens
+por enquanto; acesso da IA aos dados = tool nova (não contexto injetado em toda mensagem).
+
+**Implementado (backend)**:
+
+- `crates/warden-bootstrap/src/usage.rs` (novo arquivo): `UsageSummary`/`UsageByKey` +
+  `aggregate_usage(&[Conversation]) -> UsageSummary`, somando `ConversationMessage.usage` de
+  toda conversa persistida (lidas via `list_conversations`, já usado pela sidebar do desktop),
+  quebrado por `agent_id`/`provider_id`. **Limitação deliberada, documentada no doc comment do
+  módulo**: esses dois campos guardam só a *última* seleção de toda a conversa (os seletores do
+  desktop), não por mensagem — uma conversa que trocou de provider no meio atribui todo o uso ao
+  provider atual, não ao que rodou em cada mensagem de fato; corrigir isso pediria gravar
+  provider/agente por `ConversationMessage`, fora de escopo desta agregação sob demanda (a opção
+  escolhida sobre um índice persistido novo)
+- `UsageStatsTool` (mesmo arquivo) — `Tool` novo, registrado em `bootstrap()` junto de
+  `ReadFileTool`/`WriteFileTool` — então **qualquer canal** (CLI, desktop, Telegram, WhatsApp) já
+  ganha o modelo respondendo "quantos tokens eu já usei" sob pedido, sem custo de contexto nas
+  mensagens que não tocam no assunto (a decisão da pergunta 3)
+- `warden-core`: `impl AddAssign<&Usage> for Usage` novo — reaproveitado tanto por `aggregate_usage`
+  quanto pelo `/usage` do CLI (parte anterior desta sessão), que perdeu sua função `add_usage`
+  solta em favor de `+=`
+- `cargo build/test/clippy --workspace` limpos — 5 testes novos em `usage.rs` (soma total ignorando
+  mensagem sem uso, quebra por agente/provider ordenada por tokens desc, tool com dir ausente
+  retorna `{"error": ...}` em vez de falhar, round-trip do tool lendo conversa salva em disco,
+  lista vazia soma zero)
+
+**Implementado (desktop)**:
+
+- IPC `usage_summary` novo (`desktop/src-tauri/src/lib.rs`) — mesma `aggregate_usage`/
+  `list_conversations` do backend, lido fresco do disco a cada chamada (nunca cacheado)
+- `UsageView.tsx` novo: 5 stat tiles (tokens totais/prompt/resposta, chamadas de modelo,
+  conversas) + duas listas de barra horizontal ("By agent"/"By provider"). `AgentEntry.id`/
+  `ProviderEntry.id` já dobram como nome de exibição (comentário existente em `types.ts`), então a
+  quebra não precisou de nenhum lookup de nome contra Settings
+- **Design passou pela skill de dataviz do projeto antes de codar** (carregada explicitamente):
+  forma = stat tile pro headline + bar chart pra quebra categórica (não um plot mais pesado —
+  poucos pontos, magnitude por categoria); cor = um hue de acento só (o `--color-accent` que já
+  existe no app) pras barras, já que cada barra é a mesma métrica (tokens totais) numa categoria
+  diferente — identidade vem do rótulo da linha, não da cor, então nenhuma paleta categórica nova
+  nem legenda fazem falta aqui; specs de marca seguidos (barra ≤24px, ponta arredondada, valor
+  sempre na ponta — "value at the tip" — números grandes em algarismo proporcional nos tiles,
+  `tabular-nums` só na coluna de valores das barras). Sem camada de hover: cada barra já mostra seu
+  valor via rótulo direto, então um tooltip seria redundante pra uma lista pequena (≤10 categorias)
+  dentro de uma tela do próprio app, não um chart publicado à parte
+- `Icons.tsx` ganhou `ChartIcon`; `Sidebar.tsx` ganhou um terceiro botão "Usage" no rodapé (ao lado
+  de Settings); `App.tsx`/`types.ts` com o roteamento e os tipos (`UsageSummary`/`UsageByKey`)
+  espelhando os estruturas Rust campo a campo
+- `cargo build/test/clippy --workspace` e `tsc`/`npm run build` do desktop limpos
+- **Verificado via Playwright headless contra o dev server real do Tauri** (`npm run dev`, porta
+  1420) — não só um harness estático: `window.__TAURI_INTERNALS__.invoke` mockado via
+  `page.addInitScript` (a mesma função que `@tauri-apps/api/core`'s `invoke` chama por baixo) pra
+  simular `usage_summary`/`get_settings`/`list_conversations` sem precisar de uma janela nativa
+  nem de dados reais persistidos no disco. Clique de verdade no botão "Usage" da sidebar (não só
+  render direto do componente), tiles e barras renderizando números compactos (`189.6K`, `120K`)
+  em claro e escuro, zero erro de console; estado vazio ("No usage recorded yet") também conferido
+  com um segundo mock. `playwright` instalado localmente com `--no-save` só pra rodar o teste
+  (`package.json`/lockfile do desktop intactos, sem diff) — os navegadores do Chrome for Testing
+  tiveram que ser baixados de novo (`npx playwright install chromium`) porque a versão cacheada no
+  container não batia com a versão do pacote
+
+**Ainda falta**: teste de ponta a ponta com dados reais numa janela nativa de verdade (não
+mockado) — mesma lacuna de sempre, sem chave de API real neste shell pra gerar uso de verdade e
+sem confirmação visual do usuário na janela do Tauri em si. Fecha o pedido 3 da lista que o usuário
+trouxe nesta Sessão 49 — os 3 pedidos junto com a cor/tab-completion (1 e 4) ficaram todos
+resolvidos ao longo da sessão.
+
 ---
 
 ### 2026-09-05 — Sessão 48

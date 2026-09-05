@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { LogoMark, PlusIcon, SettingsIcon } from "./Icons";
+import { ChartIcon, LogoMark, PlusIcon, SettingsIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -7,7 +7,8 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onOpenSettings: () => void;
-  view: "chat" | "settings";
+  onOpenUsage: () => void;
+  view: "chat" | "settings" | "usage";
 }
 
 function Sidebar({
@@ -16,6 +17,7 @@ function Sidebar({
   onSelectConversation,
   onNewConversation,
   onOpenSettings,
+  onOpenUsage,
   view,
 }: SidebarProps) {
   return (
@@ -55,6 +57,10 @@ function Sidebar({
       </div>
 
       <div className="sidebar-footer">
+        <button type="button" className={`sidebar-footer-btn${view === "usage" ? " sidebar-footer-btn--active" : ""}`} onClick={onOpenUsage}>
+          <ChartIcon size={17} />
+          Usage
+        </button>
         <button type="button" className={`sidebar-footer-btn${view === "settings" ? " sidebar-footer-btn--active" : ""}`} onClick={onOpenSettings}>
           <SettingsIcon size={17} />
           Settings

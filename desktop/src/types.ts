@@ -103,6 +103,26 @@ export interface AgentEntry {
   providerId: string;
 }
 
+/** One breakdown bucket of a `UsageSummary` — `key` is the `agent_id`/`provider_id` (an
+ * `AgentEntry.id`/`ProviderEntry.id`, which already doubles as its display name) `null` means "no
+ * override" for that conversation, mirrors `warden_bootstrap::usage::UsageByKey`. */
+export interface UsageByKey {
+  key: string | null;
+  messageCount: number;
+  usage: Usage;
+}
+
+/** Mirrors `warden_bootstrap::usage::UsageSummary` — the "Usage" nav view's data, aggregated
+ * on demand from every saved conversation (see `usage_summary` IPC command). Token counts only,
+ * no dollar cost: there's no per-model price table in the project yet. */
+export interface UsageSummary {
+  conversationCount: number;
+  messageCount: number;
+  total: Usage;
+  byAgent: UsageByKey[];
+  byProvider: UsageByKey[];
+}
+
 /** What `get_settings` returns, and also what the settings form holds — the shapes are
  * identical so the fetched snapshot can be used directly as initial form state. */
 export interface Settings {

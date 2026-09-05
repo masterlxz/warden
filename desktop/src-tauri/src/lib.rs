@@ -6,10 +6,10 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
-    bootstrap, build_model_provider, default_config_path, default_conversations_dir, default_model_for,
+    aggregate_usage, bootstrap, build_model_provider, default_config_path, default_conversations_dir, default_model_for,
     list_conversations as read_conversations, load_config_from_path, oauth_credential_store_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
-    ProviderConfig,
+    ProviderConfig, UsageSummary,
 };
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
@@ -484,6 +484,16 @@ fn save_conversation(conversation: Conversation) -> Result<(), String> {
     write_conversation(&dir, &conversation).map_err(|e| format!("{e:#}"))
 }
 
+/// Backs the "Usage" nav view — the same on-demand aggregation the `usage_stats` tool (`warden-
+/// bootstrap`'s `usage.rs`) gives the model itself, read fresh from disk on every call rather than
+/// cached, so it can never show a stale number after a new message is sent.
+#[tauri::command]
+fn usage_summary() -> Result<UsageSummary, String> {
+    let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let conversations = read_conversations(&dir).map_err(|e| format!("{e:#}"))?;
+    Ok(aggregate_usage(&conversations))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let orchestrator = tauri::async_runtime::block_on(bootstrap(None, Overrides::default(), desktop_default_vault_path()))
@@ -504,6 +514,7 @@ pub fn run() {
             save_settings,
             list_conversations,
             save_conversation,
+            usage_summary,
             mcp_oauth_status,
             mcp_oauth_connect,
             mcp_oauth_disconnect

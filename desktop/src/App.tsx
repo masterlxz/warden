@@ -4,6 +4,7 @@ import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
+import UsageView from "./components/UsageView";
 import type { Attachment, ChatMessage, Conversation, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -28,7 +29,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -154,10 +155,13 @@ function App() {
           setView("chat");
         }}
         onOpenSettings={() => setView("settings")}
+        onOpenUsage={() => setView("usage")}
         view={view}
       />
       {view === "settings" ? (
         <SettingsView />
+      ) : view === "usage" ? (
+        <UsageView />
       ) : (
         <ChatArea
           activeConversation={activeConversation}
