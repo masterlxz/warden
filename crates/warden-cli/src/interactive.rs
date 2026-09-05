@@ -905,12 +905,6 @@ struct CliSession {
     turn_count: usize,
 }
 
-fn add_usage(total: &mut Usage, delta: &Usage) {
-    total.prompt_tokens += delta.prompt_tokens;
-    total.completion_tokens += delta.completion_tokens;
-    total.total_tokens += delta.total_tokens;
-}
-
 /// Reads `config.toml` fresh — never cached across turns/commands (see `CliSession`'s doc
 /// comment). A missing file (no path configured, or a path that doesn't exist yet — e.g. before
 /// the very first `/models add`) is treated as an empty config, not an error; a malformed file
@@ -1434,7 +1428,7 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, confi
             Ok(Some(outcome)) => {
                 session.turn_count += 1;
                 if let Some(usage) = &outcome.usage {
-                    add_usage(&mut session.usage_total, usage);
+                    session.usage_total += usage;
                 }
                 history.push(Message::user(trimmed));
                 history.push(Message::assistant(outcome.content));

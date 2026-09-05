@@ -22,6 +22,9 @@ use warden_core::tool::mcp::McpToolProvider;
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::{Tool, ToolProvider};
 
+pub mod usage;
+pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
+
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
@@ -642,8 +645,11 @@ pub async fn bootstrap(
 
     let vault = Arc::new(Vault::new(vault_path));
 
-    let mut base_tools: Vec<Arc<dyn Tool>> =
-        vec![Arc::new(ReadFileTool::new(vault.clone())), Arc::new(WriteFileTool::new(vault.clone()))];
+    let mut base_tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(ReadFileTool::new(vault.clone())),
+        Arc::new(WriteFileTool::new(vault.clone())),
+        Arc::new(UsageStatsTool::new(default_conversations_dir())),
+    ];
 
     match resolve_secret(std::env::var("TAVILY_API_KEY").ok(), config.api_keys.tavily) {
         Some(tavily_key) => {

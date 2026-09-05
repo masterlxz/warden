@@ -108,6 +108,17 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Accumulates one call's usage into a running total — shared by the `warden-cli` REPL's
+/// `/usage` (session-only) and `warden-bootstrap`'s cross-conversation aggregation, so both add
+/// up the same three fields the same way.
+impl std::ops::AddAssign<&Usage> for Usage {
+    fn add_assign(&mut self, other: &Usage) {
+        self.prompt_tokens += other.prompt_tokens;
+        self.completion_tokens += other.completion_tokens;
+        self.total_tokens += other.total_tokens;
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Response {
     pub content: String,
