@@ -1,9 +1,13 @@
 //! The rich terminal loop, used only when stdin is a real TTY (see `main.rs`'s `IsTerminal`
 //! check) — a bordered input box and a "thinking" status box, both drawn with `ratatui`'s
-//! *inline* viewport (not full-screen/alt-screen: the rest of the terminal's scrollback stays
-//! completely normal, matching how the Claude Code CLI behaves), plus real token-by-token
-//! streaming of the assistant's response. The plain non-interactive loop in `main.rs` is
-//! untouched and still handles piped stdin (scripted use, the existing process-level tests).
+//! *inline* viewport (not full-screen/alt-screen — the terminal's own scroll history, not a
+//! second buffer ratatui owns, is what holds the growing conversation), plus real token-by-token
+//! streaming of the assistant's response. `run` clears the screen (and scrollback) before
+//! printing anything, so opening Warden reads as starting a clean session rather than a banner
+//! stuck below whatever was on screen already (explicit user feedback: the first version of this
+//! module didn't do that, and it read as a plain terminal script, not an app). The plain
+//! non-interactive loop in `main.rs` is untouched and still handles piped stdin (scripted use,
+//! the existing process-level tests).
 //!
 //! There's no line-editing library here (`rustyline` is gone) — a bordered, redrawn-every-frame
 //! input box needs to own the terminal region itself, which a separate line-editing library
@@ -12,14 +16,25 @@
 //! reads/writes is a plain newline-per-entry text file — a new, simpler format than rustyline's
 //! own, since only the on-disk *format* changed, not what it's for (still just remembered input
 //! lines, not the conversation itself, which was never persisted here).
+//!
+//! Key events are read via `crossterm::event::poll`/`read` — bounded, synchronous polls — never
+//! `crossterm::event::EventStream`. `EventStream` spawns a background thread that, once polled
+//! even once, blocks indefinitely inside crossterm's internal event reader until a byte actually
+//! arrives on stdin; that reader is a single process-wide lock shared with
+//! `cursor::position()` (what ratatui's inline viewport uses under the hood, on construction and
+//! on every `Terminal::clear()`). Since a chat turn spends most of its time with nobody typing,
+//! that lock stays held for the whole "thinking" wait, so the `clear()` call that swaps the
+//! thinking box for the streamed response can't get the cursor position and fails after
+//! crossterm's hardcoded 2s timeout — reproduced directly against a real pty before this comment
+//! was written. Bounded polls never hold that lock past their own timeout, so `clear()` always
+//! finds it free.
 
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use futures_util::StreamExt;
 use owo_colors::OwoColorize;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style};
@@ -228,8 +243,8 @@ fn new_inline_terminal() -> anyhow::Result<CliTerminal> {
     Ok(Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(VIEWPORT_HEIGHT) })?)
 }
 
-fn is_ctrl_c(event: &Event) -> bool {
-    matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+fn key_is_ctrl_c(key: &crossterm::event::KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 enum LineOutcome {
@@ -237,19 +252,48 @@ enum LineOutcome {
     Exit,
 }
 
-/// Drives the bordered input box until the user submits a line, quits, or the terminal's event
-/// stream ends (e.g. stdin closed unexpectedly). Owns its own short-lived `Terminal` — by the
-/// time this returns, the box has been cleared, so whatever's printed next starts from a clean,
-/// normal line of scrollback.
-async fn read_line(line_history: &mut Vec<String>, term_events: &mut EventStream) -> anyhow::Result<LineOutcome> {
+/// Prints one already-styled line while raw mode is active, terminated with `\r\n` instead of
+/// `println!`'s bare `\n`. Raw mode (`cfmakeraw` semantics, what
+/// `crossterm::terminal::enable_raw_mode` sets up) clears the terminal's own `OPOST` output
+/// processing, so a lone `\n` no longer returns the cursor to column 0 — confirmed against a real
+/// terminal: a multi-line error body (the Gemini 429 response's JSON) staircased across the
+/// screen, smeared over the input box below it, because every `println!` after raw mode was
+/// enabled relied on that translation happening for free. Any newline embedded in `text` itself
+/// gets the same treatment, not just the trailing one.
+fn write_raw_line(text: &str) -> io::Result<()> {
+    print!("{}\r\n", text.replace('\n', "\r\n"));
+    io::stdout().flush()
+}
+
+/// Same fix as `write_raw_line`, without the terminator — for the streamed response, printed
+/// delta by delta as it arrives rather than as whole lines.
+fn write_raw(text: &str) -> io::Result<()> {
+    print!("{}", text.replace('\n', "\r\n"));
+    io::stdout().flush()
+}
+
+/// How long each bounded `event::poll` waits before giving the caller a chance to redraw/check
+/// other state. Small enough that typing and the spinner both feel instant; see the module-level
+/// doc comment for why this must be a bounded poll, never `EventStream`.
+const POLL_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Drives the bordered input box until the user submits a line, quits, or stdin is closed (e.g.
+/// piped input running dry mid-session). Draws into the caller's long-lived `Terminal` (see `run`
+/// for why one is shared across the whole session rather than rebuilt per call) — by the time
+/// this returns, the box has been cleared, so whatever's printed next starts from a clean, normal
+/// line of scrollback.
+async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -> anyhow::Result<LineOutcome> {
     let mut editor = LineEditor::new(line_history.clone());
-    let mut terminal = new_inline_terminal()?;
 
     loop {
         terminal.draw(|frame| render_input_box(frame, &editor))?;
 
-        match term_events.next().await {
-            Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => match (key.code, key.modifiers) {
+        if !event::poll(POLL_INTERVAL)? {
+            continue;
+        }
+
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match (key.code, key.modifiers) {
                 (KeyCode::Enter, _) => {
                     let text = editor.submit();
                     terminal.clear()?;
@@ -281,12 +325,7 @@ async fn read_line(line_history: &mut Vec<String>, term_events: &mut EventStream
                 (KeyCode::Down, _) => editor.history_down(),
                 _ => {}
             },
-            Some(Ok(_)) => {}
-            Some(Err(err)) => return Err(err.into()),
-            None => {
-                terminal.clear()?;
-                return Ok(LineOutcome::Exit);
-            }
+            _ => {}
         }
     }
 }
@@ -294,13 +333,19 @@ async fn read_line(line_history: &mut Vec<String>, term_events: &mut EventStream
 /// Runs one full turn: spawns the streaming call, shows the "thinking" box until the first
 /// content arrives (or the call finishes/fails with none), then prints the response as plain
 /// text as it streams in. Returns `Ok(None)` if the user interrupted with Ctrl+C — nothing gets
-/// appended to conversation history in that case, matching a turn that never happened.
-async fn run_turn(orchestrator: &Orchestrator, history: &[Message], input: &str, term_events: &mut EventStream) -> anyhow::Result<Option<MessageOutcome>> {
+/// appended to conversation history in that case, matching a turn that never happened. Draws into
+/// the caller's long-lived `Terminal`, same reasoning as `read_line`.
+async fn run_turn(
+    orchestrator: &Orchestrator,
+    history: &[Message],
+    input: &str,
+    terminal: &mut CliTerminal,
+) -> anyhow::Result<Option<MessageOutcome>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
     let orchestrator = orchestrator.clone();
     let history_owned = history.to_vec();
     let input_owned = input.to_string();
-    let mut handle = tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         orchestrator
             .handle_message_streaming(&history_owned, &input_owned, move |event| {
                 let _ = tx.send(event.clone());
@@ -308,77 +353,99 @@ async fn run_turn(orchestrator: &Orchestrator, history: &[Message], input: &str,
             .await
     });
 
-    let mut terminal = new_inline_terminal()?;
     let start = Instant::now();
-    let mut ticker = tokio::time::interval(Duration::from_millis(90));
     let mut spinner_frame = 0usize;
     let mut header_printed = false;
-    let mut rx_open = true;
 
+    // Not a `tokio::select!` over `rx`/a ticker/key events/`handle` — deliberately: this whole
+    // turn just needs to notice new state at human-perceptible speed (a spinner frame, a Ctrl+C
+    // keypress), and `event::poll`'s bounded wait below already paces the loop at that speed, so
+    // it doubles as the tick. See the module doc comment for why key events specifically can't be
+    // read via an async `EventStream` here.
     loop {
-        tokio::select! {
-            biased;
-
-            maybe_event = rx.recv(), if rx_open => {
-                match maybe_event {
-                    Some(StreamEvent::ContentDelta(delta)) => {
-                        if !header_printed {
-                            terminal.clear()?;
-                            println!("{}", "● Warden".truecolor(46, 204, 113).bold());
-                            header_printed = true;
-                        }
-                        print!("{delta}");
-                        io::stdout().flush()?;
-                    }
-                    Some(_) => {}
-                    None => rx_open = false,
-                }
-            }
-
-            _ = ticker.tick(), if !header_printed => {
-                spinner_frame = spinner_frame.wrapping_add(1);
-                terminal.draw(|frame| render_thinking_box(frame, start.elapsed(), spinner_frame))?;
-            }
-
-            event = term_events.next() => {
-                if let Some(Ok(event)) = &event {
-                    if is_ctrl_c(event) {
-                        handle.abort();
-                        if !header_printed {
-                            terminal.clear()?;
-                        } else {
-                            println!();
-                        }
-                        println!("{}", "(interrompido)".dimmed());
-                        println!();
-                        return Ok(None);
-                    }
-                }
-            }
-
-            result = &mut handle => {
+        while let Ok(event) = rx.try_recv() {
+            if let StreamEvent::ContentDelta(delta) = event {
                 if !header_printed {
                     terminal.clear()?;
-                } else {
-                    println!();
+                    write_raw_line(&"● Warden".truecolor(46, 204, 113).bold().to_string())?;
+                    header_printed = true;
                 }
-                let outcome = result??;
-                if let Some(usage) = &outcome.usage {
-                    println!(
-                        "{}",
-                        format!("  ({} prompt + {} completion = {} tokens)", usage.prompt_tokens, usage.completion_tokens, usage.total_tokens).dimmed()
-                    );
+                write_raw(&delta)?;
+            }
+        }
+
+        if handle.is_finished() {
+            let result = handle.await;
+            if !header_printed {
+                terminal.clear()?;
+            } else {
+                write_raw_line("")?;
+            }
+            let outcome = result??;
+            if let Some(usage) = &outcome.usage {
+                write_raw_line(
+                    &format!("  ({} prompt + {} completion = {} tokens)", usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+                        .dimmed()
+                        .to_string(),
+                )?;
+            }
+            write_raw_line("")?;
+            return Ok(Some(outcome));
+        }
+
+        if !header_printed {
+            spinner_frame = spinner_frame.wrapping_add(1);
+            terminal.draw(|frame| render_thinking_box(frame, start.elapsed(), spinner_frame))?;
+        }
+
+        if event::poll(POLL_INTERVAL)? {
+            if let Event::Key(key) = event::read()? {
+                if key_is_ctrl_c(&key) {
+                    handle.abort();
+                    if !header_printed {
+                        terminal.clear()?;
+                    } else {
+                        write_raw_line("")?;
+                    }
+                    write_raw_line(&"(interrompido)".dimmed().to_string())?;
+                    write_raw_line("")?;
+                    return Ok(None);
                 }
-                println!();
-                return Ok(Some(outcome));
             }
         }
     }
 }
 
+/// Same purple as the desktop app's `--color-accent` in dark mode (`desktop/src/App.css`) — the
+/// one brand color this project actually has, reused here instead of the unrelated orange/yellow
+/// this module picked ad hoc before. Terminals default to a dark background far more often than
+/// light, so the dark-mode shade (lighter, more legible on black) is the one used unconditionally
+/// — there's no terminal-side equivalent of the app's light/dark media query to key off of. Kept
+/// as plain `(r, g, b)` rather than either color type below, since it's shared between two
+/// different color APIs: `owo_colors::OwoColorize::truecolor` for the plain `println!`ed banner,
+/// and `ratatui::style::Color::Rgb` for the bordered boxes drawn through `ratatui`.
+const BRAND: (u8, u8, u8) = (167, 139, 250);
+
+/// Clears the visible screen *and* the terminal's scrollback (`ESC[3J` — supported by every
+/// terminal this project targets: xterm, Alacritty, Kitty, Wezterm, GNOME Terminal, Windows
+/// Terminal), then homes the cursor. Called once, before anything else is printed, so opening
+/// Warden feels like starting a session — not a wall of old shell history with a banner tacked on
+/// below it. Confirmed against a real pty that this doesn't disturb the input box's cursor-query
+/// dance from the module doc comment: it runs before raw mode / the `Terminal` even exist.
+fn clear_screen() -> io::Result<()> {
+    print!("\x1b[2J\x1b[3J\x1b[H");
+    io::stdout().flush()
+}
+
 fn print_banner() {
-    println!("{}", "Warden".bold());
+    let (r, g, b) = BRAND;
+    println!("{}", "Warden".truecolor(r, g, b).bold());
     println!("{}", "seu assistente pessoal — escreva algo abaixo (↑ para o histórico, Ctrl+D pra sair)".dimmed());
+    // A thin rule, sized to the real terminal width (not a hardcoded guess) — separates the
+    // one-time header from the conversation that scrolls below it, so the top of the screen reads
+    // as a session's title bar rather than two unrelated lines of text.
+    let width = crossterm::terminal::size().map(|(cols, _)| cols).unwrap_or(60) as usize;
+    println!("{}", "─".repeat(width).truecolor(r, g, b).dimmed());
     println!();
 }
 
@@ -386,13 +453,19 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
     let mut line_history = history_path.map(load_history).unwrap_or_default();
     let mut history: Vec<Message> = Vec::new();
 
+    clear_screen()?;
     print_banner();
 
     let _raw_mode = RawModeGuard::enable()?;
-    let mut term_events = EventStream::new();
+    // One `Terminal`, built once here and reused for both the input box and the "thinking" box
+    // for the whole session, instead of rebuilt per turn (see the module doc comment for why a
+    // fresh one per call used to hang/error: its construction queries the terminal's cursor
+    // position, which contends with reading key events — reused here means that query only ever
+    // happens once, before the loop below starts reading any key at all).
+    let mut terminal = new_inline_terminal()?;
 
     loop {
-        let input = match read_line(&mut line_history, &mut term_events).await? {
+        let input = match read_line(&mut line_history, &mut terminal).await? {
             LineOutcome::Submitted(text) => text,
             LineOutcome::Exit => break,
         };
@@ -405,17 +478,17 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
             break;
         }
 
-        println!("{} {}", ">".truecolor(230, 126, 34).bold(), trimmed);
+        write_raw_line(&format!("{} {}", ">".truecolor(230, 126, 34).bold(), trimmed))?;
 
-        match run_turn(orchestrator, &history, trimmed, &mut term_events).await {
+        match run_turn(orchestrator, &history, trimmed, &mut terminal).await {
             Ok(Some(outcome)) => {
                 history.push(Message::user(trimmed));
                 history.push(Message::assistant(outcome.content));
             }
             Ok(None) => {}
             Err(err) => {
-                println!("{}", format!("erro: {err:#}").red());
-                println!();
+                write_raw_line(&format!("erro: {err:#}").red().to_string())?;
+                write_raw_line("")?;
             }
         }
     }

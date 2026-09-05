@@ -2,7 +2,118 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-04 (Sessão 46)
+> Última atualização: 2026-09-04 (Sessão 47)
+
+---
+
+### 2026-09-04 — Sessão 47
+
+- **Objetivo**: usuário testou o CLI `ratatui` da Sessão 46 (P34) numa janela real pela primeira
+  vez — travou em "pensando" sem nunca voltar ("ta terrivel, mandei e ficou pensando e não para,
+  tirando que ta mt feio"). Investigar e corrigir a causa raiz.
+
+**O que foi feito**:
+
+- Reproduzido o travamento sem precisar do usuário: harness em Python (`pty.fork` + `select`)
+  simulando um terminal real, incluindo resposta às queries de posição do cursor (`ESC[6n`) que um
+  terminal de verdade responderia — sem isso, o processo já falhava na primeira query, escondendo
+  o bug real
+- **Causa raiz**: `ratatui` faz uma leitura síncrona e bloqueante de `ESC[6n` toda vez que o
+  `Terminal` é construído (`Terminal::with_options`) ou que `.clear()` é chamado — usado a cada
+  turno pra apagar a caixa de "pensando" antes de imprimir a resposta. Essa leitura e o
+  `EventStream` assíncrono do crossterm disputam o mesmo lock global interno do crossterm
+  (`INTERNAL_EVENT_READER`): a thread de fundo que o `EventStream` cria, uma vez usada, fica
+  bloqueada segurando esse lock indefinidamente enquanto espera a próxima tecla — o estado normal
+  durante um turno, já que ninguém digita enquanto o modelo responde. Resultado: a query de cursor
+  nunca consegue o lock e estoura o timeout fixo de 2s do crossterm, toda vez que não há tecla
+  sendo pressionada. É um comportamento **documentado no próprio crossterm** (doc-comment de
+  `cursor::position()`: "this function will block and possibly time out while `event::read`/`poll`
+  are being called"), não uma falha isolada desta implementação
+- **Corrigido**: `EventStream` removido de vez do `warden-cli` — trocado por
+  `crossterm::event::{poll, read}` síncronos com timeout curto (30ms), que nunca seguram o lock
+  além do próprio timeout, então a query de cursor sempre encontra ele livre. Um único `Terminal`
+  agora é construído uma vez por sessão (não mais um novo por turno, que já era uma causa
+  secundária do mesmo tipo de disputa) e reaproveitado por `read_line`/`run_turn`.
+  `run_turn` deixou de usar `tokio::select!` (não faz mais sentido sem `EventStream`) — vira um
+  loop que drena o canal de eventos sem bloquear, redesenha o spinner e faz o poll limitado de
+  teclado a cada iteração, dobrando como o "tick" antigo. Dependência `futures-util` e a feature
+  `event-stream` do `crossterm` saíram do `Cargo.toml` do `warden-cli` por não serem mais usadas
+- Verificado com o mesmo harness de pty, incluindo uma chamada real (não mockada) à API do Gemini
+  configurada no `~/.config/warden/config.toml` do usuário: turno completo funcionando de ponta a
+  ponta — caixa de "pensando" por ~10-13s (latência real do Gemini observada nesta sessão),
+  transição limpa pra "● Warden" + texto da resposta, contagem de tokens, volta pra caixa de input
+  vazia, sem travar. `cargo build/test/clippy --workspace` limpos (15 testes no `warden-cli`, todos
+  os outros crates sem mudança nenhuma)
+- **Efeito colateral notado durante os testes**: o free tier do Gemini (`gemini-3.5-flash`) tem um
+  limite de 20 requisições/dia por projeto — as várias chamadas reais feitas pra diagnosticar e
+  confirmar o fix provavelmente esgotaram a cota diária da chave do usuário (erro 429
+  `RESOURCE_EXHAUSTED` visto no fim dos testes). Não é um bug do Warden — o app tratou o erro
+  graciosamente (mensagem clara, volta pro prompt) — mas o usuário pode encontrar isso ao testar
+  de novo hoje
+- `PENDING.md`: P34 atualizado com a causa raiz e o fix, mantido em aberto — falta a confirmação
+  visual do próprio usuário numa janela real (o pty sintético prova que não trava mais, mas não é
+  a mesma coisa que ver renderizado), e a reclamação de "tá muito feio" (mesma mensagem do usuário)
+  segue sem detalhe do que especificamente incomoda, não endereçada nesta sessão
+
+**Próximo passo (revisado depois do usuário responder ao pedido de detalhe, ainda na Sessão 47)**:
+usuário detalhou o "muito feio" — três pedidos concretos: (1) início limpo tipo Claude Code, sem
+os comandos antigos do shell aparecendo atrás do banner; (2) melhorar especificamente "a parte
+superior" (o banner, que hoje era texto puro sem cor nenhuma); (3) responsivo ao tamanho da janela.
+A caixa de input em si foi elogiada como já estando boa — não mexida.
+
+Implementado na sequência, ainda nesta sessão:
+
+- **(3) confirmado que já funcionava** antes de qualquer mudança nova — verificado via pty
+  redimensionando de 120 pra 80 colunas em pleno uso: a borda encolheu corretamente no próximo
+  frame, sem travar. `ratatui` já revalida o tamanho do terminal (via `ioctl`, não a query de
+  cursor problemática de antes) a cada `Terminal::draw()` — não precisou de código novo
+- **(1) `clear_screen()` novo** — `\x1b[2J\x1b[3J\x1b[H` (limpa tela visível **e** scrollback, home
+  no cursor) chamado logo no início de `run()`, antes de qualquer print, inclusive antes do próprio
+  banner. Como isso limpa o scrollback inteiro do terminal (não só a área visível), os avisos de
+  bootstrap ("TAVILY_API_KEY not set", "shell tool disabled") impressos *antes* de
+  `interactive::run` ser chamado também somem da tela — o usuário só vê o banner do Warden ao
+  abrir, igual pedido
+- **(2) banner redesenhado** — usa a mesma cor de marca roxa que o app desktop já tem
+  (`--color-accent` em modo escuro do `desktop/src/App.css`, `#a78bfa` / `rgb(167, 139, 250)`) em
+  vez do laranja/amarelo escolhido meio ao acaso nas sessões anteriores só pro CLI; "Warden" em
+  negrito roxo, subtítulo continua discreto (`dimmed`), e uma linha divisória fina abaixo, também
+  roxa e discreta, com a largura real do terminal (via `crossterm::terminal::size()`, não um número
+  fixo chutado) — separa visualmente o cabeçalho da conversa que cresce abaixo
+- Verificado via pty (sem gastar mais cota do Gemini — só até a caixa de input aparecer, sem
+  mandar mensagem) que a sequência de escape do clear roda antes do banner e que as cores/divisória
+  aparecem certas. `cargo build/test/clippy --workspace` limpos
+
+**Próximo passo (revisado de novo depois do usuário testar, ainda Sessão 47)**: usuário testou —
+confirmou que era mesmo o 429 (cota diária do Gemini esgotada, como avisado), mas reportou um bug
+novo: o texto do erro "ficou todo jogado pela tela, embaixo, em cima do campo de digitar, e todo
+picotado".
+
+**Causa raiz**: modo raw (`cfmakeraw`, o que `crossterm::terminal::enable_raw_mode` liga) desliga o
+processamento de saída do terminal (`OPOST`) — inclusive a tradução automática de `\n` sozinho pra
+`\r\n` que todo terminal faz por padrão fora do modo raw. Isso significa que **todo** `println!`
+chamado depois do raw mode ligado (o eco "> mensagem", o cabeçalho "● Warden", a linha de tokens, a
+mensagem de erro) deixava o cursor onde a linha anterior tinha parado, em vez de voltar pra coluna
+0 — inofensivo pra uma linha só (não dava pra notar), mas o corpo do erro 429 do Gemini é um JSON
+de várias linhas, deixando o efeito bem visível: cada linha nova começava mais à direita que a
+anterior, "escada" espalhada pela tela, exatamente o relato do usuário. Esse mesmo bug atingiria
+qualquer resposta do modelo com múltiplos parágrafos, não só mensagens de erro — só não tinha
+aparecido ainda nos testes anteriores porque as respostas de teste ("Hello"/"Hi") eram sempre uma
+linha só
+
+**Corrigido**: dois helpers novos, `write_raw_line`/`write_raw` (`interactive.rs`) — trocam
+qualquer `\n` (inclusive os embutidos no meio do texto, não só o final) por `\r\n` antes de
+imprimir. Todo `println!`/`print!` que roda depois do raw mode ligado (dentro de `run_turn` e no
+loop principal de `run`) migrou pra eles; o banner e o `clear_screen()` continuam com `println!`
+normal porque rodam **antes** do raw mode ligar, onde a tradução automática do terminal ainda
+funciona. Verificado via pty forçando o mesmo erro 429 de propósito (reprodutor perfeito, por ser
+JSON de várias linhas): zero `\n` sozinho no texto do erro depois do fix — os únicos dois `\n` sem
+`\r` que sobraram no capture inteiro são do próprio `ratatui` reservando espaço pro viewport
+(linhas em branco, sem texto depois pra desalinhar, inofensivas). `cargo build/test/clippy
+--workspace` limpos
+
+**Próximo passo**: usuário confirmar visualmente numa janela real — em especial mandar uma
+mensagem que dê uma resposta de verdade (não só o erro 429) pra ver o texto de várias linhas
+renderizando limpo, já que a cota do Gemini deve seguir zerada por hoje.
 
 ---
 
