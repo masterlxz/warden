@@ -2,7 +2,168 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-04 (Sessão 47)
+> Última atualização: 2026-09-05 (Sessão 48)
+
+---
+
+### 2026-09-05 — Sessão 48
+
+- **Objetivo**: usuário testou o fix de raw-mode da Sessão 47 numa janela real e reportou um bug de
+  layout novo: "ta tudo cagado, a mensagem está em baixo da caixa de teste, não parece um chat
+  normal". Investigar e corrigir.
+
+**O que foi feito**:
+
+- **Causa raiz**: os helpers `write_raw_line`/`write_raw` (introduzidos na própria Sessão 47 pra
+  resolver o bug de `\n`/`\r\n`) imprimiam a mensagem do usuário, o cabeçalho "● Warden", a resposta
+  e erros direto via `print!`/`println!` em modo raw — sem passar pelo `ratatui`. O `Terminal`
+  (`Viewport::Inline`) só sabe onde a caixa embutida está porque ele mesmo atualiza esse
+  rastreamento a cada `draw`/`clear`/`insert_before`; um `print!` cru avança o cursor real sem o
+  `ratatui` saber, então o próximo `.clear()`/`.draw()` desenhava na posição errada (desatualizada),
+  embaralhando a caixa com o texto de conversa já impresso — exatamente o "não parece chat normal"
+  relatado
+- Lido o código-fonte do `ratatui-core` instalado (`~/.cargo/registry`) pra confirmar a API certa:
+  `Terminal::insert_before(height, draw_fn)` é a própria solução do crate pra "imprimir histórico
+  permanente acima de uma caixa fixa" — literalmente o caso de uso descrito na doc do método
+- **Corrigido**: todo `print!`/`println!` em modo raw trocado por `insert_before`. Como o método
+  exige saber de antemão quantas linhas o bloco vai ocupar, `warden-cli/src/interactive.rs` ganhou
+  um wrapper de texto próprio (`wrap_text`/`wrap_segment`, usando `unicode_width`) em vez da API de
+  contagem de linhas do `ratatui` (que hoje é instável/gated por feature). A resposta em streaming
+  passou a acumular num buffer (`pending`): linhas terminadas em `\n` de verdade são promovidas pro
+  histórico assim que completam, e qualquer trecho que já preencheu a largura do terminal também é
+  promovido linha a linha (a maioria das respostas é um parágrafo contínuo até a quebra final, então
+  só esperar por `\n` deixaria o texto invisível até o fim) — a caixinha "Warden respondendo" (nova,
+  `render_streaming_box`, verde, substitui a de "pensando" assim que chega o primeiro texto) nunca
+  precisa de mais de uma linha de conteúdo, sem precisar redimensionar a caixa. Efeito colateral
+  bom: `insert_before` desenha por coordenada de célula, não depende da tradução `\n`→`\r\n` do
+  terminal — o bug de "escada" da correção anterior deixa de ser uma preocupação por construção
+- `cargo build/test/clippy --workspace` limpos (15 testes em `warden-cli`, `LineEditor` intocado)
+- **Verificado com o mesmo harness de pty** (Python `pty`+`select`, mais `pyte` dessa vez pra
+  renderizar a tela de verdade em texto legível em vez de bytes crus) — 3 rodadas contra a API real
+  do Gemini (não mockada): a linha "> mensagem" e um erro real de várias linhas (JSON do Gemini, 503
+  "high demand") renderizaram corretamente coladas acima da caixa, sem sobreposição nem escada, nas
+  três rodadas — a caixa ficou fixa embaixo, como esperado
+- **Limitação**: o Gemini esteve instável durante toda a verificação desta sessão (503 "high demand"
+  repetido, uma chamada passou de 70s sem responder nem errar) — não foi possível ver uma resposta
+  de texto real (só o caminho de erro) renderizando em streaming de ponta a ponta; a lógica de
+  promoção linha-a-linha do `pending` ficou coberta só pelo raciocínio + os testes automatizados
+- `PENDING.md` (P34) atualizado com a causa raiz e o fix, mantido em aberto até o usuário confirmar
+  com uma resposta de verdade quando o Gemini normalizar
+
+**Próximo passo**: usuário testar numa janela real com uma mensagem simples assim que a API do
+Gemini estiver respondendo normalmente, prestando atenção especial ao texto da resposta em si
+(não só o erro) renderizando em streaming, linha a linha, sem travar nem embaralhar.
+
+**Continuação (ainda 2026-09-05, mesma Sessão 48)**: usuário testou o fix do layout de verdade —
+confirmou que melhorou, mas "ainda não está um Claude Code da vida". Perguntado o que
+especificamente, apontou (múltipla escolha + texto livre): falta cor/formatação no texto (markdown
+cru), o visual dos "balões"/mensagens não tem identidade clara, a caixa de pensando/status ainda
+incomoda, e de forma geral "como as mensagens ficam estruturadas, tá mt esquisito".
+
+**Implementado nesta continuação**:
+
+- **Markdown inline** (`parse_inline`, novo) — `**negrito**`, `*itálico*`/`_itálico_` e `` `código` ``
+  extraídos de uma linha e convertidos em spans estilizados (`Vec<(String, Style)>`); não é
+  CommonMark completo, só os construtos que uma resposta de chat realmente usa. Um marcador aberto
+  no fim do texto disponível (ainda sem o par de fechamento) fica como caractere literal — não tenta
+  "adivinhar" o fechamento
+- **Classificação de bloco** (`classify_and_strip`, novo) — reconhece cabeçalho (`#`/`##`/`###`),
+  item de lista (`-`/`*`) e bloco de código cercado (` ``` `, com um `bool in_code_block` mantido
+  pelo chamador ao longo do turno inteiro, já que uma linha de cerca sozinha não deve renderizar
+  nada). Cabeçalho vira negrito + cor de destaque (a mesma roxa do `BRAND`/banner); item de lista
+  ganha um marcador "• " roxo; linha dentro de um bloco de código fica na cor de destaque de código
+  (a mesma laranja que já era usada pro código inline), sem parsing de markdown dentro (senão
+  `**`/`` ` `` dentro de código de verdade virariam negrito/código por engano)
+- **Wrap com estilo preservado** (`wrap_spans`, novo) — mesmo algoritmo guloso do `wrap_segment` já
+  existente, mas operando sobre spans já estilizados em vez de texto plano, pra negrito/itálico
+  sobreviverem à quebra de linha em vez de virar texto plano de novo
+- **Estrutura de "hanging indent" por mensagem** (`insert_history_rows`/`commit_assistant_rows`,
+  novos) — a primeira linha de uma mensagem inteira (do usuário ou do Warden) ganha o marcador
+  ("> "/"● "), toda linha seguinte (inclusive quebras de parágrafo dentro da mesma resposta, ao
+  longo de várias chamadas separadas de `insert_before` numa resposta longa) ganha só um recuo de
+  dois espaços — o pedido concreto de "estrutura esquisita": antes cada linha impressa não tinha
+  relação visual nenhuma com as outras da mesma mensagem
+- **Eco da mensagem do usuário** — trocado de negrito laranja pra um "> " discreto/dim, sem cor —
+  o orçamento de cor fica reservado pro markdown da resposta do Warden, não pra repetir o que o
+  próprio usuário acabou de digitar (mais parecido com como um chat normal trata o próprio input)
+- **Caixa de pensando/status sem borda** (`render_thinking_line`/`render_streaming_line`, era
+  `render_thinking_box`/`render_streaming_box`) — a caixa com borda ficou só pro input de texto (que
+  o usuário já tinha elogiado antes, não mexida); o status "pensando"/"respondendo" virou uma linha
+  solta sem `Block`, desenhada na mesma linha vertical de antes (meio das 3 linhas do viewport
+  embutido) pra não pular visualmente ao trocar de um pro outro
+- **Limitação conhecida, aceita deliberadamente**: como a maioria das respostas ainda precisa da
+  promoção linha-a-linha antes do parágrafo terminar (senão o texto fica invisível até o fim, o
+  problema que a correção anterior resolveu), a classificação de bloco (cabeçalho/lista/código) só
+  roda quando uma linha termina de verdade com `\n` — o trecho ainda em streaming (sem `\n` ainda)
+  usa só o parsing inline, sem marcador de bloco. Isso significa que um marcador de markdown (`**`,
+  `` ` ``, cabeçalho/lista) que calhe de ficar dividido bem na fronteira entre duas promoções
+  separadas pode deixar um asterisco ou marcador solto visível — confirmado numa das rodadas de
+  teste (ver abaixo), efeito raro e cosmético só, sem quebrar o layout
+- `cargo build/test/clippy --workspace` limpos — 6 testes novos em `warden-cli`
+  (`parse_inline_extracts_bold_italic_and_code_spans`,
+  `parse_inline_leaves_an_unclosed_marker_as_literal_text`,
+  `classify_and_strip_recognizes_headers_and_bullets`,
+  `classify_and_strip_toggles_code_block_state_across_calls`,
+  `wrap_spans_breaks_on_word_boundaries_and_preserves_style`,
+  `wrap_spans_hard_breaks_a_single_word_longer_than_the_width`), 21 no total no crate
+- **Verificado com o mesmo harness de pty (Python `pty`+`pyte`)**, desta vez com uma chamada real ao
+  Gemini que **respondeu de verdade** (não só erro) — pedido "liste 3 dicas de produtividade em
+  bullets, cada uma com uma palavra em negrito": confirmado visualmente (dump de tela + dump de
+  estilo por célula) — "● " verde só na primeira linha da resposta, "• " roxo em cada item de lista,
+  negrito de verdade em "Foco"/"Priorização", linhas de continuação recuadas sem repetir o marcador,
+  eco do usuário discreto/dim, caixa de pensando sem borda. Uma ocorrência do limite conhecido acima
+  apareceu (um asterisco solto onde um itálico ficou dividido entre duas promoções), consistente com
+  o esperado — nada mais quebrado
+
+**Próximo passo**: usuário testar numa janela real e dizer se a estrutura/cor está no nível esperado
+agora, ou se ainda falta algo específico.
+
+**Continuação (ainda 2026-09-05, mesma Sessão 48)**: usuário testou de novo numa janela real,
+colou o resultado (mensagem + erro 503 renderizando certo, confirmando o fix de layout) e disse:
+"ta simples dms, não tem como deixar mais bonitão, com mais detalhes e tudo mais?". Apresentadas 3
+opções visuais em ASCII (cartões com borda por mensagem / sem caixa mas com metadados / só a
+resposta do Warden em card) — usuário escolheu **cartões com borda por mensagem**.
+
+**Implementado**:
+
+- `insert_history_rows`/`commit_assistant_rows` (do "hanging indent" da rodada anterior) removidos
+  — trocados por `insert_card`, que desenha um cartão inteiro (borda de cima com título embutido,
+  linhas de conteúdo já quebradas/estilizadas emolduradas por "│ "/" │", rodapé opcional com
+  espaçador antes, borda de baixo) numa única chamada de `insert_before` — uma borda não pode ser
+  "reaberta" depois de fechada pra receber mais linhas, diferente do esquema anterior de ir
+  promovendo linha a linha
+- Isso mudou a estratégia de streaming: como um cartão só é commitado quando está completo, o texto
+  cru da resposta só vai acumulando (`pending`) enquanto chega, mostrado ao vivo numa
+  pré-visualização com a mesma borda arredondada (`render_card_preview`, título "● Warden") que
+  **cresce dinamicamente** até um teto de 6 linhas (`MAX_PREVIEW_ROWS`, depois disso só mostra a
+  cauda) — só quando a resposta termina de verdade é que o texto completo passa pelo parser de
+  markdown (`markdown_body_rows`) de uma vez só e vira um cartão permanente. Isso fecha de vez a
+  limitação conhecida da rodada anterior (marcador de markdown dividido entre duas promoções
+  separadas), já que agora só existe UMA promoção, com o texto inteiro já disponível
+- A pré-visualização dinâmica exigiu voltar a reconstruir o `Terminal` em tempo de execução
+  (`ensure_preview_height`/`new_inline_terminal_with_height`) — a mesma operação que causou o
+  travamento da Sessão 47 com o `EventStream` antigo. Agora é seguro: o `EventStream` já foi
+  removido de vez naquela sessão (só restam `poll`/`read` síncronos e limitados), então reconstruir
+  o `Terminal` só faz uma query de cursor pontual, sem risco do lock ficar preso
+- Mensagem do usuário também virou cartão (`plain_body_rows` — sem parsing de markdown, é texto
+  literal dele), título "você" discreto/dim, borda dim; erro também virou cartão, com borda
+  vermelha. A caixa de input ganhou borda arredondada (`BorderType::Rounded`) pra combinar
+  visualmente com os cartões novos (antes usava o canto reto padrão do `ratatui`)
+- `cargo build/test/clippy --workspace` limpos — mesmos 21 testes (as funções puras de
+  parsing/wrap não mudaram; `insert_card`/`ensure_preview_height` não são testáveis sem terminal
+  de verdade)
+- **Verificado via pty**: cartão do usuário e pré-visualização com borda arredondada renderizando
+  certo; bateu num rate limit do Gemini de novo (429 por minuto dessa vez, `retryDelay: 57s`, não a
+  cota diária) — o cartão de ERRO em si renderizou certinho (borda vermelha, JSON de várias linhas
+  emoldurado e alinhado), mas grande o bastante (~30 linhas) pra estourar a altura do terminal de
+  teste (34 linhas) e rolar o título/borda de cima pra fora da tela capturada — artefato do teste
+  (terminal pequeno), não um bug, já que o desenho da borda de cima é idêntico ao já confirmado
+  funcionando na rodada anterior
+
+**Ainda falta**: nunca visto uma resposta de verdade (não só erro) completa no novo formato de
+cartão — toda tentativa de hoje bateu em rate limit do Gemini antes de completar. Usuário pediu
+pra deixar assim por enquanto ("deixa assim por enquanto, só atualiza o project... e commita e da
+push") — retomar o teste de ponta a ponta quando o Gemini normalizar.
 
 ---
 

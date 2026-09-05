@@ -28,6 +28,19 @@
 //! crossterm's hardcoded 2s timeout — reproduced directly against a real pty before this comment
 //! was written. Bounded polls never hold that lock past their own timeout, so `clear()` always
 //! finds it free.
+//!
+//! Every line that should become permanent conversation history (the user's own message, the
+//! assistant's reply, token counts, errors) is committed via `Terminal::insert_before` —
+//! `ratatui`'s own API for "print history above a pinned inline box" — never via a bare
+//! `print!`/`println!`. An earlier version of this module printed those lines directly to
+//! stdout while raw mode was on, bypassing `ratatui`'s bookkeeping of where the inline viewport
+//! (the input/status box) actually sits on screen; the box's position is only ever updated by
+//! `Terminal::draw`/`clear`/`insert_before`, so a raw print left it stale, and the next
+//! `draw()`/`clear()` rendered into the wrong row — the input box would end up staircased away
+//! from the conversation instead of pinned below it (confirmed against a real pty, and against
+//! the user's own report of a garbled, non-chat-like layout). `insert_before` also sidesteps the
+//! `\n`-vs-`\r\n` raw-mode pitfall entirely, since it positions the cursor per cell on the
+//! backend rather than relying on the terminal's own newline handling.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -37,8 +50,10 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use owo_colors::OwoColorize;
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::buffer::Buffer;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
@@ -218,7 +233,7 @@ fn save_history(path: &Path, history: &[String]) {
 
 fn render_input_box(frame: &mut ratatui::Frame, editor: &LineEditor) {
     let area = frame.area();
-    let block = Block::bordered().border_style(Style::default().fg(Color::Rgb(230, 126, 34))).title(" Warden ");
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::default().fg(Color::Rgb(230, 126, 34))).title(" Warden ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(editor.as_str()), inner);
@@ -227,20 +242,69 @@ fn render_input_box(frame: &mut ratatui::Frame, editor: &LineEditor) {
     frame.set_cursor_position((cursor_col, inner.y));
 }
 
-fn render_thinking_box(frame: &mut ratatui::Frame, elapsed: Duration, spinner_frame: usize) {
+/// What the live, not-yet-committed assistant preview (see `render_card_preview`) currently
+/// shows: a spinner before any content has arrived, or the tail of the response streamed in so
+/// far once it has (see `run_turn` and `MAX_PREVIEW_ROWS`).
+enum PreviewState<'a> {
+    Thinking { elapsed: Duration, spinner_frame: usize },
+    Streaming { lines: &'a [String] },
+}
+
+/// Same rounded border as `render_input_box`, titled like the final committed card
+/// (`insert_card`) it turns into once the reply completes — so the transition from "still
+/// streaming" to "permanent history" is just the border staying in place while the box grows and
+/// then gets committed, not a jump between two unrelated visual styles.
+fn render_card_preview(frame: &mut ratatui::Frame, state: PreviewState) {
     let area = frame.area();
-    let block = Block::bordered().border_style(Style::default().fg(Color::Rgb(241, 196, 15))).title(" Warden ");
+    let title = Line::from(vec![Span::styled("● ", Style::default().fg(Color::Rgb(46, 204, 113))), Span::raw("Warden")]);
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::default().fg(accent_color())).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let glyph = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
-    let line = format!("{glyph} pensando... ({}s — Ctrl+C para interromper)", elapsed.as_secs());
-    frame.render_widget(Paragraph::new(line).style(Style::default().fg(Color::DarkGray)), inner);
+    match state {
+        PreviewState::Thinking { elapsed, spinner_frame } => {
+            let glyph = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
+            let line = Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::default().fg(Color::Rgb(241, 196, 15))),
+                Span::styled(format!("pensando... ({}s — Ctrl+C para interromper)", elapsed.as_secs()), Style::default().add_modifier(Modifier::DIM)),
+            ]);
+            frame.render_widget(Paragraph::new(line), inner);
+        }
+        PreviewState::Streaming { lines } => {
+            let text: Vec<Line> = lines.iter().map(|l| Line::raw(l.clone())).collect();
+            frame.render_widget(Paragraph::new(text), inner);
+        }
+    }
+}
+
+fn new_inline_terminal_with_height(height: u16) -> anyhow::Result<CliTerminal> {
+    let backend = CrosstermBackend::new(io::stdout());
+    Ok(Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(height) })?)
 }
 
 fn new_inline_terminal() -> anyhow::Result<CliTerminal> {
-    let backend = CrosstermBackend::new(io::stdout());
-    Ok(Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(VIEWPORT_HEIGHT) })?)
+    new_inline_terminal_with_height(VIEWPORT_HEIGHT)
+}
+
+/// Body rows the live preview shows at once before it stops growing and just scrolls to show the
+/// tail (see `ensure_preview_height`) — keeps a very long reply from making the preview take over
+/// the whole screen while it's still streaming. The final card (`insert_card`) always gets every
+/// row regardless; this only bounds the *live* view.
+const MAX_PREVIEW_ROWS: usize = 6;
+
+/// Grows (or shrinks back down) the live card-preview viewport to fit `wanted_rows` of body text
+/// plus its border, rebuilding the `Terminal` only when the height actually needs to change.
+/// Safe to do repeatedly now that `EventStream` (see the module doc comment) is gone: rebuilding
+/// just queries the cursor position once via the backend, and nothing else can hold that query's
+/// lock indefinitely anymore, which is what made a fresh `Terminal` per call hang before.
+fn ensure_preview_height(terminal: &mut CliTerminal, current_height: &mut u16, wanted_rows: usize) -> anyhow::Result<()> {
+    let wanted_height = (wanted_rows.min(MAX_PREVIEW_ROWS) as u16 + 2).max(VIEWPORT_HEIGHT);
+    if wanted_height != *current_height {
+        terminal.clear()?;
+        *terminal = new_inline_terminal_with_height(wanted_height)?;
+        *current_height = wanted_height;
+    }
+    Ok(())
 }
 
 fn key_is_ctrl_c(key: &crossterm::event::KeyEvent) -> bool {
@@ -252,24 +316,312 @@ enum LineOutcome {
     Exit,
 }
 
-/// Prints one already-styled line while raw mode is active, terminated with `\r\n` instead of
-/// `println!`'s bare `\n`. Raw mode (`cfmakeraw` semantics, what
-/// `crossterm::terminal::enable_raw_mode` sets up) clears the terminal's own `OPOST` output
-/// processing, so a lone `\n` no longer returns the cursor to column 0 — confirmed against a real
-/// terminal: a multi-line error body (the Gemini 429 response's JSON) staircased across the
-/// screen, smeared over the input box below it, because every `println!` after raw mode was
-/// enabled relied on that translation happening for free. Any newline embedded in `text` itself
-/// gets the same treatment, not just the trailing one.
-fn write_raw_line(text: &str) -> io::Result<()> {
-    print!("{}\r\n", text.replace('\n', "\r\n"));
-    io::stdout().flush()
+/// The terminal's current column count — used to wrap history text ourselves before committing
+/// it (see `wrap_text`), since `Terminal::insert_before` needs an exact row count up front.
+fn terminal_width() -> u16 {
+    crossterm::terminal::size().map(|(cols, _)| cols).unwrap_or(80)
 }
 
-/// Same fix as `write_raw_line`, without the terminator — for the streamed response, printed
-/// delta by delta as it arrives rather than as whole lines.
-fn write_raw(text: &str) -> io::Result<()> {
-    print!("{}", text.replace('\n', "\r\n"));
-    io::stdout().flush()
+/// Wraps one line (no embedded newlines) to at most `width` display columns, breaking on spaces
+/// where possible and only hard-breaking a single word that alone exceeds `width`. Always returns
+/// at least one (possibly empty) row.
+fn wrap_segment(segment: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for word in segment.split_inclusive(' ') {
+        let word_width = UnicodeWidthStr::width(word);
+        if current_width > 0 && current_width + word_width > width {
+            rows.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        if word_width > width {
+            for c in word.chars() {
+                let c_width = UnicodeWidthStr::width(c.to_string().as_str()).max(1);
+                if current_width + c_width > width {
+                    rows.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+                current.push(c);
+                current_width += c_width;
+            }
+            continue;
+        }
+        current.push_str(word);
+        current_width += word_width;
+    }
+    rows.push(current);
+    rows
+}
+
+/// Wraps possibly-multi-line `text` (split on real `\n`s first, each segment wrapped on its own)
+/// to `width` display columns — Warden's own tiny word-wrapper, used instead of `ratatui`'s
+/// (which only reports a wrapped row count through an unstable, render-time API) so a row count
+/// is known ahead of the `insert_before` call below.
+fn wrap_text(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    text.split('\n').flat_map(|segment| wrap_segment(segment, width)).collect()
+}
+
+/// Permanently commits one block of text (which may be wider than the terminal, in which case it
+/// soft-wraps, and may contain embedded newlines) to the scrollback, just above the pinned
+/// input/status box, via `insert_before` — see the module doc comment for why this, and never a
+/// raw `print!`/`println!`, is the only safe way to grow the conversation history.
+fn insert_history_line(terminal: &mut CliTerminal, text: &str, style: Style) -> anyhow::Result<()> {
+    let rows = wrap_text(text, terminal_width());
+    let height = rows.len() as u16;
+    terminal.insert_before(height, move |buf| {
+        for (i, row) in rows.iter().enumerate() {
+            buf.set_string(buf.area.x, buf.area.y + i as u16, row, style);
+        }
+    })?;
+    Ok(())
+}
+
+/// Width (in display columns) available for a message card's content — the full terminal width
+/// minus the left `"│ "` and right `" │"` border padding (see `insert_card`).
+fn card_content_width() -> usize {
+    (terminal_width() as usize).saturating_sub(4).max(1)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineKind {
+    Header,
+    Bullet,
+    Code,
+    Plain,
+}
+
+/// Classifies one already-`\n`-free markdown-ish line, stripping its block syntax so only the
+/// content remains. `in_code_block` toggles on a fenced-code delimiter line (`` ``` ``, in which
+/// case there's nothing to render — `None`) and must be threaded across an entire turn by the
+/// caller, not reset per call.
+fn classify_and_strip(line: &str, in_code_block: &mut bool) -> Option<(LineKind, String)> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") {
+        *in_code_block = !*in_code_block;
+        return None;
+    }
+    if *in_code_block {
+        return Some((LineKind::Code, line.to_string()));
+    }
+    for prefix in ["### ", "## ", "# "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return Some((LineKind::Header, rest.to_string()));
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        return Some((LineKind::Bullet, rest.to_string()));
+    }
+    Some((LineKind::Plain, line.to_string()))
+}
+
+/// The index of the first run of `len` consecutive `marker` characters at or after `start`, if
+/// any — used by `parse_inline` to find a markdown delimiter's closing counterpart.
+fn find_marker(chars: &[char], start: usize, marker: char, len: usize) -> Option<usize> {
+    (start..=chars.len().saturating_sub(len)).find(|&i| chars[i..i + len].iter().all(|&c| c == marker))
+}
+
+/// Parses `**bold**`, `*italic*`/`_italic_` and `` `inline code` `` out of one line, applying
+/// `base` to everything else. Not full CommonMark — just the constructs a chat reply actually
+/// uses — and doesn't try to recover from a marker left open at the end of `text`: it's rendered
+/// as its own literal characters instead. A marker split across two separately-committed history
+/// rows (see `run_turn`) is a rare, self-limited cosmetic edge case for the same reason: once a
+/// row is committed via `insert_before` it can't be redrawn once the rest of the markup arrives.
+fn parse_inline(text: &str, base: Style) -> Vec<(String, Style)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0;
+
+    macro_rules! flush {
+        () => {
+            if !buf.is_empty() {
+                spans.push((std::mem::take(&mut buf), base));
+            }
+        };
+    }
+
+    while i < chars.len() {
+        if chars[i] == '`' {
+            if let Some(end) = find_marker(&chars, i + 1, '`', 1) {
+                flush!();
+                spans.push((chars[i + 1..end].iter().collect(), base.fg(Color::Rgb(230, 126, 34))));
+                i = end + 1;
+                continue;
+            }
+        }
+        if chars[i] == '*' && chars.get(i + 1) == Some(&'*') {
+            if let Some(end) = find_marker(&chars, i + 2, '*', 2) {
+                flush!();
+                spans.push((chars[i + 2..end].iter().collect(), base.add_modifier(Modifier::BOLD)));
+                i = end + 2;
+                continue;
+            }
+        }
+        if chars[i] == '*' || chars[i] == '_' {
+            let marker = chars[i];
+            if let Some(end) = find_marker(&chars, i + 1, marker, 1) {
+                if end > i + 1 {
+                    flush!();
+                    spans.push((chars[i + 1..end].iter().collect(), base.add_modifier(Modifier::ITALIC)));
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        buf.push(chars[i]);
+        i += 1;
+    }
+    flush!();
+    spans
+}
+
+/// Same purple as `BRAND` (see its doc comment) — reused here for markdown headers/bullets so
+/// they read as part of the same visual identity rather than a random extra color.
+fn accent_color() -> Color {
+    let (r, g, b) = BRAND;
+    Color::Rgb(r, g, b)
+}
+
+/// Classifies+strips `line` (a complete, `\n`-terminated logical line — never a still-streaming
+/// partial one, see `run_turn`) and turns it into styled spans: a header is bold and accented, a
+/// bullet gets a `"• "` marker, a fenced code line is styled as code with no inline parsing
+/// (so `**`/`` ` `` inside real code isn't mistaken for markdown), everything else gets inline
+/// span parsing. Returns `None` for a fence delimiter line, which renders nothing.
+fn markdown_spans_for_line(line: &str, in_code_block: &mut bool) -> Option<Vec<(String, Style)>> {
+    let (kind, content) = classify_and_strip(line, in_code_block)?;
+    Some(match kind {
+        LineKind::Header => parse_inline(&content, Style::default().add_modifier(Modifier::BOLD).fg(accent_color())),
+        LineKind::Bullet => {
+            let mut spans = vec![("• ".to_string(), Style::default().fg(accent_color()))];
+            spans.extend(parse_inline(&content, Style::default()));
+            spans
+        }
+        LineKind::Code => vec![(content, Style::default().fg(Color::Rgb(230, 126, 34)))],
+        LineKind::Plain => parse_inline(&content, Style::default()),
+    })
+}
+
+/// Word-wraps already-styled spans to `width` display columns — the same greedy algorithm as
+/// `wrap_segment`, but keeping each token's style attached, so markdown emphasis survives
+/// wrapping instead of collapsing back to plain text.
+fn wrap_spans(spans: &[(String, Style)], width: usize) -> Vec<Vec<(String, Style)>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut current: Vec<(String, Style)> = Vec::new();
+    let mut current_width = 0usize;
+
+    for (text, style) in spans {
+        for word in text.split_inclusive(' ') {
+            let word_width = UnicodeWidthStr::width(word);
+            if current_width > 0 && current_width + word_width > width {
+                rows.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            if word_width > width {
+                let mut piece = String::new();
+                let mut piece_width = 0usize;
+                for c in word.chars() {
+                    let c_width = UnicodeWidthStr::width(c.to_string().as_str()).max(1);
+                    if current_width + piece_width + c_width > width {
+                        if !piece.is_empty() {
+                            current.push((std::mem::take(&mut piece), *style));
+                            piece_width = 0;
+                        }
+                        rows.push(std::mem::take(&mut current));
+                        current_width = 0;
+                    }
+                    piece.push(c);
+                    piece_width += c_width;
+                }
+                if !piece.is_empty() {
+                    current.push((piece, *style));
+                    current_width += piece_width;
+                }
+                continue;
+            }
+            current.push((word.to_string(), *style));
+            current_width += word_width;
+        }
+    }
+    rows.push(current);
+    rows
+}
+
+/// Classifies+styles a complete assistant reply (all of it, not a still-streaming partial chunk
+/// — see `run_turn`) into wrapped, card-ready body rows: every logical (`\n`-separated) line runs
+/// through `markdown_spans_for_line` and gets wrapped to `card_content_width()`. Calling this only
+/// once the full text is known — instead of line-by-line as it streams, which an earlier version
+/// of this module did — means a markdown marker can never end up split across two separately
+/// committed rows; see `PENDING.md` P34 for that now-obsolete trade-off. Never empty: an empty
+/// reply still gets one empty row, so its card has a body instead of being just two borders.
+fn markdown_body_rows(text: &str) -> Vec<Vec<(String, Style)>> {
+    let mut in_code_block = false;
+    let width = card_content_width();
+    let rows: Vec<Vec<(String, Style)>> =
+        text.split('\n').flat_map(|line| markdown_spans_for_line(line, &mut in_code_block).map(|spans| wrap_spans(&spans, width)).unwrap_or_default()).collect();
+    if rows.is_empty() { vec![Vec::new()] } else { rows }
+}
+
+/// Wraps the user's own raw input to `card_content_width()` for their message card — deliberately
+/// no markdown parsing: what they typed is literal text, not something to interpret as markup.
+fn plain_body_rows(text: &str) -> Vec<Vec<(String, Style)>> {
+    wrap_text(text, card_content_width() as u16).into_iter().map(|row| vec![(row, Style::default())]).collect()
+}
+
+/// One row of a card's bordered content — `"│ "`, the row's styled spans, then a right-aligned
+/// `"│"` at the card's own width. A blank `row` (no spans) still draws both border characters, so
+/// an empty spacer line inside a card (see `insert_card`'s footer handling) still looks framed.
+fn draw_card_row(buf: &mut Buffer, x0: u16, y: u16, width: u16, row: &[(String, Style)], border_style: Style) {
+    buf.set_string(x0, y, "│ ", border_style);
+    let mut x = x0 + 2;
+    for (text, style) in row {
+        buf.set_string(x, y, text, *style);
+        x += UnicodeWidthStr::width(text.as_str()) as u16;
+    }
+    buf.set_string(x0 + width - 1, y, "│", border_style);
+}
+
+/// Renders one complete message "card" — a full-width bordered box with a titled top border,
+/// already-wrapped/styled body rows, an optional single footer row (e.g. token count, preceded by
+/// a blank spacer), and a bottom border — as one permanent block of history via `insert_before`.
+/// A card is only ever committed once its full content is known: `insert_before` commits are
+/// permanent, so a border can't be "reopened" to append more body rows into it later — the
+/// still-streaming assistant reply is shown live in the pinned preview instead
+/// (`render_card_preview`) and only turned into a card once it's complete (see `run_turn`).
+fn insert_card(terminal: &mut CliTerminal, title: Vec<(String, Style)>, border_style: Style, body: Vec<Vec<(String, Style)>>, footer: Option<Vec<(String, Style)>>) -> anyhow::Result<()> {
+    let width = (terminal_width() as usize).max(8) as u16;
+    let title_width: usize = title.iter().map(|(t, _)| UnicodeWidthStr::width(t.as_str())).sum();
+    let top_dashes = (width as usize).saturating_sub(4 + title_width);
+
+    let mut content_rows = body;
+    if let Some(footer_row) = footer {
+        content_rows.push(Vec::new());
+        content_rows.push(footer_row);
+    }
+    let height = content_rows.len() as u16 + 2;
+
+    terminal.insert_before(height, move |buf| {
+        let x0 = buf.area.x;
+        let y0 = buf.area.y;
+
+        buf.set_string(x0, y0, "╭─ ", border_style);
+        let mut x = x0 + 3;
+        for (text, style) in &title {
+            buf.set_string(x, y0, text, *style);
+            x += UnicodeWidthStr::width(text.as_str()) as u16;
+        }
+        buf.set_string(x, y0, format!(" {}╮", "─".repeat(top_dashes)), border_style);
+
+        for (i, row) in content_rows.iter().enumerate() {
+            draw_card_row(buf, x0, y0 + 1 + i as u16, width, row, border_style);
+        }
+
+        buf.set_string(x0, y0 + height - 1, format!("╰{}╯", "─".repeat((width as usize).saturating_sub(2))), border_style);
+    })?;
+    Ok(())
 }
 
 /// How long each bounded `event::poll` waits before giving the caller a chance to redraw/check
@@ -330,11 +682,13 @@ async fn read_line(line_history: &mut Vec<String>, terminal: &mut CliTerminal) -
     }
 }
 
-/// Runs one full turn: spawns the streaming call, shows the "thinking" box until the first
-/// content arrives (or the call finishes/fails with none), then prints the response as plain
-/// text as it streams in. Returns `Ok(None)` if the user interrupted with Ctrl+C — nothing gets
-/// appended to conversation history in that case, matching a turn that never happened. Draws into
-/// the caller's long-lived `Terminal`, same reasoning as `read_line`.
+/// Runs one full turn: spawns the streaming call, grows a live bordered preview (`render_card_
+/// preview`) as content arrives, then — once the reply is complete — turns it into a permanent
+/// message card (`insert_card`) with full markdown styling and a token-count footer. Returns
+/// `Ok(None)` if the user interrupted with Ctrl+C — nothing gets appended to conversation history
+/// in that case, matching a turn that never happened. Draws into the caller's long-lived
+/// `Terminal` (though it may swap it out for a taller/shorter one via `ensure_preview_height` —
+/// see that function's doc comment for why rebuilding mid-turn is safe here).
 async fn run_turn(
     orchestrator: &Orchestrator,
     history: &[Message],
@@ -355,7 +709,15 @@ async fn run_turn(
 
     let start = Instant::now();
     let mut spinner_frame = 0usize;
-    let mut header_printed = false;
+    // Raw text received so far — re-parsed for markdown as a whole once the reply completes
+    // (`markdown_body_rows`), not line-by-line as it streams in. Shown live, plainly wrapped and
+    // capped to `MAX_PREVIEW_ROWS`, via `render_card_preview` in the meantime.
+    let mut pending = String::new();
+    let mut current_height = VIEWPORT_HEIGHT;
+
+    let warden_title = vec![("● ".to_string(), Style::default().fg(Color::Rgb(46, 204, 113))), ("Warden".to_string(), Style::default())];
+    let card_border = Style::default().fg(accent_color());
+    let dim_style = Style::default().add_modifier(Modifier::DIM);
 
     // Not a `tokio::select!` over `rx`/a ticker/key events/`handle` — deliberately: this whole
     // turn just needs to notice new state at human-perceptible speed (a spinner frame, a Ctrl+C
@@ -365,50 +727,43 @@ async fn run_turn(
     loop {
         while let Ok(event) = rx.try_recv() {
             if let StreamEvent::ContentDelta(delta) = event {
-                if !header_printed {
-                    terminal.clear()?;
-                    write_raw_line(&"● Warden".truecolor(46, 204, 113).bold().to_string())?;
-                    header_printed = true;
-                }
-                write_raw(&delta)?;
+                pending.push_str(&delta);
             }
         }
 
         if handle.is_finished() {
             let result = handle.await;
-            if !header_printed {
-                terminal.clear()?;
-            } else {
-                write_raw_line("")?;
-            }
+            // Reset the preview's height back to the baseline *before* the fallible unwrap below
+            // — `?` short-circuits immediately on an error, and the caller (`run`, which prints
+            // the error) always expects the terminal to be back at `VIEWPORT_HEIGHT` for the next
+            // `read_line`, whether this turn ended in success or failure.
+            ensure_preview_height(terminal, &mut current_height, 0)?;
             let outcome = result??;
-            if let Some(usage) = &outcome.usage {
-                write_raw_line(
-                    &format!("  ({} prompt + {} completion = {} tokens)", usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
-                        .dimmed()
-                        .to_string(),
-                )?;
-            }
-            write_raw_line("")?;
+            let footer = outcome.usage.as_ref().map(|usage| {
+                vec![(format!("{} prompt + {} completion = {} tokens", usage.prompt_tokens, usage.completion_tokens, usage.total_tokens), dim_style)]
+            });
+            insert_card(terminal, warden_title, card_border, markdown_body_rows(&outcome.content), footer)?;
+            terminal.insert_before(1, |_buf| {})?;
             return Ok(Some(outcome));
         }
 
-        if !header_printed {
+        let preview_lines = wrap_text(&pending, card_content_width() as u16);
+        ensure_preview_height(terminal, &mut current_height, if pending.is_empty() { 0 } else { preview_lines.len() })?;
+        if pending.is_empty() {
             spinner_frame = spinner_frame.wrapping_add(1);
-            terminal.draw(|frame| render_thinking_box(frame, start.elapsed(), spinner_frame))?;
+            terminal.draw(|frame| render_card_preview(frame, PreviewState::Thinking { elapsed: start.elapsed(), spinner_frame }))?;
+        } else {
+            let tail_start = preview_lines.len().saturating_sub(MAX_PREVIEW_ROWS);
+            terminal.draw(|frame| render_card_preview(frame, PreviewState::Streaming { lines: &preview_lines[tail_start..] }))?;
         }
 
         if event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = event::read()? {
                 if key_is_ctrl_c(&key) {
                     handle.abort();
-                    if !header_printed {
-                        terminal.clear()?;
-                    } else {
-                        write_raw_line("")?;
-                    }
-                    write_raw_line(&"(interrompido)".dimmed().to_string())?;
-                    write_raw_line("")?;
+                    ensure_preview_height(terminal, &mut current_height, 0)?;
+                    insert_history_line(terminal, "(interrompido)", dim_style)?;
+                    insert_history_line(terminal, "", Style::default())?;
                     return Ok(None);
                 }
             }
@@ -478,7 +833,13 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
             break;
         }
 
-        write_raw_line(&format!("{} {}", ">".truecolor(230, 126, 34).bold(), trimmed))?;
+        // Same card structure as the assistant's own reply (`insert_card`) — muted border/title
+        // rather than a bright color, matching how understated an echoed prompt reads in a normal
+        // chat UI (the color budget is reserved for the assistant's own markdown, not for
+        // restating what the user just typed).
+        let dim_style = Style::default().add_modifier(Modifier::DIM);
+        insert_card(&mut terminal, vec![("você".to_string(), dim_style)], dim_style, plain_body_rows(trimmed), None)?;
+        terminal.insert_before(1, |_buf| {})?;
 
         match run_turn(orchestrator, &history, trimmed, &mut terminal).await {
             Ok(Some(outcome)) => {
@@ -487,8 +848,9 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>) -> an
             }
             Ok(None) => {}
             Err(err) => {
-                write_raw_line(&format!("erro: {err:#}").red().to_string())?;
-                write_raw_line("")?;
+                let error_border = Style::default().fg(Color::Red);
+                insert_card(&mut terminal, vec![("erro".to_string(), error_border)], error_border, plain_body_rows(&format!("{err:#}")), None)?;
+                terminal.insert_before(1, |_buf| {})?;
             }
         }
     }
@@ -628,5 +990,59 @@ mod tests {
         assert_eq!(text, "hi");
         assert!(editor.is_empty());
         assert_eq!(editor.cursor, 0);
+    }
+
+    fn plain_text(spans: &[(String, Style)]) -> String {
+        spans.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    #[test]
+    fn parse_inline_extracts_bold_italic_and_code_spans() {
+        let spans = parse_inline("normal **bold** and *italic* and `code` done", Style::default());
+        assert_eq!(plain_text(&spans), "normal bold and italic and code done");
+        assert!(spans.iter().any(|(t, s)| t == "bold" && s.add_modifier == Modifier::BOLD));
+        assert!(spans.iter().any(|(t, s)| t == "italic" && s.add_modifier == Modifier::ITALIC));
+        assert!(spans.iter().any(|(t, _)| t == "code"));
+    }
+
+    #[test]
+    fn parse_inline_leaves_an_unclosed_marker_as_literal_text() {
+        let spans = parse_inline("this **never closes", Style::default());
+        assert_eq!(plain_text(&spans), "this **never closes");
+    }
+
+    #[test]
+    fn classify_and_strip_recognizes_headers_and_bullets() {
+        let mut in_code = false;
+        assert!(matches!(classify_and_strip("# Title", &mut in_code), Some((LineKind::Header, ref rest)) if rest == "Title"));
+        assert!(matches!(classify_and_strip("- item", &mut in_code), Some((LineKind::Bullet, ref rest)) if rest == "item"));
+        assert!(matches!(classify_and_strip("plain text", &mut in_code), Some((LineKind::Plain, ref rest)) if rest == "plain text"));
+    }
+
+    #[test]
+    fn classify_and_strip_toggles_code_block_state_across_calls() {
+        let mut in_code = false;
+        assert!(classify_and_strip("```rust", &mut in_code).is_none());
+        assert!(in_code);
+        assert!(matches!(classify_and_strip("fn main() {}", &mut in_code), Some((LineKind::Code, _))));
+        assert!(classify_and_strip("```", &mut in_code).is_none());
+        assert!(!in_code);
+    }
+
+    #[test]
+    fn wrap_spans_breaks_on_word_boundaries_and_preserves_style() {
+        let spans = vec![("hello world foo".to_string(), Style::default())];
+        let rows = wrap_spans(&spans, 8);
+        let row_texts: Vec<String> = rows.iter().map(|row| row.iter().map(|(t, _)| t.as_str()).collect()).collect();
+        assert_eq!(row_texts, vec!["hello ", "world ", "foo"]);
+    }
+
+    #[test]
+    fn wrap_spans_hard_breaks_a_single_word_longer_than_the_width() {
+        let spans = vec![("supercalifragilistic".to_string(), Style::default())];
+        let rows = wrap_spans(&spans, 5);
+        assert!(rows.iter().all(|row| row.iter().map(|(t, _)| UnicodeWidthStr::width(t.as_str())).sum::<usize>() <= 5));
+        let rejoined: String = rows.iter().flatten().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(rejoined, "supercalifragilistic");
     }
 }
