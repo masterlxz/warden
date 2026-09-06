@@ -2,7 +2,98 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-05 (Sessão 49)
+> Última atualização: 2026-09-06 (Sessão 50)
+
+---
+
+### 2026-09-06 — Sessão 50
+
+- **Objetivo**: usuário disse "bora continuar?". Resumido o estado (Sessão 49 fechou a 7.1 Android;
+  próximo passo natural era 7.3 — layout responsivo mobile — ou P1, que bloqueava a 7.2).
+  Perguntado ao usuário, escolheu **fechar o P1 primeiro** (protocolo servidor↔cliente).
+
+**O que foi feito**:
+
+- Antes de decidir, conferido o SDK real do TruthID (`~/Documents/workspace/truthid/docs/docs/sdk/dart.md`,
+  `TruthIDRequester`) pra validar a premissa registrada em `PENDING.md` P1 ("TruthID já tem um relay
+  stateless por WS — reaproveitar seria natural") — **premissa incorreta**: o mecanismo real de lá
+  não usa relay nenhum, é local-network sweep + IPFS/IPNS dead-drop ("No relayer, no TruthID server,
+  no polling endpoint for you to host"), resolvendo pareamento entre dois devices sem VPN
+  compartilhada — um problema que o Warden não tem, já que assume Tailscale (`CONTEXT.md`,
+  `OVERVIEW.md`) como malha de conectividade. Nada do TruthID foi reaproveitado na decisão final
+- Apresentada ao usuário a análise sem essa suposição: WebSocket vs gRPC como protocolo de
+  *aplicação* rodando dentro do túnel já criptografado do Tailscale (não mais "qual mecanismo de
+  conectividade" — isso já é o Tailscale). Recomendado **WebSocket + protocolo JSON próprio**,
+  motivado pela Fase 9 (9.4/9.5: servidor precisa empurrar "execute esta tool" pro cliente certo e
+  receber o resultado pela mesma conexão — duplex nativo em WS) e por consistência com os outros
+  dois protocolos JSON internos que o projeto já tem (sidecar do WhatsApp, MCP) em vez de introduzir
+  protobuf/`tonic`/codegen só pra tipagem forte. Usuário confirmou a recomendação
+- `PENDING.md`: P1 movido de "Não Resolvidas" pra "Resolvidas", com a correção da suposição do
+  TruthID documentada. `ARCHITECTURE.md`: linha "Protocolo servidor↔cliente" atualizada de "Em
+  aberto" pra **WebSocket + protocolo JSON próprio** ✓, com o raciocínio completo e o que ainda fica
+  em aberto (formato exato das mensagens por tipo de evento, quem assume o papel de servidor,
+  autenticação da conexão WS — tudo isso fica pra quando 7.2/9.2 forem implementadas de verdade,
+  fora do escopo desta decisão de protocolo)
+- Nenhuma etapa de `PHASE.md` marcada como concluída — P1 era só a decisão de arquitetura que
+  bloqueava a 7.2/9.2, não a implementação em si; ambas seguem `[ ]`
+
+**Próximo passo**: com P1 fechado, a 7.2 (conectar o mobile ao servidor via Tailscale/WS) e a 9.2
+(implementar o protocolo em si) estão desbloqueadas — mas o usuário ainda não escolheu qual atacar
+agora, nem se prefere ir primeiro pela 7.3 (layout responsivo mobile, que não dependia de nada e
+segue disponível). Perguntar ao usuário por onde seguir.
+
+**Continuação (ainda 2026-09-06, mesma Sessão 50) — 9.2, implementação**: perguntado por onde
+seguir entre 7.3/7.2/9.2, usuário escolheu **9.2** (protocolo em si), já que 7.2 e 9.2 reaproveitam
+o mesmo protocolo — implementar a 9.2 primeiro evita desenhar o wire format duas vezes. Planejado
+com 2 agentes de exploração em paralelo (arquitetura de `Tool`/`Orchestrator`/`DelegateTool` em
+`warden-core`; config/bootstrap e o binário `warden-mcp-server` como precedente de "expor Warden
+sobre um protocolo") + 1 agente de design, plano revisado (lendo `Cargo.toml` de crates existentes
+pra confirmar convenções) e aprovado pelo usuário antes de codar.
+
+**Implementado**:
+
+- **Novo crate `crates/warden-server`** (bin + lib, diferente do `warden-mcp-server` que é só bin
+  — o lado *client* já nasce reutilizável pra Fase 7.2 sem redesenhar o protocolo depois):
+  - `src/protocol.rs`: `ClientMessage`/`ServerMessage`, um enum por direção (mesmo estilo do IPC
+    do sidecar do WhatsApp, não JSON-RPC), `Hello{device_id,device_name,auth_key}`/
+    `Ping{nonce}`/`Goodbye{reason}` e `HelloAck{server_name}`/`AuthError{reason}`/`Pong{nonce}`/
+    `Goodbye{reason}`. **Achado real rodando o teste de round-trip JSON**: `rename_all =
+    "camelCase"` num enum com `tag = "type"` só renomeia o nome da variante/tag — os campos
+    dentro de cada variante continuam snake_case a menos que se acrescente
+    `rename_all_fields = "camelCase"` à parte (corrigido, os dois atributos juntos)
+  - `src/server.rs`: `Server::bind`/`local_addr`/`serve` (accept loop, uma task por conexão,
+    mesmo estilo do `ChildSidecar` do WhatsApp) + `handle_connection` (primeiro frame tem que ser
+    `Hello`; chave errada → `AuthError` tipado + WS `Close` código 1008, não um close silencioso;
+    chave certa → `HelloAck`; depois só responde `Ping`/loga `Goodbye`/erro de parse)
+  - `src/client.rs`: `ServerConnection::connect`/`send`/`recv`/`ping` — a API que a 7.2
+    (desktop/mobile como cliente) vai importar direto depois
+  - `src/main.rs`: `warden-server` binário, clap (`--listen`, default `0.0.0.0:7420` — porta
+    escolhida só pra não colidir com o dev server do Tauri em `1420`; `--auth-key`), resolve a
+    chave (`WARDEN_SERVER_AUTH_KEY` env vence sobre a flag, mesmo *padrão* de `resolve_secret` sem
+    puxar `warden-bootstrap` por um campo só)
+  - `tests/handshake.rs`: 3 testes reais (não mockados) — handshake + heartbeat com múltiplos
+    ping/pong, chave errada rejeitada com `AuthError` e conexão fechada
+- **Dependência escolhida**: `tokio-tungstenite` (não promover `axum`, que já existe só como
+  dev-dependency em `warden-core`) — o `ws` extractor do `axum` traria a pilha HTTP inteira
+  (tower/hyper/matchit) pra um servidor com um endpoint só e zero semântica HTTP, mesmo raciocínio
+  já usado pro catcher de redirect OAuth. `crates/warden-server` **não depende de
+  `warden-bootstrap`/`warden-core`** — zero superfície de tool dispatch nesta peça (isso é 9.4),
+  um `Orchestrator` aqui seria peso morto agora
+- `cargo build/test/clippy --workspace` limpos (5 testes novos no `warden-server`: 2 de
+  round-trip JSON + 3 de integração real client+server), `cargo run -p warden-server` testado
+  manualmente de verdade (bindou, logou, encerrado limpo)
+- `project/PHASE.md` (9.2 marcada como concluída), `project/ARCHITECTURE.md` (decisão de
+  crate/dependência/schema registrada), `project/PENDING.md` (P36 novo — sem TLS próprio, depende
+  da 9.1 pra criptografia; chave de auth sem rotação/UI ainda; sem teste sobre tailnet real)
+
+**Ainda falta**: sem Tailscale real pra testar sobre a malha de verdade (mesma lacuna já aceita em
+outras partes do projeto por falta de infra externa no ambiente de dev). 9.1 (Tailscale), 9.3
+(registro/pareamento), 9.4/9.5 (roteamento de tool pro cliente certo), 9.6/9.7 (workspace de
+máquinas, QR pairing) seguem todos em aberto, deliberadamente fora desta sessão.
+
+**Próximo passo**: usuário ainda não escolheu — candidatos são 7.2 (agora desbloqueada, desktop ou
+mobile conectando de verdade em um `warden-server` via o `ServerConnection` novo), 7.3 (layout
+responsivo mobile, seguia disponível o tempo todo), ou continuar a própria Fase 9 (9.3/9.4).
 
 ---
 

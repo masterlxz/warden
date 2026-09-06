@@ -239,7 +239,8 @@ P29/P30/P31).
 
 **Etapas**:
 - [ ] 9.1 — Setup Tailscale (todos os nós na mesma subnet)
-- [ ] 9.2 — Protocolo servidor↔cliente (WebSocket ou gRPC)
+- [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
+  roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
 - [ ] 9.3 — Registrar cliente no servidor (pareamento)
 - [ ] 9.4 — Rotear requisição de tool para o cliente correto
 - [ ] 9.5 — Cliente executa tool localmente e devolve resultado
