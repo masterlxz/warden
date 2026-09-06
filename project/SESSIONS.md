@@ -197,6 +197,40 @@ de 🟡 Baixa pra **🔴 Alta**, a pedido do usuário.
 toolchain Android em `~/.local/opt/`) continua no repo, e o projeto Flutter novo ainda não existe.
 Fica pra quando o usuário quiser retomar a 7.1 de fato.
 
+**Continuação (2026-09-06, mesma Sessão 50) — retomando P35, 7.1 refeita em Flutter**: usuário
+disse "bora continuar?"; apresentadas as opções em aberto (P35 recomeçar 7.1 em Flutter — prioridade
+🔴 Alta definida por ele mesmo no fim da sessão anterior —, P37 fechar design do sync Arweave, Fase 9
+9.3/9.4, ou 7.2 conectar ao `warden-server`), escolheu **P35**.
+
+**Feito**: scaffold Android do Tauri Mobile removido de vez (`git rm -r desktop/src-tauri/gen/android/`,
+`bundle.android.minSdkVersion` tirado do `tauri.conf.json`, resto de `gen/` — build output nunca
+versionado — apagado do disco). Flutter SDK stable (3.47.2) instalado sem sudo em
+`~/.local/opt/flutter` (clone raso, mesmo espírito do Android SDK da Sessão 49); único obstáculo foi
+a falta de `unzip` no sistema — contornado com um shim próprio (`~/.local/bin/unzip`) traduzindo pra
+`bsdtar`, sem tocar em pacman/sudo. **Toolchain Android de `~/.local/opt/` inteiro reaproveitado**
+(JDK 17, SDK, NDK, licenças já aceitas) — `flutter doctor` confirmou tudo certo sem baixar nada de
+novo desse lado. Projeto novo criado em `mobile/` (raiz do repo, fora de `desktop/`) via `flutter
+create --org com.warden --project-name mobile --platforms android,ios mobile`
+(`applicationId com.warden.mobile`).
+
+**Verificado de ponta a ponta, mesmo rigor da checagem anterior em Tauri Mobile**: `flutter build apk
+--debug` compilou de verdade (baixou sozinho NDK r28c e Build-Tools 36 que faltavam), instalado no
+mesmo AVD `warden_test` via `adb install`, aberto via `adb shell monkey`, **screenshot real via `adb
+exec-out screencap`** confirmando a tela padrão do Flutter renderizando no emulador. Emulador
+desligado ao final (`adb emu kill`) pra liberar recursos. `mobile/.gitignore` (gerado pelo próprio
+`flutter create`) já cobre build output/`local.properties`/keystores — nada disso versionado.
+
+`project/PENDING.md` (P35 movida pra "Resolvidas" com o resumo completo; P39 nova — lado iOS segue
+sem nenhum teste, mesma limitação de sempre, sem Xcode/macOS neste container). `project/PHASE.md`
+(7.1 marcada `[x]`). `project/ARCHITECTURE.md` (seção nova "7.1 refeita em Flutter" com todos os
+detalhes técnicos — shim do unzip, reaproveitamento do toolchain, verificação via emulador, disco).
+
+**Ainda falta**: nenhuma etapa de feature (7.2-7.6) implementada — só o setup em si. iOS nunca
+testado (P39). Layout mobile de verdade (7.3) e conexão ao `warden-server` (7.2) seguem por fazer.
+
+**Próximo passo**: usuário ainda não escolheu entre 7.2 (conectar ao `warden-server`), 7.3 (layout
+de chat mobile) ou voltar pra Fase 9/P37 — perguntar por onde seguir.
+
 ---
 
 ### 2026-09-05 — Sessão 49

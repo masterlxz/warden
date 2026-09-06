@@ -213,11 +213,14 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 `ARCHITECTURE.md` ("Mobile: troca de Tauri Mobile pra Flutter") e `PENDING.md` P35.
 
 **Etapas**:
-- [ ] 7.1 — Setup Flutter (Android + iOS) — *substitui o setup anterior em Tauri Mobile
-  (revertido, Sessão 50 continuação): toolchain Android + scaffold `gen/android/` ficam
-  depreciados, recomeça como projeto Flutter novo, fora de `desktop/`. O achado de que a UI
-  fixa do desktop não serve num celular (ver `ARCHITECTURE.md`) continua válido — reforça que a
-  7.3 sempre ia precisar de um layout mobile dedicado*
+- [x] 7.1 — Setup Flutter (Android + iOS) — *substitui o setup anterior em Tauri Mobile
+  (revertido, Sessão 50 continuação): scaffold `gen/android/` removido, projeto novo em
+  `mobile/` (fora de `desktop/`). Lado **Android** verificado de ponta a ponta (build real +
+  emulador + screenshot); toolchain Android de `~/.local/opt/` reaproveitado, não reinstalado.
+  Lado **iOS** só com o projeto Xcode gerado (`mobile/ios/`), nunca buildado/testado — sem
+  Xcode/macOS neste container, ver `PENDING.md` P39. O achado de que a UI fixa do desktop não
+  serve num celular continua válido — reforça que a 7.3 sempre ia precisar de um layout mobile
+  dedicado*
 - [ ] 7.2 — Conectar ao servidor (Tailscale + WebSocket/gRPC)
 - [ ] 7.3 — Interface de chat mobile *(a UI atual do desktop não serve como está — ver nota em
   `ARCHITECTURE.md`: sidebar de largura fixa praticamente toma a tela inteira num celular)*

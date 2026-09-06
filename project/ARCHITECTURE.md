@@ -356,9 +356,76 @@ Flutter é ordens de grandeza mais fundo); e um ecossistema de plugins bem
 mais maduro pra 7.4 (arquivos/permissões) e principalmente 7.5 (push
 notification via FCM/APNs), onde o Tauri Mobile ainda é bem mais cru.
 
-**Trabalho que essa reversão implica** (ainda não feito, registrado como
-prioridade alta em `PENDING.md` P35): reverter/depreciar o scaffold Android
-do Tauri Mobile (`desktop/src-tauri/gen/android/`, toolchain em
-`~/.local/opt/`) e recomeçar a 7.1 num projeto Flutter novo — provavelmente
-fora de `desktop/` (não é mais uma extensão do mesmo app Tauri, é um client
-separado). `PHASE.md` (Fase 7) atualizado pra refletir a stack nova.
+**Trabalho que essa reversão implica** (registrado como prioridade alta em
+`PENDING.md` P35): reverter/depreciar o scaffold Android do Tauri Mobile
+(`desktop/src-tauri/gen/android/`, toolchain em `~/.local/opt/`) e recomeçar
+a 7.1 num projeto Flutter novo — provavelmente fora de `desktop/` (não é
+mais uma extensão do mesmo app Tauri, é um client separado). `PHASE.md`
+(Fase 7) atualizado pra refletir a stack nova.
+
+## 7.1 refeita em Flutter (Sessão 50, continuação)
+
+**Scaffold Tauri Mobile removido de vez**: `desktop/src-tauri/gen/android/`
+(commitado na Sessão 49) apagado via `git rm`, junto do bloco
+`bundle.android.minSdkVersion` em `tauri.conf.json` (a única parte de fato
+mobile-específica dessa config — `crate-type`/`mobile_entry_point` no
+`Cargo.toml`/`main.rs` do `desktop/src-tauri` já eram scaffold genérico do
+`create-tauri-app` desde o início do projeto, não removidos). O restante de
+`gen/` (`schemas/*.json`) nunca foi versionado — é build output regenerado
+pelo próprio Tauri, apagado do disco por limpeza mas sem efeito no git.
+
+**Toolchain Android de `~/.local/opt/` reaproveitado, não descartado** —
+diferente do scaffold em si, o JDK 17/Android SDK/NDK instalados sem sudo na
+Sessão 49 (com as licenças já aceitas) servem exatamente do mesmo jeito pro
+Flutter, que também precisa desse toolchain pra compilar Android. `flutter
+config --android-sdk ~/.local/opt/android-sdk` + `JAVA_HOME` apontado pro
+mesmo JDK bastou — `flutter doctor` confirmou "All Android licenses
+accepted" sem precisar aceitar nada de novo.
+
+**Flutter SDK instalado sem sudo, mesmo padrão da Sessão 49** — clone raso
+(`git clone --depth 1 -b stable`) direto pra `~/.local/opt/flutter`, sem
+tocar em pacman/apt. Único obstáculo: o ambiente não tem `unzip` instalado
+(usado internamente por `update_dart_sdk.sh` pra extrair o Dart SDK) e
+instalar via pacman pediria sudo. Em vez de arriscar mexer no sistema,
+criado um shim (`~/.local/bin/unzip`, à frente no `PATH`) que traduz a
+chamada específica que o Flutter faz (`unzip -o -q FILE -d DIR`) pra
+`bsdtar -x -f FILE -C DIR` — `bsdtar` (libarchive) já vinha instalado no
+sistema e lê zip nativamente. Resolve só o caso de uso real do Flutter, não
+é um `unzip` completo.
+
+**Projeto novo em `mobile/`, raiz do repo** — `flutter create --org
+com.warden --project-name mobile --platforms android,ios mobile`, gerando
+`applicationId com.warden.mobile` (paralelo ao `com.warden.desktop` do lado
+Tauri). Fora de `desktop/` de propósito: não é mais uma extensão do mesmo
+app, é um client de UI totalmente separado que só fala WebSocket/JSON com o
+`warden-server` (P1) — nenhuma dependência Rust/FFI embutida.
+
+**Verificado de ponta a ponta, mesmo rigor da checagem anterior em Tauri
+Mobile**: `flutter build apk --debug` rodou o pipeline completo (Gradle,
+primeira execução, baixou sozinho o NDK r28c e o Build-Tools 36 que
+faltavam pro target novo — nenhum dos dois precisou de intervenção manual),
+gerando um APK real (~150MB, debug). Instalado no mesmo AVD `warden_test`
+já existente da Sessão 49 (`adb install -r`), aberto via `adb shell monkey`,
+e **screenshot real via `adb exec-out screencap`** confirmando a tela padrão
+do Flutter (contador "You have pushed the button this many times") — prova
+que a cadeia inteira (Dart → Gradle/Kotlin/aapt2 → APK → instalação →
+runtime Android) funciona neste ambiente, do jeito que também foi provado
+pro Tauri Mobile antes de reverter. `mobile/.gitignore` (gerado pelo próprio
+`flutter create`) já cobre `/build/`, `.dart_tool/`,
+`android/local.properties`, `android/.gradle`, `*.keystore` — nada disso
+versionado, confirmado com `git status`.
+
+**iOS segue sem nenhum teste** — `flutter create` já gera o projeto Xcode
+(`mobile/ios/`) mesmo sem poder buildá-lo aqui (exige Xcode/macOS,
+indisponível neste container Linux). Mesma limitação exata que já existia
+com Tauri Mobile antes da troca — não é uma lacuna nova introduzida pelo
+Flutter, é a mesma lacuna de ambiente carregada adiante. Registrado como
+`PENDING.md` P39.
+
+**Disco**: instalação consumiu ~16GB novos entre `~/.local/opt/flutter`
+(1.5GB), `~/.gradle` (5GB, cache de dependências Kotlin/AGP — parcialmente
+compartilhado com o que o Tauri Mobile já tinha baixado antes), Android
+NDK/Build-Tools novos dentro de `~/.local/opt/android-sdk` (SDK total foi
+de ~7GB pra 10GB) e `mobile/build/` (~1.9GB, gitignored). Disco ficou em 26GB
+livres (86% usado) — não crítico, mas vale lembrar do `cargo clean`/`flutter
+clean` se apertar de novo, mesmo aviso já registrado na Sessão 49.
