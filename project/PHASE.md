@@ -84,9 +84,17 @@ foi resolvida na Sessão 43 (2026-09-03): agentes nomeados com persona em texto 
 
 **Objetivo**: Memória persistente com backup descentralizado.
 
-**Stack**: Rust, IPFS (Filebase/Pinata)
+**Stack**: Rust, IPFS (Filebase/Pinata) — **superado, ver nota abaixo**
 
-**Etapas**:
+> **Nota (Sessão 50, 2026-09-06)**: a direção mudou de IPFS pra **Arweave via TruthID** — a
+> carteira do TruthID paga/publica (não uma carteira própria do Warden), tudo cifrado antes de
+> sair do device, escopo ampliado pra incluir `config.toml` inteiro (não só o vault), conversas
+> ficam de fora. As etapas abaixo ainda descrevem o plano antigo (IPFS) e serão reescritas quando
+> o desenho do manifesto de sync (diff tipo-git, ponteiro de "última versão") for fechado — ver
+> P37 em `PENDING.md` e a entrada "Sync descentralizado (Fase 4)" em `ARCHITECTURE.md`. Primeira
+> peça já implementada: `crates/warden-truthid` (cliente do protocolo `pin()` do TruthID).
+
+**Etapas (plano antigo, será reescrito)**:
 - [ ] 4.1 — Espelhar vault local em IPFS (pin via Filebase + Pinata)
 - [ ] 4.2 — Cifra opcional do vault (AES-256-GCM, mesmo padrão TruthID Vault)
 - [ ] 4.3 — Versionamento de memória (histórico de mudanças)

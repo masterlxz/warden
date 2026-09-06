@@ -95,6 +95,84 @@ máquinas, QR pairing) seguem todos em aberto, deliberadamente fora desta sessã
 mobile conectando de verdade em um `warden-server` via o `ServerConnection` novo), 7.3 (layout
 responsivo mobile, seguia disponível o tempo todo), ou continuar a própria Fase 9 (9.3/9.4).
 
+**Continuação (ainda 2026-09-06, mesma Sessão 50) — direção nova, TruthID+Arweave**: perguntado
+"nada que dependa de hardware/emulador agora" como restrição pro próximo passo, usuário mudou de
+direção por completo: quer reduzir ao máximo a dependência de servidor sincronizando vault +
+`config.toml` entre devices via **Arweave**, usando a carteira do **TruthID** (projeto irmão) como
+pagador/publicador em vez do Warden ter carteira própria — "eu quero que o truthid seja o local
+onde possa ser cobrado essas taxas". Confirmado logo em seguida, sem meio-termo: **"mas vamos
+criptografar tudo certo?"** — tudo cifrado antes de sair do device, não só chaves de API, o vault
+inteiro também, decisão não-negociável.
+
+**Investigação em duas rodadas** (agentes em paralelo, código real do TruthID — não só docs — e o
+`Vault`/config do Warden):
+- Confirmado: a carteira Arweave do TruthID (RSA-4096 JWK) é independente do lado EVM/smart-account
+  — dá pra usar como pagador sem herdar nenhuma infra EVM/bundler
+- O SDK Dart já expõe exatamente o mecanismo pra apps terceiros: `TruthIDRequester.pin()` — QR, o
+  app TruthID escaneia/aprova, cifra em trânsito/decifra/publica no Arweave com a própria carteira,
+  devolve `PinResult{cid: "ar://<txid>", ...}`
+- **Limitações reais que moldam o design**: sem tags customizáveis no Arweave pro `pin()` de
+  terceiro (só `App-Name: TruthID` fixo — inviabiliza descoberta "latest by tag" via GraphQL);
+  sem batching (uma aprovação física por chamada — sessão de uso único, LAN + IPFS/IPNS dead-drop
+  só pro resultado, nunca pro conteúdo)
+- Sem spec do protocolo fora do código Dart — replicar em Rust exige ler o código-fonte real
+  byte a byte, não tem documento pra seguir
+- Lado Warden confirmado limpo pra receber isso: `Vault` sem hashing/cifra hoje, config isolado das
+  conversas (`FileConfig` nunca referencia `Conversation`), nenhuma dependência de hash/cripto no
+  workspace ainda
+
+**Perguntas fechadas com o usuário** antes de planejar: ponteiro de "última versão" — usuário pediu
+pra usar a carteira do TruthID mesmo (fica como direção, resolvendo o "quem paga" mas deixando o
+"como descobrir a versão mais recente" pra uma sessão futura de design do manifesto, já que
+`pin()` não dá tags customizáveis); `mcp_servers` **incluído** no escopo cifrado (mesmo nível de
+sensibilidade das chaves de API); usuário confirmou entrar em modo de planejamento formal.
+
+**Escopo desta sessão, deliberadamente restrito**: só o cliente Rust do protocolo `pin()` (o
+"requester") — não o formato do manifesto de sync, não a integração com `Vault`/config de fato, não
+renderização de QR. Restrição adicional do usuário desde o início ("não quero hardware agora"):
+nada de teste contra um celular real — validado só com testes automatizados sem hardware nenhum.
+
+**Implementado**:
+
+- **Novo crate `crates/warden-truthid`** (só lib, sem consumidor ainda — mesma situação em que o
+  lado *client* do `warden-server` nasceu): `protocol.rs` (`QrPayload`/`PinResult`, espelham os
+  campos do SDK Dart exatamente), `crypto.rs` (fase 1: HKDF-SHA256 sobre o `session_id` cru +
+  AES-256-GCM, layout `nonce(12)||ciphertext||tag(16)`; fase 2: ECIES secp256k1 — ECDH + SHA-256
+  puro + AES-256-GCM, layout `ephemeral_pubkey(33)||nonce(12)||ciphertext||tag(16)` — replica
+  `ecies.dart`/`pin_content_cipher.dart` byte a byte, conferidos linha a linha no código-fonte real
+  do TruthID antes de escrever o Rust), `lan.rs` (`candidate_hosts()` via `if-addrs`, varredura de
+  `/24` por interface não-loopback × porta fixa `48050-48054`), `requester.rs` (`PendingPin::begin`/
+  `qr_payload_json`/`run`, espelha a forma do `PendingRequest` do Dart)
+- **`k256` (RustCrypto puro Rust) em vez de `secp256k1`/`libsecp256k1`** — evita mais uma
+  dependência nativa pra cross-compilar (o build Android da 7.1 já doeu com isso, `-laaudio` do
+  `cpal`), consistente com o resto do ecossistema RustCrypto já usado no projeto
+- **`run_with_hosts` como API pública própria**, não só um hack de teste — deixa um chamador que já
+  sabe o IP do celular por outro canal pular a varredura; é o que os testes usam pra não varrer a
+  LAN real do container (que tem interfaces de verdade, `wlp0s20f3`/`docker0` — varredura completa
+  seria lenta e não-determinística num teste automatizado)
+- **Testado sem hardware nenhum**: vetor conhecido de RFC 5869 (HKDF-SHA256, Test Case 1) rodado
+  direto contra a primitiva usada — prova a primitiva em si, independente de qualquer suposição
+  sobre o Dart; round-trip de cada camada de cifra; um "celular fake" (servidor `axum` de teste, só
+  dev-dependency, mesmo padrão de `crates/warden-core/tests/mcp_http.rs`) implementando os mesmos
+  dois endpoints HTTP single-shot do `RemoteSignerLanServer` real, provando o fluxo `PendingPin`
+  inteiro (fase 1 → varredura → fase 2 → decifra ECIES → parse de `PinResult`) de ponta a ponta
+- `cargo build/test/clippy --workspace` limpos (9 testes unitários + 1 de integração no crate novo,
+  zero regressão no resto do workspace)
+- `project/PENDING.md` (P37 novo — visão geral da direção + decisões ainda em aberto; P38 novo —
+  lacuna de teste sem hardware; P24 atualizado apontando pra P37), `project/ARCHITECTURE.md`
+  (decisão "Sync descentralizado" + decisão de implementação do `warden-truthid`), `project/PHASE.md`
+  (nota na Fase 4 apontando pra essa direção nova, etapas antigas de IPFS mantidas até o desenho do
+  manifesto ser fechado)
+
+**Ainda falta / decisões em aberto pra fechar a Fase 4 de verdade** (todas registradas em P37):
+formato do manifesto de sync (diff tipo-git); como um segundo device descobre "qual é a versão mais
+recente" sem tags customizáveis no Arweave; qual identidade deriva a chave de cifra do vault, já
+que agora quem paga é o TruthID, não uma carteira do Warden; como agrupar N arquivos mudados num
+blob só por sync, já que `pin()` não faz batching. **Nunca testado contra o app TruthID real** —
+por pedido explícito do usuário nesta sessão, registrado como P38; maior risco de interoperação é a
+convenção exata do "ECDH secret" do pacote Dart `elliptic` (assumida, não confirmada rodando Dart
+de verdade).
+
 ---
 
 ### 2026-09-05 — Sessão 49
