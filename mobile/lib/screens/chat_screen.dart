@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../protocol/messages.dart';
+import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 
 enum _EntryRole { user, assistant, error }
@@ -103,6 +104,61 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  Future<void> _openFilesDialog() async {
+    final fileTool = MobileFileTool();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            title: const Text('Files'),
+            content: FutureBuilder<String?>(
+              future: fileTool.rootFolderUri(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const SizedBox(height: 24, child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+                final uri = snapshot.data;
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(uri == null ? 'No folder configured yet.' : 'Configured folder:\n$uri'),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Lets the model list and read text files under this folder. '
+                      'Takes effect the next time you connect.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                );
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await fileTool.clearRootFolder();
+                  setDialogState(() {});
+                },
+                child: const Text('Clear'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await fileTool.pickRootFolder();
+                  setDialogState(() {});
+                },
+                child: const Text('Choose folder'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Done'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final serverName = switch (_status) {
@@ -114,6 +170,11 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         title: Text(serverName),
         actions: [
+          IconButton(
+            onPressed: _openFilesDialog,
+            icon: const Icon(Icons.folder_outlined),
+            tooltip: 'Files',
+          ),
           TextButton(
             onPressed: _disconnect,
             child: const Text('Disconnect'),

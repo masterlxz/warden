@@ -69,8 +69,13 @@ class HandshakeException implements Exception {
 /// on a failed or dropped connection — this phase step only has to prove
 /// connectivity, not be resilient. That's an accepted limitation, not a
 /// silent gap (see `PENDING.md`).
+/// A local tool this client can run when the server asks (Fase 7.4) — `args` is whatever JSON
+/// object the model passed as the tool call's arguments. Return the JSON-encodable result, or
+/// throw (any exception) to send a `ToolCallErrorMessage` back instead.
+typedef ToolHandler = Future<Object?> Function(Map<String, dynamic> args);
+
 class ServerConnection {
-  ServerConnection._(this._channel, this._subscription, this.serverName) {
+  ServerConnection._(this._channel, this._subscription, this.serverName, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
     _subscription
@@ -92,6 +97,7 @@ class ServerConnection {
   final StreamChannel<dynamic> _channel;
   final StreamSubscription<dynamic> _subscription;
   final String serverName;
+  final Map<String, ToolHandler> _toolHandlers;
 
   final _statusController = StreamController<ConnectionStatus>.broadcast();
   ConnectionStatus _status = const Connecting();
@@ -123,6 +129,8 @@ class ServerConnection {
     required String deviceName,
     required String authKey,
     Duration handshakeTimeout = defaultHandshakeTimeout,
+    List<Map<String, dynamic>> toolSpecs = const [],
+    Map<String, ToolHandler> toolHandlers = const {},
   }) {
     final channel = WebSocketChannel.connect(Uri.parse('ws://$host:$port'));
     return _handshake(
@@ -131,6 +139,8 @@ class ServerConnection {
       deviceName: deviceName,
       authKey: authKey,
       handshakeTimeout: handshakeTimeout,
+      toolSpecs: toolSpecs,
+      toolHandlers: toolHandlers,
     );
   }
 
@@ -141,6 +151,8 @@ class ServerConnection {
     required String deviceName,
     required String authKey,
     Duration handshakeTimeout = defaultHandshakeTimeout,
+    List<Map<String, dynamic>> toolSpecs = const [],
+    Map<String, ToolHandler> toolHandlers = const {},
   }) =>
       _handshake(
         channel,
@@ -148,6 +160,8 @@ class ServerConnection {
         deviceName: deviceName,
         authKey: authKey,
         handshakeTimeout: handshakeTimeout,
+        toolSpecs: toolSpecs,
+        toolHandlers: toolHandlers,
       );
 
   static Future<ServerConnection> _handshake(
@@ -156,6 +170,8 @@ class ServerConnection {
     required String deviceName,
     required String authKey,
     required Duration handshakeTimeout,
+    required List<Map<String, dynamic>> toolSpecs,
+    required Map<String, ToolHandler> toolHandlers,
   }) async {
     if (channel is WebSocketChannel) {
       // Surfaces TCP/connect-time failures before Hello is even sent.
@@ -193,17 +209,22 @@ class ServerConnection {
       deviceId: deviceId,
       deviceName: deviceName,
       authKey: authKey,
+      tools: toolSpecs,
     ).encode());
 
     try {
       final reply = await firstFrame.future;
       switch (reply) {
         case HelloAckMessage(:final serverName):
-          return ServerConnection._(channel, subscription, serverName);
+          return ServerConnection._(channel, subscription, serverName, toolHandlers);
         case AuthErrorMessage(:final reason):
           await subscription.cancel();
           throw HandshakeException('authentication rejected: $reason');
-        case PongMessage() || GoodbyeServerMessage() || ChatResponseMessage() || ChatErrorMessage():
+        case PongMessage() ||
+              GoodbyeServerMessage() ||
+              ChatResponseMessage() ||
+              ChatErrorMessage() ||
+              ToolCallRequestMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
       }
@@ -235,10 +256,28 @@ class ServerConnection {
       case ChatResponseMessage():
       case ChatErrorMessage():
         _chatController.add(msg);
+      case ToolCallRequestMessage(:final callId, :final tool, :final arguments):
+        // Fire-and-forget: each call runs independently, so a slow one (e.g. reading a large
+        // file) never blocks this connection's heartbeat/chat handling in the meantime.
+        unawaited(_handleToolCallRequest(callId, tool, arguments));
       case HelloAckMessage():
       case AuthErrorMessage():
         // Only ever valid as the first frame, already consumed by _handshake.
         break;
+    }
+  }
+
+  Future<void> _handleToolCallRequest(int callId, String tool, Map<String, dynamic> arguments) async {
+    final handler = _toolHandlers[tool];
+    if (handler == null) {
+      _channel.sink.add(ToolCallErrorMessage(callId, "no local handler registered for tool '$tool'").encode());
+      return;
+    }
+    try {
+      final result = await handler(arguments);
+      _channel.sink.add(ToolCallResultMessage(callId, result).encode());
+    } catch (e) {
+      _channel.sink.add(ToolCallErrorMessage(callId, e.toString()).encode());
     }
   }
 

@@ -667,3 +667,93 @@ pra esconder. Verificado com Playwright headless contra o `vite dev`
 server real (não harness estático) mockando `window.__TAURI_INTERNALS__.
 invoke`, claro e escuro: expandido → recolhido → expandido de novo, sem
 erro de console em nenhum estado. `tsc`/`npm run build` limpos.
+
+## 7.4 — Tool local no mobile: roteamento genérico de tool pro cliente certo (Sessão 52)
+
+Escolhido pelo usuário como próximo passo após a 7.3. Confirmado antes de planejar: como o modelo
+roda dentro do `Orchestrator` que o `warden-server` hospeda (7.3), não no celular, uma tool "local"
+só funciona se o servidor souber pedir pra *aquela conexão específica* rodar algo e devolver o
+resultado — exatamente o mecanismo que `PHASE.md` já reservava pra 9.4/9.5. A 7.4 é o primeiro
+consumidor concreto disso, escrito de forma genérica (qualquer tool que um cliente anuncie), não
+amarrado só ao caso de arquivos do celular. Escopo fechado com o usuário antes de codar: só leitura
+(`list_phone_files`/`read_phone_file`, sem escrita — risco maior, adiado), pasta raiz persistida
+(escolhida uma vez, sem picker por chamada), Android-only (sem equivalente iOS pra SAF).
+
+**Protocolo** (`crates/warden-server/src/protocol.rs`) — `ClientMessage::Hello` ganha
+`#[serde(default)] tools: Vec<warden_core::tool::ToolSpec>` (retrocompatível — um cliente antigo ou
+sem nada pra anunciar não manda o campo). `warden_core::tool::ToolSpec` ganhou `Serialize`/
+`Deserialize` (`crates/warden-core/src/tool/mod.rs`) pra ser reaproveitado direto como formato de
+wire, sem duplicar a struct. Novo `ServerMessage::ToolCallRequest{call_id, tool, arguments}` e
+`ClientMessage::ToolCallResult{call_id, result}`/`ToolCallError{call_id, message}` — `call_id` é um
+contador simples por conexão, mesmo espírito do `nonce` do `Ping`.
+
+**`crates/warden-server/src/remote_tool.rs`** (novo) — `RemoteTool`, um `Tool` que em vez de rodar
+localmente manda um `ToolCallRequest` pelo canal de escrita da conexão (o mesmo `mpsc` da 7.3) e
+espera a resposta via um `oneshot` guardado num mapa `pending` (`call_id → oneshot::Sender`)
+compartilhado por conexão (`RemoteToolChannel`) — várias tools anunciadas na mesma conexão dividem
+um `next_call_id`/`pending` só, sem colisão. Timeout de 30s (`DEFAULT_TIMEOUT`) — uma leitura de
+arquivo local não deveria demorar disso, diferente do `Chat` (7.3), que não tem timeout nenhum
+porque uma resposta de modelo lenta é esperada. `server.rs`: depois do `Hello` validado, se `tools`
+não for vazio, clona o `Orchestrator` compartilhado (barato, já é `Arc`-backed) e registra um
+`RemoteTool` por spec anunciada — só essa conexão ganha essas tools; uma conexão sem nada anunciado
+continua usando o `Orchestrator` do servidor inteiro, sem custo extra. Loop de leitura ganha dois
+`match` novos (`ToolCallResult`/`ToolCallError` resolvem o `pending` pelo `call_id`) — a solução de
+concorrência da 7.3 (task de escrita dedicada) não mudou nada.
+
+**Bug real achado rodando o teste de ponta a ponta, não previsto no plano**: a primeira tentativa
+nomeou as tools do celular `list_files`/`read_file` — os MESMOS nomes que `ReadFileTool`/
+`WriteFileTool` (vault, `crates/warden-core/src/tool/file_tools.rs`) já usam, registradas por
+`bootstrap()` em todo `Orchestrator`. A API do Gemini rejeitou a primeira chamada real com erro 400
+"Duplicate function declaration found: read_file" — duas tools com nome idêntico na mesma lista de
+`function_declarations` não é permitido. Renomeado pra `list_phone_files`/`read_phone_file`
+(`mobile/lib/services/mobile_file_tool.dart`), sem tocar nos nomes do vault (`read_file`/
+`write_file` já são convenção estabelecida em todos os canais). Lição registrada: um nome de tool
+de um cliente remoto pode colidir com uma tool já registrada localmente — não há checagem de
+colisão em `server.rs` hoje (uma tool com nome duplicado simplesmente quebra a chamada de API do
+provider, silenciosamente do lado do Warden), registrado em `PENDING.md`.
+
+**Pacote Flutter — achado de pesquisa antes de escrever código**: a escolha óbvia (`shared_storage`,
+o wrapper mais conhecido do Storage Access Framework) está **descontinuada** no pub.dev, sem
+sucessor listado na própria página. Rastreando o fork da comunidade (`mg_shared_storage`, também
+descontinuado) até a recomendação dele mesmo, chegou-se em **`saf_util` + `saf_stream`**
+(`github.com/flutter-cavalry`), par ativamente mantido (releases de poucos meses atrás) que faz a
+mesma coisa dividida em dois pacotes — `saf_util` pra picker/listagem/permissão persistida,
+`saf_stream` pra ler bytes de verdade. Confirmado lendo o código-fonte instalado em
+`~/.pub-cache` (não só a doc do pub.dev) antes de escrever `mobile_file_tool.dart`.
+
+**`mobile/lib/services/mobile_file_tool.dart`** (novo) — `pickRootFolder()`
+(`SafUtil().pickDirectory(persistablePermission: true)`, persiste a URI via `shared_preferences`,
+mesmo padrão de `connection_settings.dart`), `listFiles`/`readFile` (handlers reais das tools).
+Design de "path opaco": cada entrada que `list_phone_files` devolve já carrega a URI SAF real do
+documento como `path` — o modelo nunca constrói um path, só ecoa de volta um que já viu, mesmo
+espírito de URI de recurso do MCP. Arquivo não-UTF-8 falha com erro claro em vez de estourar bytes
+crus no chat.
+
+**`mobile/lib/services/server_connection.dart`** — `connect`/`connectOverChannel` ganham
+`toolSpecs`/`toolHandlers` opcionais (`Map<String, ToolHandler>`), inclusos no `Hello` só quando
+não-vazios (opt-in, mesmo espírito do `enable_shell` do desktop). Novo case
+`ToolCallRequestMessage` em `_onMessage` despacha pro handler registrado (`unawaited`, uma chamada
+lenta não trava heartbeat/chat desta conexão) e manda `ToolCallResult`/`ToolCallError` de volta.
+
+**UI** — botão de pasta na `AppBar` do `ChatScreen` abre um diálogo leve (não uma tela nova):
+mostra a URI configurada, "Choose folder"/"Clear". Como o protocolo não tem "atualizar Hello
+depois de conectado", trocar a pasta só tem efeito na próxima conexão — avisado no próprio diálogo.
+
+**Testes**: `crates/warden-server/tests/tools.rs` — `MockProvider` estendido
+(`calling_tool_then_replying`) pra devolver uma tool call na primeira chamada e derivar a resposta
+final do conteúdo REAL da mensagem `Role::Tool` que voltou (não uma string enlatada — prova que o
+resultado do cliente atravessou de verdade), round-trip completo contra um `Server` real + client
+de teste cru. `remote_tool.rs` ganhou testes unitários próprios (sucesso, erro do cliente, timeout,
+conexão caída) sem precisar de rede nenhuma. Lado Flutter: `flutter analyze`/`flutter test` cobrindo
+o novo `Hello.tools`/`ToolCallRequest`/`ToolCallResult`/`ToolCallError` contra um
+`StreamChannelController` fake. `cargo build/test/clippy --workspace` e `flutter analyze`/`flutter
+test` limpos nos dois lados.
+
+**Verificado de ponta a ponta contra um `warden-server` real com Gemini de verdade**: dois arquivos
+de texto reais (`recipe.txt`/`notes.txt`) empurrados pro emulador via `adb push` numa pasta
+`Download/warden-test`; picker real do Android (SAF) usado pra escolher essa pasta, diálogo de
+permissão real aceito; pergunta real ("liste os arquivos, leia recipe.txt, me diga o ingrediente
+secreto") respondida corretamente citando os dois arquivos reais e o conteúdo real de `recipe.txt`
+("stardust", exatamente o que foi escrito no arquivo de teste) — prova a cadeia inteira (Gemini →
+`Orchestrator` do servidor → `RemoteTool` → `ToolCallRequest` pela rede → SAF real no Android →
+`ToolCallResult` de volta → resposta final) funcionando de verdade, não só nos testes automatizados.

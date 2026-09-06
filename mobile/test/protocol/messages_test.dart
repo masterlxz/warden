@@ -6,11 +6,27 @@ import 'package:mobile/protocol/messages.dart';
 // serialization tests assert.
 void main() {
   group('ClientMessage encoding', () {
-    test('Hello', () {
+    test('Hello with no tools', () {
       const msg = HelloMessage(deviceId: 'dev-1', deviceName: 'Test Device', authKey: 'secret');
       expect(
         msg.encode(),
-        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret"}',
+        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[]}',
+      );
+    });
+
+    test('Hello with advertised tools', () {
+      const msg = HelloMessage(
+        deviceId: 'dev-1',
+        deviceName: 'Test Device',
+        authKey: 'secret',
+        tools: [
+          {'name': 'list_files', 'description': 'List files', 'parameters': {'type': 'object'}},
+        ],
+      );
+      expect(
+        msg.encode(),
+        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret",'
+        '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}]}',
       );
     });
 
@@ -32,6 +48,16 @@ void main() {
     test('Chat', () {
       const msg = ChatMessage('hello there');
       expect(msg.encode(), '{"type":"chat","message":"hello there"}');
+    });
+
+    test('ToolCallResult', () {
+      const msg = ToolCallResultMessage(7, {'ok': true});
+      expect(msg.encode(), '{"type":"toolCallResult","callId":7,"result":{"ok":true}}');
+    });
+
+    test('ToolCallError', () {
+      const msg = ToolCallErrorMessage(7, 'boom');
+      expect(msg.encode(), '{"type":"toolCallError","callId":7,"message":"boom"}');
     });
   });
 
@@ -82,6 +108,15 @@ void main() {
       final msg = ServerMessage.decode('{"type":"chatError","message":"provider unavailable"}');
       expect(msg, isA<ChatErrorMessage>());
       expect((msg as ChatErrorMessage).message, 'provider unavailable');
+    });
+
+    test('ToolCallRequest', () {
+      final msg = ServerMessage.decode('{"type":"toolCallRequest","callId":3,"tool":"read_file","arguments":{"path":"abc"}}');
+      expect(msg, isA<ToolCallRequestMessage>());
+      final request = msg as ToolCallRequestMessage;
+      expect(request.callId, 3);
+      expect(request.tool, 'read_file');
+      expect(request.arguments, {'path': 'abc'});
     });
 
     test('unknown type throws FormatException', () {

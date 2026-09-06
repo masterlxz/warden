@@ -2,6 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use warden_core::tool::ToolSpec;
 
 use crate::protocol::{ClientMessage, ServerMessage};
 
@@ -24,6 +25,18 @@ impl ServerConnection {
         device_name: &str,
         auth_key: &str,
     ) -> anyhow::Result<Self> {
+        Self::connect_with_tools(url, device_id, device_name, auth_key, Vec::new()).await
+    }
+
+    /// Same as `connect`, but also advertises `tools` this client can run locally (Fase 7.4) —
+    /// `Server` registers a `RemoteTool` proxy for each one on this connection's `Orchestrator`.
+    pub async fn connect_with_tools(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        auth_key: &str,
+        tools: Vec<ToolSpec>,
+    ) -> anyhow::Result<Self> {
         let (ws, _response) = tokio_tungstenite::connect_async(url).await?;
         let mut conn = Self { ws };
 
@@ -31,6 +44,7 @@ impl ServerConnection {
             device_id: device_id.to_string(),
             device_name: device_name.to_string(),
             auth_key: auth_key.to_string(),
+            tools,
         })
         .await?;
 

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/connection_settings.dart';
+import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 import 'chat_screen.dart';
 
@@ -24,6 +25,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   final _deviceNameController = TextEditingController();
 
   final _settingsStore = ConnectionSettingsStore();
+  final _fileTool = MobileFileTool();
 
   ServerConnection? _connection;
   ConnectionStatus _status = const Disconnected();
@@ -79,12 +81,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
     try {
       final deviceId = await _settingsStore.getOrCreateDeviceId();
+      final hasRootFolder = await _fileTool.rootFolderUri() != null;
       final connection = await ServerConnection.connect(
         host: host,
         port: port,
         deviceId: deviceId,
         deviceName: deviceName,
         authKey: authKey,
+        // Opt-in, same spirit as the desktop's `enable_shell`: only advertise (and answer) the
+        // file tools once the user has picked a root folder for them to operate in.
+        toolSpecs: hasRootFolder ? const [MobileFileTool.listFilesSpec, MobileFileTool.readFileSpec] : const [],
+        toolHandlers: hasRootFolder ? {'list_phone_files': _fileTool.listFiles, 'read_phone_file': _fileTool.readFile} : const {},
       );
       await _settingsStore.save(ConnectionSettings(
         host: host,

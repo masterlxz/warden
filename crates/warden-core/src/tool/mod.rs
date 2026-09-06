@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod delegate;
@@ -9,7 +10,10 @@ pub mod mcp;
 pub mod mcp_oauth;
 pub mod shell;
 
-#[derive(Debug, Clone)]
+/// `Serialize`/`Deserialize` let this be reused directly as the wire shape for a client-advertised
+/// tool (`warden-server`'s `ClientMessage::Hello.tools`, Fase 7.4) — no parallel wire struct needed.
+/// `PartialEq` so `ClientMessage` (which derives it for its own round-trip tests) can too.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,

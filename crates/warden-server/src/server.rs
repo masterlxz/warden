@@ -12,6 +12,7 @@ use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
 
 use crate::protocol::{ClientMessage, ServerMessage};
+use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 
 type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
@@ -88,7 +89,8 @@ async fn handle_connection(
             device_id,
             device_name,
             auth_key: provided,
-        }) => (device_id, device_name, provided),
+            tools,
+        }) => (device_id, device_name, provided, tools),
         Ok(_) => {
             eprintln!("warden-server: {peer} didn't send Hello first, closing");
             return Ok(());
@@ -98,7 +100,7 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key) = hello;
+    let (device_id, device_name, provided_key, tools) = hello;
 
     if provided_key.as_str() != auth_key.as_ref() {
         send(&mut sink, &ServerMessage::AuthError {
@@ -135,6 +137,21 @@ async fn handle_connection(
         }
     });
 
+    // Fase 7.4: a client that advertised tools in Hello gets its own Orchestrator (cheap clone —
+    // Orchestrator is Arc-backed) with a RemoteTool proxy per advertised spec, so the model can
+    // invoke a capability that only exists on *this* device (mobile's file access, to start). A
+    // client with nothing to advertise (tools empty) just reuses the shared, server-wide instance.
+    let tool_channel = RemoteToolChannel::new(tx.clone());
+    let orchestrator: Arc<Orchestrator> = if tools.is_empty() {
+        orchestrator
+    } else {
+        let mut per_connection = (*orchestrator).clone();
+        for spec in tools {
+            per_connection.register_tool(Arc::new(RemoteTool::new(spec, tool_channel.clone(), REMOTE_TOOL_TIMEOUT)));
+        }
+        Arc::new(per_connection)
+    };
+
     while let Some(frame) = stream.next().await {
         match frame? {
             Message::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
@@ -161,6 +178,12 @@ async fn handle_connection(
                         };
                         let _ = reply_tx.send(reply);
                     });
+                }
+                Ok(ClientMessage::ToolCallResult { call_id, result }) => {
+                    tool_channel.resolve(call_id, Ok(result));
+                }
+                Ok(ClientMessage::ToolCallError { call_id, message }) => {
+                    tool_channel.resolve(call_id, Err(message));
                 }
                 Ok(ClientMessage::Goodbye { reason }) => {
                     eprintln!("warden-server: {device_id} said goodbye ({reason:?})");

@@ -38,7 +38,8 @@ dependencies:
   shared_preferences: ^2.5.5
   stream_channel: ^2.1.4
   meta: ^1.19.0
-
+  saf_util: ^3.1.0
+  saf_stream: ^4.0.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -28,7 +28,7 @@ void main() {
     final sentHello = await fromClient.next as String;
     expect(
       sentHello,
-      '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key"}',
+      '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key","tools":[]}',
     );
 
     controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
@@ -172,5 +172,97 @@ void main() {
     expect(reply, isA<ChatErrorMessage>());
     expect((reply as ChatErrorMessage).message, 'provider unavailable');
     expect(conn.status, isA<Connected>());
+  });
+
+  test('advertised tools are sent in Hello', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+      toolSpecs: const [
+        {'name': 'list_files', 'description': 'List files', 'parameters': {'type': 'object'}},
+      ],
+    );
+
+    final sentHello = await fromClient.next as String;
+    expect(
+      sentHello,
+      '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key",'
+      '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}]}',
+    );
+
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    await future;
+  });
+
+  test('a ToolCallRequest for a registered handler replies with ToolCallResult', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+      toolHandlers: {
+        'list_files': (args) async => {'entries': []},
+      },
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    await future;
+
+    controller.local.sink.add('{"type":"toolCallRequest","callId":1,"tool":"list_files","arguments":{}}');
+
+    final sentResult = await fromClient.next as String;
+    expect(sentResult, '{"type":"toolCallResult","callId":1,"result":{"entries":[]}}');
+  });
+
+  test('a ToolCallRequest for an unregistered tool replies with ToolCallError', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    await future;
+
+    controller.local.sink.add('{"type":"toolCallRequest","callId":1,"tool":"list_files","arguments":{}}');
+
+    final sentError = await fromClient.next as String;
+    expect(sentError, "{\"type\":\"toolCallError\",\"callId\":1,\"message\":\"no local handler registered for tool 'list_files'\"}");
+  });
+
+  test('a handler that throws replies with ToolCallError carrying the exception message', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+      toolHandlers: {
+        'read_file': (args) async => throw StateError('file not found'),
+      },
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    await future;
+
+    controller.local.sink.add('{"type":"toolCallRequest","callId":9,"tool":"read_file","arguments":{"path":"x"}}');
+
+    final sentError = await fromClient.next as String;
+    expect(sentError, contains('"type":"toolCallError","callId":9'));
+    expect(sentError, contains('file not found'));
   });
 }

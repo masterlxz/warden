@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use warden_core::model::Usage;
+use warden_core::tool::ToolSpec;
 
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -9,6 +11,12 @@ pub enum ClientMessage {
         device_id: String,
         device_name: String,
         auth_key: String,
+        /// Local tools this client can execute on request (Fase 7.4) — e.g. mobile's
+        /// `list_files`/`read_file`. `#[serde(default)]` so a client that predates this (or
+        /// simply has none configured, like the desktop-as-client) doesn't need to send anything;
+        /// `Server` only builds the remote-tool-dispatch machinery when this is non-empty.
+        #[serde(default)]
+        tools: Vec<ToolSpec>,
     },
     Ping {
         nonce: u64,
@@ -17,6 +25,17 @@ pub enum ClientMessage {
     /// connection's `device_id` (one conversation per device, same pattern as Telegram's
     /// `chat_id`/WhatsApp's JID).
     Chat {
+        message: String,
+    },
+    /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
+    ToolCallResult {
+        call_id: u64,
+        result: Value,
+    },
+    /// The client failed to run a requested tool call (Fase 7.4) — same "carry the real error
+    /// text" posture as `ServerMessage::ChatError`.
+    ToolCallError {
+        call_id: u64,
         message: String,
     },
     Goodbye {
@@ -47,6 +66,15 @@ pub enum ServerMessage {
     ChatError {
         message: String,
     },
+    /// Asks a connected client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
+    /// `call_id` is scoped to this connection (a simple counter, mirrors `Ping`'s `nonce`) — the
+    /// client echoes it back on `ToolCallResult`/`ToolCallError` so the server can correlate the
+    /// reply even if several calls are in flight at once.
+    ToolCallRequest {
+        call_id: u64,
+        tool: String,
+        arguments: Value,
+    },
     Goodbye {
         reason: Option<String>,
     },
@@ -62,12 +90,58 @@ mod tests {
             device_id: "dev-1".into(),
             device_name: "Test Device".into(),
             auth_key: "secret".into(),
+            tools: Vec::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret"}"#
+            r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[]}"#
         );
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn client_hello_without_a_tools_field_defaults_to_empty() {
+        // A client written before Fase 7.4 (or one with nothing to advertise) never sends `tools`
+        // at all — must still parse, not error.
+        let json = r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret"}"#;
+        let msg = serde_json::from_str::<ClientMessage>(json).unwrap();
+        assert!(matches!(msg, ClientMessage::Hello { tools, .. } if tools.is_empty()));
+    }
+
+    #[test]
+    fn client_hello_with_advertised_tools_round_trips_through_json() {
+        let msg = ClientMessage::Hello {
+            device_id: "dev-1".into(),
+            device_name: "Test Device".into(),
+            auth_key: "secret".into(),
+            tools: vec![ToolSpec {
+                name: "list_files".into(),
+                description: "List files".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn client_tool_call_result_round_trips_through_json() {
+        let msg = ClientMessage::ToolCallResult { call_id: 7, result: serde_json::json!({"ok": true}) };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"toolCallResult","callId":7,"result":{"ok":true}}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn client_tool_call_error_round_trips_through_json() {
+        let msg = ClientMessage::ToolCallError { call_id: 7, message: "boom".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"toolCallError","callId":7,"message":"boom"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
     }
 
@@ -78,6 +152,21 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"type":"authError","reason":"invalid auth key"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_tool_call_request_round_trips_through_json() {
+        let msg = ServerMessage::ToolCallRequest {
+            call_id: 3,
+            tool: "read_file".into(),
+            arguments: serde_json::json!({"path": "abc"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"toolCallRequest","callId":3,"tool":"read_file","arguments":{"path":"abc"}}"#
+        );
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
     }
 }

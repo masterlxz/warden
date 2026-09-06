@@ -237,7 +237,13 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   WhatsApp). Novo `ChatScreen` no Flutter, verificado de ponta a ponta contra um `warden-server`
   real com Gemini de verdade. Sem fetch de histórico ao reconectar ainda (`PENDING.md` P40) — só a
   UI de chat em si, layout mobile mais completo (seletor de agente/provider, etc.) fica pra depois*
-- [ ] 7.4 — Execução de tools local (shell, arquivos)
+- [x] 7.4 — Execução de tools local *(Sessão 52) — acesso a arquivos do celular, só leitura
+  (`list_phone_files`/`read_phone_file`), pasta raiz persistida via SAF (Android). "Shell" saiu do
+  escopo (não existe num celular sem root). Mecanismo real: `warden-server` ganhou um roteamento
+  de tool genérico pro cliente conectado certo (`RemoteTool`, `crates/warden-server/src/
+  remote_tool.rs`) — primeira peça concreta do que a Fase 9.4/9.5 vai generalizar depois.
+  Verificado de ponta a ponta contra um `warden-server` real com Gemini de verdade: listou e leu
+  arquivos reais empurrados pro emulador via `adb push`*
 - [ ] 7.5 — Notificações push
 - [ ] 7.6 — Build e deploy
 

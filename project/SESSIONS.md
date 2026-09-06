@@ -2,7 +2,65 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-06 (Sessão 51)
+> Última atualização: 2026-09-06 (Sessão 52)
+
+---
+
+### 2026-09-06 — Sessão 52
+
+- **Objetivo**: usuário disse "commita e da push" (feito, commit `b388051`), depois "por onde
+  continuamos?". Candidatos: 7.4 (tools locais no mobile), P37 (design do sync Arweave), Fase 9
+  (9.3/9.4). Usuário escolheu **7.4**.
+
+**Decisão de escopo, antes de planejar**: como o modelo roda no `Orchestrator` que o
+`warden-server` hospeda (7.3), não no celular, uma tool "local" só funciona com um mecanismo de
+roteamento de tool pra conexão certa — exatamente o que `PHASE.md` reservava pra 9.4/9.5.
+Perguntado ao usuário qual tool faria sentido pra começar (já que "shell, arquivos" do `PHASE.md`
+original não cabe num celular sem root) — escolheu **acesso a arquivos**. Perguntas de escopo
+adicionais antes de planejar: pasta raiz persistida (vs. picker por chamada) — escolhida a
+persistida; só leitura (vs. leitura+escrita) — escolhida só leitura. Planejado em modo formal
+(`/plan`).
+
+**Implementado** (ver `ARCHITECTURE.md`, seção "7.4" pros detalhes completos):
+
+- Mecanismo genérico de roteamento de tool em `crates/warden-server`: `Hello` ganha
+  `tools: Vec<ToolSpec>` (retrocompatível), novo par `ToolCallRequest`/`ToolCallResult`+
+  `ToolCallError`, novo `RemoteTool` (`src/remote_tool.rs`) — um `Tool` que manda a chamada pela
+  conexão e espera a resposta via `oneshot`, compartilhando um mapa `pending` por conexão. Uma
+  conexão que anuncia tools ganha seu próprio `Orchestrator` (clone barato do compartilhado) com um
+  `RemoteTool` por spec — a primeira peça concreta do que 9.4/9.5 vai generalizar depois
+- **Bug real achado rodando o teste de ponta a ponta**: as tools do celular nomeadas
+  `list_files`/`read_file` colidiam com `ReadFileTool`/`WriteFileTool` do vault (mesmos nomes) —
+  Gemini rejeitou com 400 "Duplicate function declaration found". Renomeado pra
+  `list_phone_files`/`read_phone_file`. Registrado como P42 (sem validação de colisão no servidor
+  ainda)
+- **Achado de pesquisa antes de escrever código**: a escolha óbvia de pacote Flutter
+  (`shared_storage`) está descontinuada, sem sucessor listado — rastreado até `saf_util`+
+  `saf_stream` (mesmo autor, ativamente mantidos), confirmado lendo o código-fonte instalado, não
+  só a doc do pub.dev
+- `mobile/lib/services/mobile_file_tool.dart` novo (pick de pasta via SAF, `list_phone_files`/
+  `read_phone_file`, design de "path opaco" — o modelo só ecoa paths que já viu, nunca constrói
+  um), `ConnectionScreen`/`ChatScreen` ganham a UI (diálogo "Files" no `AppBar`, opt-in — só
+  anuncia as tools se uma pasta já foi escolhida)
+- Testes: `crates/warden-server/tests/tools.rs` (round-trip completo, resposta final derivada do
+  conteúdo REAL que o cliente de teste devolveu — não uma string enlatada), `remote_tool.rs` ganha
+  testes unitários (sucesso, erro, timeout, conexão caída). Lado Flutter: `flutter analyze`/
+  `flutter test` cobrindo `Hello.tools`/`ToolCallRequest`/`Result`/`Error`. `cargo build/test/
+  clippy --workspace` e `flutter analyze`/`flutter test` limpos nos dois lados
+- **Verificado de ponta a ponta contra um `warden-server` real com Gemini de verdade**: dois
+  arquivos reais empurrados pro emulador via `adb push`, pasta escolhida via o picker real do
+  Android (SAF, diálogo de permissão real aceito), pergunta real respondida corretamente citando
+  os arquivos reais e o conteúdo real de um deles — a cadeia inteira (Gemini → servidor →
+  `RemoteTool` → rede → SAF real no Android → de volta → resposta) funcionando de verdade
+- `project/PHASE.md` (7.4 marcada `[x]`), `project/OVERVIEW.md` (status da Fase 7 atualizado),
+  `project/PENDING.md` (P42 novo — colisão de nome não validada; P43 novo — escrita deliberadamente
+  fora de escopo; P44 novo — Android-only, sem iOS)
+
+**Ainda falta**: 7.5 (push), 7.6 (build/deploy). P40/P41 (Sessão 51, ainda abertas). P42/P43/P44
+(acima). Sem Tailscale real disponível neste ambiente (P36, mesma lacuna de sempre).
+
+**Próximo passo**: perguntar ao usuário se segue pra 7.5/7.6, volta pro design do sync Arweave
+(P37), ou outra frente da Fase 9 (9.3/9.4).
 
 ---
 

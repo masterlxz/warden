@@ -19,11 +19,19 @@ final class HelloMessage extends ClientMessage {
     required this.deviceId,
     required this.deviceName,
     required this.authKey,
+    this.tools = const [],
   });
 
   final String deviceId;
   final String deviceName;
   final String authKey;
+
+  /// Local tools this client can run on request (Fase 7.4), e.g.
+  /// `MobileFileTool.listFilesSpec`/`readFileSpec` — each a `{name, description, parameters}`
+  /// map mirroring `warden_core::tool::ToolSpec`. Empty when nothing is configured (e.g. no
+  /// root folder picked yet) — `warden-server` only builds the remote-tool-dispatch machinery
+  /// when this is non-empty.
+  final List<Map<String, dynamic>> tools;
 
   @override
   Map<String, dynamic> toJson() => {
@@ -31,6 +39,7 @@ final class HelloMessage extends ClientMessage {
         'deviceId': deviceId,
         'deviceName': deviceName,
         'authKey': authKey,
+        'tools': tools,
       };
 }
 
@@ -61,6 +70,28 @@ final class ChatMessage extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {'type': 'chat', 'message': message};
+}
+
+/// The result of a `ToolCallRequestMessage` this client was asked to run (Fase 7.4).
+final class ToolCallResultMessage extends ClientMessage {
+  const ToolCallResultMessage(this.callId, this.result);
+
+  final int callId;
+  final dynamic result;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'toolCallResult', 'callId': callId, 'result': result};
+}
+
+/// This client failed to run a requested tool call (Fase 7.4).
+final class ToolCallErrorMessage extends ClientMessage {
+  const ToolCallErrorMessage(this.callId, this.message);
+
+  final int callId;
+  final String message;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'toolCallError', 'callId': callId, 'message': message};
 }
 
 /// Token usage for one chat turn, when the provider reported it. Mirrors
@@ -100,6 +131,11 @@ sealed class ServerMessage {
           Usage.fromJson(json['usage'] as Map<String, dynamic>?),
         ),
       'chatError' => ChatErrorMessage(json['message'] as String),
+      'toolCallRequest' => ToolCallRequestMessage(
+          json['callId'] as int,
+          json['tool'] as String,
+          json['arguments'] as Map<String, dynamic>,
+        ),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
       final other => throw FormatException('Unknown ServerMessage type: $other'),
     };
@@ -142,6 +178,15 @@ final class ChatErrorMessage extends ServerMessage {
   const ChatErrorMessage(this.message);
 
   final String message;
+}
+
+/// Asks this client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
+final class ToolCallRequestMessage extends ServerMessage {
+  const ToolCallRequestMessage(this.callId, this.tool, this.arguments);
+
+  final int callId;
+  final String tool;
+  final Map<String, dynamic> arguments;
 }
 
 final class GoodbyeServerMessage extends ServerMessage {

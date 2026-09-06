@@ -57,6 +57,7 @@ async fn a_second_hello_on_the_same_connection_is_ignored_not_fatal() {
         device_id: "dev-1".to_string(),
         device_name: "Test Device".to_string(),
         auth_key: "test-key".to_string(),
+        tools: Vec::new(),
     })
     .await
     .unwrap();
