@@ -173,6 +173,30 @@ por pedido explícito do usuário nesta sessão, registrado como P38; maior risc
 convenção exata do "ECDH secret" do pacote Dart `elliptic` (assumida, não confirmada rodando Dart
 de verdade).
 
+**Continuação (ainda 2026-09-06, mesma Sessão 50) — troca de stack mobile, Tauri Mobile → Flutter**:
+conversa sobre o app mobile do Warden (Fase 7.1, feita na Sessão 49) puxou uma comparação com a
+recomendação de Flutter dada em outra sessão pro TruthID — explicado que a diferença vinha do
+ponto de partida de cada projeto (TruthID mobile-first sem legado; Warden já tinha desktop em
+Tauri, então estender pra mobile reaproveitava UI React + backend Rust sem reescrever nada).
+Usuário disse estar "pensando seriamente em trocar" antes que ficasse mais complexo reverter,
+priorizando **maturidade geral** e **suporte a iOS** ("acho muito importante"). Analisado que o
+timing é bom (só a 7.1 feita, nenhuma etapa de feature ainda) e que a troca não reabre a decisão
+de protocolo servidor↔cliente (P1, WS/JSON, mesma sessão) nem o `warden-server` — mobile sempre
+foi definido como cliente puro (`PHASE.md`), framework-agnóstico nessa ponta. Usuário confirmou:
+**registrar a decisão no `project/` com prioridade**.
+
+**Registrado** (sem código novo, só documentação de decisão): `ARCHITECTURE.md` — linha "Framework
+desktop/mobile" separada em "Framework desktop" (Tauri, mantido) e "Framework mobile" (Flutter,
+revertido de Tauri Mobile), mais uma seção nova detalhando o raciocínio completo logo após a seção
+"Setup Tauri Mobile (Fase 7.1)". `PHASE.md` (Fase 7) — stack atualizada pra Flutter, 7.1 reaberta
+(`[ ]`) com nota explicando que substitui o setup anterior. `PENDING.md` — P35 atualizado (era só
+o registro dos achados da 7.1) com a decisão de troca e o trabalho que falta, prioridade subida
+de 🟡 Baixa pra **🔴 Alta**, a pedido do usuário.
+
+**Ainda não feito**: nenhum código mexido — scaffold Tauri Mobile (`desktop/src-tauri/gen/android/`,
+toolchain Android em `~/.local/opt/`) continua no repo, e o projeto Flutter novo ainda não existe.
+Fica pra quando o usuário quiser retomar a 7.1 de fato.
+
 ---
 
 ### 2026-09-05 — Sessão 49

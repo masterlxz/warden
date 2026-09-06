@@ -4,7 +4,8 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
-| Framework desktop/mobile | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
+| Framework desktop | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
+| Framework mobile | Tauri Mobile vs Flutter | **Flutter** ✓ (revertido de Tauri Mobile, Sessão 50 continuação) — usuário priorizou maturidade geral e suporte a iOS; ver nota detalhada abaixo (seção "Mobile: troca de Tauri Mobile pra Flutter") |
 | Topologia de rede | Estrela vs Malha P2P | **Estrela** ✓ — servidor central, clientes se conectam. **Refinado 2026-08-02**: servidor é opcional, só entra quando a feature exige coordenação entre múltiplos nodes — ver nota abaixo e P14 em `PENDING.md` |
 | Memória | Markdown vault (Obsidian) vs banco vetorial | **Markdown vault** ✓ — portátil, legível, versionável |
 | Backup | IPFS (Filebase/Pinata) vs S3 vs Arweave via TruthID | **Superado — ver linha "Sync descentralizado (Fase 4)" abaixo** (Sessão 50). Registro histórico: a decisão original era IPFS (Filebase/Pinata), mesmo padrão que o TruthID usava antes de migrar pra Arweave (P24 em `PENDING.md`) |
@@ -316,3 +317,48 @@ iOS fica sem nenhum teste até rodar num Mac de verdade.
   que tinha crescido acumulando builds de sessões anteriores, chegando a 96%
   de disco ocupado na máquina real do usuário) — confirmado com o usuário
   antes de rodar, não é automático.
+
+## Mobile: troca de Tauri Mobile pra Flutter (Sessão 50, continuação)
+
+**Decisão revertida** — a escolha original de Tauri Mobile pro app mobile
+(linha "Framework mobile" no topo deste arquivo) foi trocada por **Flutter**,
+a pedido explícito do usuário: prioriza **maturidade geral** e **suporte a
+iOS** acima do reuso de código que motivou a escolha original do Tauri.
+
+**Por que o timing é bom pra reverter agora**: só a 7.1 (setup do toolchain
+Android + confirmação de que a UI do desktop renderiza dentro do WebView, ver
+seção acima) tinha sido feita. Nenhuma etapa de feature (7.2 a 7.6) foi
+implementada — é o ponto mais barato possível da Fase 7 pra trocar de stack.
+
+**Por que a troca não afeta nada já decidido pro backend**: o `PHASE.md`
+(Fase 7) já define o mobile como **cliente puro** ("nunca servidor"),
+conversando com o servidor via Tailscale + WebSocket usando o protocolo JSON
+próprio decidido na linha "Protocolo servidor↔cliente" (P1, mesma Sessão 50)
+— uma decisão explicitamente agnóstica de linguagem/framework. O mobile nunca
+ia embutir o `warden-core` em Rust diretamente (isso exigiria FFI/bindings
+tipo `flutter_rust_bridge` em qualquer framework não-Rust); ia só falar
+JSON por WebSocket com o servidor, exatamente o que um app Flutter faz
+normalmente. Ou seja: trocar o client de UI não reabre nem o `warden-server`
+nem o schema de mensagens já fechados.
+
+**O que se perde**: o reuso "de graça" da UI React do desktop, motivo
+original da escolha de Tauri (ver linha "Framework desktop" no topo). Mas a
+própria 7.1 já tinha achado que esse reuso valia menos do que parecia — a UI
+fixa do desktop (sidebar de 280px) não serve como está numa tela de celular
+(ver achado registrado acima e P35 em `PENDING.md`), então a 7.3 já ia exigir
+um layout mobile dedicado de qualquer forma, com ou sem Tauri.
+
+**O que se ganha, alinhado com o pedido do usuário**: suporte a iOS maduro em
+produção há anos (diferente do Tauri Mobile, cujo lado iOS nem chegou a ser
+testado nesta sessão por falta de Xcode/macOS — ver seção acima, e isso não
+muda de framework nenhum, mas o ecossistema/comunidade em volta do iOS no
+Flutter é ordens de grandeza mais fundo); e um ecossistema de plugins bem
+mais maduro pra 7.4 (arquivos/permissões) e principalmente 7.5 (push
+notification via FCM/APNs), onde o Tauri Mobile ainda é bem mais cru.
+
+**Trabalho que essa reversão implica** (ainda não feito, registrado como
+prioridade alta em `PENDING.md` P35): reverter/depreciar o scaffold Android
+do Tauri Mobile (`desktop/src-tauri/gen/android/`, toolchain em
+`~/.local/opt/`) e recomeçar a 7.1 num projeto Flutter novo — provavelmente
+fora de `desktop/` (não é mais uma extensão do mesmo app Tauri, é um client
+separado). `PHASE.md` (Fase 7) atualizado pra refletir a stack nova.

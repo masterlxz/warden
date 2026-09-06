@@ -206,12 +206,18 @@ P29/P30/P31).
 
 **Objetivo**: Warden no celular como cliente (nunca servidor).
 
-**Stack**: Tauri Mobile (Rust + React)
+**Stack**: ~~Tauri Mobile (Rust + React)~~ **Flutter (Dart)** — trocado na Sessão 50
+(continuação): usuário priorizou maturidade geral e suporte a iOS acima do reuso de UI que
+motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor (decisão P1,
+`ARCHITECTURE.md`) — decisão agnóstica de framework, não afetada por essa troca. Ver
+`ARCHITECTURE.md` ("Mobile: troca de Tauri Mobile pra Flutter") e `PENDING.md` P35.
 
 **Etapas**:
-- [x] 7.1 — Setup Tauri Mobile (Android + iOS) — *só o lado Android de verdade (build + emulador);
-  iOS fica só na config genérica do Tauri, sem nenhum teste, já que exige Xcode/macOS, ver
-  `ARCHITECTURE.md` e `PENDING.md`*
+- [ ] 7.1 — Setup Flutter (Android + iOS) — *substitui o setup anterior em Tauri Mobile
+  (revertido, Sessão 50 continuação): toolchain Android + scaffold `gen/android/` ficam
+  depreciados, recomeça como projeto Flutter novo, fora de `desktop/`. O achado de que a UI
+  fixa do desktop não serve num celular (ver `ARCHITECTURE.md`) continua válido — reforça que a
+  7.3 sempre ia precisar de um layout mobile dedicado*
 - [ ] 7.2 — Conectar ao servidor (Tailscale + WebSocket/gRPC)
 - [ ] 7.3 — Interface de chat mobile *(a UI atual do desktop não serve como está — ver nota em
   `ARCHITECTURE.md`: sidebar de largura fixa praticamente toma a tela inteira num celular)*
