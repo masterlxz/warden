@@ -429,3 +429,104 @@ NDK/Build-Tools novos dentro de `~/.local/opt/android-sdk` (SDK total foi
 de ~7GB pra 10GB) e `mobile/build/` (~1.9GB, gitignored). Disco ficou em 26GB
 livres (86% usado) — não crítico, mas vale lembrar do `cargo clean`/`flutter
 clean` se apertar de novo, mesmo aviso já registrado na Sessão 49.
+
+## 7.2 — Flutter conecta ao `warden-server` (Sessão 50, continuação)
+
+Escopo deliberadamente estreito, conforme `PHASE.md`: só provar
+conectividade (handshake, heartbeat, erro de auth), não a UI de chat (7.3).
+Dois agentes de exploração (protocolo real do `warden-server`, estado do
+scaffold `mobile/`) + um agente de design produziram o plano; implementação
+seguiu esse plano quase à risca, com uma correção real encontrada e
+corrigida durante a implementação (abaixo).
+
+**Camada de protocolo** — `mobile/lib/protocol/messages.dart`: `sealed
+class ClientMessage`/`ServerMessage` (Dart 3.13), uma subclasse `final` por
+variante, `toJson`/`fromJson` na mão — espelha `crates/warden-server/src/
+protocol.rs` campo a campo (`camelCase`, tag `"type"`). Testado com 9 casos
+de round-trip (`test/protocol/messages_test.dart`) comparando string JSON
+literal contra o que o lado Rust produz, incluindo o caso de `Goodbye`
+serializar `"reason":null` explícito em vez de omitir o campo.
+
+**Serviço de conexão** — `mobile/lib/services/server_connection.dart`:
+espelha `ServerConnection` de `client.rs`, escrito contra
+`StreamChannel<dynamic>` (não `WebSocketChannel` direto — `WebSocketChannel`
+já *é* um `StreamChannel`, confirmado lendo o código-fonte real do pacote).
+**Achado real durante a implementação, não previsto no plano**: tanto
+`WebSocketChannel.stream` quanto as duas metades de um
+`StreamChannelController` são de fato *single-subscription* (confirmado lendo
+`adapter_web_socket_channel.dart` e `stream_channel_controller.dart` do
+pacote) — um stream desses só pode ser escutado (`.listen()`) uma única vez
+na vida. O plano original chamava `channel.stream.first` no handshake e
+depois `channel.stream.listen(...)` de novo no modo conectado — teria
+lançado `Bad state: Stream has already been listened to` em produção
+assim que o primeiro `HelloAck` chegasse. Corrigido criando **uma única**
+`StreamSubscription` antes de mandar `Hello`, com um `Completer` resolvendo
+a resposta do handshake; no sucesso, os callbacks (`onData`/`onError`/
+`onDone`) dessa mesma subscription são trocados (`.onData(...)`, não um novo
+`.listen()`) pro modo conectado — Dart permite trocar os handlers de uma
+subscription a qualquer momento, mesmo já recebendo eventos. Isso também
+aproxima mais fielmente o `recv()` do `client.rs`, que consome do mesmo
+stream continuamente, nunca re-escuta.
+
+Heartbeat a cada 30s (`Timer.periodic` + hook `@visibleForTesting
+pingNow()` pra testes não dependerem do timer real) — puramente JSON de
+aplicação, sem depender de frame WS nativo de ping/pong (o servidor não
+inicia nem exige). Nonce sem pong dentro de um intervalo vira
+`ConnectionFailure` (sem retry automático — fora de escopo da 7.2,
+documentado no próprio doc-comment da classe). `goodbye()` manda `Goodbye` e
+trata o fechamento do socket que vem depois como `Disconnected` limpo
+(flag `_goodbyeSent`), já que o servidor nunca confirma — só para de ler e
+derruba a conexão.
+
+**Configurações** — `mobile/lib/services/connection_settings.dart`
+(`shared_preferences`, texto puro — mesma postura de segurança do OAuth MCP
+do desktop, P26) + `device_id.dart` (UUID na mão, `Random.secure()`, sem
+pacote `uuid`).
+
+**UI** — `mobile/lib/screens/connection_screen.dart`, `StatefulWidget` puro
+(sem pacote de state management — uma tela só). Prefill de host
+`10.0.2.2` só em `kDebugMode && Platform.isAndroid` e só quando não há valor
+salvo — nunca sobrescreve o que o usuário já digitou, nunca aparece em
+iOS/release.
+
+**Android/iOS — permissão de rede que faltava** (achado real do agente de
+design, confirmado lendo o arquivo): `mobile/android/app/src/main/
+AndroidManifest.xml` não tinha `INTERNET` (só existia nos manifests de
+debug/profile, que o Flutter usa só pro próprio hot-reload) nem
+`usesCleartextTraffic` — sem isso, Android 9+/API 28+ bloqueia `ws://` por
+padrão. Corrigido no manifest principal. Adicionada proativamente a exceção
+equivalente de App Transport Security no `Info.plist` do lado iOS
+(`NSAllowsArbitraryLoads`) — não dá pra verificar nesta sessão (sem
+Xcode/macOS, P39), mas evita uma falha silenciosa quando alguém finalmente
+buildar lá.
+
+**Pacotes novos**: `web_socket_channel` (oficial dart-lang, puro Dart),
+`shared_preferences` (oficial Flutter), `stream_channel` e `meta` como
+dependências diretas (não só transitivas, já que `server_connection.dart`
+os importa direto — `flutter analyze` pegou isso, `depend_on_referenced_
+packages`), `async` como dev-dependency (`StreamQueue` nos testes). Sem
+`json_serializable`/`freezed`/`build_runner` — protocolo pequeno e estável,
+mesmo raciocínio do `protocol.rs` escrito na mão do lado Rust.
+
+**Verificado de ponta a ponta contra um `warden-server` real** (não
+mockado): `cargo run -p warden-server -- --listen 0.0.0.0:7420 --auth-key
+test-key` no host, app instalado no mesmo AVD `warden_test`. Três fluxos
+confirmados com screenshot real via `adb exec-out screencap` **e** o log do
+servidor do outro lado: (1) handshake com chave certa → tela mostra
+"Connected to warden-server", log do servidor mostra `Android Device
+(<deviceId>) connected from 127.0.0.1:50738`; (2) toque em "Disconnect" →
+tela volta a "Disconnected", log do servidor mostra `<deviceId> said
+goodbye (Some("user disconnected"))` — confirma que o `reason` chega
+intacto; (3) reconectar com chave errada → tela mostra "Error:
+authentication rejected: invalid auth key", replicando a mensagem exata que
+`client.rs` produziria no lado Rust. `flutter analyze` limpo, `flutter
+test` limpo (14 testes: 9 de protocolo + 4 de `ServerConnection` rodando a
+lógica real de handshake/heartbeat/goodbye contra um
+`StreamChannelController` real, não mocks — mesmo espírito de
+`crates/warden-server/tests/handshake.rs` — + 1 smoke test de widget).
+`cargo build --workspace` confirmado limpo (nenhum arquivo Rust tocado).
+
+**Sem Tailscale real disponível** neste ambiente de dev — mesma lacuna já
+aceita do lado servidor (`PENDING.md` P36), agora estendida ao cliente
+mobile: testado só via `10.0.2.2` (emulador → host), não sobre uma tailnet
+de verdade.

@@ -26,6 +26,16 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Fase 7.2: warden-server has no TLS of its own yet (encryption is
+	     expected to come from the Tailscale tunnel, see PENDING.md P36), so
+	     ws:// to an arbitrary tailnet host must be allowed. Mirrors Android's
+	     android:usesCleartextTraffic="true". Never built/verified in this
+	     session — no Xcode/macOS available, see PENDING.md P39. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

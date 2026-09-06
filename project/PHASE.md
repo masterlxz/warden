@@ -221,7 +221,16 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   Xcode/macOS neste container, ver `PENDING.md` P39. O achado de que a UI fixa do desktop não
   serve num celular continua válido — reforça que a 7.3 sempre ia precisar de um layout mobile
   dedicado*
-- [ ] 7.2 — Conectar ao servidor (Tailscale + WebSocket/gRPC)
+- [x] 7.2 — Conectar ao servidor (Tailscale + WebSocket) — *protocolo já fechado
+  na 9.2 (WS + JSON próprio, decisão P1); client Dart em `mobile/lib/` mirando
+  `crates/warden-server/src/protocol.rs`. Escopo estreito de propósito: prova
+  conectividade (handshake, heartbeat, erro de auth), não é a UI de chat
+  (isso é a 7.3). Verificado de ponta a ponta contra um `warden-server` real
+  (não mockado) rodando no host, do emulador Android via `10.0.2.2` — os três
+  caminhos (handshake OK, `Goodbye` limpo, chave errada rejeitada) conferidos
+  com screenshot real via `adb`. Sem Tailscale real disponível neste ambiente
+  (mesma lacuna já aceita do lado servidor, `PENDING.md` P36, agora estendida
+  ao cliente mobile)
 - [ ] 7.3 — Interface de chat mobile *(a UI atual do desktop não serve como está — ver nota em
   `ARCHITECTURE.md`: sidebar de largura fixa praticamente toma a tela inteira num celular)*
 - [ ] 7.4 — Execução de tools local (shell, arquivos)

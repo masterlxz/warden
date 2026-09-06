@@ -231,6 +231,60 @@ testado (P39). Layout mobile de verdade (7.3) e conexão ao `warden-server` (7.2
 **Próximo passo**: usuário ainda não escolheu entre 7.2 (conectar ao `warden-server`), 7.3 (layout
 de chat mobile) ou voltar pra Fase 9/P37 — perguntar por onde seguir.
 
+**Continuação (2026-09-06, mesma Sessão 50) — 7.2, Flutter conecta ao `warden-server`**: usuário
+escolheu 7.2. Planejado em modo formal (`/plan`): 2 agentes de exploração em paralelo (protocolo
+real do `warden-server` lido direto do código-fonte; estado do scaffold `mobile/` + o que
+`PHASE.md`/`ARCHITECTURE.md`/`GUIDELINES.md` já diziam sobre o escopo) + 1 agente de design
+(pacotes, camada de protocolo, serviço de conexão, UI, testes — com pushback explícito pedido e
+recebido: achou a falta de permissão `INTERNET` no `AndroidManifest.xml` principal, que eu
+confirmei lendo o arquivo antes de aceitar). Plano aprovado pelo usuário antes de codar.
+
+**Implementado**: `mobile/lib/protocol/messages.dart` (`ClientMessage`/`ServerMessage` como
+`sealed class` do Dart 3.13, espelhando `crates/warden-server/src/protocol.rs` campo a campo,
+JSON na mão, sem `json_serializable`/`freezed`); `mobile/lib/services/server_connection.dart`
+(espelha `ServerConnection` de `client.rs`, escrito contra `StreamChannel<dynamic>` já que
+`WebSocketChannel` já é um); `connection_settings.dart` (`shared_preferences`, texto puro, mesma
+postura do OAuth MCP do desktop) + `device_id.dart` (UUID na mão); `screens/connection_screen.dart`
+(`StatefulWidget` puro, prefill de host `10.0.2.2` só em debug+Android e só sem valor salvo);
+`main.dart` reescrito (saiu o contador demo). `AndroidManifest.xml` ganhou `INTERNET` +
+`usesCleartextTraffic`; `Info.plist` ganhou `NSAllowsArbitraryLoads` (não verificável, sem
+Xcode/macOS, P39).
+
+**Bug real achado e corrigido durante a implementação** (não previsto no plano): `WebSocketChannel.
+stream` e as duas metades de um `StreamChannelController` são *single-subscription* — o plano
+original chamava `.stream.first` no handshake e depois `.stream.listen(...)` de novo no modo
+conectado, o que teria lançado `Bad state: Stream has already been listened to` em produção assim
+que o primeiro `HelloAck` chegasse. Corrigido antes de rodar qualquer teste: uma única
+`StreamSubscription` criada antes do `Hello`, callbacks trocados (não re-escutados) na transição
+pro modo conectado. Ver `ARCHITECTURE.md` pro detalhe técnico completo.
+
+**Testado**: `flutter analyze` limpo (achou e corrigiu duas dependências transitivas que
+precisavam virar diretas — `meta`/`stream_channel`, usadas direto em código de produção).
+`flutter test`: 14 testes — 9 de round-trip de protocolo (JSON literal comparado byte a byte
+contra o que o Rust produziria) + 4 de `ServerConnection` rodando a lógica REAL de
+handshake/heartbeat/goodbye contra um `StreamChannelController` real (não mocks, mesmo espírito de
+`crates/warden-server/tests/handshake.rs`) + 1 smoke test de widget. **Verificado de ponta a ponta
+contra um `warden-server` real** (`cargo run -p warden-server --listen 0.0.0.0:7420 --auth-key
+test-key`, não mockado): app instalado no mesmo AVD `warden_test`, três fluxos confirmados com
+screenshot real via `adb` **e** conferidos contra o log do servidor do outro lado — handshake OK
+("Connected to warden-server" + log `Android Device (<id>) connected`), `Goodbye` limpo
+("Disconnected" + log `<id> said goodbye (Some("user disconnected"))`, confirma o `reason`
+chegando intacto), chave errada rejeitada ("Error: authentication rejected: invalid auth key",
+igual à mensagem que `client.rs` produziria). `cargo build --workspace` confirmado limpo (nenhum
+arquivo Rust tocado).
+
+`project/PHASE.md` (7.2 marcada `[x]`), `project/ARCHITECTURE.md` (seção nova "7.2 — Flutter
+conecta ao warden-server" com todos os detalhes, incluindo o bug do single-subscription),
+`project/PENDING.md` (P36 atualizado — a lacuna de "sem tailnet real" agora cobre o cliente mobile
+também, só testado via `10.0.2.2`).
+
+**Ainda falta**: 7.3 (UI de chat mobile de verdade — a tela atual é só prova de conectividade,
+formulário de host/porta/chave), 7.4 (tools locais), 7.5 (push), 7.6 (build/deploy). iOS nunca
+testado (P39, inalterado). Sem Tailscale real (P36, atualizado).
+
+**Próximo passo**: perguntar ao usuário se segue pra 7.3 (UI de chat mobile) ou outra frente
+(P37 — sync Arweave, ou 9.3/9.4 — registro/roteamento de tool na Fase 9).
+
 ---
 
 ### 2026-09-05 — Sessão 49
