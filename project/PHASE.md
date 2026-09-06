@@ -201,9 +201,12 @@ P29/P30/P31).
 **Stack**: Tauri Mobile (Rust + React)
 
 **Etapas**:
-- [ ] 7.1 — Setup Tauri Mobile (Android + iOS)
+- [x] 7.1 — Setup Tauri Mobile (Android + iOS) — *só o lado Android de verdade (build + emulador);
+  iOS fica só na config genérica do Tauri, sem nenhum teste, já que exige Xcode/macOS, ver
+  `ARCHITECTURE.md` e `PENDING.md`*
 - [ ] 7.2 — Conectar ao servidor (Tailscale + WebSocket/gRPC)
-- [ ] 7.3 — Interface de chat mobile
+- [ ] 7.3 — Interface de chat mobile *(a UI atual do desktop não serve como está — ver nota em
+  `ARCHITECTURE.md`: sidebar de largura fixa praticamente toma a tela inteira num celular)*
 - [ ] 7.4 — Execução de tools local (shell, arquivos)
 - [ ] 7.5 — Notificações push
 - [ ] 7.6 — Build e deploy

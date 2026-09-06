@@ -210,6 +210,52 @@ sem confirmação visual do usuário na janela do Tauri em si. Fecha o pedido 3 
 trouxe nesta Sessão 49 — os 3 pedidos junto com a cor/tab-completion (1 e 4) ficaram todos
 resolvidos ao longo da sessão.
 
+**Continuação (ainda 2026-09-05, mesma Sessão 49) — Fase 7.1, App Mobile**: com a fila de pedidos
+do usuário esgotada, perguntado "o que fazemos agora?" — resumida a situação (testar o que foi
+construído vs puxar o próximo item do roadmap) e o usuário escolheu **"bora pro próximo item do
+roadmap"**. Pelo `ROADMAP.md`, isso é a Fase 7 (App Mobile) — a Fase 5/Tools & MCP só tem a 5.4 em
+aberto, e essa já está bloqueada pela Fase 8. Antes de começar, avisado que este container só
+builda Android (iOS exige Xcode/macOS) — usuário escolheu **instalar o SDK/NDK Android agora** e
+seguir de verdade, não só scaffolding.
+
+**Implementado — toolchain e build (detalhes completos em `ARCHITECTURE.md`)**:
+
+- JDK 17 (Temurin), Android cmdline-tools/SDK (platform-tools, platforms 34/36, build-tools 34/35,
+  NDK 27) e um `rustup` paralelo (só pros 4 targets Android) instalados **sem `sudo`** em
+  `~/.local/opt/` — o Rust do sistema (pacman, usado pelo resto do workspace) ficou intocado
+- `cargo tauri android init` gerou `desktop/src-tauri/gen/android/` — commitado (exceto
+  `build/`/`.gradle/`/`local.properties`, já cobertos pelo `.gitignore` interno que o próprio
+  comando gera), convenção oficial do Tauri
+- Primeiro build falhou (`ld.lld: error: unable to find library -laaudio` — o `cpal` de gravação
+  de voz nativa, P28, linka `libaaudio.so` incondicionalmente no Android, só disponível a partir
+  da API 26 do NDK); corrigido subindo `bundle.android.minSdkVersion` de 24 pra 26 em
+  `tauri.conf.json` (não é workaround, é a correção certa — API 26+/Android 8.0+ já cobre a
+  esmagadora maioria dos devices ativos em 2026)
+- **Disco chegou a 96% de uso na máquina real do usuário** no meio da instalação (`target/` do
+  workspace tinha crescido pra 62GB ao longo de sessões anteriores) — avisado o usuário antes de
+  agir; escolheu limpar (`cargo clean`, liberou 76GB) em vez de arriscar ou parar por aqui
+
+**Verificado de ponta a ponta com emulador de verdade (não só compilação)**: `cargo tauri android
+build --debug --apk` compilado com sucesso pros targets `aarch64` e `x86_64` (o segundo, específico
+pra rodar acelerado via KVM — `/dev/kvm` disponível neste container); AVD `warden_test`
+(`system-images;android-34;google_apis;x86_64`) criado via `avdmanager`, emulador subido headless,
+boot completo em ~68s, APK instalado via `adb install`, app aberto via `adb shell monkey`, e
+**screenshot real via `adb exec-out screencap`** confirmando que a UI do React (a mesma do desktop,
+zero mudança de código) renderiza dentro do WebView do Android — inclusive a tela de "Usage"
+construída na parte anterior desta mesma sessão, visível no rodapé da sidebar.
+
+**Achado real do teste (não um bug — vira trabalho da 7.3)**: a sidebar de largura fixa (280px, CSS
+grid `280px 1fr`) praticamente toma a tela inteira numa AVD de 320×640 lógicos — a área de chat
+sobra como uma faixa de ~40px. Confirma que a 7.3 ("Interface de chat mobile") precisa mesmo de um
+layout responsivo dedicado, registrado como P35 em `PENDING.md` junto com a lacuna do iOS.
+
+`PHASE.md` (7.1 marcada como concluída, nota sobre 7.3 precisar de layout responsivo).
+
+**Ainda falta**: iOS inteiramente não testado (sem Xcode/macOS disponível); a 7.2 (conectar ao
+servidor via Tailscale/WebSocket/gRPC) depende do P1 (protocolo servidor↔cliente, ainda decisão em
+aberto) — próximo passo natural dentro da Fase 7 seria a 7.3 (layout responsivo mobile) ou voltar
+pro P1 pra desbloquear a 7.2.
+
 ---
 
 ### 2026-09-05 — Sessão 48

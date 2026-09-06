@@ -245,3 +245,71 @@ na Settings, escrevendo no mesmo `config.toml` — decisões que valem registrar
   mascarada (some da tela no próximo `clear()`, nunca vai pro arquivo de
   histórico); só o REPL interativo ganhou os comandos — `run_plain` (stdin via
   pipe, só usado por teste) não.
+
+---
+
+## Setup Tauri Mobile (Fase 7.1) — Sessão 49
+
+Primeira etapa da Fase 7. Feito só pro lado **Android**; **iOS não tem como ser
+validado neste container** — exige Xcode, que só roda em macOS. A config
+`tauri.conf.json`/`Cargo.toml` já é genérica o bastante pra cobrir os dois
+(mesmo `crate-type = ["staticlib", "cdylib", "rlib"]` e
+`#[cfg_attr(mobile, tauri::mobile_entry_point)]` que o scaffold original do
+`create-tauri-app` já deixou prontos desde o início do projeto), mas o lado
+iOS fica sem nenhum teste até rodar num Mac de verdade.
+
+- **Toolchain Android instalado sem tocar no Rust do sistema (pacman) nem
+  pedir `sudo`** — o ambiente não tinha JDK/Android SDK/NDK, e o `rustc` do
+  sistema (via pacman) não tem os targets de cross-compile que `rustup`
+  gerencia. Em vez de arriscar mexer no Rust do sistema (usado por todo o
+  resto do workspace) ou depender de `sudo` (que pede senha, indisponível pro
+  agente), tudo foi instalado **sem privilégio de root, isolado em
+  `~/.local/opt/`**: JDK 17 (Temurin, tarball direto), Android cmdline-tools +
+  SDK (platform 34/36, build-tools, NDK 27, emulator, imagem de sistema
+  x86_64) via `sdkmanager`, e um `rustup` **paralelo** só para os 4 targets
+  Android (`aarch64`/`armv7`/`i686`/`x86_64-linux-android`) — instalado com
+  `--no-modify-path` de propósito, então o `cargo`/`rustc` que todo o resto do
+  projeto usa no dia a dia continua sendo o do pacman, sem mudar de versão por
+  baixo dos panos. Builds mobile precisam exportar `JAVA_HOME`/`ANDROID_HOME`/
+  `PATH` manualmente na hora (não persistido em nenhum shell rc) — replicável
+  em outra máquina/sessão seguindo os mesmos passos, mas vale considerar um
+  script `setup-android-toolchain.sh` se isso for repetido com frequência.
+- **`minSdkVersion` subiu de 24 (default do template) pra 26 em
+  `tauri.conf.json`** (`bundle.android.minSdkVersion`) — o primeiro build
+  falhou no link (`ld.lld: error: unable to find library -laaudio`): o
+  `cpal` (gravação nativa de voz, P28/Sessão 41) linka contra `libaaudio.so`
+  incondicionalmente no target Android, mas essa lib só existe no sysroot do
+  NDK a partir da API 26 (AAudio foi introduzida no Android 8.0). Android
+  8.0+ já cobre a esmagadora maioria dos devices ativos em 2026, então subir o
+  mínimo foi a correção certa (não um workaround) — nenhuma feature foi
+  cortada. Fonte de verdade é o `tauri.conf.json`, não o `build.gradle.kts`
+  gerado em `gen/android/`, que é sobrescrito a cada `tauri android init`.
+- **Verificado de ponta a ponta com emulador de verdade, não só build**:
+  `cargo tauri android build --debug --apk` compilou `desktop_lib` pros
+  targets `aarch64` e depois `x86_64` (o segundo, específico pra rodar
+  acelerado via KVM — `/dev/kvm` disponível neste container); AVD
+  `warden_test` (`system-images;android-34;google_apis;x86_64`) criado via
+  `avdmanager`, emulador subido headless (`-no-window -gpu
+  swiftshader_indirect`), boot completo em ~68s, APK instalado via `adb
+  install`, app aberto via `adb shell monkey -p com.warden.desktop`, e
+  **screenshot real via `adb exec-out screencap`** confirmando que a UI do
+  React (a mesma do desktop, sem nenhuma mudança) renderiza dentro do
+  WebView do Android.
+- **Achado real do teste (não um bug — vira trabalho da 7.3)**: a sidebar de
+  largura fixa (`280px`, grid `280px 1fr` em `App.css`) praticamente toma a
+  tela inteira num celular (a AVD usa 320×640 lógicos) — a área de chat
+  sobra como uma faixa de ~40px. Confirma que a 7.3 ("Interface de chat
+  mobile") precisa mesmo de um layout responsivo dedicado, não é só
+  "reaproveitar a UI do desktop sem mexer".
+- **`desktop/src-tauri/gen/android/` commitado** (exceto `build/`,
+  `.gradle/`, `local.properties` — já cobertos pelo `.gitignore` que o
+  próprio `tauri android init` gera dentro da pasta) — é pequeno sem os
+  artefatos de build (~620KB, 55 arquivos: `AndroidManifest.xml`,
+  `build.gradle.kts`, wrapper do Gradle) e é onde customização nativa
+  específica do Android (ícones, permissões, etc.) vai morar quando a 7.3
+  precisar. Convenção oficial do Tauri — evita todo mundo que mexer no
+  projeto ter que rodar `tauri android init` de novo do zero.
+- **`cargo clean` rodado no meio da sessão** (liberou 76GB de um `target/`
+  que tinha crescido acumulando builds de sessões anteriores, chegando a 96%
+  de disco ocupado na máquina real do usuário) — confirmado com o usuário
+  antes de rodar, não é automático.
