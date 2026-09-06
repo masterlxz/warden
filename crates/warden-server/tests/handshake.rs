@@ -1,12 +1,11 @@
-use warden_server::{Server, ServerConnection, ServerMessage};
+mod support;
+
+use support::{spin_up_server, MockProvider};
+use warden_server::{ClientMessage, ServerConnection, ServerMessage};
 
 #[tokio::test]
 async fn hello_handshake_and_heartbeat_round_trip() {
-    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key")
-        .await
-        .unwrap();
-    let addr = server.local_addr().unwrap();
-    tokio::spawn(server.serve());
+    let addr = spin_up_server(MockProvider::replying("unused")).await;
 
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key")
         .await
@@ -19,14 +18,9 @@ async fn hello_handshake_and_heartbeat_round_trip() {
 
 #[tokio::test]
 async fn wrong_auth_key_is_rejected() {
-    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key")
-        .await
-        .unwrap();
-    let addr = server.local_addr().unwrap();
-    tokio::spawn(server.serve());
+    let addr = spin_up_server(MockProvider::replying("unused")).await;
 
-    let result = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "wrong-key")
-        .await;
+    let result = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "wrong-key").await;
 
     match result {
         Ok(_) => panic!("expected the connection to be rejected"),
@@ -36,11 +30,7 @@ async fn wrong_auth_key_is_rejected() {
 
 #[tokio::test]
 async fn multiple_pings_on_the_same_connection_all_get_replies() {
-    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key")
-        .await
-        .unwrap();
-    let addr = server.local_addr().unwrap();
-    tokio::spawn(server.serve());
+    let addr = spin_up_server(MockProvider::replying("unused")).await;
 
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key")
         .await
@@ -53,4 +43,24 @@ async fn multiple_pings_on_the_same_connection_all_get_replies() {
             Some(ServerMessage::Pong { nonce: n }) if n == nonce
         ));
     }
+}
+
+#[tokio::test]
+async fn a_second_hello_on_the_same_connection_is_ignored_not_fatal() {
+    let addr = spin_up_server(MockProvider::replying("unused")).await;
+
+    let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key")
+        .await
+        .unwrap();
+
+    conn.send(&ClientMessage::Hello {
+        device_id: "dev-1".to_string(),
+        device_name: "Test Device".to_string(),
+        auth_key: "test-key".to_string(),
+    })
+    .await
+    .unwrap();
+    // The connection should still be alive and answer a ping afterward.
+    conn.ping(1).await.unwrap();
+    assert!(matches!(conn.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 1 })));
 }

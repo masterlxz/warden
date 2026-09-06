@@ -59,6 +59,11 @@ body {
   display: grid;
   grid-template-columns: 280px 1fr;
   height: 100vh;
+  transition: grid-template-columns 0.15s ease;
+}
+
+.app-shell--sidebar-collapsed {
+  grid-template-columns: 64px 1fr;
 }
 
 /* Sidebar */
@@ -72,6 +77,11 @@ body {
   padding: 0.75rem 0.75rem 0.5rem;
 }
 
+.sidebar--collapsed {
+  padding-left: 0.4rem;
+  padding-right: 0.4rem;
+}
+
 .sidebar-header {
   flex-shrink: 0;
   display: flex;
@@ -80,11 +90,47 @@ body {
   padding: 0.4rem 0.15rem 1.1rem;
 }
 
+.sidebar-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar--collapsed .sidebar-topbar {
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   padding: 0 0.15rem;
+}
+
+.sidebar-collapse-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, transform 0.15s;
+}
+
+.sidebar-collapse-btn:hover {
+  background-color: var(--color-accent-soft);
+  color: var(--color-accent-dark);
+}
+
+.sidebar--collapsed .sidebar-collapse-btn {
+  transform: rotate(180deg);
 }
 
 .sidebar-title {
@@ -115,6 +161,11 @@ body {
   background-color: var(--color-accent-soft);
   border-color: var(--color-accent);
   color: var(--color-accent-dark);
+}
+
+.sidebar--collapsed .new-conversation-btn,
+.sidebar--collapsed .sidebar-footer-btn {
+  justify-content: center;
 }
 
 .conversation-list-scroll {

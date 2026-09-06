@@ -98,6 +98,11 @@ class ServerConnection {
   ConnectionStatus get status => _status;
   Stream<ConnectionStatus> get statusStream => _statusController.stream;
 
+  // Carries only ChatResponseMessage/ChatErrorMessage (Fase 7.3) — everything else stays
+  // internal to the handshake/heartbeat machinery above.
+  final _chatController = StreamController<ServerMessage>.broadcast();
+  Stream<ServerMessage> get chatStream => _chatController.stream;
+
   Timer? _heartbeatTimer;
   int _nextNonce = 0;
   int? _pendingPingNonce;
@@ -198,7 +203,7 @@ class ServerConnection {
         case AuthErrorMessage(:final reason):
           await subscription.cancel();
           throw HandshakeException('authentication rejected: $reason');
-        case PongMessage() || GoodbyeServerMessage():
+        case PongMessage() || GoodbyeServerMessage() || ChatResponseMessage() || ChatErrorMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
       }
@@ -227,11 +232,20 @@ class ServerConnection {
         // completeness/forward-compatibility.
         _heartbeatTimer?.cancel();
         _setStatus(const Disconnected());
+      case ChatResponseMessage():
+      case ChatErrorMessage():
+        _chatController.add(msg);
       case HelloAckMessage():
       case AuthErrorMessage():
         // Only ever valid as the first frame, already consumed by _handshake.
         break;
     }
+  }
+
+  /// Sends one chat turn. The reply arrives asynchronously on [chatStream] as either a
+  /// [ChatResponseMessage] or a [ChatErrorMessage].
+  void sendChat(String message) {
+    _channel.sink.add(ChatMessage(message).encode());
   }
 
   void _startHeartbeat() {

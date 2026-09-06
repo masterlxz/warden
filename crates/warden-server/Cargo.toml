@@ -10,8 +10,14 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
+dirs.workspace = true
 futures-util = "0.3"
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tokio-tungstenite = "0.30"
+warden-bootstrap = { path = "../warden-bootstrap" }
+warden-core = { path = "../warden-core" }
+
+[dev-dependencies]
+async-trait.workspace = true

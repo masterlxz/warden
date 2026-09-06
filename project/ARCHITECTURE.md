@@ -530,3 +530,140 @@ lógica real de handshake/heartbeat/goodbye contra um
 aceita do lado servidor (`PENDING.md` P36), agora estendida ao cliente
 mobile: testado só via `10.0.2.2` (emulador → host), não sobre uma tailnet
 de verdade.
+
+## 7.3 — Chat real no Flutter, `warden-server` ganha um `Orchestrator` (Sessão 51)
+
+Antes de codar, o usuário escolheu explicitamente entre chat real (servidor
+hospeda um `Orchestrator` de verdade) vs. UI de chat só de mentirinha sem
+back-end — optou pelo primeiro, reabrindo de propósito a decisão da 9.2 de
+"`warden-server` deliberadamente sem `Orchestrator`/superfície de tool
+dispatch". Planejado em modo formal (`/plan`) antes de codar, sem
+sub-agentes de exploração desta vez — o código relevante (`protocol.rs`/
+`server.rs`/`bootstrap()`/`handle_turn`/o client Dart da 7.2) já tinha sido
+lido nesta mesma sessão de continuidade.
+
+**Protocolo** (`crates/warden-server/src/protocol.rs`) — `ClientMessage`
+ganha `Chat{message}`; `ServerMessage` ganha `ChatResponse{content,
+usage: Option<Usage>}` e `ChatError{message}`. `Usage` é
+`warden_core::model::Usage`, reaproveitado direto (já tinha `camelCase`
+pronto pra isso) — não inventou um tipo próprio. `ChatError` existe pra
+uma falha de `handle_turn` (chave de API ausente, rate limit, erro do
+provider) virar uma mensagem que o cliente mostra, em vez de simplesmente
+fechar a conexão; carrega o texto real do erro (`format!("{err:#}")`), não
+uma mensagem genérica — diferente do `warden-telegram`, que degrada pra uma
+string fixa porque é um bot público, aqui é uma ferramenta pessoal.
+
+**`warden-server` ganha `warden-core`/`warden-bootstrap` como dependências**
+(path deps, mesmo padrão do `warden-telegram`) — reabre de propósito a
+decisão da 9.2. `Server::bind` passou a receber `Arc<Orchestrator>` +
+`conversations_dir: PathBuf`; `main.rs` chama `bootstrap()` uma vez no
+start (mesmas flags `--vault-path`/`--provider`/`--model`/`--config` do
+`warden-telegram`, `default_vault_path()` = `~/Warden/vault`). Nova
+`warden_bootstrap::default_server_conversations_dir()`
+(`~/.config/warden/conversations-server`), mesma forma de
+`default_telegram_conversations_dir`/`default_whatsapp_conversations_dir`.
+Uma conversa por `device_id` (a partir do `Hello` já validado) — mesmo
+padrão do `chat_id` do Telegram/JID do WhatsApp, usando o `handle_turn`
+já existente sem mudar nada nele.
+
+**Bug de concorrência achado e corrigido *antes* de rodar qualquer coisa** —
+puramente por raciocínio sobre o código existente, não por reprodução
+acidental: `handle_connection` lia e tratava um frame por vez num único
+loop; um `Chat` dispara `handle_turn`, que pode levar de ~10s a 70s+ (a
+própria Sessão 48 já registrou instabilidade/rate limit do Gemini nessa
+faixa). Se tratado inline, o loop de leitura trava esse tempo todo — o
+`Ping` que o cliente manda a cada 30s (`heartbeatInterval` em
+`server_connection.dart`) não seria *lido* até o `Chat` terminar, e o
+`pingNow()` do cliente trata um ping sem pong dentro do próximo intervalo
+como conexão morta, matando uma conexão perfeitamente saudável só porque a
+resposta do modelo demorou. **Corrigido** com um `tokio::sync::mpsc::
+unbounded_channel<ServerMessage>` — depois do handshake (que continua
+escrevendo direto no `sink`, como antes), uma task de escrita dedicada
+assume o `sink` e drena o canal; o loop de leitura mantém um `tx` e nunca
+mais bloqueia: `Ping` manda `Pong` na hora pelo canal, `Chat` clona
+`orchestrator`/`conversations_dir`/`device_id`/`tx` e roda `handle_turn`
+numa task própria (`tokio::spawn`), mandando `ChatResponse`/`ChatError`
+pelo canal quando terminar — o loop de leitura já voltou a ler o próximo
+frame nesse meio-tempo. `Goodbye`/erro de parse: `drop(tx)` e `.await` na
+writer task antes de retornar, pra fechar limpo.
+
+**Testado sem chave de API nenhuma** — `crates/warden-server/tests/
+support/mod.rs`: `MockProvider` implementa só `ModelProvider::chat_stream`
+(único método obrigatório da trait), reaproveitando `warden_core::model::
+response_stream`/`Response`, o mesmo helper que os testes do próprio
+`warden-core` usam pra virar uma resposta enlatada num `ChatStream` sem
+tocar rede nenhuma. Três testes novos em `tests/chat.rs`: round-trip normal
+(`Chat` → `ChatResponse` com o conteúdo esperado); caminho de erro
+(`MockProvider::failing()` → `ChatError`, e a conexão continua respondendo
+`Ping` depois — não morre); e **o teste que prova o fix de concorrência**:
+`MockProvider` com 2s de delay artificial, manda `Chat` e logo em seguida
+um `Ping` — afirma que o `Pong` chega dentro de 500ms (bem antes do
+`ChatResponse` de 2s), com um `tokio::time::timeout` explícito que falharia
+com uma mensagem clara ("Pong took too long — the reader loop was blocked
+by the in-flight Chat call") se o bug reaparecesse. `cargo build/test/
+clippy --workspace` limpos (7 testes novos no `warden-server`: 3 de chat +
+1 novo de handshake pra cobrir um segundo `Hello` na mesma conexão, que já
+existia no código mas não tinha teste).
+
+**Flutter** — `mobile/lib/protocol/messages.dart` ganha `ChatMessage`
+(`ClientMessage`), uma classe `Usage` pequena (espelha `warden_core::
+model::Usage`, campos opcionais quando o provider não reporta) e
+`ChatResponseMessage`/`ChatErrorMessage` (`ServerMessage`) — achado real ao
+rodar `flutter analyze`: o switch exaustivo de `_handshake` (só trata o
+primeiro frame da conexão) também precisou dos dois casos novos, mesmo
+sem nenhum sentido prático de um `Chat*` chegar ali (não compila sem, Dart
+exige exaustividade total sobre um `sealed class`). `server_connection.dart`
+ganha `sendChat(String)` e `Stream<ServerMessage> get chatStream`
+(broadcast, só `ChatResponseMessage`/`ChatErrorMessage`) — zero mudança na
+máquina de handshake/heartbeat existente.
+
+**Novo `mobile/lib/screens/chat_screen.dart`** — histórico só em memória
+pro tempo de vida da tela (o protocolo não tem mensagem de "buscar
+histórico" ainda, registrado como P40; o servidor persiste a conversa em
+disco, mas o cliente não pede de volta ao reconectar — escopo estreito
+deliberado, mesmo espírito da 7.2). Um turno por vez (`_waitingForReply`
+desabilita input/envio enquanto espera, mesma postura síncrona do
+desktop/CLI). Botão "Disconnect" explícito na `AppBar` — voltar (seta/
+botão de sistema) NÃO desliga a conexão, só navega de volta pra
+`ConnectionScreen` (que continua viva por baixo, `Navigator.push` em vez
+de `pushReplacement`) — permite o usuário checar a tela de conexão sem
+perder a sessão. **Achado durante a própria verificação manual**: como a
+`ConnectionScreen` só oferece "Connect"/"Disconnect" (nunca "voltar pro
+chat" quando já conectada), voltar da `ChatScreen` sem querer desconectar
+não tem caminho de volta pela UI — só desconectando e reconectando de
+novo. Aceito como lacuna pequena, registrado em `PENDING.md` (P41) em vez
+de corrigido nesta sessão (fora do escopo aprovado).
+
+**Verificado de ponta a ponta contra um `warden-server` real com Gemini de
+verdade** (não mockado, config real do usuário em `~/.config/warden/
+config.toml`): app no mesmo AVD `warden_test`, conectado via `10.0.2.2`,
+duas mensagens reais mandadas e respondidas corretamente (bolhas
+renderizando texto real do Gemini, "Thinking…" enquanto espera). A
+segunda mensagem pedia um poema de 3 frases (resposta demorou o bastante
+pra passar de um ciclo de heartbeat de 30s) — confirmado por screenshot **e**
+pelo log do servidor que a conexão nunca caiu nem repetiu o handshake
+durante a espera, provando o fix de concorrência também no caminho real,
+não só no `MockProvider` com delay artificial. `flutter analyze` limpo;
+`flutter test` limpo (20 testes: os 14 anteriores + 6 novos — round-trip
+de `Chat`/`ChatResponse` com e sem `usage`/`ChatError`, e dois testes de
+`ServerConnection.sendChat`/`chatStream` contra um `StreamChannelController`
+real).
+
+**Bônus da mesma sessão, fora do escopo original mas pedido pelo usuário
+no meio do trabalho**: a sidebar do desktop nunca teve mecanismo de
+recolher — confirmado que não existia nenhum estado/CSS/botão de collapse
+em lugar nenhum antes de implementar. Escolhido "rail de ícones" (logo +
+"+ nova conversa" + Usage + Settings, todos só com ícone, lista de
+conversas some por inteiro) sobre "esconder de vez" — mantém acesso rápido
+às ações do rodapé mesmo recolhida. `sidebarCollapsed` novo em `App.tsx`,
+persistido via `localStorage` (`warden.sidebarCollapsed` — preferência
+por-device, não faz sentido no `config.toml` sincronizável). `Sidebar.tsx`
+ganha `collapsed`/`onToggleCollapsed`; `ChevronIcon` novo em `Icons.tsx`
+(aponta pra esquerda por padrão, `transform: rotate(180deg)` via CSS
+quando recolhida). `.app-shell--sidebar-collapsed` estreita a coluna do
+grid de 280px pra 64px; textos escondidos por renderização condicional
+(`{!collapsed && ...}`), não por CSS, pra não deixar nó morto no DOM só
+pra esconder. Verificado com Playwright headless contra o `vite dev`
+server real (não harness estático) mockando `window.__TAURI_INTERNALS__.
+invoke`, claro e escuro: expandido → recolhido → expandido de novo, sem
+erro de console em nenhum estado. `tsc`/`npm run build` limpos.

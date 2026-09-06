@@ -28,6 +28,11 @@ void main() {
       const msg = GoodbyeMessage();
       expect(msg.encode(), '{"type":"goodbye","reason":null}');
     });
+
+    test('Chat', () {
+      const msg = ChatMessage('hello there');
+      expect(msg.encode(), '{"type":"chat","message":"hello there"}');
+    });
   });
 
   group('ServerMessage decoding', () {
@@ -53,6 +58,30 @@ void main() {
       final msg = ServerMessage.decode('{"type":"goodbye","reason":null}');
       expect(msg, isA<GoodbyeServerMessage>());
       expect((msg as GoodbyeServerMessage).reason, isNull);
+    });
+
+    test('ChatResponse with usage', () {
+      final msg = ServerMessage.decode(
+        '{"type":"chatResponse","content":"ahoy","usage":{"promptTokens":1,"completionTokens":2,"totalTokens":3}}',
+      );
+      expect(msg, isA<ChatResponseMessage>());
+      final response = msg as ChatResponseMessage;
+      expect(response.content, 'ahoy');
+      expect(response.usage?.promptTokens, 1);
+      expect(response.usage?.completionTokens, 2);
+      expect(response.usage?.totalTokens, 3);
+    });
+
+    test('ChatResponse without usage', () {
+      final msg = ServerMessage.decode('{"type":"chatResponse","content":"ahoy","usage":null}');
+      expect(msg, isA<ChatResponseMessage>());
+      expect((msg as ChatResponseMessage).usage, isNull);
+    });
+
+    test('ChatError', () {
+      final msg = ServerMessage.decode('{"type":"chatError","message":"provider unavailable"}');
+      expect(msg, isA<ChatErrorMessage>());
+      expect((msg as ChatErrorMessage).message, 'provider unavailable');
     });
 
     test('unknown type throws FormatException', () {

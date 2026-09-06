@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:async/async.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile/protocol/messages.dart';
 import 'package:mobile/services/server_connection.dart';
 import 'package:stream_channel/stream_channel.dart';
 
@@ -118,5 +119,58 @@ void main() {
     final status = await statusUpdates.next;
     expect(status, isA<Disconnected>());
     expect((status as Disconnected).reason, isNull); // clean, not an error
+  });
+
+  test('sendChat sends a Chat message and a ChatResponse arrives on chatStream', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final chatUpdates = StreamQueue<ServerMessage>(conn.chatStream);
+
+    conn.sendChat('hello there');
+    final sentChat = await fromClient.next as String;
+    expect(sentChat, '{"type":"chat","message":"hello there"}');
+
+    controller.local.sink.add('{"type":"chatResponse","content":"ahoy","usage":null}');
+
+    final reply = await chatUpdates.next;
+    expect(reply, isA<ChatResponseMessage>());
+    expect((reply as ChatResponseMessage).content, 'ahoy');
+  });
+
+  test('a ChatError arrives on chatStream without disrupting the connection', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final chatUpdates = StreamQueue<ServerMessage>(conn.chatStream);
+
+    conn.sendChat('hello there');
+    await fromClient.next; // consume the Chat frame
+    controller.local.sink.add('{"type":"chatError","message":"provider unavailable"}');
+
+    final reply = await chatUpdates.next;
+    expect(reply, isA<ChatErrorMessage>());
+    expect((reply as ChatErrorMessage).message, 'provider unavailable');
+    expect(conn.status, isA<Connected>());
   });
 }

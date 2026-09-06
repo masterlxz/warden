@@ -112,3 +112,13 @@ export function StopIcon({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+
+/** Points left by default (the sidebar's collapse toggle rotates it 180° when collapsed, so it
+ * points right — "expand" — instead). */
+export function ChevronIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M15 6l-6 6 6 6" />
+    </svg>
+  );
+}

@@ -231,8 +231,12 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   com screenshot real via `adb`. Sem Tailscale real disponível neste ambiente
   (mesma lacuna já aceita do lado servidor, `PENDING.md` P36, agora estendida
   ao cliente mobile)
-- [ ] 7.3 — Interface de chat mobile *(a UI atual do desktop não serve como está — ver nota em
-  `ARCHITECTURE.md`: sidebar de largura fixa praticamente toma a tela inteira num celular)*
+- [x] 7.3 — Interface de chat mobile *(Sessão 51) — chat de verdade, não mock: `warden-server`
+  passou a hospedar um `Orchestrator` real (reabrindo a decisão da 9.2 de não ter um) e responde
+  `Chat` com o modelo de verdade, uma conversa por `device_id` (mesmo padrão do Telegram/
+  WhatsApp). Novo `ChatScreen` no Flutter, verificado de ponta a ponta contra um `warden-server`
+  real com Gemini de verdade. Sem fetch de histórico ao reconectar ainda (`PENDING.md` P40) — só a
+  UI de chat em si, layout mobile mais completo (seletor de agente/provider, etc.) fica pra depois*
 - [ ] 7.4 — Execução de tools local (shell, arquivos)
 - [ ] 7.5 — Notificações push
 - [ ] 7.6 — Build e deploy

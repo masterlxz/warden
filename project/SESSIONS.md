@@ -2,7 +2,68 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-06 (Sessão 50)
+> Última atualização: 2026-09-06 (Sessão 51)
+
+---
+
+### 2026-09-06 — Sessão 51
+
+- **Objetivo**: usuário disse "bora continuar?". Recapitulado o estado (7.1/7.2 concluídas na
+  Sessão 50, P37/Arweave em design, Fase 9 9.3/9.4 em aberto). Perguntado por onde seguir —
+  usuário escolheu **7.3, interface de chat mobile**.
+
+**Decisão de escopo, antes de codar**: constatado que o protocolo `warden-server` só tinha
+`Hello/Ping/Goodbye` — não dava pra ter chat de verdade sem o servidor rodar um `Orchestrator`
+real (reabrindo de propósito a decisão da 9.2 de não ter um). Perguntado ao usuário: chat real
+(servidor hospeda `Orchestrator`) vs. UI de chat só de mentirinha sem back-end — escolheu **chat
+real**. Planejado em modo formal (`/plan`) antes de codar.
+
+**Implementado** (ver `ARCHITECTURE.md`, seção "7.3 — Chat real no Flutter" pros detalhes
+completos):
+
+- `crates/warden-server`: protocolo ganha `Chat`/`ChatResponse`/`ChatError`; `Server` passa a
+  hospedar um `Arc<Orchestrator>` (via `bootstrap()`, chamado uma vez no `main.rs`, mesmas flags
+  do `warden-telegram`) e responde `Chat` com o modelo de verdade, uma conversa por `device_id`
+  (`warden_bootstrap::handle_turn`, nova `default_server_conversations_dir()`)
+- **Bug de concorrência achado e corrigido por raciocínio, antes de qualquer teste**: tratar
+  `Chat` inline no loop de leitura da conexão travaria heartbeats do cliente por até 70s+ (latência
+  real do Gemini já registrada em sessões anteriores), derrubando conexões saudáveis. Corrigido com
+  um canal `mpsc` + task de escrita dedicada — o loop de leitura nunca mais bloqueia num `Chat` em
+  andamento
+- Testes novos no `warden-server` (`MockProvider` sem chave de API real, reaproveitando
+  `warden_core::model::response_stream`): round-trip de chat, caminho de erro, e um teste que
+  prova o fix de concorrência (`Ping` durante um `Chat` de 2s de delay artificial chega em menos de
+  500ms). `cargo build/test/clippy --workspace` limpos (7 testes novos)
+- Flutter: `ChatMessage`/`ChatResponseMessage`/`ChatErrorMessage` no protocolo,
+  `sendChat`/`chatStream` no `ServerConnection`, novo `ChatScreen` (bolhas de mensagem, indicador
+  de "Thinking…", um turno por vez, banner de status se a conexão cair). `ConnectionScreen` navega
+  pra lá após conectar, sem forçar desconexão ao voltar. `flutter analyze`/`flutter test` limpos
+  (20 testes, 6 novos)
+- **Verificado de ponta a ponta contra um `warden-server` real com Gemini de verdade** (config
+  real do usuário, não mockado): AVD `warden_test`, duas mensagens reais respondidas e renderizadas
+  corretamente; a segunda (pedido de poema) demorou o bastante pra passar de um ciclo de heartbeat
+  de 30s — confirmado por screenshot e pelo log do servidor que a conexão não caiu, provando o fix
+  de concorrência também no caminho real
+- `project/PHASE.md` (7.3 marcada `[x]`), `project/OVERVIEW.md` (status da Fase 7 atualizado),
+  `project/PENDING.md` (P40 novo — sem histórico ao reconectar; P41 novo — sem caminho de volta pra
+  `ChatScreen` sem desconectar, achado durante a verificação manual; P36 atualizado — a lacuna de
+  "sem tailnet real" cobre agora tráfego de chat também)
+
+**Bônus fora do escopo original, pedido pelo usuário no meio do trabalho**: usuário reportou "a
+barra lateral esquerda de menu não recolhe" — confirmado que nunca existiu mecanismo de collapse
+na sidebar do desktop (não é regressão, feature nunca construída). Perguntado como deveria
+recolher — usuário escolheu **rail de ícones** (logo + nova conversa + Usage + Settings só com
+ícone, lista de conversas some) sobre esconder de vez. Implementado: `sidebarCollapsed` em
+`App.tsx` persistido via `localStorage`, `Sidebar.tsx`/`ChevronIcon` novos, CSS estreitando a
+coluna do grid de 280px pra 64px. Verificado com Playwright headless contra o `vite dev` real
+(claro e escuro, expandir/recolher/expandir de novo), zero erro de console. `tsc`/`npm run build`
+limpos.
+
+**Ainda falta**: 7.4 (tools locais no mobile), 7.5 (push), 7.6 (build/deploy). P40/P41 (acima).
+Sem Tailscale real disponível neste ambiente (P36, mesma lacuna de sempre).
+
+**Próximo passo**: perguntar ao usuário se segue pra 7.4 (tools locais), volta pro design do sync
+Arweave (P37), ou outra frente da Fase 9.
 
 ---
 

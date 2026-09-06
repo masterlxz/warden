@@ -52,6 +52,40 @@ final class GoodbyeMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'goodbye', 'reason': reason};
 }
 
+/// A chat turn (Fase 7.3) — answered by the `Orchestrator` `warden-server` hosts, keyed by this
+/// device's id (one conversation per device, same pattern as Telegram/WhatsApp on the Rust side).
+final class ChatMessage extends ClientMessage {
+  const ChatMessage(this.message);
+
+  final String message;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'chat', 'message': message};
+}
+
+/// Token usage for one chat turn, when the provider reported it. Mirrors
+/// `warden_core::model::Usage`.
+class Usage {
+  const Usage({
+    required this.promptTokens,
+    required this.completionTokens,
+    required this.totalTokens,
+  });
+
+  final int promptTokens;
+  final int completionTokens;
+  final int totalTokens;
+
+  static Usage? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    return Usage(
+      promptTokens: json['promptTokens'] as int,
+      completionTokens: json['completionTokens'] as int,
+      totalTokens: json['totalTokens'] as int,
+    );
+  }
+}
+
 /// Messages sent from a warden-server to this client.
 sealed class ServerMessage {
   const ServerMessage();
@@ -61,6 +95,11 @@ sealed class ServerMessage {
       'helloAck' => HelloAckMessage(json['serverName'] as String),
       'authError' => AuthErrorMessage(json['reason'] as String),
       'pong' => PongMessage(json['nonce'] as int),
+      'chatResponse' => ChatResponseMessage(
+          json['content'] as String,
+          Usage.fromJson(json['usage'] as Map<String, dynamic>?),
+        ),
+      'chatError' => ChatErrorMessage(json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
       final other => throw FormatException('Unknown ServerMessage type: $other'),
     };
@@ -90,6 +129,19 @@ final class PongMessage extends ServerMessage {
   // stops holding if Flutter Web is ever targeted (`int` becomes a JS
   // double there) — not a concern for the mobile-only scope of Fase 7.
   final int nonce;
+}
+
+final class ChatResponseMessage extends ServerMessage {
+  const ChatResponseMessage(this.content, this.usage);
+
+  final String content;
+  final Usage? usage;
+}
+
+final class ChatErrorMessage extends ServerMessage {
+  const ChatErrorMessage(this.message);
+
+  final String message;
 }
 
 final class GoodbyeServerMessage extends ServerMessage {

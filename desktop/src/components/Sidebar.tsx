@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, LogoMark, PlusIcon, SettingsIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -9,6 +9,8 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onOpenUsage: () => void;
   view: "chat" | "settings" | "usage";
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }
 
 function Sidebar({
@@ -19,51 +21,76 @@ function Sidebar({
   onOpenSettings,
   onOpenUsage,
   view,
+  collapsed,
+  onToggleCollapsed,
 }: SidebarProps) {
   return (
-    <div className="sidebar">
+    <div className={`sidebar${collapsed ? " sidebar--collapsed" : ""}`}>
       <div className="sidebar-header">
-        <div className="sidebar-brand">
-          <LogoMark size={24} />
-          <span className="sidebar-title">Warden</span>
+        <div className="sidebar-topbar">
+          <div className="sidebar-brand">
+            <LogoMark size={24} />
+            {!collapsed && <span className="sidebar-title">Warden</span>}
+          </div>
+          <button
+            type="button"
+            className="sidebar-collapse-btn"
+            onClick={onToggleCollapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <ChevronIcon size={14} />
+          </button>
         </div>
-        <button type="button" className="new-conversation-btn" onClick={onNewConversation}>
+        <button type="button" className="new-conversation-btn" onClick={onNewConversation} title="New chat">
           <PlusIcon size={16} />
-          New chat
+          {!collapsed && "New chat"}
         </button>
       </div>
 
-      <div className="conversation-list-scroll">
-        {conversations.length === 0 ? (
-          <p className="conversation-list-empty">No conversations yet.</p>
-        ) : (
-          <ul className="conversation-list">
-            {conversations.map((conversation) => (
-              <li key={conversation.id}>
-                <button
-                  type="button"
-                  className={
-                    "conversation-list-item" +
-                    (view === "chat" && conversation.id === activeConversationId ? " conversation-list-item--active" : "")
-                  }
-                  onClick={() => onSelectConversation(conversation.id)}
-                >
-                  {conversation.title}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {!collapsed && (
+        <div className="conversation-list-scroll">
+          {conversations.length === 0 ? (
+            <p className="conversation-list-empty">No conversations yet.</p>
+          ) : (
+            <ul className="conversation-list">
+              {conversations.map((conversation) => (
+                <li key={conversation.id}>
+                  <button
+                    type="button"
+                    className={
+                      "conversation-list-item" +
+                      (view === "chat" && conversation.id === activeConversationId ? " conversation-list-item--active" : "")
+                    }
+                    onClick={() => onSelectConversation(conversation.id)}
+                  >
+                    {conversation.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="sidebar-footer">
-        <button type="button" className={`sidebar-footer-btn${view === "usage" ? " sidebar-footer-btn--active" : ""}`} onClick={onOpenUsage}>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "usage" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenUsage}
+          title="Usage"
+        >
           <ChartIcon size={17} />
-          Usage
+          {!collapsed && "Usage"}
         </button>
-        <button type="button" className={`sidebar-footer-btn${view === "settings" ? " sidebar-footer-btn--active" : ""}`} onClick={onOpenSettings}>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "settings" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenSettings}
+          title="Settings"
+        >
           <SettingsIcon size={17} />
-          Settings
+          {!collapsed && "Settings"}
         </button>
       </div>
     </div>

@@ -25,7 +25,7 @@ Fase 3 — Canal WhatsApp              [x] Concluída
 Fase 4 — Vault & Memória             [ ] Pendente (repensar com Arweave — ver PENDING.md P24)
 Fase 5 — Tools & MCP                 [~] Quase completa (falta só 5.4, bloqueada pela Fase 8)
 Fase 6 — App Desktop Nativo          [x] Concluída (polish: registry de provedores ✓ Sessão 35)
-Fase 7 — App Mobile                  [ ] Pendente
+Fase 7 — App Mobile                  [ ] Pendente (7.1-7.3 concluídas — chat real via warden-server; falta 7.4-7.6)
 Fase 8 — Extensão de Navegador       [ ] Pendente
 Fase 9 — Rede de Nós & Tailscale     [ ] Pendente
 Fase 10 — Autenticação & TruthID     [ ] Pendente

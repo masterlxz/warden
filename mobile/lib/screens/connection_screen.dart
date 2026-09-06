@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 
 import '../services/connection_settings.dart';
 import '../services/server_connection.dart';
+import 'chat_screen.dart';
 
 /// Fase 7.2 scope: prove connectivity to a warden-server over WebSocket.
-/// Deliberately not a chat UI — that's Fase 7.3, built on top of this.
+/// A successful connect now pushes straight into the real chat UI (Fase 7.3, `ChatScreen`) —
+/// this screen stays underneath so the user can navigate back to it without hanging up.
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
 
@@ -100,6 +102,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         _connection = connection;
         _status = connection.status;
       });
+
+      if (mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => ChatScreen(connection: connection)),
+        );
+      }
     } on HandshakeException catch (e) {
       setState(() => _status = ConnectionFailure(e.message));
     } catch (e) {

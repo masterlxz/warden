@@ -19,6 +19,10 @@ const emptySettings: Settings = {
   agents: [],
 };
 
+// Purely a per-device UI preference (not something another device/channel needs to know about),
+// so localStorage rather than config.toml is the right home for it.
+const SIDEBAR_COLLAPSED_KEY = "warden.sidebarCollapsed";
+
 function titleFromMessage(content: string): string {
   const collapsed = content.trim().replace(/\s+/g, " ");
   return collapsed.length > 40 ? `${collapsed.slice(0, 40)}…` : collapsed;
@@ -33,6 +37,7 @@ function App() {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
 
@@ -61,6 +66,14 @@ function App() {
     const storedProviderId = activeConversation?.providerId ?? "";
     setSelectedProviderId(settings.providers.some((p) => p.id === storedProviderId) ? storedProviderId : settings.activeProvider);
   }, [activeConversationId, settings]);
+
+  function handleToggleSidebarCollapsed() {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }
 
   function handleSelectAgent(agentId: string) {
     setSelectedAgentId(agentId);
@@ -142,7 +155,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}>
       <Sidebar
         conversations={conversations}
         activeConversationId={activeConversationId}
@@ -157,6 +170,8 @@ function App() {
         onOpenSettings={() => setView("settings")}
         onOpenUsage={() => setView("usage")}
         view={view}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={handleToggleSidebarCollapsed}
       />
       {view === "settings" ? (
         <SettingsView />
