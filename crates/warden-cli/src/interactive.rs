@@ -899,10 +899,36 @@ fn print_banner() {
 /// config-file equivalent to re-read) — accumulated in `run()`'s loop after every completed turn.
 struct CliSession {
     config_path: Option<PathBuf>,
+    /// `--vault-path` as passed on the command line, if any (P37's `/sync` commands need to
+    /// resolve the same vault the running `Orchestrator` already uses, but `Orchestrator` itself
+    /// doesn't expose its `Vault`'s root path back out — this mirrors `bootstrap()`'s own
+    /// override-then-config-then-default precedence independently, see `resolve_vault_path`).
+    vault_path_override: Option<String>,
     provider_id: Option<String>,
     agent_id: Option<String>,
     usage_total: Usage,
     turn_count: usize,
+}
+
+/// Mirrors `warden_bootstrap::bootstrap`'s own vault-path precedence (override, then the config
+/// file, then a default) — needed here because `Orchestrator` doesn't expose its `Vault`'s root
+/// back out, and `/sync` needs the exact same path the running session already reads/writes.
+fn resolve_vault_path(config_path: Option<&Path>, vault_path_override: Option<&str>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = vault_path_override {
+        return Ok(PathBuf::from(path));
+    }
+    let config = load_fresh_config(config_path)?;
+    Ok(config.vault_path.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("vault")))
+}
+
+/// Builds a `SyncEngine` pointed at the same vault/config this CLI session already uses — called
+/// fresh by every `/sync` command (same "never cached" posture as `load_fresh_config`).
+fn make_sync_engine(session: &CliSession) -> anyhow::Result<warden_sync::SyncEngine> {
+    let vault_path = resolve_vault_path(session.config_path.as_deref(), session.vault_path_override.as_deref())?;
+    let config_path = session.config_path.clone().unwrap_or_else(|| PathBuf::from("config.toml"));
+    let secrets_path = warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"));
+    let manifest_path = warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"));
+    Ok(warden_sync::SyncEngine::new(vault_path, config_path, secrets_path, manifest_path))
 }
 
 /// Reads `config.toml` fresh — never cached across turns/commands (see `CliSession`'s doc
@@ -1003,6 +1029,11 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/agents create — criar um agente novo",
         "/agents edit <id> — editar um agente",
         "/agents remove <id> — remover um agente",
+        "/sync — status da sincronização (pendências, último push/pull)",
+        "/sync push — enviar mudanças locais (mostra QR pro TruthID escanear)",
+        "/sync pull — buscar a versão mais recente",
+        "/sync pair — mostrar um código de pareamento e esperar outro device",
+        "/sync pair <code> — parear com um device que já mostrou um código",
     ]
     .into_iter()
     .map(|line| (line.to_string(), style))
@@ -1338,6 +1369,104 @@ async fn save_config_or_report(session: &CliSession, config: &FileConfig) -> any
     Ok(())
 }
 
+/// `/sync` — status only, no network call beyond what `SyncEngine::status` itself does (a local
+/// diff against the manifest, no Arweave/TruthID touch).
+async fn cmd_sync_status(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_sync_engine(session)?;
+    let status = engine.status()?;
+    let lines = vec![
+        (format!("pareado: {}", if status.paired { "sim" } else { "não" }), Style::default()),
+        (format!("endereço do dono (Arweave): {}", status.owner_address.as_deref().unwrap_or("—")), Style::default()),
+        (
+            format!("última sincronização: {}", status.last_synced_at_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "nunca".to_string())),
+            Style::default(),
+        ),
+        (
+            format!(
+                "pendências: {} arquivo(s){}",
+                status.pending_vault_changes,
+                if status.pending_config_changed { " + config.toml" } else { "" }
+            ),
+            Style::default(),
+        ),
+    ];
+    render_message_card(terminal, "sync", accent_style(), lines)
+}
+
+/// `/sync push` — the QR is rendered as Unicode block art right in the terminal (not a PNG file),
+/// which is exactly what makes this usable from a headless box reached over SSH: whoever is at
+/// the keyboard sees the QR in their own terminal and scans it with their phone.
+async fn cmd_sync_push(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_sync_engine(session)?;
+    let Some(begin) = engine.begin_push()? else {
+        return render_message_card(
+            terminal,
+            "sync",
+            accent_style(),
+            vec![("nada para enviar — vault e config já batem com o último Enviar".to_string(), Style::default())],
+        );
+    };
+
+    let qr_json = begin.pending.qr_payload_json()?;
+    let qr_code = qrcode::QrCode::new(qr_json.as_bytes()).map_err(|e| anyhow::anyhow!("falha ao montar o QR code: {e}"))?;
+    let qr_ascii = qr_code.render::<qrcode::render::unicode::Dense1x2>().build();
+    let qr_rows: Vec<Vec<(String, Style)>> = qr_ascii.split('\n').map(|line| vec![(line.to_string(), Style::default())]).collect();
+    insert_card(terminal, vec![("sync".to_string(), accent_style())], accent_style(), qr_rows, None)?;
+    terminal.insert_before(1, |_buf| {})?;
+
+    let outcome = engine.finish_push(begin).await?;
+    render_message_card(
+        terminal,
+        "sync",
+        accent_style(),
+        vec![(format!("enviado — tx {} ({} arquivo(s))", outcome.tx_id, outcome.files_changed), Style::default())],
+    )
+}
+
+async fn cmd_sync_pull(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_sync_engine(session)?;
+    let outcome = engine.pull().await?;
+    let mut lines = vec![(
+        format!(
+            "pull concluído — {} escrito(s), {} removido(s){}",
+            outcome.files_written,
+            outcome.files_deleted,
+            if outcome.config_updated { ", config.toml atualizado" } else { "" }
+        ),
+        Style::default(),
+    )];
+    for warning in &outcome.warnings {
+        lines.push((warning.clone(), Style::default()));
+    }
+    render_message_card(terminal, "sync", accent_style(), lines)
+}
+
+/// `/sync pair` (no args) — shows a code and blocks until another device joins with it, or the
+/// pairing times out. Blocking here (unlike the desktop's background+event-emit approach) is fine
+/// on the CLI: there's nothing else useful to do at this prompt meanwhile, and `Ctrl+C`-style
+/// cancellation isn't wired into any other long-running command either.
+async fn cmd_sync_pair_show(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_sync_engine(session)?;
+    let host = engine.pairing_host().await?;
+    render_message_card(
+        terminal,
+        "sync",
+        accent_style(),
+        vec![
+            (format!("código de pareamento: {}", host.code()), Style::default()),
+            ("digite esse código em /sync pair <code> no outro dispositivo. aguardando…".to_string(), Style::default()),
+        ],
+    )?;
+    host.wait_for_join().await?;
+    render_message_card(terminal, "sync", accent_style(), vec![("pareado com sucesso!".to_string(), Style::default())])
+}
+
+async fn cmd_sync_pair_join(terminal: &mut CliTerminal, session: &CliSession, code: String) -> anyhow::Result<()> {
+    let engine = make_sync_engine(session)?;
+    engine.pairing_join(&code).await?;
+    render_message_card(terminal, "sync", accent_style(), vec![("pareado com sucesso!".to_string(), Style::default())])
+}
+
 async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
     match command {
         Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
@@ -1354,10 +1483,20 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::AgentsCreate => wizard_agents_create(terminal, session).await,
         Command::AgentsEdit(id) => wizard_agents_edit(terminal, session, id).await,
         Command::AgentsRemove(id) => cmd_agents_remove(terminal, session, id).await,
+        Command::SyncStatus => cmd_sync_status(terminal, session).await,
+        Command::SyncPush => cmd_sync_push(terminal, session).await,
+        Command::SyncPull => cmd_sync_pull(terminal, session).await,
+        Command::SyncPairShow => cmd_sync_pair_show(terminal, session).await,
+        Command::SyncPairJoin(code) => cmd_sync_pair_join(terminal, session, code).await,
     }
 }
 
-pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, config_path: Option<PathBuf>) -> anyhow::Result<()> {
+pub async fn run(
+    orchestrator: &Orchestrator,
+    history_path: Option<&Path>,
+    config_path: Option<PathBuf>,
+    vault_path_override: Option<String>,
+) -> anyhow::Result<()> {
     let mut line_history = history_path.map(load_history).unwrap_or_default();
     let mut history: Vec<Message> = Vec::new();
 
@@ -1372,7 +1511,8 @@ pub async fn run(orchestrator: &Orchestrator, history_path: Option<&Path>, confi
     // happens once, before the loop below starts reading any key at all).
     let mut terminal = new_inline_terminal()?;
 
-    let mut session = CliSession { config_path, provider_id: None, agent_id: None, usage_total: Usage::default(), turn_count: 0 };
+    let mut session =
+        CliSession { config_path, vault_path_override, provider_id: None, agent_id: None, usage_total: Usage::default(), turn_count: 0 };
 
     loop {
         let input = match read_line(&mut line_history, &mut terminal).await? {

@@ -16,5 +16,7 @@ owo-colors = "4"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 tokio = { workspace = true, features = ["sync"] }
 unicode-width = "0.2"
+qrcode = "0.14"
 warden-bootstrap = { path = "../warden-bootstrap" }
 warden-core = { path = "../warden-core" }
+warden-sync = { path = "../warden-sync" }

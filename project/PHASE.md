@@ -84,24 +84,31 @@ foi resolvida na Sessão 43 (2026-09-03): agentes nomeados com persona em texto 
 
 **Objetivo**: Memória persistente com backup descentralizado.
 
-**Stack**: Rust, IPFS (Filebase/Pinata) — **superado, ver nota abaixo**
+**Stack**: Rust, Arweave (via `pin()` do TruthID) — direção decidida na Sessão 50, motor
+implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fase 4)" em
+`ARCHITECTURE.md`.
 
-> **Nota (Sessão 50, 2026-09-06)**: a direção mudou de IPFS pra **Arweave via TruthID** — a
-> carteira do TruthID paga/publica (não uma carteira própria do Warden), tudo cifrado antes de
-> sair do device, escopo ampliado pra incluir `config.toml` inteiro (não só o vault), conversas
-> ficam de fora. As etapas abaixo ainda descrevem o plano antigo (IPFS) e serão reescritas quando
-> o desenho do manifesto de sync (diff tipo-git, ponteiro de "última versão") for fechado — ver
-> P37 em `PENDING.md` e a entrada "Sync descentralizado (Fase 4)" em `ARCHITECTURE.md`. Primeira
-> peça já implementada: `crates/warden-truthid` (cliente do protocolo `pin()` do TruthID).
-
-**Etapas (plano antigo, será reescrito)**:
-- [ ] 4.1 — Espelhar vault local em IPFS (pin via Filebase + Pinata)
-- [ ] 4.2 — Cifra opcional do vault (AES-256-GCM, mesmo padrão TruthID Vault)
-- [ ] 4.3 — Versionamento de memória (histórico de mudanças)
-- [ ] 4.4 — Busca semântica no vault (embedding local ou via API)
-- [ ] 4.5 — Backup automático em intervalo configurável
-- [ ] 4.6 — Restore a partir de snapshot IPFS
-- [ ] 4.7 — Configuração de providers de pinning
+**Etapas**:
+- [x] 4.1 — Motor de sync (`crates/warden-sync`) *(Sessão 54) — manifesto de diff incremental
+  (hash por arquivo, `SyncManifest`/`SyncSecrets` em JSON separados do `config.toml`), envelope
+  cifrado do bundle (AES-256-GCM via chave própria do Warden, derivada por HKDF, reaproveitando os
+  primitivos genéricos de `warden-truthid::crypto`), cliente GraphQL do Arweave (descoberta da
+  "última versão" por dono da carteira, já que `pin()` não permite tags customizadas), push/pull
+  completos, e um protocolo de pareamento novo (código curto + LAN, sem câmera/QR — distinto do QR
+  que o TruthID usa pra pagar) que espalha a chave de cifra entre os devices do usuário sem passar
+  pelo TruthID/Arweave. 34 testes automatizados (unitários + round-trips de ponta a ponta contra
+  telefone/gateway/par de pareamento falsos, mesmo padrão do `fake_phone.rs` do `warden-truthid`)*
+- [x] 4.2 — Integração desktop (Tauri) *(Sessão 54) — tela "Sync" nova (status, botões Enviar/
+  Pull, QR em SVG, fluxo de pareamento mostrar/digitar código), comandos IPC em
+  `desktop/src-tauri/src/sync_cmds.rs`*
+- [x] 4.3 — Integração CLI *(Sessão 54) — `/sync`, `/sync push` (QR em Unicode no próprio
+  terminal, funciona por SSH numa máquina sem tela), `/sync pull`, `/sync pair` (mostrar código),
+  `/sync pair <code>` (digitar código)*
+- [ ] 4.4 — Vault local + pareamento pleno no app mobile (Flutter) — exige a primeira ponte
+  Rust↔Flutter (`flutter_rust_bridge`) do projeto e armazenamento local novo no app (hoje só
+  `SharedPreferences`); deliberadamente fora da fatia da Sessão 54, ver `PENDING.md` P53
+- [ ] 4.5 — Busca semântica no vault (embedding local ou via API) — P6 em `PENDING.md`, sem
+  relação com o sync
 
 ---
 

@@ -42,6 +42,16 @@ impl Vault {
         Ok(files)
     }
 
+    /// Every regular file in the vault, any extension — unlike `list_files`, which only returns
+    /// `.md` (the memory `search` reads). Used by sync (Fase 4/P37), which mirrors the whole
+    /// vault, not just the markdown subset. Skips dotfiles/dot-directories (OS/editor cruft like
+    /// `.DS_Store`, `.git`) — same "good enough for v1" posture as `search`'s naive grep.
+    pub fn list_all_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files = Vec::new();
+        collect_all_files(&self.root, &self.root, &mut files)?;
+        Ok(files)
+    }
+
     /// Naive grep: case-insensitive substring match on any query word (3+ chars)
     /// across every markdown file. Good enough for v1 memory retrieval — semantic
     /// search is Phase 4 territory (see ARCHITECTURE.md, PENDING.md P5/P6).
@@ -93,6 +103,26 @@ fn collect_markdown_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> an
     Ok(())
 }
 
+fn is_dotfile(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(false)
+}
+
+fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if is_dotfile(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_all_files(root, &path, out)?;
+        } else {
+            out.push(path.strip_prefix(root)?.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +154,21 @@ mod tests {
         files.sort();
 
         assert_eq!(files, vec!["a.md".to_string(), "nested/b.md".to_string()]);
+    }
+
+    #[test]
+    fn list_all_files_finds_every_file_including_non_markdown() {
+        let vault = temp_vault();
+        vault.write("a.md", "one").unwrap();
+        vault.write("nested/notes.txt", "ignored by list_files").unwrap();
+        vault.write("nested/.hidden/secret.md", "excluded, dot-directory").unwrap();
+        vault.write(".dotfile", "excluded, dotfile").unwrap();
+
+        let mut files: Vec<String> =
+            vault.list_all_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+        files.sort();
+
+        assert_eq!(files, vec!["a.md".to_string(), "nested/notes.txt".to_string()]);
     }
 
     #[test]

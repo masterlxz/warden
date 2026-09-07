@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/warden-core", "crates/warden-bootstrap", "crates/warden-cli", "crates/warden-telegram", "crates/warden-whatsapp", "crates/warden-mcp-server", "crates/warden-server", "crates/warden-truthid", "desktop/src-tauri"]
+members = ["crates/warden-core", "crates/warden-bootstrap", "crates/warden-cli", "crates/warden-telegram", "crates/warden-whatsapp", "crates/warden-mcp-server", "crates/warden-server", "crates/warden-truthid", "crates/warden-sync", "desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

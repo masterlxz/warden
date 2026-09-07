@@ -1,4 +1,5 @@
 mod recording;
+mod sync_cmds;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -18,6 +19,12 @@ struct AppState {
     orchestrator: Mutex<Result<Orchestrator, String>>,
     /// Set between a `start_recording`/`stop_recording` pair (P28) — `None` otherwise.
     recording: Mutex<Option<recording::ActiveRecording>>,
+    /// P37 — the vault+config sync engine (Arweave via TruthID). No `Mutex` around the engine
+    /// itself: every method takes `&self` and does its own file I/O, nothing mutates in memory.
+    sync: warden_sync::SyncEngine,
+    /// Set by `sync_cmds::sync_push_begin`, taken by `sync_cmds::sync_push_await` — showing the
+    /// QR and blocking on the TruthID phone are deliberately separate IPC calls.
+    pending_push: Mutex<Option<warden_sync::push::BeginPushResult>>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -494,15 +501,29 @@ fn usage_summary() -> Result<UsageSummary, String> {
     Ok(aggregate_usage(&conversations))
 }
 
+/// Where sync tracking state lives — same OS config dir as `config.toml`, just a different file
+/// (`warden_sync::paths`), so a fallback matches the same spirit as `default_config_path`'s own
+/// callers elsewhere in this file (an OS with no resolvable config dir is exotic enough that a
+/// relative-path fallback is fine, never hit in practice).
+fn sync_secrets_path() -> PathBuf {
+    warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"))
+}
+
+fn sync_manifest_path() -> PathBuf {
+    warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let orchestrator = tauri::async_runtime::block_on(bootstrap(None, Overrides::default(), desktop_default_vault_path()))
         .map_err(|e| format!("{e:#}"));
+    let sync_config_path = default_config_path().unwrap_or_else(|| PathBuf::from("config.toml"));
+    let sync = warden_sync::SyncEngine::new(desktop_default_vault_path(), sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { orchestrator: Mutex::new(orchestrator), recording: Mutex::new(None) })
+        .manage(AppState { orchestrator: Mutex::new(orchestrator), recording: Mutex::new(None), sync, pending_push: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             send_message,
             read_attachment,
@@ -517,7 +538,14 @@ pub fn run() {
             usage_summary,
             mcp_oauth_status,
             mcp_oauth_connect,
-            mcp_oauth_disconnect
+            mcp_oauth_disconnect,
+            sync_cmds::sync_status,
+            sync_cmds::sync_init,
+            sync_cmds::sync_push_begin,
+            sync_cmds::sync_push_await,
+            sync_cmds::sync_pull,
+            sync_cmds::pairing_start,
+            sync_cmds::pairing_join
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

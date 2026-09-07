@@ -946,6 +946,95 @@ body {
   color: var(--color-danger);
 }
 
+/* Sync view (P37) */
+
+.sync-status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.sync-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 12rem;
+}
+
+.sync-status-label {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+}
+
+.sync-status-value {
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.sync-status-value--mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-weight: 500;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.sync-actions-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.sync-qr-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.25rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  max-width: 20rem;
+}
+
+.sync-qr-image {
+  width: 220px;
+  height: 220px;
+}
+
+.sync-qr-image svg {
+  width: 100%;
+  height: 100%;
+}
+
+.sync-warning-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2em;
+}
+
+.sync-pairing-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.sync-pairing-code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 1.4em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--color-accent-dark);
+  background: var(--color-accent-soft);
+  padding: 0.4em 0.8em;
+  border-radius: 8px;
+}
+
+.sync-join-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 /* Stat tiles: label (sentence case) + auto-compact value, per the dataviz skill's stat-tile
    contract. Wraps at narrow widths instead of a fixed column count, same responsive approach as
    the rest of this file. */

@@ -123,6 +123,40 @@ export interface UsageSummary {
   byProvider: UsageByKey[];
 }
 
+/** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's
+ * status card. `null` fields mean "not applicable yet" (e.g. `deviceId` before `sync_init`/
+ * pairing, `ownerAddress`/`lastTxId`/`lastSyncedAtMs` before the first push or pull). */
+export interface SyncStatus {
+  paired: boolean;
+  deviceId: string | null;
+  ownerAddress: string | null;
+  lastTxId: string | null;
+  lastSyncedAtMs: number | null;
+  pendingVaultChanges: number;
+  pendingConfigChanged: boolean;
+}
+
+/** What `sync_push_begin` returns — the QR to show before blocking on `sync_push_await`. */
+export interface SyncPushBegin {
+  qrSvg: string;
+  filesChanged: number;
+  configChanged: boolean;
+}
+
+export interface SyncPushResult {
+  txId: string;
+  filesChanged: number;
+  configChanged: boolean;
+}
+
+export interface SyncPullResult {
+  txId: string | null;
+  filesWritten: number;
+  filesDeleted: number;
+  configUpdated: boolean;
+  warnings: string[];
+}
+
 /** What `get_settings` returns, and also what the settings form holds — the shapes are
  * identical so the fetched snapshot can be used directly as initial form state. */
 export interface Settings {

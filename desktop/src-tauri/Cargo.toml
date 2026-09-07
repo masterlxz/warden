@@ -32,6 +32,8 @@ dirs.workspace = true
 # the webview permission system entirely, and works the same on Windows/macOS too.
 cpal = "0.18"
 hound = "3.5"
+qrcode = "0.14"
 warden-bootstrap = { path = "../../crates/warden-bootstrap" }
 warden-core = { path = "../../crates/warden-core" }
+warden-sync = { path = "../../crates/warden-sync" }
 

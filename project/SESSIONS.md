@@ -2,7 +2,91 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-06 (Sessão 53)
+> Última atualização: 2026-09-06 (Sessão 54)
+
+---
+
+### 2026-09-06 — Sessão 54
+
+- **Objetivo**: usuário disse "bora continuar?". Depois de fechar a leva de ideias da Sessão 53
+  (registro sem implementação), retomado o **P37** — sync descentralizado do vault + `config.toml`
+  via Arweave com o TruthID pagando (`pin()`). P37 tinha ficado com três decisões em aberto desde a
+  Sessão 50 (formato do manifesto, descoberta da "última versão" sem tags no Arweave, identidade
+  que deriva a chave de cifra) — esta sessão fechou as três e implementou o motor completo.
+  Planejado em modo formal (`/plan`) antes de codar.
+
+**Decisões-chave** (detalhes completos em `ARCHITECTURE.md`, entrada "warden-sync (Sessão 54)"):
+
+- **Novo crate `crates/warden-sync`**, consumido pelo desktop (`desktop/src-tauri`) e pelo
+  `warden-cli` (não pelo `warden-bootstrap`, que é `deny_unknown_fields`). `SyncEngine` é a única
+  superfície publica: `status`/`init_fresh`/`begin_push`/`finish_push`/`pull`/`pairing_host`/
+  `pairing_join`. Estado em dois JSON novos em `~/.config/warden/` (separados do `config.toml`):
+  `sync_secrets.json` (`device_id` + `vault_key` de 32 bytes, **nunca** reescrito depois de criado)
+  e `sync_manifest.json` (hash sha256 por arquivo do vault + hash do `config.toml` +
+  `owner_address`/`last_tx_id`/`manifest_counter`, reescrito a cada push/pull)
+- **Formato do manifesto (decisão 1)**: diff tipo-git, hash sha256 por arquivo, via `Vault::list_all_files()`
+  novo em `warden-core` (todos os arquivos, não só `.md` — `list_files` original ficou intocado).
+  Bundle de um push é um envelope JSON (arquivos mudados em base64 + deletados + config se mudou)
+  cifrado como **um blob só** reaproveitando `warden_truthid::crypto::encrypt_pin_content`/
+  `decrypt_pin_content` — resolve também a restrição de sem-batching do `pin()` (uma aprovação
+  física por chamada → N arquivos viram um blob por sync)
+- **Descoberta da "última versão" (decisão 2)**: como `pin()` não permite tags customizadas,
+  consultado o GraphQL do Arweave (`transactions(owners:[...], sort:HEIGHT_DESC)`) pelo endereço
+  da carteira do TruthID — aprendido uma vez (via `transaction(id:...){owner{address}}` sobre a tx
+  do primeiro push) e propagado a outros devices pelo pareamento, sem ponteiro copiado à mão
+- **Identidade da chave (decisão 3)**: segredo próprio do Warden (`SyncSecrets.vault_key`), nunca
+  visto pelo TruthID/Arweave, gerado no primeiro device e espalhado pelos demais via **protocolo de
+  pareamento novo** — código curto (8 chars, alfabeto sem `0/O/1/I/L`) + LAN, sem câmera/QR
+  (decisão explícita do usuário: pareamento agora é só entre dispositivos com vault — desktop↔desktop
+  ou desktop↔`warden-cli` — não mais desktop↔celular, então QR perdeu a vantagem da câmera).
+  Reaproveita só os primitivos genéricos de `warden-truthid` (ECIES, `lan::candidate_hosts()`), com
+  faixa de portas própria (`48070-48074`, distinta de `LAN_PORTS` do TruthID) e um listener de
+  verdade (`tokio_tungstenite`/`accept_async`, não `axum` — que no projeto só existe em testes).
+  Quem mostra o código é o host; o joiner varre a LAN, prova o conhecimento do código via
+  `code_proof` (HMAC derivado do código, o código em si nunca trafega) e recebe a chave via ECIES
+- **Bug real achado pelo teste de ponta a ponta**: a primeira versão do pareamento também propagava
+  `last_tx_id` do host pro dispositivo que entra — isso fazia o primeiro `pull` do novo dispositivo
+  achar que "já estava atualizado" sem nunca ter baixado nada (manifest `last_tx_id` batia com o tx
+  mais recente sem `vault_files` correspondente). Corrigido removendo `last_tx_id` do payload de
+  pareamento — só a chave e o `owner_address` viajam; a versão real só vem de um `pull` de verdade
+- **Política de conflito do v1**: last-write-wins, sem merge de 3 vias — `pull` compara hashes
+  contra o manifesto **antigo** antes de sobrescrever pra avisar sobre mudança local perdida
+  (warning na UI), mas não bloqueia
+
+**Implementado** (ver `ARCHITECTURE.md` pros detalhes completos):
+
+- `crates/warden-sync`: `manifest.rs`, `diff.rs`, `bundle.rs` (envelope cifrado), `arweave.rs`
+  (cliente GraphQL simples via `reqwest`, tres queries: `latest_tx_by_owner`/`owner_of_tx`/
+  `fetch_tx_data`), `push.rs` (`begin_push`/`finish_push` separados, mostra o QR antes de bloquear
+  no telefone), `pull.rs`, `pairing/` (`host.rs`/`join.rs`/`protocol.rs`)
+- **Integração desktop**: `desktop/src-tauri/src/sync_cmds.rs` novo (7 comandos Tauri mostrados no
+  invoke handler: `sync_status`/`sync_init`/`sync_push_begin`/`sync_push_await`/`sync_pull`/
+  `pairing_start`/`pairing_join` — mostrar o QR e bloquear no telefone são IPC separados, e o
+  pareamento roda em background emitindo `pairing-completed`/`pairing-failed`), QR renderizado como
+  **SVG inline** via crate `qrcode`, tela `SyncView.tsx` nova (status, botões Enviar/Pull, fluxo de
+  pareamento mostrar/digitar código), item "Sync" na sidebar (`SyncIcon` novo em `Icons.tsx`)
+- **Integração CLI**: `/sync` (status local, sem tocar na rede), `/sync push` (QR em **Unicode
+  direto no terminal** via `qrcode::render::unicode::Dense1x2` — funciona por SSH numa máquina sem
+  tela), `/sync pull`, `/sync pair` (mostra código e bloqueia aguardando join), `/sync pair <code>`
+  (digitar código). `--vault-path` do CLI passado adiante pro `/sync` resolver o mesmo vault que a
+  sessão usa (`resolve_vault_path` espelha a precedência do próprio `bootstrap`)
+- **34 testes** (27 unitários em `warden-sync` + `tests/engine_lifecycle.rs` + `tests/fake_arweave_gateway.rs`
+  + `tests/fake_pairing_peer.rs` + `tests/fake_phone_push.rs` — round-trip completo simulando dois
+  devices via telefone/gateway/par de pareamento falsos, mesmo padrão do `fake_phone.rs` do
+  `warden-truthid`). `cargo build/test/clippy --workspace` e `tsc` limpos
+- `project/PHASE.md` (4.1 motor / 4.2 integração desktop / 4.3 integração CLI marcadas `[x]`,
+  lista antiga de etapas IPFS substituída), `project/OVERVIEW.md` (IPFS → Arweave, status da Fase 4),
+  `project/ARCHITECTURE.md` (decisão do crate registrada em detalhe), `project/PENDING.md` (P37
+  movida pra Resolvidas; P53/P54/P55 novos)
+
+**Ainda falta**: P53 (mobile sem vault local — exigiria `flutter_rust_bridge`, primeira ponte
+Rust↔Flutter, deliberadamente fora desta fatia), P54 (credenciais OAuth de MCP fora do sync),
+P55 (nunca testado contra o TruthID/Arweave reais — só fakes, maior risco é a query GraphQL exata
+bater com o schema real do gateway `arweave.net`). 4.4 (mobile) e 4.5 (busca semântica) seguem
+abertas no `PHASE.md`.
+
+**Próximo passo**: perguntar ao usuário se segue pra 4.4 (mobile, custo de toolchain alto) ou volta
+pros demais candidatos da Sessão 52/53 (7.5/7.6, Fase 9 9.3/9.4, ou uma das 8 ideias da Sessão 53).
 
 ---
 

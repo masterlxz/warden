@@ -5,6 +5,7 @@ import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
+import SyncView from "./components/SyncView";
 import type { Attachment, ChatMessage, Conversation, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -33,7 +34,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings" | "usage">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -169,6 +170,7 @@ function App() {
         }}
         onOpenSettings={() => setView("settings")}
         onOpenUsage={() => setView("usage")}
+        onOpenSync={() => setView("sync")}
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
@@ -177,6 +179,8 @@ function App() {
         <SettingsView />
       ) : view === "usage" ? (
         <UsageView />
+      ) : view === "sync" ? (
+        <SyncView />
       ) : (
         <ChatArea
           activeConversation={activeConversation}

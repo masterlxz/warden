@@ -20,6 +20,11 @@ pub enum Command {
     AgentsCreate,
     AgentsEdit(String),
     AgentsRemove(String),
+    SyncStatus,
+    SyncPush,
+    SyncPull,
+    SyncPairShow,
+    SyncPairJoin(String),
 }
 
 /// What a line of input turned out to be, once checked against the slash-command grammar.
@@ -60,6 +65,11 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("agents", ["create"]) => Command::AgentsCreate,
         ("agents", ["edit", id]) => Command::AgentsEdit(id.to_string()),
         ("agents", ["remove", id]) => Command::AgentsRemove(id.to_string()),
+        ("sync", []) => Command::SyncStatus,
+        ("sync", ["push"]) => Command::SyncPush,
+        ("sync", ["pull"]) => Command::SyncPull,
+        ("sync", ["pair"]) => Command::SyncPairShow,
+        ("sync", ["pair", code]) => Command::SyncPairJoin(code.to_string()),
         _ => return ParseOutcome::Unrecognized(trimmed.to_string()),
     };
     ParseOutcome::Recognized(command)
@@ -88,9 +98,10 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "sync"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
+const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair"];
 
 /// Parses the word currently being typed (the last whitespace-separated token) out of a
 /// `/`-prefixed `input`, along with its candidate completions from the fixed part of the grammar
@@ -110,6 +121,7 @@ fn current_word(input: &str) -> Option<(&str, Vec<&'static str>)> {
         let subcommands: &[&str] = match head.as_str() {
             "models" => MODELS_SUBCOMMANDS,
             "agents" => AGENTS_SUBCOMMANDS,
+            "sync" => SYNC_SUBCOMMANDS,
             _ => return None,
         };
         let typed_lower = rest.to_ascii_lowercase();
@@ -187,6 +199,19 @@ mod tests {
     }
 
     #[test]
+    fn sync_subcommands_parse_their_arguments() {
+        assert!(matches!(assert_recognized("/sync"), Command::SyncStatus));
+        assert!(matches!(assert_recognized("/sync push"), Command::SyncPush));
+        assert!(matches!(assert_recognized("/sync pull"), Command::SyncPull));
+        assert!(matches!(assert_recognized("/sync pair"), Command::SyncPairShow));
+    }
+
+    #[test]
+    fn sync_pair_join_captures_the_typed_code() {
+        assert!(matches!(assert_recognized("/sync pair ABCD1234"), Command::SyncPairJoin(code) if code == "ABCD1234"));
+    }
+
+    #[test]
     fn command_matching_is_case_insensitive_on_the_head_word() {
         assert!(matches!(assert_recognized("/EXIT"), Command::Exit));
         assert!(matches!(assert_recognized("/Models"), Command::ModelsList));
@@ -223,6 +248,7 @@ mod tests {
     fn current_word_completes_a_subcommand_name() {
         assert_eq!(candidates_for("/models u"), vec!["use"]);
         assert_eq!(candidates_for("/agents "), vec!["create", "edit", "remove", "use"]);
+        assert_eq!(candidates_for("/sync pu"), vec!["pull", "push"]);
     }
 
     #[test]

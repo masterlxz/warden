@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     // REPL's `/models`/`/agents` commands know where to read/write, without `bootstrap()` needing
     // to hand its own resolved path back out.
     let config_path = cli.config.clone().map(PathBuf::from).or_else(warden_bootstrap::default_config_path);
+    let vault_path_override = cli.vault_path.clone();
 
     let orchestrator = bootstrap(
         cli.config.as_deref(),
@@ -71,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     // tests in tests/cli.rs) falls back to the plain loop below, unchanged from before this
     // module existed.
     if io::stdin().is_terminal() {
-        interactive::run(&orchestrator, history_path().as_deref(), config_path).await
+        interactive::run(&orchestrator, history_path().as_deref(), config_path, vault_path_override).await
     } else {
         run_plain(&orchestrator).await
     }

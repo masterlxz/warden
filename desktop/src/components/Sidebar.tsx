@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -8,7 +8,8 @@ interface SidebarProps {
   onNewConversation: () => void;
   onOpenSettings: () => void;
   onOpenUsage: () => void;
-  view: "chat" | "settings" | "usage";
+  onOpenSync: () => void;
+  view: "chat" | "settings" | "usage" | "sync";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -20,6 +21,7 @@ function Sidebar({
   onNewConversation,
   onOpenSettings,
   onOpenUsage,
+  onOpenSync,
   view,
   collapsed,
   onToggleCollapsed,
@@ -82,6 +84,15 @@ function Sidebar({
         >
           <ChartIcon size={17} />
           {!collapsed && "Usage"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "sync" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenSync}
+          title="Sync"
+        >
+          <SyncIcon size={17} />
+          {!collapsed && "Sync"}
         </button>
         <button
           type="button"

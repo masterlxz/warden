@@ -63,6 +63,15 @@ export function SettingsIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function SyncIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M4 12a8 8 0 0 1 14.5-4.6M20 12a8 8 0 0 1-14.5 4.6" />
+      <path d="M18.5 3v4.4h-4.4M5.5 21v-4.4h4.4" />
+    </svg>
+  );
+}
+
 export function SendIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
