@@ -48,6 +48,83 @@ Ordem de implementação recomendada (atualizada 2026-08-29, ver nota acima):
 
 ## Ideias de Expansão (Brainstorm — sem `/plan`)
 
+> **Sessão 53 (2026-09-06)** — leva grande de ideias novas do usuário, dadas de uma vez, cru
+> ("são apenas ideias pro projeto"), sem `/plan` e sem decisão de prioridade ainda além do que
+> está anotado em cada uma. Ver P45-P52 em `PENDING.md`.
+
+### Um agente por conversa (seleção no início)
+
+Ideia nova do usuário (2026-09-06): não permitir mais de um agente por conversa. Ao iniciar uma
+conversa nova, a primeira coisa seria escolher qual agente (dos cadastrados) conduz aquela
+conversa inteira — diferente do seletor atual (Sessão 43, `chat-header`), que já restringe o
+efeito da troca só às mensagens daí pra frente mas ainda permite trocar no meio. Se for pra
+frente, provavelmente **substitui** o seletor atual por um passo de escolha na criação da
+conversa, travado depois. Ver P45.
+
+### Orquestração de agentes — dois modos de uso
+
+Detalhado pelo usuário (2026-09-06), evoluindo a ideia de "Sub-agentes autônomos" logo abaixo:
+quer atender dois perfis de usuário diferentes, não escolher um só —
+
+- **Modo centralizado**: um agente único (o "chefe") que cria e comanda outros agentes, mas o
+  usuário só interage com o chefe — os sub-agentes ficam geridos por trás
+- **Modo "funcionários"**: vários agentes especializados e independentes, sem nenhum agente
+  global coordenando — o usuário fala com cada um diretamente, cada um no seu escopo
+
+Em ambos os modos, agentes devem poder criar outros agentes (não só um orquestrador raiz fixo).
+Arquitetura pra suportar os dois modos ao mesmo tempo (não é escolher um dos dois) ainda em
+aberto. Ver P46, complementa P8/a seção "Sub-agentes autônomos" abaixo.
+
+### SSH — conectar com VPS e máquinas externas
+
+Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA
+acesso a cada uma, e a IA poder usar isso pra rodar comandos em servidores/VPS remotos — não só
+a máquina local (tool `shell`, Fase 5.5). Usuário também quer que a IA possa **criar** esse tipo
+de infraestrutura — escopo exato (provisionar um VPS do zero? só conectar num já existente?)
+ainda não detalhado. Ver P47.
+
+### Avatares/personas para agentes (3D, animações)
+
+Ideia nova (2026-09-06), bem mais ambiciosa: dar um "personagem" visual a um agente — ex. um
+gatinho — gerado em 3D com animações, criável de duas formas: (a) só um prompt de texto, ou (b)
+uma foto + prompt (ou só a foto). O avatar poderia "se mexer no computador" (overlay animado na
+tela, não só um ícone estático). Nada de arquitetura definida ainda — geração 3D a partir de
+texto/imagem é um problema de pesquisa em si (que modelo/serviço gera isso? rigging de animação
+automático?). Ver P48.
+
+### Overlay "Super Jarvis" — atalho global + avatar na tela
+
+Ideia nova (2026-09-06), evolução do app "Copilot" logo abaixo (P9): atalho de teclado global
+pra ativar áudio ou abrir uma tela de busca/chat da IA **sem precisar abrir o app** — nessa tela
+o avatar (ideia acima) aparece, e dá pra conversar por texto ou voz. Visão declarada pelo
+usuário como "um super Jarvis mesmo". Ver P49, complementa P9.
+
+### Tier pago — hospedagem do servidor pelo próprio Warden
+
+Ideia nova de modelo de negócio (2026-09-06): hoje a Fase 9 (rede de nós/servidor) pressupõe o
+usuário hospedando o próprio servidor (VPS ou em casa). Um tier pago ofereceria hospedar esse
+servidor pelo próprio Warden (SaaS), pra quem não quiser cuidar de infraestrutura própria.
+Primeira menção de um modelo de negócio pago no projeto. Ver P50.
+
+### "9Router" — API do agente pessoal + OAuth de contas de IA
+
+Evolução concreta da ideia "Warden API" abaixo (P12): o usuário quer nomear e detalhar isso como
+**"9Router"** — uma API completa que expõe o agente pessoal dele (conhecimento do vault +
+personalidade configurada) pra ser usada em **outros harnesses**, não só dentro do Warden.
+Inclui conectar contas via **OAuth de provedores de IA** (Claude, GPT, e outros) —
+presumivelmente pra permitir usar a conta/assinatura que o usuário já paga em vez de (ou além
+de) uma chave de API bruta. Usuário sinalizou que "vem a hora" de puxar isso pra frente. Ver
+P51, substitui/evolui P12.
+
+### Estrutura padrão do vault + visualização pela interface
+
+Ideia nova (2026-09-06) pra Fase 4 (Vault & Memória): dentro da memória compartilhada entre
+agentes, o usuário quer uma parte **fixa/padrão** (perfil do usuário, comportamento da IA) e o
+resto **livre**, a critério da própria IA organizar (ex. arquivo sobre o cachorro, família,
+estudos). Também quer que o vault seja bem organizado e legível — não só pra IA, mas de fácil
+visualização **pela interface** (não só arquivos markdown crus). Ver P52, relacionado a P37
+(que cobre "como sincronizar" via Arweave, não "como estruturar").
+
 ### Canal Terminal (estilo Claude Code)
 
 Confirmado pelo usuário (2026-08-02): terminal como canal completo de conversa,

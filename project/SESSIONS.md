@@ -2,7 +2,42 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-06 (Sessão 52)
+> Última atualização: 2026-09-06 (Sessão 53)
+
+---
+
+### 2026-09-06 — Sessão 53
+
+- **Objetivo**: usuário trouxe uma leva grande de ideias novas pro projeto, dadas de uma vez e
+  cru ("são apenas ideias pro projeto"), sem pedir implementação nenhuma. Nenhum código
+  mudado nesta sessão — só registro em `PENDING.md` (P45-P52) e `ROADMAP.md` (seção
+  "Ideias de Expansão"), como o protocolo do projeto pede pra ideia nova/pendência sem `/plan`.
+
+**Ideias registradas** (detalhes completos em `ROADMAP.md`/`PENDING.md`):
+
+- **P45** — um agente por conversa, escolhido no início (trava depois), evolução do seletor
+  atual (Sessão 43)
+- **P46** — orquestração de agentes em dois modos possíveis: um "chefe" central que cria/comanda
+  outros agentes, ou vários agentes "funcionários" independentes sem nenhum global — evolui
+  "Sub-agentes autônomos"/P8
+- **P47** — SSH pra VPS/máquinas externas: cadastro de chaves nas configurações, permissão
+  concedida/negada à IA por chave
+- **P48** — avatares/personas 3D pros agentes (geração via prompt e/ou foto, animações, avatar
+  que se move na tela)
+- **P49** — overlay "Super Jarvis": atalho global de teclado abre busca/voz sem abrir o app,
+  avatar aparece ali — evolução do "Copilot" (P9)
+- **P50** — tier pago: hospedar o servidor (Fase 9) pelo próprio Warden, sem o usuário precisar
+  de VPS/casa própria — primeira menção de modelo de negócio pago no projeto
+- **P51** — "9Router": nome concreto pra evolução da "Warden API" (P12) — API do agente pessoal
+  (vault + personalidade) pra usar em outros harnesses, com OAuth de contas de provedores de IA
+  (Claude, GPT, etc.); usuário sinalizou que é hora de puxar isso pra frente
+- **P52** — estrutura padrão do vault (parte fixa: perfil do usuário/comportamento da IA; parte
+  livre: o resto, a critério da IA) + visualização fácil do vault pela interface, não só
+  markdown cru — pra Fase 4, relacionado a P37 (sync via Arweave)
+
+**Próximo passo**: nenhuma decisão de prioridade tomada ainda sobre essas 8 ideias — quando o
+usuário quiser avançar alguma, vale revisitar a ordem do `ROADMAP.md` (topo do arquivo) e
+decidir onde encaixar.
 
 ---
 
