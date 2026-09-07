@@ -1,6 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Required to reach warden-server over ws:// (Fase 7.2). -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Fase 4.4 — sync pairing enumerates this device's own network interfaces
+         (`warden_truthid::lan::candidate_hosts`) to sweep the LAN for another Warden device
+         showing a pairing code. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <application
         android:label="mobile"
         android:name="${applicationName}"

@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'screens/connection_screen.dart';
+import 'src/rust/frb_generated.dart';
 
-void main() {
+Future<void> main() async {
+  // Fase 4.4 — loads the native warden_mobile_bridge library (Rust: sync engine + vault) before
+  // any screen can call into it. Must finish before runApp, same reasoning as any other native
+  // plugin registration.
+  await RustLib.init();
   runApp(const WardenApp());
 }
 

@@ -104,9 +104,20 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
 - [x] 4.3 — Integração CLI *(Sessão 54) — `/sync`, `/sync push` (QR em Unicode no próprio
   terminal, funciona por SSH numa máquina sem tela), `/sync pull`, `/sync pair` (mostrar código),
   `/sync pair <code>` (digitar código)*
-- [ ] 4.4 — Vault local + pareamento pleno no app mobile (Flutter) — exige a primeira ponte
-  Rust↔Flutter (`flutter_rust_bridge`) do projeto e armazenamento local novo no app (hoje só
-  `SharedPreferences`); deliberadamente fora da fatia da Sessão 54, ver `PENDING.md` P53
+- [x] 4.4 — Vault local + pareamento pleno no app mobile (Flutter) *(Sessão 55) — primeira ponte
+  Rust↔Flutter do projeto: novo crate `crates/warden-mobile-bridge` (via `flutter_rust_bridge` +
+  `cargokit`), casca fina sobre o mesmo `warden_sync::SyncEngine` do desktop/CLI, path explícitos
+  resolvidos em Dart via `path_provider` (`getApplicationSupportDirectory()`). Nova
+  `mobile/lib/screens/sync_screen.dart` (status, init, send/pull com QR via `qr_flutter`,
+  pareamento host/join), reachable independente da conexão com `warden-server`. Override manual de
+  host no join (não só sweep de LAN automático) — resolve o mesmo problema de NAT que a 7.2/7.3 já
+  tinham com `10.0.2.2`, e é útil de verdade em wifi com isolamento de cliente, não só um hack de
+  teste. Verificado de ponta a ponta num Android emulador real: `.so` compilado pras 4 ABIs via
+  `cargo-ndk`, app instalado/aberto via `adb`, pareamento real contra um processo host separado
+  (mesma chave de vault confirmada nos dois lados via `adb run-as`), e o motor de diff/hash rodando
+  de verdade on-device (`pending_vault_changes` refletindo um arquivo escrito no vault local do
+  emulador). Push/pull contra Arweave/TruthID reais e o lado iOS seguem sem teste — mesma lacuna já
+  aceita em P38/P55 e P39/P44, ver `PENDING.md`
 - [ ] 4.5 — Busca semântica no vault (embedding local ou via API) — P6 em `PENDING.md`, sem
   relação com o sync
 

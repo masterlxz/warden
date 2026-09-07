@@ -1,0 +1,16 @@
+[package]
+name = "warden_mobile_bridge"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+anyhow.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+warden-sync = { path = "../warden-sync" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

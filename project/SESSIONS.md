@@ -2,7 +2,56 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-06 (Sessão 54)
+> Última atualização: 2026-09-07 (Sessão 55)
+
+---
+
+### 2026-09-07 — Sessão 55
+
+- **Objetivo**: usuário disse "bora continuar?". Escolhido entre as frentes em aberto (Mobile 7.5/7.6,
+  Vault mobile + busca semântica 4.4/4.5, ou polish do CLI P8): **Fase 4.4 — vault local + sync
+  pleno no app mobile**, e dentro dela, 4.4 antes de 4.5 (maior risco de toolchain, já que era a
+  primeira ponte Rust↔Flutter do projeto — melhor validar logo). Planejado em modo formal (`/plan`)
+  antes de codar, dado o tamanho e o risco novo de toolchain.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, entrada "Fase 4.4"):
+
+- **Novo crate `crates/warden-mobile-bridge`** — casca fina sobre o mesmo `warden_sync::SyncEngine`
+  que o desktop/CLI já usam (Sessão 54), exposta via `flutter_rust_bridge` (FRB) com toolchain de
+  build **cargokit** (não Gradle/Xcode escritos à mão). Funções espelhando os 7 comandos Tauri de
+  `sync_cmds.rs`, recebendo os 4 paths do sync (vault/config/secrets/manifest) como `String`
+  explícitos do Dart — mobile não tem `dirs::config_dir()` confiável
+- Métodos async do `SyncEngine` (Tokio por baixo) rodam via um `tokio::runtime::Runtime` próprio
+  (`OnceLock`) dentro do bridge, `.block_on()`'d de dentro de funções `pub fn` simples que o FRB já
+  despacha pra thread de fundo por padrão — nunca trava a UI do Dart
+- `mobile/lib/services/vault_paths.dart` — paths resolvidos via `path_provider`'s
+  `getApplicationSupportDirectory()`. Nova `mobile/lib/screens/sync_screen.dart` (status, init,
+  send/pull com QR via `qr_flutter`, pareamento host/join), alcançável por um ícone novo na AppBar
+  da `ConnectionScreen`, independente de estar conectado ao `warden-server`
+- **Campo de "host override" no pareamento** (não só sweep de LAN automático) — decisão de
+  produto: `pairing_join_with_hosts` já existia no `SyncEngine` (só usado em teste), exposto na UI
+  porque o sweep automático não atravessa NAT de emulador nem wifi com isolamento de cliente
+- Toolchain instalado: `cargo-ndk`, `flutter_rust_bridge_codegen` — o NDK Android em si
+  (`~/.local/opt/android-sdk/ndk` 27/28) já existia de sessões anteriores, só reaproveitado
+- **Verificado de ponta a ponta contra hardware real (emulador `warden_test`), sem mock**: `.so`
+  compilado pras 4 ABIs Android via `cargo-ndk`; APK instalado/aberto via `adb`; `bridge_status()`
+  chamado de verdade on-device; **pareamento real** contra um segundo processo `SyncEngine`
+  isolado (path de teste dedicado — nunca tocou o `~/.config/warden/` real do usuário) usando o
+  override `10.0.2.2`, confirmado via `adb run-as` que o `vault_key` ficou **idêntico** nos dois
+  lados (prova a troca ECIES completa); e o motor de diff/hash rodando de verdade dentro do `.so`
+  — um arquivo escrito no vault local do emulador fez `bridge_status` reportar
+  `pending_vault_changes: 1`. `cargo build/test/clippy --workspace` e `flutter analyze`/
+  `flutter test` (28 testes) limpos
+- **Fora desta fatia, mesmas lacunas já aceitas em outras pendências**: push/pull reais contra
+  Arweave/TruthID (extensão de P38/P55), lado iOS (scaffold no lugar, nunca buildado — sem
+  Xcode/macOS, mesma lacuna de P39/P44), UI de navegação/edição do conteúdo do vault (nem
+  desktop/CLI têm isso hoje)
+- Atualizados `PHASE.md` (4.4 concluída), `PENDING.md` (P53 resolvida), `OVERVIEW.md` (status geral
+  + correção de uma linha desatualizada "Mobile: Tauri" pra "Flutter")
+
+**Próximo passo**: Fase 4.5 (busca semântica no vault) — independente da 4.4, sem bloqueio de
+toolchain; ou retomar Fase 7.5/7.6 (mobile: push notifications, build/deploy) ou P8 (CLI), conforme
+prioridade do usuário na próxima sessão.
 
 ---
 

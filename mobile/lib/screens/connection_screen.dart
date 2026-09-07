@@ -7,6 +7,7 @@ import '../services/connection_settings.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 import 'chat_screen.dart';
+import 'sync_screen.dart';
 
 /// Fase 7.2 scope: prove connectivity to a warden-server over WebSocket.
 /// A successful connect now pushes straight into the real chat UI (Fase 7.3, `ChatScreen`) —
@@ -143,7 +144,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Warden — Server Connection')),
+      appBar: AppBar(
+        title: const Text('Warden — Server Connection'),
+        actions: [
+          // Fase 4.4 — sync doesn't depend on being connected to warden-server (it only talks to
+          // a paired device over LAN and to Arweave/TruthID), so it's reachable independent of
+          // this screen's connection state.
+          IconButton(
+            icon: const Icon(Icons.sync),
+            tooltip: 'Sync',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SyncScreen())),
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(
