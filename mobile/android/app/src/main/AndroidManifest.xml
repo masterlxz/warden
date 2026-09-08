@@ -6,6 +6,9 @@
          showing a pairing code. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <!-- Fase 7.5 — local notification when a chat reply arrives while the app is backgrounded.
+         Required at runtime on Android 13+ (API 33) for the notification to actually show. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="mobile"
         android:name="${applicationName}"

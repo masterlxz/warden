@@ -1,8 +1,29 @@
+#[cfg(feature = "semantic-search")]
+mod semantic;
+
+#[cfg(feature = "semantic-search")]
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+#[cfg(feature = "semantic-search")]
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "semantic-search")]
+use std::sync::Mutex;
 
 /// Markdown vault on local disk (Obsidian-compatible). IPFS mirroring lands in Phase 4.
 pub struct Vault {
     root: PathBuf,
+    /// Lazily loaded on first semantic search (downloads the ONNX model on first-ever use) and
+    /// reused after that — `Vault` is held behind `Arc` for the life of the process, so this loads
+    /// at most once per process, not once per turn. Behind the `semantic-search` feature (default
+    /// on) — off for crates that only need `Vault` for file I/O (e.g. `warden-sync`), since `ort`
+    /// (fastembed's ONNX runtime) has no prebuilt binary for some cross-compile targets those
+    /// crates build for (Android's `armv7-linux-androideabi`, via `warden-mobile-bridge`).
+    #[cfg(feature = "semantic-search")]
+    embedder: Mutex<Option<TextEmbedding>>,
+    /// Guards the read-refresh-write cycle of the on-disk semantic index (`.warden/semantic_index.json`)
+    /// against two turns (e.g. two channels sharing one `warden-server` vault) racing each other.
+    #[cfg(feature = "semantic-search")]
+    index_lock: Mutex<()>,
 }
 
 /// One matching line from `Vault::search`, with enough location info to cite it.
@@ -16,7 +37,13 @@ impl Vault {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let _ = std::fs::create_dir_all(&root);
-        Self { root }
+        Self {
+            root,
+            #[cfg(feature = "semantic-search")]
+            embedder: Mutex::new(None),
+            #[cfg(feature = "semantic-search")]
+            index_lock: Mutex::new(()),
+        }
     }
 
     pub fn root(&self) -> &PathBuf {
@@ -88,6 +115,107 @@ impl Vault {
         }
         Ok(hits)
     }
+
+    #[cfg(feature = "semantic-search")]
+    /// Semantic counterpart to `search` — ranks markdown chunks by embedding similarity to `query`
+    /// instead of substring match. Self-healing: re-hashes every chunk on each call and only
+    /// re-embeds what's new or changed since the last call (including edits made outside the
+    /// Warden app entirely, since the vault is a plain Obsidian-compatible directory), rather than
+    /// hooking every write path. Returns the same `SearchHit` shape as `search`, so callers don't
+    /// need to change — `line` becomes a chunk preview rather than the literal matched line.
+    pub fn search_semantic(&self, query: &str, max_hits: usize) -> anyhow::Result<Vec<SearchHit>> {
+        if max_hits == 0 || query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let _guard = self.index_lock.lock().unwrap();
+        let index_path = self.root.join(semantic::INDEX_DIR).join(semantic::INDEX_FILE);
+        let index = semantic::SemanticIndex::load(&index_path);
+
+        let mut wanted: Vec<(String, usize, String, String)> = Vec::new();
+        for relative in self.list_files()? {
+            let path = relative.to_string_lossy().to_string();
+            let content = std::fs::read_to_string(self.root.join(&relative))?;
+            for (start_line, text) in semantic::chunk_file(&content, semantic::CHUNK_WINDOW_LINES) {
+                let hash = semantic::hash_chunk(&text);
+                wanted.push((path.clone(), start_line, hash, text));
+            }
+        }
+
+        let existing: HashMap<(&str, usize), &semantic::IndexedChunk> =
+            index.chunks.iter().map(|c| ((c.path.as_str(), c.start_line), c)).collect();
+
+        let mut rebuilt = Vec::with_capacity(wanted.len());
+        let mut pending: Vec<usize> = Vec::new();
+        for (i, (path, start_line, hash, text)) in wanted.iter().enumerate() {
+            match existing.get(&(path.as_str(), *start_line)) {
+                Some(chunk) if chunk.hash == *hash => rebuilt.push((*chunk).clone()),
+                _ => {
+                    rebuilt.push(semantic::IndexedChunk {
+                        path: path.clone(),
+                        start_line: *start_line,
+                        hash: hash.clone(),
+                        preview: semantic::preview(text),
+                        embedding: Vec::new(),
+                    });
+                    pending.push(i);
+                }
+            }
+        }
+
+        if !pending.is_empty() {
+            let texts: Vec<&str> = pending.iter().map(|&i| wanted[i].3.as_str()).collect();
+            let embeddings = self.with_embedder(|model| Ok(model.embed(texts, None)?))?;
+            for (slot, embedding) in pending.into_iter().zip(embeddings) {
+                rebuilt[slot].embedding = embedding;
+            }
+        }
+
+        let mut index = index;
+        index.chunks = rebuilt;
+        let _ = index.save(&index_path);
+
+        let query_embedding = self.with_embedder(|model| {
+            Ok(model.embed(vec![query], None)?.into_iter().next().unwrap_or_default())
+        })?;
+
+        let mut scored: Vec<(f32, &semantic::IndexedChunk)> = index
+            .chunks
+            .iter()
+            .filter(|c| !c.embedding.is_empty())
+            .map(|c| (semantic::cosine_similarity(&query_embedding, &c.embedding), c))
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+        Ok(scored
+            .into_iter()
+            .take(max_hits)
+            .map(|(_, c)| SearchHit { path: c.path.clone(), line_number: c.start_line, line: c.preview.clone() })
+            .collect())
+    }
+
+    /// Lazily loads the local embedding model (downloads it on first-ever use — the one part of
+    /// "local" search that needs network, exactly once per machine) and runs `f` against it.
+    #[cfg(feature = "semantic-search")]
+    fn with_embedder<T>(&self, f: impl FnOnce(&mut TextEmbedding) -> anyhow::Result<T>) -> anyhow::Result<T> {
+        let mut guard = self.embedder.lock().unwrap();
+        if guard.is_none() {
+            let model = TextEmbedding::try_new(
+                TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
+                    .with_cache_dir(model_cache_dir())
+                    .with_show_download_progress(false),
+            )?;
+            *guard = Some(model);
+        }
+        f(guard.as_mut().expect("just initialized above"))
+    }
+}
+
+/// Where the (shared, not per-vault) ONNX model file lives once downloaded — not vault content,
+/// so it must not live inside a vault directory or get duplicated per vault.
+#[cfg(feature = "semantic-search")]
+fn model_cache_dir() -> PathBuf {
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("warden").join("models")
 }
 
 fn collect_markdown_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {

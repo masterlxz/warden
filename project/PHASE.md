@@ -118,8 +118,17 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   de verdade on-device (`pending_vault_changes` refletindo um arquivo escrito no vault local do
   emulador). Push/pull contra Arweave/TruthID reais e o lado iOS seguem sem teste — mesma lacuna já
   aceita em P38/P55 e P39/P44, ver `PENDING.md`
-- [ ] 4.5 — Busca semântica no vault (embedding local ou via API) — P6 em `PENDING.md`, sem
-  relação com o sync
+- [x] 4.5 — Busca semântica no vault *(Sessão 56) — embedding local via ONNX (`fastembed`,
+  `AllMiniLML6V2`), decisão fechada com o usuário: local em vez de API, pra manter a busca offline
+  e model-agnostic (Anthropic nem tem endpoint de embedding). `Vault::search_semantic` novo em
+  `warden-core`, mesma `SearchHit` de sempre — `Orchestrator::handle_turn_streaming` tenta o
+  caminho semântico (via `spawn_blocking`, primeiro uso desse padrão no projeto) e cai pro grep
+  original em qualquer erro (ex. sem rede no primeiro download do modelo). Índice
+  (`.warden/semantic_index.json`) vive dentro do próprio vault, dot-prefixado — já ignorado por
+  `list_files`/`list_all_files`/sync sem precisar mexer em `warden-sync`. Verificado de ponta a
+  ponta com o modelo real baixado de verdade nesta sessão (rede disponível no ambiente) — ranking
+  correto distinguindo "consulta médica" de "compromisso com dentista" sem nenhuma palavra em
+  comum*
 
 ---
 
@@ -262,8 +271,26 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   remote_tool.rs`) — primeira peça concreta do que a Fase 9.4/9.5 vai generalizar depois.
   Verificado de ponta a ponta contra um `warden-server` real com Gemini de verdade: listou e leu
   arquivos reais empurrados pro emulador via `adb push`*
-- [ ] 7.5 — Notificações push
-- [ ] 7.6 — Build e deploy
+- [x] 7.5 — Notificações push (locais) *(Sessão 56) — decisão do usuário: notificação local via
+  `flutter_local_notifications` (app vivo em background), não push de verdade via FCM/APNs — evita
+  a primeira dependência de nuvem de terceiro do projeto inteiro. Gatilho em `ChatScreen`
+  (`WidgetsBindingObserver` + `AppLifecycleState`, já que não existe hoje nenhum outro jeito de
+  navegar pra fora do chat enquanto conectado — P41). `mobile/lib/services/chat_notifications.dart`
+  novo, funções puras (`shouldNotifyFor`/`notificationContentFor`) testadas sem platform channel,
+  mesmo padrão pure-vs-plugin do `warden-cli`. Achado no meio do caminho, sem relação com a decisão
+  em si: `fastembed` (Fase 4.5) quebrava a compilação cruzada do `warden-mobile-bridge` pra Android
+  — `ort` sem binário pré-compilado pra `armv7-linux-androideabi`, e `native-tls`/`openssl-sys` sem
+  build pro alvo. Corrigido tornando `semantic-search` uma feature opcional em `warden-core`
+  (default-on), desligada só em `warden-sync` (que nunca usa `Orchestrator`/chat, só I/O de
+  arquivo), e trocando o TLS do `fastembed` pra rustls. **Verificado de ponta a ponta contra
+  hardware real (emulador Android), zero mock**: prompt de permissão de notificação real aceito,
+  mensagem mandada por um `warden-server` real (chave OpenAI inválida de propósito, pra ter uma
+  resposta rápida e determinística), app levado pro background antes da resposta chegar, e a
+  notificação real do Android apareceu na bandeja com o conteúdo certo — confirmado por
+  `dumpsys notification`, screenshot da bandeja puxada, e toque na notificação reabrindo o chat com
+  a conversa intacta*
+- [ ] 7.6 — Build e deploy (release assinado, publicação nas lojas) — fora do escopo desta sessão,
+  não pedido pelo usuário; só o fluxo `--debug` de sempre (7.1-7.5) foi usado
 
 ---
 

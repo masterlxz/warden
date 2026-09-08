@@ -23,6 +23,33 @@ reqwest-oauth = { package = "reqwest", version = "0.13.2" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# All three optional, gated behind the `semantic-search` feature below (default-on) — `ort` (fastembed's
+# ONNX runtime) has no prebuilt binary for `armv7-linux-androideabi`, so any crate that cross-
+# compiles for Android (`warden-mobile-bridge`, via `warden-sync`) needs a way to depend on
+# `warden-core` WITHOUT pulling this in, even though it never calls `Vault::search_semantic`.
+# `default-features = false` + explicit rustls features on fastembed itself: its own defaults pull
+# in `native-tls`/`openssl-sys` (for both `ort`'s model-download and `hf-hub`'s HTTP client), which
+# — independently of the Android prebuilt-binary gap above — also can't cross-compile without a
+# target-specific OpenSSL build. Every other HTTP client in the workspace already standardizes on
+# rustls (see `reqwest.workspace`'s `rustls-tls` feature in the root Cargo.toml); this keeps
+# fastembed consistent with that instead of being the one exception.
+fastembed = { version = "6.0.3", optional = true, default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+    "image-models",
+] }
+# Pinned to 0.10 to match the version already used by warden-sync/warden-truthid (avoids a second
+# sha2 major compiling into the workspace) — `cargo add` defaults to the newest 0.11 otherwise.
+sha2 = { version = "0.10", optional = true }
+dirs = { workspace = true, optional = true }
+
+[features]
+default = ["semantic-search"]
+# Fase 4.5 — local embedding-based vault search (`Vault::search_semantic`). Off by default for a
+# crate that depends on `warden-core` only for non-model plumbing (e.g. `warden-sync`, which pulls
+# in `Vault` purely for file I/O, not chat) — see the fastembed comment above for why this needs to
+# be optional at all rather than just always-on.
+semantic-search = ["dep:fastembed", "dep:sha2", "dep:dirs"]
 
 [dev-dependencies]
 # `transport-io` (plain stdio, used to play the *server* side against a real child process in

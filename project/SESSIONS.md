@@ -2,7 +2,118 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-07 (Sessão 55)
+> Última atualização: 2026-09-08 (Sessão 56)
+
+---
+
+### 2026-09-08 — Sessão 56
+
+- **Objetivo**: usuário disse "bora continuar?". Escolhido entre as frentes em aberto (4.5 busca
+  semântica, 7.5/7.6 mobile push/deploy, P8 polish do CLI): **Fase 4.5 — busca semântica no
+  vault** (P6), a única que fecha a Fase 4 inteira. Decisão de arquitetura (embedding local vs
+  API) posta ao usuário com trade-offs antes de planejar — escolheu **local via ONNX**. Planejado
+  em modo formal (`/plan`, com 2 agentes Explore em paralelo mapeando padrões de crate/config/tool
+  e o vault/sync) antes de codar, dado o tamanho e a decisão de arquitetura nova.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, entrada "Fase 4.5"):
+
+- **`Vault::search_semantic` novo** (`crates/warden-core/src/memory/{mod.rs,semantic.rs}`) —
+  embedding local via `fastembed` (ONNX, modelo `AllMiniLML6V2`), mesma `SearchHit` que o grep
+  original (`Vault::search`, intocado). Índice (`.warden/semantic_index.json`) dentro do próprio
+  vault, dot-prefixado — já ignorado por `list_files`/`list_all_files`/sync sem tocar
+  `warden-sync`. Self-healing: rehash sha256 por chunk (janela fixa de 40 linhas) a cada chamada,
+  reembeda só o que mudou — cobre edição do vault por fora do Warden (Obsidian-compatible), sem
+  precisar de hooks nos dois pontos de escrita (`WriteFileTool`, `bundle::apply_bundle` do sync)
+- `Orchestrator::handle_turn_streaming` roda a busca semântica dentro de `tokio::task::spawn_blocking`
+  (primeiro uso desse padrão no projeto — inferência ONNX é síncrona e pesada) e cai pro grep
+  original em qualquer erro (sem rede no primeiro download do modelo, índice corrompido) — resiliente
+  sem precisar de um toggle novo em `config.toml`/Settings
+- **Verificado de ponta a ponta com o modelo real baixado de verdade** (rede disponível neste
+  ambiente, ao contrário da maioria das outras pendências "sem infra externa" do projeto): ranking
+  correto distinguindo "consulta médica" de "compromisso com dentista" sem nenhuma palavra em
+  comum, e refresh incremental confirmado após editar um arquivo (`crates/warden-core/tests/semantic_search.rs`,
+  `#[ignore]`d por padrão pra `cargo test`/CI ficarem hermético e rápido)
+- `cargo test -p warden-core` (22 testes), `cargo check --workspace`, `cargo clippy --workspace
+  --all-targets` e `cargo test -p warden-sync -p warden-bootstrap -p warden-cli` limpos
+- **Achado no meio do caminho, sem relação com a decisão em si**: o ambiente de dev ficou com
+  `/home` praticamente cheio (263MB livres) — `target/` (43GB) somado às dependências pesadas do
+  `fastembed` (`ort`/`tokenizers`/`image`) estourou o disco, causando um `Bus error` no linker ao
+  compilar os testes do `desktop`. `cargo clean` liberou 48GB, mas uma segunda tentativa de
+  `cargo test --workspace` completo esvaziou o `target/` sozinho no meio da build (aparenta ser
+  alguma limitação de armazenamento do próprio ambiente) — contornado verificando os crates
+  individualmente (`check --workspace`/`clippy --workspace --all-targets` cobrem todos os 12,
+  `test` escopado nos que mais exercitam `Vault`) em vez do workspace inteiro de uma vez
+- Atualizados `PHASE.md` (4.5 concluída, Fase 4 inteira fechada), `PENDING.md` (P6 resolvida, P56
+  nova — fallback pro grep nunca exercitado contra uma falha de verdade), `OVERVIEW.md` (status
+  geral da Fase 4)
+
+**Próximo passo**: Fase 7.5/7.6 (mobile: push notifications, build/deploy) ou P8 (polish do CLI),
+conforme prioridade do usuário na próxima sessão. Vale o usuário confirmar `cargo test --workspace`
+numa máquina com mais espaço em disco, se quiser fechar de vez o `#[ignore]` mental sobre isso.
+
+---
+
+### 2026-09-08 — Sessão 56 (continuação)
+
+- **Objetivo**: usuário disse "bora pro 7.5 ent" (Fase 7.5, retomando a lista de opções deixada no
+  fim da parte anterior desta sessão). `PHASE.md` só tinha "Notificações push" como título, sem
+  nenhum detalhe de escopo — perguntado ao usuário o que deveria disparar a notificação: escolheu
+  **notificação local, com o app vivo em background** (`flutter_local_notifications`), não push de
+  verdade via FCM/APNs (rejeitando explicitamente a opção de push real depois de um primeiro
+  esbarrão sem querer nessa escolha — corrigido pelo usuário antes de eu seguir). Planejado em modo
+  formal (`/plan`, 1 agente Explore mapeando a arquitetura do app Flutter) antes de codar.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, entrada "Fase 7.5"):
+
+- **`mobile/lib/services/chat_notifications.dart` novo** — `shouldNotifyFor`/`notificationContentFor`
+  puras e testadas (`mobile/test/services/chat_notifications_test.dart`, 5 testes novos, mesmo
+  padrão pure-vs-plugin do `warden-cli`); `initializeChatNotifications`/`requestNotificationPermission`/
+  `showChatNotification` finas sobre `flutter_local_notifications`. Gatilho em `_ChatScreenState`
+  via `WidgetsBindingObserver`/`AppLifecycleState` — como não existe hoje nenhum jeito de navegar
+  pra fora do chat sem desconectar (P41), `state != resumed` já resolve "devo notificar?" sozinho
+- **Achado real, sem relação com a decisão em si**: `fastembed` (Fase 4.5 da sessão anterior)
+  quebrava a compilação cruzada do `warden-mobile-bridge` pra Android — `ort` sem binário
+  pré-compilado pra `armv7-linux-androideabi`, e os defaults do `fastembed` puxando
+  `native-tls`/`openssl-sys` (que também não cross-compila). Nunca tinha aparecido porque a 4.5 só
+  foi testada em host x86_64 — essa foi a primeira tentativa de build Android desde então.
+  Corrigido: `semantic-search` virou uma feature opcional em `warden-core` (default-on), desligada
+  só em `warden-sync` (nunca usa `Orchestrator`, só I/O de arquivo — e é por onde
+  `warden-mobile-bridge` alcança `warden-core`), e `fastembed` trocado pra rustls
+- **Segundo achado real**: `main.dart` faltava `WidgetsFlutterBinding.ensureInitialized()` antes de
+  `initializeChatNotifications()` — inofensivo enquanto só `RustLib.init()` (FFI puro) rodava antes
+  do `runApp`, mas `flutter_local_notifications` fala por `MethodChannel`, que exige o binary
+  messenger pronto; sem isso o app crashava direto na abertura (tela em branco)
+- **Verificado de ponta a ponta contra hardware real (emulador `warden_test`), zero mock, nenhum
+  passo pulado**: subiu um `warden-server` real de teste (chave OpenAI inválida de propósito, pra
+  ter uma resposta rápida e determinística sem gastar cota de API real), app conectado via
+  `10.0.2.2`, prompt de permissão de notificação real aceito e confirmado via `adb shell dumpsys
+  package`, mensagem mandada, app levado pro background antes da resposta chegar, e a notificação
+  real do Android apareceu na bandeja com o conteúdo certo (confirmado por `dumpsys notification` —
+  `NotificationRecord` de verdade, canal `chat_messages` — e uma screenshot da bandeja puxada)
+  enquanto o processo seguia **não congelado** (`dumpsys activity processes` → `isFrozen=false` o
+  tempo todo, descartando a hipótese de que o Android estava só "congelando" o app). Toque na
+  notificação reabriu a `ChatScreen` com a conversa intacta. **Lição de metodologia**: as primeiras
+  tentativas de automatizar o envio via `adb shell input tap` erraram a posição do botão de enviar
+  porque a barra de input muda de lugar na tela dependendo do teclado estar aberto ou não —
+  resolvido lendo `uiautomator dump` pra pegar as coordenadas reais em vez de estimar pela
+  screenshot
+- `flutter analyze`/`flutter test` (38 testes) e `cargo check --workspace`/`cargo clippy --workspace
+  --all-targets`/`cargo test -p warden-core` limpos
+- Atualizados `PHASE.md` (7.5 concluída, 7.6 registrada como não pedida/fora de escopo),
+  `PENDING.md` (P57 nova — notificações são Android-only, sem equivalente iOS), `OVERVIEW.md`
+  (status da Fase 7 quase completa)
+
+**Próximo passo**: Fase 7.6 (build/deploy de release) se o usuário quiser publicar de verdade em
+algum momento, ou P8 (polish do CLI) — nenhum dos dois pedido ainda.
+
+**Depois de entregue a 7.5**, usuário comentou que ainda tem muita coisa pra mexer, quer testar o
+app no celular real dele antes de qualquer trabalho visual, e quer continuar os pontos já
+registrados no backlog (P45-P52 etc.) — mas sem escolher qual agora. Pedido explícito: só anotar,
+sem implementar nada disso ainda. Registrado como **P58** em `PENDING.md` (identidade visual do
+mobile não alinhada com a marca — achado concreto: `Colors.deepPurple` genérico do Material em vez
+dos tokens reais `#7c3aed`/`#a78bfa` do desktop) — escopo exato (só cor vs. revisão visual mais
+ampla) fica pra quando o usuário tiver testado no celular dele e voltar com o que incomodou de
+verdade.
 
 ---
 

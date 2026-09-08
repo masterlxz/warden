@@ -138,6 +138,24 @@ impl Orchestrator {
             }
         }
 
+        // Semantic search runs ONNX inference (blocking, CPU-heavy) — `spawn_blocking` keeps it
+        // off the async runtime thread. Falls back to the plain grep on any error (model download
+        // failed offline, corrupt index, panic) so vault context injection never breaks outright.
+        // Behind the `semantic-search` feature (default on) — see `warden-core/Cargo.toml`; every
+        // real `Orchestrator` host (CLI/desktop/server/Telegram/WhatsApp) keeps it enabled, this
+        // only matters for `warden-core` compiled with default features off (e.g. as a dependency
+        // of `warden-sync`, which never constructs an `Orchestrator` at all).
+        #[cfg(feature = "semantic-search")]
+        let hits = {
+            let vault_for_search = self.vault.clone();
+            let query = user_input.to_string();
+            tokio::task::spawn_blocking(move || vault_for_search.search_semantic(&query, 8))
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .unwrap_or_else(|| self.vault.search(user_input, 8).unwrap_or_default())
+        };
+        #[cfg(not(feature = "semantic-search"))]
         let hits = self.vault.search(user_input, 8).unwrap_or_default();
         if !hits.is_empty() {
             let context = hits

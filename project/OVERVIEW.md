@@ -22,11 +22,13 @@ Stack planejada:
 Fase 1 — Fundação & Orquestrador    [x] Concluída
 Fase 2 — Canal Telegram              [x] Concluída
 Fase 3 — Canal WhatsApp              [x] Concluída
-Fase 4 — Vault & Memória             [~] Quase completa (4.1-4.4 concluídas — sync via Arweave
-                                          no desktop/CLI/mobile; falta só 4.5 busca semântica)
+Fase 4 — Vault & Memória             [x] Concluída (sync via Arweave no desktop/CLI/mobile +
+                                          busca semântica local via ONNX, Sessão 56)
 Fase 5 — Tools & MCP                 [~] Quase completa (falta só 5.4, bloqueada pela Fase 8)
 Fase 6 — App Desktop Nativo          [x] Concluída (polish: registry de provedores ✓ Sessão 35)
-Fase 7 — App Mobile                  [ ] Pendente (7.1-7.4 concluídas — chat real + arquivos do celular; falta 7.5-7.6)
+Fase 7 — App Mobile                  [~] Quase completa (7.1-7.5 concluídas — chat real +
+                                          arquivos do celular + notificações locais; falta só 7.6
+                                          build/deploy de release, não pedido ainda)
 Fase 8 — Extensão de Navegador       [ ] Pendente
 Fase 9 — Rede de Nós & Tailscale     [ ] Pendente
 Fase 10 — Autenticação & TruthID     [ ] Pendente

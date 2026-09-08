@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../protocol/messages.dart';
+import '../services/chat_notifications.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 
@@ -29,7 +30,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _entries = <_ChatEntry>[];
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
@@ -39,10 +40,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   ConnectionStatus _status = const Disconnected();
   bool _waitingForReply = false;
+  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(requestNotificationPermission());
     _status = widget.connection.status;
     _chatSubscription = widget.connection.chatStream.listen(_onChatMessage);
     _statusSubscription = widget.connection.statusStream.listen((s) {
@@ -52,11 +56,17 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _chatSubscription?.cancel();
     _statusSubscription?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
   }
 
   void _onChatMessage(ServerMessage msg) {
@@ -73,6 +83,9 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     _scrollToBottom();
+    if (shouldNotifyFor(_lifecycleState)) {
+      unawaited(showChatNotification(msg, serverName: widget.connection.serverName));
+    }
   }
 
   void _send() {
