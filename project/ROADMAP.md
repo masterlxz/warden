@@ -70,6 +70,11 @@ Em ambos os modos, agentes devem poder criar outros agentes (não só um orquest
 Arquitetura pra suportar os dois modos ao mesmo tempo (não é escolher um dos dois) ainda em
 aberto. Ver P46, complementa P8/a seção "Sub-agentes autônomos" abaixo.
 
+**Núcleo técnico feito (Sessão 57)**: delegação recursiva com profundidade limitada
+(`DelegateTool`/`build_delegating_orchestrator`, ver P46/`ARCHITECTURE.md`) — agentes já podem
+criar sub-agentes que criam sub-agentes (não só um nível). Os dois modos em si (UI/config pra
+"chefe" vs. "funcionários") e o resto do pacote (fila de jobs, custo, isolamento) seguem em aberto.
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA
@@ -171,10 +176,13 @@ próprio usuário já sinalizou (Sessão 38) que o MCP é o caminho mais rápido
 Agentes que criam outros agentes recursivamente para tarefas complexas.
 Usuário confirmou interesse em "lançar agentes" (2026-08-02) — arquitetura
 ainda em aberto, ver P8 em `PENDING.md`. Precisa de:
+- ~~Recursão em si (agente cria agente que cria agente)~~ — **núcleo feito (Sessão 57, P46)**:
+  `DelegateTool` recursivo, profundidade fixa (`DELEGATE_MAX_DEPTH = 2`), sem controle de custo
 - Fila de jobs
 - Controle de custo por sub-agente
 - Isolamento de tools por sub-agente
-- Critério de parada
+- Critério de parada — parcialmente coberto: a profundidade fixa acima é estrutural (o nível
+  terminal nunca anuncia a tool), mas não há teto de custo/tempo se toda iteração delegar
 - __Fora do escopo v1__ — mas não mais só brainstorm, é algo que o usuário quer priorizar eventualmente
 
 ### App "Copilot" — IA leve rodando no SO

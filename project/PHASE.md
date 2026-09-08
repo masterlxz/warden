@@ -20,7 +20,7 @@ lendo/escrevendo num vault markdown local, sem canal externo ainda.
 - [x] 1.5 — Memória: buscar contexto relevante no vault (grep/ripgrep) e injetar no prompt
 - [x] 1.6 — Trait `Tool` + primeira tool: `read_file`, `write_file`
 - [x] 1.7 — Tool `web_search` (pesquisa na internet via API) — *implementação original (REST direto na API da Tavily) substituída pela versão via MCP na etapa 5.3*
-- [x] 1.8 — Sub-agente leve: delegar tarefa escopada pra outro modelo/contexto
+- [x] 1.8 — Sub-agente leve: delegar tarefa escopada pra outro modelo/contexto — *estendido na Sessão 57 (P46, núcleo) pra suportar delegação recursiva com profundidade limitada; ver `PENDING.md` P46/P60*
 - [x] 1.9 — Testes de integração do pipeline completo (CLI)
 - [x] 1.10— Configuração via arquivo YAML/TOML (modelo, API keys, vault path)
 

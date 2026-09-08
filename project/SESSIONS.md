@@ -6,6 +6,50 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 4)
+
+- **Objetivo**: usuário disse "bora pro p46 ent". Como o ROADMAP deixava a arquitetura do P46
+  explicitamente em aberto (dois modos + fila de jobs + custo + isolamento + critério de parada,
+  vários eixos independentes), oferecidas 3 fatias de escopo antes de codar — usuário escolheu **só
+  o núcleo técnico**: delegação recursiva (agentes que delegam pra sub-agentes que também podem
+  delegar), sem UI nova nem fila de jobs/custo ainda.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, seção "Sub-agentes: Invocação Leve
+vs. Autônomos"):
+
+- **`DelegateTool` (`crates/warden-core/src/tool/delegate.rs`)** — removida a trava original ("o
+  orchestrator passado pro `new` nunca pode ter outro `DelegateTool` registrado"); doc comment
+  reescrito explicando que agora suporta uma cadeia de qualquer profundidade, e que o critério de
+  parada é estrutural (quem monta a cadeia para de registrar `delegate_task` em algum nível), não
+  uma checagem em runtime dentro da tool.
+- **`warden_bootstrap::build_delegating_orchestrator` novo** (função recursiva) substitui a
+  construção anterior de dois orchestrators fixos (`sub_orchestrator` + principal) — monta uma
+  cadeia de até `DELEGATE_MAX_DEPTH = 2` níveis (raiz → nível-1, ainda pode delegar de novo →
+  folha, terminal). Constante fixa, não configurável ainda: sem fila de jobs/controle de custo, o
+  pior caso é `MAX_TOOL_ITERATIONS ^ depth` chamadas de modelo (64 nesta profundidade) se toda
+  iteração em todo nível delegar.
+- **Teste novo em `delegate.rs`** (`supports_bounded_recursive_delegation`) — cadeia de 3
+  orchestrators compartilhando um único `ModelProvider` mockado, roteirizado por ordem de chamada
+  (determinístico: cada `chat_stream` bloqueia em qualquer delegação aninhada antes da próxima
+  chamada acontecer, mesmo padrão do wiring real). Prova as duas partes do contrato: o nível 1
+  recebe `delegate_task` de verdade (recursão genuína) e a folha nunca recebe a tool (critério de
+  parada estrutural conferido, não só assumido).
+- `cargo test -p warden-core -p warden-bootstrap` (65 + 35 testes, nenhum quebrado) e `cargo
+  clippy --workspace --all-targets` limpos.
+- **Sem teste de ponta a ponta com um modelo real** — forçar um modelo de verdade a decidir delegar
+  duas vezes de propósito não é confiável de scriptar; mesma limitação que a v1 do `DelegateTool`
+  (Sessão 11) já tinha aceitado. Registrado como P60, junto com o risco de custo sem teto (acima).
+- Atualizados `PENDING.md` (P46 — núcleo marcado como feito, o que segue em aberto listado
+  explicitamente; P60 novo), `ARCHITECTURE.md` (entrada nova na seção de sub-agentes), `ROADMAP.md`
+  (as duas seções que mencionavam P46 — "Orquestração de agentes" e "Sub-agentes autônomos" —
+  atualizadas com o que já saiu do papel).
+
+**Próximo passo**: dentro do próprio P46, faltam os dois modos em si (UI/config pra "chefe" vs.
+"funcionários") e o resto do pacote (fila de jobs, custo, isolamento, profundidade configurável).
+Fora do P46: Fase 7.6, P8, P47-P51, P59/P60.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 3)
 
 - **Objetivo**: usuário disse "bora continuar?" de novo (sem item travado desde o fim da parte 2 do

@@ -707,18 +707,39 @@ pub async fn bootstrap(
         register_mcp_tools(&mut base_tools, name, connect).await;
     }
 
-    let mut sub_orchestrator = Orchestrator::new(model_provider.clone(), vault.clone());
-    for tool in &base_tools {
-        sub_orchestrator.register_tool(tool.clone());
-    }
-
-    let mut orchestrator = Orchestrator::new(model_provider, vault);
-    for tool in base_tools {
-        orchestrator.register_tool(tool);
-    }
-    orchestrator.register_tool(Arc::new(DelegateTool::new(sub_orchestrator)));
+    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, DELEGATE_MAX_DEPTH);
 
     Ok(orchestrator)
+}
+
+/// How many levels deep a sub-agent spawned via `DelegateTool` can itself delegate further (P46
+/// — "sub-agentes autônomos", core recursion piece). Fixed and not user-configurable yet: no job
+/// queue or cost control exists to bound a deep chain's total model calls (worst case is roughly
+/// `MAX_TOOL_ITERATIONS ^ depth` if every single iteration at every level delegates), so a small
+/// constant is what keeps that worst case sane without either. Revisit alongside P4 (cost
+/// control) if a use case needs deeper chains — see `PENDING.md` P60.
+const DELEGATE_MAX_DEPTH: u32 = 2;
+
+/// Builds an `Orchestrator` with `base_tools` registered, plus — while `depth > 0` — a
+/// `DelegateTool` wrapping another orchestrator built the same way one level shallower. The
+/// terminal orchestrator (`depth == 0`) never gets a `DelegateTool`, so it never advertises
+/// `delegate_task` in its tool specs — that's the actual stopping criterion (structural, not a
+/// runtime check), see the doc comment on `DelegateTool` itself.
+fn build_delegating_orchestrator(
+    model: Arc<dyn ModelProvider>,
+    vault: Arc<Vault>,
+    base_tools: &[Arc<dyn Tool>],
+    depth: u32,
+) -> Orchestrator {
+    let mut orchestrator = Orchestrator::new(model.clone(), vault.clone());
+    for tool in base_tools {
+        orchestrator.register_tool(tool.clone());
+    }
+    if depth > 0 {
+        let sub = build_delegating_orchestrator(model, vault, base_tools, depth - 1);
+        orchestrator.register_tool(Arc::new(DelegateTool::new(sub)));
+    }
+    orchestrator
 }
 
 /// Seeds the vault's "fixed/standard" memory files (P52 — `Vault::standing_memory`) with a
