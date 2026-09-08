@@ -26,7 +26,15 @@ class WardenApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Warden',
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple)),
+      // Matches desktop/src/App.css --color-accent (light #7c3aed, dark #a78bfa) instead of the
+      // generic Material seed, so the two apps read as the same brand.
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF7C3AED)),
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFA78BFA), brightness: Brightness.dark),
+      ),
+      themeMode: ThemeMode.system,
       home: const ConnectionScreen(),
     );
   }

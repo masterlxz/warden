@@ -6,6 +6,38 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 3)
+
+- **Objetivo**: usuário disse "bora continuar?" de novo (sem item travado desde o fim da parte 2 do
+  P52). Oferecidas as frentes em aberto (P8, Fase 7.6, P46-P51, P58) — usuário escolheu **P58**
+  (identidade visual do mobile), pedindo explicitamente pra fazer **sem esperar teste no celular
+  real antes**, deixando essa verificação como pendência separada. Escopo fechado com uma pergunta
+  antes de codar: só alinhar as cores de marca (vs. revisão visual mais ampla de layout/espaçamento/
+  tipografia) — escolhida a opção menor.
+
+**O que foi feito**:
+
+- **`mobile/lib/main.dart`** — `MaterialApp` ganhou `theme`/`darkTheme`/`themeMode:
+  ThemeMode.system` no lugar do `theme` único de antes; `ColorScheme.fromSeed` passou a usar os
+  mesmos tokens de `desktop/src/App.css` (`--color-accent: #7c3aed` claro, `#a78bfa` escuro) em vez
+  do `Colors.deepPurple` genérico do Material. Antes o app não tinha suporte a modo escuro nenhum —
+  ganhou de graça alinhando com o padrão do desktop (que já segue `prefers-color-scheme`).
+- Conferido que nenhuma outra mudança era necessária: as telas (`ConnectionScreen`/`ChatScreen`/
+  `SyncScreen`) já usam `Theme.of(context).colorScheme` em vez de cor hardcoded, então herdam a
+  marca automaticamente. As poucas cores literais que existem (`Colors.grey/orange/green/red` em
+  `connection_screen.dart`) são indicadores semânticos de status de conexão, não cor de marca —
+  deixadas como estavam, fora do escopo confirmado.
+- `flutter analyze`/`flutter test` (33 testes, nenhum novo — mudança é só configuração de tema, sem
+  lógica testável) limpos.
+- Atualizado `PENDING.md`: P58 movida pra "Resolvidas"; **P59 nova** — cores de marca nunca vistas
+  numa janela/emulador real, fica como pendência de verificação visual pro usuário confirmar quando
+  testar no celular dele.
+
+**Próximo passo**: seguem em aberto Fase 7.6 (build/deploy mobile), P8 (polish do CLI), P46-P51
+(backlog), e agora também P59 (verificar visualmente a cor nova no celular).
+
+---
+
 ### 2026-09-08 — Sessão 57
 
 - **Objetivo**: usuário disse "bora continuar?". Sem próximo passo travado (Sessão 56 tinha
