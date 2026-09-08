@@ -193,6 +193,7 @@ function App() {
           selectedProviderId={selectedProviderId}
           onSelectAgent={handleSelectAgent}
           onSelectProvider={setSelectedProviderId}
+          onOpenSettings={() => setView("settings")}
         />
       )}
     </div>

@@ -52,14 +52,9 @@ Ordem de implementação recomendada (atualizada 2026-08-29, ver nota acima):
 > ("são apenas ideias pro projeto"), sem `/plan` e sem decisão de prioridade ainda além do que
 > está anotado em cada uma. Ver P45-P52 em `PENDING.md`.
 
-### Um agente por conversa (seleção no início)
+### ~~Um agente por conversa (seleção no início)~~ — feito (Sessão 57)
 
-Ideia nova do usuário (2026-09-06): não permitir mais de um agente por conversa. Ao iniciar uma
-conversa nova, a primeira coisa seria escolher qual agente (dos cadastrados) conduz aquela
-conversa inteira — diferente do seletor atual (Sessão 43, `chat-header`), que já restringe o
-efeito da troca só às mensagens daí pra frente mas ainda permite trocar no meio. Se for pra
-frente, provavelmente **substitui** o seletor atual por um passo de escolha na criação da
-conversa, travado depois. Ver P45.
+Implementado — ver `PENDING.md` P45 (resolvida) e `ARCHITECTURE.md`. Escopo: só desktop.
 
 ### Orquestração de agentes — dois modos de uso
 

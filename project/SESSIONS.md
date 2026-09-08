@@ -2,7 +2,54 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-08 (Sessão 56)
+> Última atualização: 2026-09-08 (Sessão 57)
+
+---
+
+### 2026-09-08 — Sessão 57
+
+- **Objetivo**: usuário disse "bora continuar?". Sem próximo passo travado (Sessão 56 tinha
+  terminado com o usuário pedindo só pra anotar o backlog, sem escolher item — P58). Perguntado
+  por onde seguir: escolhido um item do backlog P45-P52, especificamente **P45 — um agente por
+  conversa, escolhido na criação, travado depois**. Escopo confirmado com o usuário antes de
+  planejar (2 perguntas): só desktop (não Telegram/WhatsApp/mobile/CLI) e agente obrigatório (sem
+  mais opção "sem agente" numa conversa nova). Planejado em modo formal (`/plan`, 1 agente Explore
+  mapeando o seletor atual + fluxo de criação de conversa) antes de codar.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, três entradas novas "Um agente por
+conversa (P45)"):
+
+- **`desktop/src/components/ChatArea.tsx`** — `needsAgentPick = !hasMessages && !selectedAgentId`
+  (nenhum estado novo, só reaproveita `hasMessages` e o reset de `selectedAgentId` que já
+  existiam desde a Sessão 43) substitui o `<select aria-label="Agent">` do `chat-header` por um
+  `.agent-picker` (cards clicáveis por `AgentEntry`, ou direcionamento pra Settings se
+  `agents.length === 0`) enquanto o agente não foi escolhido, e por um rótulo somente-leitura
+  (`.chat-header-label`) depois — sem jeito de trocar. `MessageInput` ganhou
+  `disabled={isSending || needsAgentPick}`. Seletor de modelo/provider intocado, continua editável
+  a qualquer momento.
+- `App.tsx` só ganhou uma prop nova (`onOpenSettings`) repassada pro `ChatArea` — nenhuma mudança
+  de lógica; `handleSelectAgent`/`appendMessage`/`handleSendMessage` continuam exatamente como
+  estavam, a trava é inteiramente responsabilidade do `ChatArea` não oferecer a troca.
+- `SettingsView.tsx` — corrigido de passagem um texto desatualizado ("conversations use no persona
+  by default"), que não fazia mais sentido com o agente virando obrigatório.
+- Nenhuma mudança em `warden-bootstrap`/Rust — `Conversation.agent_id` já era um campo por-conversa
+  desde a Sessão 43, só faltava parar de oferecer troca na UI.
+- **Verificado via Playwright contra o dev server real** (`npm run dev`, não harness estático) —
+  `window.__TAURI_INTERNALS__.invoke` mockado via `addInitScript`, usando o agente real já
+  cadastrado no `config.toml` do usuário ("pirata"): picker aparecendo numa conversa nova,
+  escolha do agente liberando o composer, header virando rótulo fixo depois da primeira mensagem
+  (conferido tanto antes quanto depois de enviar), caso `agents.length === 0` direcionando pra
+  Settings (botão testado, navegação confirmada), e claro/escuro. Um artefato do teste (duas
+  mensagens enviadas ao simular Enter via `keyboard.press`) foi isolado e descartado como bug —
+  confirmado com um clique real no botão de enviar que só 1 mensagem é mandada; não é um problema
+  do app nem desta mudança.
+- `npm run build` (tsc+vite) e `cargo check --workspace` limpos.
+- Atualizados `PHASE.md` (nova entrada em Fase 6), `PENDING.md` (P45 resolvida), `ROADMAP.md`
+  (item marcado como feito).
+
+**Próximo passo**: nenhum item específico escolhido ainda — seguem em aberto Fase 7.6 (build/
+deploy mobile), P8 (polish do CLI), o resto do backlog P46-P52, e P58 (identidade visual do
+mobile, aguardando o usuário testar no celular real dele antes de mexer no visual).
 
 ---
 

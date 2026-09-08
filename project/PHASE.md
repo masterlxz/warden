@@ -227,6 +227,20 @@ seletores (Agent/Model), escolhíveis por conversa e persistidos nela. Ver `ARCH
 `PENDING.md` (P32 é o teste de ponta a ponta ainda pendente, mesma lacuna de chave de API real que
 P29/P30/P31).
 
+**Um agente por conversa, travado na criação (Sessão 57, 2026-09-08)**: fecha P45 — substitui o
+seletor de agente do `chat-header` (Sessão 43 acima), que deixava trocar de agente a qualquer
+momento, por uma escolha única antes da primeira mensagem. Conversa nova sem agente escolhido
+ainda mostra um `.agent-picker` (cards clicáveis, um por agente cadastrado, ou um direcionamento
+pra Settings se nenhum agente existir) no lugar do composer liberado; escolhido o agente, vira uma
+conversa normal com o nome do agente fixo (rótulo somente-leitura, não mais `<select>`) no header
+pro resto da vida da conversa. Escopo confirmado com o usuário: só desktop (Telegram/WhatsApp/
+mobile/CLI não têm — ou mantêm — seletor de agente, fora de escopo); modelo/provider continua
+livre pra trocar a qualquer momento, só o agente trava; agente passou a ser obrigatório, não existe
+mais opção "sem agente" numa conversa nova. Nenhuma mudança de schema/Rust — `Conversation.agent_id`
+já existia por-conversa desde a Sessão 43, a trava é inteiramente de UX no `ChatArea.tsx`/`App.tsx`.
+Conversas antigas (criadas antes desta feature) continuam funcionando normalmente, só sem a trava
+nova sobre um histórico que não a respeitava. Ver `ARCHITECTURE.md`.
+
 ---
 
 ### Fase 7 — App Mobile

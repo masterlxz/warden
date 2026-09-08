@@ -281,6 +281,19 @@ body {
   border-color: var(--color-accent);
 }
 
+.chat-header-label {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.35em 0.9em;
+  font-size: 0.85em;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+}
+
+.chat-header-label--muted {
+  color: var(--color-text-muted);
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -315,6 +328,80 @@ body {
   font-size: 1.35rem;
   font-weight: 600;
   color: var(--color-text-muted);
+}
+
+.agent-picker {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.agent-picker h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.agent-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 26rem;
+}
+
+.agent-picker-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  padding: 0.9rem 1.1rem;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.agent-picker-card:hover,
+.agent-picker-card:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.agent-picker-card-name {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.agent-picker-card-persona {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+.agent-picker-settings-btn {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 600;
+  font-family: inherit;
+  color: white;
+  background-color: var(--color-accent);
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.agent-picker-settings-btn:hover {
+  background-color: var(--color-accent-dark);
 }
 
 .message-row {

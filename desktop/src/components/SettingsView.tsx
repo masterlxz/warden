@@ -725,9 +725,12 @@ function SettingsView() {
             </button>
           </div>
           <p className="settings-hint">
-            Give the agent a name and a personality — pick which one to use per conversation, alongside the model.
+            Give the agent a name and a personality — every new conversation starts by picking one, alongside the
+            model, and sticks with it for good.
           </p>
-          {form.agents.length === 0 && <p className="settings-hint">No agents configured yet — conversations use no persona by default.</p>}
+          {form.agents.length === 0 && (
+            <p className="settings-hint">No agents configured yet — add one here before starting a new conversation.</p>
+          )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
               <AgentCard key={i} agent={a} providers={form.providers} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
