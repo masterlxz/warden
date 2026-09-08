@@ -62,7 +62,8 @@ function SpeakButton({ text }: { text: string }) {
 }
 
 // Links must open in the user's default browser, not navigate the app's own webview away.
-function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
+// Exported for reuse by `VaultView` (P52 part 2), which renders markdown outside chat bubbles.
+export function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
   const { href, children, ...rest } = props;
   return (
     <a

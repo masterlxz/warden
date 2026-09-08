@@ -97,6 +97,56 @@ data definida — mesma lista de frentes soltas de antes (Fase 7.6, P8, P46-P51,
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 2)
+
+- **Objetivo**: usuário disse "bora para a parte 2 da p52 então". Escopo fechado antes de
+  planejar (2 perguntas): só leitura (edição continua por fora/pela IA, editor completo fica pra
+  v2) e os 3 arquivos fixos destacados numa seção própria, separados da árvore do resto do vault.
+  Planejado em modo formal (`/plan`, 1 agente Explore mapeando telas existentes do desktop,
+  comandos Tauri e renderização de markdown) antes de codar. P52 fecha por completo nesta sessão
+  (as duas partes).
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, seis entradas novas "Visualização
+do vault (P52, parte 2)"):
+
+- **Dois comandos Tauri novos** (`desktop/src-tauri/src/vault_cmds.rs`, mesmo precedente de módulo
+  dedicado que `sync_cmds.rs` já documentava): `list_vault_files` (reaproveita
+  `Vault::list_all_files`, filtra fora os 3 arquivos fixos só quando na raiz) e `read_vault_file`
+  (reaproveita `Vault::read` — caminhos só vêm do que a própria lista retornou, sem sanitização
+  extra necessária). Ambos reaproveitam o `Vault` já vivo em `AppState.orchestrator`
+  (`state.orchestrator.lock().unwrap().clone()`, mesmo padrão de `send_message`), sem reconstruir
+  nada do zero.
+- **`VaultView.tsx` novo** (mesmo formato de `SyncView`/`UsageView`) — seção "Fixed memory" no topo
+  (3 entradas hardcoded, rótulos em português, mesma ordem de `standing_memory`) + árvore simples
+  do resto do vault (`buildTree`, função pura, pastas antes de arquivos, alfabética) + painel de
+  conteúdo renderizado via `ReactMarkdown`/`remark-gfm` (dependência já existente, usada antes só
+  em `MessageBubble.tsx` — `MarkdownLink` virou `export` em vez de duplicado). Arquivo fixo vazio
+  mostra placeholder discreto; erro de leitura de um arquivo qualquer da árvore fica isolado ao
+  painel, sem derrubar a navegação.
+- Entrada nova na sidebar (`VaultIcon`, `Icons.tsx`) entre Sync e Settings; `App.tsx`/
+  `Sidebar.tsx` ganharam `"vault"` na união de views.
+- `cargo check --workspace`/`cargo clippy --workspace --all-targets` e `npm run build` (tsc+vite)
+  limpos.
+- **Verificado via Playwright contra o dev server real** (`npm run dev`, mock de
+  `list_vault_files`/`read_vault_file`) — seção fixa, árvore agrupada por pasta (`notes/`, `study/`
+  antes de `a.md` solto), seleção trocando o conteúdo renderizado (título/itálico/lista/negrito),
+  placeholder de arquivo fixo vazio, claro e escuro, todos conferidos por screenshot.
+- **Verificado também contra o vault real do usuário** (`npm run tauri dev`, sem mock — ~4:48min
+  de build limpo): app abriu e ficou rodando sem crash (confirmado por processo vivo + log sem
+  erro), e os 3 arquivos fixos foram seedados de verdade em `~/Warden/vault/` (estava vazio até
+  agora) com o conteúdo exato do template — prova de que o bootstrap real resolve o path certo e
+  escreve no vault de verdade, não só em teste. Não deu pra capturar screenshot da janela nativa
+  (compositor Wayland do ambiente não suporta o protocolo de captura de tela) nem clicar em "Vault"
+  sem automação de input (mesma lacuna já aceita em sessões anteriores) — aceito como suficiente,
+  já que a UI em si foi inteiramente verificada via Playwright.
+- Atualizados `PHASE.md` (Fase 4.6 agora cobre as duas partes), `PENDING.md` (P52 movida pra
+  "Resolvidas" — fecha de vez), `ROADMAP.md`.
+
+**Próximo passo**: nenhum item específico escolhido — seguem em aberto Fase 7.6 (build/deploy
+mobile), P8 (polish do CLI), o resto do backlog (P46-P51), e P58 (visual do mobile).
+
+---
+
 ### 2026-09-08 — Sessão 56
 
 - **Objetivo**: usuário disse "bora continuar?". Escolhido entre as frentes em aberto (4.5 busca

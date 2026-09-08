@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon, VaultIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -9,7 +9,8 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onOpenUsage: () => void;
   onOpenSync: () => void;
-  view: "chat" | "settings" | "usage" | "sync";
+  onOpenVault: () => void;
+  view: "chat" | "settings" | "usage" | "sync" | "vault";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -22,6 +23,7 @@ function Sidebar({
   onOpenSettings,
   onOpenUsage,
   onOpenSync,
+  onOpenVault,
   view,
   collapsed,
   onToggleCollapsed,
@@ -93,6 +95,15 @@ function Sidebar({
         >
           <SyncIcon size={17} />
           {!collapsed && "Sync"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "vault" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenVault}
+          title="Vault"
+        >
+          <VaultIcon size={17} />
+          {!collapsed && "Vault"}
         </button>
         <button
           type="button"

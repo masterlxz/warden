@@ -111,14 +111,11 @@ presumivelmente pra permitir usar a conta/assinatura que o usuário já paga em 
 de) uma chave de API bruta. Usuário sinalizou que "vem a hora" de puxar isso pra frente. Ver
 P51, substitui/evolui P12.
 
-### Estrutura padrão do vault + visualização pela interface
+### ~~Estrutura padrão do vault + visualização pela interface~~ — feito (Sessão 57)
 
-**Parte 1 (estrutura fixa) feita (Sessão 57)** — `_profile.md`/`_behavior.md`/`_feedback.md` na
-raiz do vault, sempre injetados no prompt (não dependentes de busca). Ver `PENDING.md` P52 e
-`ARCHITECTURE.md`.
-
-**Parte 2 (visualização pela interface) segue em aberto** — nenhuma tela nova de vault existe
-ainda no desktop, só o campo de path nas Settings. Ver P52.
+Implementado nas duas partes — ver `PENDING.md` P52 (resolvida) e `ARCHITECTURE.md`. Parte 1:
+`_profile.md`/`_behavior.md`/`_feedback.md` na raiz do vault, sempre injetados no prompt. Parte 2:
+tela "Vault" no desktop, só leitura, com os 3 fixos destacados no topo da navegação.
 
 ### Canal Terminal (estilo Claude Code)
 

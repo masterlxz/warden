@@ -129,8 +129,8 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   ponta com o modelo real baixado de verdade nesta sessão (rede disponível no ambiente) — ranking
   correto distinguindo "consulta médica" de "compromisso com dentista" sem nenhuma palavra em
   comum*
-- [x] 4.6 — Estrutura fixa/padrão do vault (P52, parte 1 — sem a UI de visualização, essa é a
-  parte 2, em aberto) *(Sessão 57) — três arquivos reservados na raiz do vault (`_profile.md`,
+- [x] 4.6 — Estrutura fixa/padrão do vault + visualização pela interface (P52, parte 1 + parte 2)
+  *(Sessão 57) — três arquivos reservados na raiz do vault (`_profile.md`,
   `_behavior.md`, `_feedback.md`, cobrindo perfil do usuário/comportamento da IA/feedback e lições
   aprendidas, escolhidos explicitamente pelo usuário), seedados com um template curto em português
   na primeira vez que cada um é usado (`warden-bootstrap::seed_default_vault_files`, idempotente —
@@ -147,7 +147,20 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   o Gemini real (não mockado): editado `_profile.md` com um fato fictício ("tenho um dragão de
   estimação chamado Fumaça") sem nunca mencionar isso na conversa, perguntado sobre o "bicho de
   estimação" — resposta refletiu o fato corretamente, confirmando que a injeção chega no modelo de
-  verdade*
+  verdade. **Parte 2 — visualização pela interface** *(Sessão 57, continuação) — tela "Vault" nova
+  no desktop (`VaultView.tsx`, entrada na sidebar ao lado de Usage/Sync/Settings), só leitura (edição
+  continua por fora — Obsidian/editor de texto, ou a própria IA via `WriteFileTool`). Os 3 arquivos
+  fixos aparecem destacados numa seção própria no topo da navegação (rótulos em português, mesma
+  ordem de `standing_memory`), separados de uma árvore simples do resto do vault (pastas antes de
+  arquivos, alfabética). Dois comandos Tauri novos (`desktop/src-tauri/src/vault_cmds.rs`, mesmo
+  precedente de módulo dedicado que `sync_cmds.rs`): `list_vault_files`/`read_vault_file`, ambos
+  reaproveitando o `Vault` já vivo em `AppState.orchestrator` (sem reconstruir um do zero por
+  chamada). Conteúdo renderizado via `ReactMarkdown`/`remark-gfm`, dependência já existente no
+  projeto (usada antes só em `MessageBubble.tsx`) — zero dependência nova, `MarkdownLink` exportado
+  de lá e reaproveitado. Verificado via Playwright contra o dev server real (seção fixa, árvore por
+  pasta, seleção trocando conteúdo renderizado, placeholder de vazio, claro/escuro) e também contra
+  o vault real do usuário (`npm run tauri dev`, sem mock) — app abriu sem crash e os 3 arquivos
+  fixos foram seedados de verdade em `~/Warden/vault/` (antes vazio)*
 
 ---
 

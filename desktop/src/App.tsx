@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import SyncView from "./components/SyncView";
+import VaultView from "./components/VaultView";
 import type { Attachment, ChatMessage, Conversation, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -34,7 +35,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -171,6 +172,7 @@ function App() {
         onOpenSettings={() => setView("settings")}
         onOpenUsage={() => setView("usage")}
         onOpenSync={() => setView("sync")}
+        onOpenVault={() => setView("vault")}
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
@@ -181,6 +183,8 @@ function App() {
         <UsageView />
       ) : view === "sync" ? (
         <SyncView />
+      ) : view === "vault" ? (
+        <VaultView />
       ) : (
         <ChatArea
           activeConversation={activeConversation}

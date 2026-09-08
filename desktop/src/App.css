@@ -867,6 +867,72 @@ body {
   color: var(--color-accent-dark);
 }
 
+/* Vault (P52 part 2) — same outer padding/gap as .settings-view, but its own scroll handling:
+   the nav and content panes scroll independently instead of the whole screen scrolling together,
+   so browsing a long file never scrolls the file tree out of view. */
+.vault-view {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  padding: 2rem;
+  background: var(--color-bg);
+  gap: 1.5rem;
+}
+
+.vault-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 1.5rem;
+}
+
+.vault-nav {
+  width: 240px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.vault-nav-section-label {
+  margin-top: 0.75rem;
+  padding: 0 0.65em;
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.vault-nav-section-label:first-child {
+  margin-top: 0;
+}
+
+.vault-tree-folder {
+  padding: 0.4em 0.65em;
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
+.vault-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--color-border);
+}
+
+.vault-placeholder {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
 .settings-form {
   display: flex;
   flex-direction: column;
