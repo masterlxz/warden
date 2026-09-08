@@ -90,6 +90,13 @@ pub struct FileConfig {
     /// Opt-in gate for the `shell` tool (Phase 5.5) — off unless explicitly turned on, since it
     /// lets the model run arbitrary commands on this machine with no sandboxing.
     pub enable_shell: Option<bool>,
+    /// Overrides how many levels deep a sub-agent spawned via `DelegateTool` can itself delegate
+    /// further (P46's recursive delegation, Sessão 57). `None` keeps `DEFAULT_DELEGATE_MAX_DEPTH`;
+    /// `WARDEN_DELEGATE_MAX_DEPTH` wins over this if set (same precedence as
+    /// `enable_shell`/`WARDEN_ENABLE_SHELL`). No UI yet — config.toml/env only, and no upper clamp:
+    /// raising this raises the worst-case model-call blowup documented on `DEFAULT_DELEGATE_MAX_DEPTH`
+    /// (see `PENDING.md` P60), deliberately left to the user to weigh.
+    pub delegate_max_depth: Option<u32>,
     #[serde(default)]
     pub api_keys: ApiKeys,
     /// The provider registry (Sessão 35). Empty means "not migrated to the registry yet" —
@@ -509,6 +516,14 @@ pub fn resolve_flag(from_env: Option<String>, from_file: Option<bool>) -> bool {
     }
 }
 
+/// Same env-wins-over-file precedence as `resolve_flag`, for `delegate_max_depth` (P46). An env
+/// value that doesn't parse as a `u32` is treated the same as it not being set at all — falls
+/// back to `from_file`, then `DEFAULT_DELEGATE_MAX_DEPTH` — rather than failing `bootstrap()`
+/// outright over a malformed value on an advanced/optional knob.
+pub fn resolve_delegate_max_depth(from_env: Option<String>, from_file: Option<u32>) -> u32 {
+    from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_DELEGATE_MAX_DEPTH)
+}
+
 /// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
 /// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
 /// take down the whole orchestrator, same graceful-degradation spirit as a missing
@@ -707,18 +722,21 @@ pub async fn bootstrap(
         register_mcp_tools(&mut base_tools, name, connect).await;
     }
 
-    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, DELEGATE_MAX_DEPTH);
+    let delegate_max_depth =
+        resolve_delegate_max_depth(std::env::var("WARDEN_DELEGATE_MAX_DEPTH").ok(), config.delegate_max_depth);
+    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth);
 
     Ok(orchestrator)
 }
 
-/// How many levels deep a sub-agent spawned via `DelegateTool` can itself delegate further (P46
-/// — "sub-agentes autônomos", core recursion piece). Fixed and not user-configurable yet: no job
-/// queue or cost control exists to bound a deep chain's total model calls (worst case is roughly
+/// Default for how many levels deep a sub-agent spawned via `DelegateTool` can itself delegate
+/// further (P46 — "sub-agentes autônomos", core recursion piece), used when `delegate_max_depth`
+/// isn't set in config.toml/env (see `resolve_delegate_max_depth`). No job queue or cost control
+/// exists to bound a deep chain's total model calls (worst case is roughly
 /// `MAX_TOOL_ITERATIONS ^ depth` if every single iteration at every level delegates), so a small
-/// constant is what keeps that worst case sane without either. Revisit alongside P4 (cost
-/// control) if a use case needs deeper chains — see `PENDING.md` P60.
-const DELEGATE_MAX_DEPTH: u32 = 2;
+/// default is what keeps that worst case sane out of the box. Revisit alongside P4 (cost control)
+/// if a use case needs deeper chains by default — see `PENDING.md` P60.
+const DEFAULT_DELEGATE_MAX_DEPTH: u32 = 2;
 
 /// Builds an `Orchestrator` with `base_tools` registered, plus — while `depth > 0` — a
 /// `DelegateTool` wrapping another orchestrator built the same way one level shallower. The
@@ -953,6 +971,7 @@ oauth = true
             model: Some("gpt-4o-mini".to_string()),
             vault_path: Some("/tmp/some-vault".to_string()),
             enable_shell: Some(true),
+            delegate_max_depth: Some(3),
             api_keys: ApiKeys {
                 gemini: Some("gk".to_string()),
                 openai: Some("ok".to_string()),
@@ -1114,6 +1133,14 @@ oauth = true
         assert!(resolve_flag(None, Some(true)));
         assert!(!resolve_flag(None, Some(false)));
         assert!(!resolve_flag(None, None));
+    }
+
+    #[test]
+    fn resolve_delegate_max_depth_prefers_env_over_file() {
+        assert_eq!(resolve_delegate_max_depth(Some("5".to_string()), Some(1)), 5);
+        assert_eq!(resolve_delegate_max_depth(Some("nonsense".to_string()), Some(1)), 1);
+        assert_eq!(resolve_delegate_max_depth(None, Some(4)), 4);
+        assert_eq!(resolve_delegate_max_depth(None, None), DEFAULT_DELEGATE_MAX_DEPTH);
     }
 
     /// `Arc<dyn ModelProvider>` isn't `Debug`, so `Result::unwrap_err` (which requires the `Ok`

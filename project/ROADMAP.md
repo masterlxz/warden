@@ -177,7 +177,8 @@ Agentes que criam outros agentes recursivamente para tarefas complexas.
 Usuário confirmou interesse em "lançar agentes" (2026-08-02) — arquitetura
 ainda em aberto, ver P8 em `PENDING.md`. Precisa de:
 - ~~Recursão em si (agente cria agente que cria agente)~~ — **núcleo feito (Sessão 57, P46)**:
-  `DelegateTool` recursivo, profundidade fixa (`DELEGATE_MAX_DEPTH = 2`), sem controle de custo
+  `DelegateTool` recursivo, profundidade default 2 (`config.toml`/`WARDEN_DELEGATE_MAX_DEPTH`
+  ajustam, sem UI ainda — Sessão 57), sem controle de custo
 - Fila de jobs
 - Controle de custo por sub-agente
 - Isolamento de tools por sub-agente

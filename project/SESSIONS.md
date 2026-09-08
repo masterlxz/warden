@@ -6,6 +6,48 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 5)
+
+- **Objetivo**: usuário disse "bora continuar no 46 ent". Com o núcleo recursivo já feito
+  (continuação 4), oferecidas 3 fatias pra seguir dentro do P46 — usuário escolheu a menor:
+  **tirar `DELEGATE_MAX_DEPTH` de constante fixa e deixar configurável** via `config.toml`/env,
+  sem UI nova. Planejado em modo formal (`/plan`, 1 agente Explore mapeando agentes nomeados e o
+  wiring do `DelegateTool`, usado pra confirmar que essa era mesmo a fatia certa antes de fechar
+  escopo com o usuário) antes de codar.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`):
+
+- **`FileConfig.delegate_max_depth: Option<u32>` novo** (`crates/warden-bootstrap/src/lib.rs`) —
+  mesmo padrão de `enable_shell`/`Option<bool>` (serde já trata `Option` ausente como `None`, sem
+  precisar de `#[serde(default)]`).
+- **`resolve_delegate_max_depth(from_env, from_file) -> u32` novo**, ao lado de
+  `resolve_flag`/`resolve_secret` — mesma precedência env-vence-arquivo, mesma permissividade (uma
+  env mal formada cai pro arquivo/default em vez de derrubar `bootstrap()` inteiro). Constante
+  antiga `DELEGATE_MAX_DEPTH` renomeada pra `DEFAULT_DELEGATE_MAX_DEPTH` (mesmo valor, `2`) — vira
+  só o fallback, não mais o único valor possível. `bootstrap()` resolve
+  `WARDEN_DELEGATE_MAX_DEPTH`/`config.delegate_max_depth` antes de chamar
+  `build_delegating_orchestrator`.
+- **Sem clamp de teto** — decisão deliberada: é exatamente esse número que o usuário pediu pra
+  poder ajustar; documentar o risco (já registrado em P60) é a resposta, não capar silenciosamente
+  o valor configurado.
+- **Desktop (`desktop/src-tauri/src/lib.rs::save_settings`)** — como não existe UI pra esse campo,
+  o save de Settings carrega `existing.delegate_max_depth` adiante em vez de zerar, mesmo
+  tratamento já dado a `telegram_bot_token` (campo sem UI, hand-editable via `config.toml`).
+- Teste novo (`resolve_delegate_max_depth_prefers_env_over_file`) e o fixture de
+  `save_config_round_trips_through_load_config` atualizado (literal de `FileConfig` lista todo
+  campo nomeado, precisou do valor novo). `cargo test -p warden-bootstrap` (36 testes),
+  `cargo check --workspace` e `cargo clippy --workspace --all-targets` limpos.
+- Atualizados `PENDING.md` (P46 — nota nova; P60 — risco agora ajustável pelo usuário, não
+  eliminado), `ROADMAP.md` (linha desatualizada corrigida).
+
+**Próximo passo**: dentro do P46, seguem em aberto os dois modos em si (UI/config pra "chefe" vs.
+"funcionários" — candidato mapeado na exploração desta sessão: uma tool `delegate_to_agent` que
+endereça um `AgentConfig` específico por id, já que hoje `DelegateTool` só sabe delegar tarefas
+anônimas), fila de jobs, controle de custo, isolamento de tools. Fora do P46: Fase 7.6, P8,
+P47-P51, P59/P60.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 4)
 
 - **Objetivo**: usuário disse "bora pro p46 ent". Como o ROADMAP deixava a arquitetura do P46

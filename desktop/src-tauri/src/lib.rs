@@ -422,6 +422,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         model: None,
         vault_path: non_empty(payload.vault_path),
         enable_shell: Some(payload.enable_shell),
+        // No Settings-screen UI yet (P46, config.toml/env-only advanced knob) — carry forward
+        // whatever was on disk instead of wiping it, same reasoning as `telegram_bot_token` above.
+        delegate_max_depth: existing.delegate_max_depth,
         api_keys: ApiKeys {
             gemini: None,
             openai: None,
