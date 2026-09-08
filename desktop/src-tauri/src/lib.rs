@@ -8,8 +8,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_model_provider, default_config_path, default_conversations_dir, default_model_for,
-    list_conversations as read_conversations, load_config_from_path, oauth_credential_store_path, save_config,
+    aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, default_config_path, default_conversations_dir,
+    default_model_for, list_conversations as read_conversations, load_config_from_path, oauth_credential_store_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
     ProviderConfig, UsageSummary,
 };
@@ -140,7 +140,14 @@ async fn send_message(
         let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
         if let Some(id) = &agent_id {
-            persona = config.agents.iter().find(|a| &a.id == id).map(|a| a.persona.clone());
+            if let Some(agent) = config.agents.iter().find(|a| &a.id == id) {
+                persona = Some(agent.persona.clone());
+                if agent.can_delegate_to_agents {
+                    if let Some(tool) = build_delegate_to_agent_tool(&config, &orchestrator) {
+                        orchestrator = orchestrator.with_tool(tool);
+                    }
+                }
+            }
         }
         if let Some(id) = &provider_id {
             let provider = config.providers.iter().find(|p| &p.id == id).ok_or_else(|| format!("model provider '{id}' not found"))?;
@@ -340,6 +347,13 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
+    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    // The Telegram bot token (Fase 2) and other config.toml/env-only fields (P46) have no
+    // Settings-screen UI yet (see PENDING.md P11) — only hand-editable via config.toml. Loaded
+    // up front so every "carry forward instead of wiping" field below (and the agents loop, which
+    // needs it for `can_delegate_to_agents`) can reference it.
+    let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+
     let mut providers = Vec::with_capacity(payload.providers.len());
     let mut seen_ids = std::collections::HashSet::new();
     for p in payload.providers {
@@ -397,7 +411,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
             }
         }
-        agents.push(AgentConfig { id, persona: a.persona, provider_id });
+        let can_delegate_to_agents = existing.agents.iter().find(|e| e.id == id).is_some_and(|e| e.can_delegate_to_agents);
+        agents.push(AgentConfig { id, persona: a.persona, provider_id, can_delegate_to_agents });
     }
 
     let active_provider = non_empty(payload.active_provider);
@@ -406,12 +421,6 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
             return Err(format!("active provider '{active_id}' is not one of the configured providers"));
         }
     }
-
-    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    // The Telegram bot token (Fase 2) has no settings-screen UI yet (see PENDING.md P11) — only
-    // hand-editable via config.toml. Carry it forward instead of defaulting to empty, so hitting
-    // Save here doesn't silently wipe it.
-    let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`

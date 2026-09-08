@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod delegate;
+pub mod delegate_to_agent;
 pub mod file_tools;
 pub mod mcp;
 pub mod mcp_oauth;

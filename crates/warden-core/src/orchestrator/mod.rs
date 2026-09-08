@@ -60,6 +60,15 @@ impl Orchestrator {
         Self { model, ..self.clone() }
     }
 
+    /// Returns a copy of this orchestrator with one extra tool registered — cheap, same reasoning
+    /// as `with_model`. Lets a caller attach a tool to one specific turn/agent (P46's opt-in
+    /// `delegate_to_agent`) without touching the shared instance every other conversation uses.
+    pub fn with_tool(&self, tool: Arc<dyn Tool>) -> Self {
+        let mut clone = self.clone();
+        clone.register_tool(tool);
+        clone
+    }
+
     /// Every tool currently registered — used by `warden-mcp-server` to re-expose this
     /// orchestrator's whole capability set (vault access, shell if enabled, whatever MCP servers
     /// were connected in `bootstrap()`, ...) as its own MCP server for third-party clients.

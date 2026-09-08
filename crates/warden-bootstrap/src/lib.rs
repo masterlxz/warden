@@ -17,6 +17,7 @@ use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::{Attachment, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
+use warden_core::tool::delegate_to_agent::{DelegateToAgentTool, NamedSubAgent};
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
 use warden_core::tool::shell::ShellTool;
@@ -72,6 +73,13 @@ pub struct AgentConfig {
     /// whatever the conversation already has selected" — picking this agent in the desktop just
     /// pre-fills the model selector with this when set, it isn't enforced afterward.
     pub provider_id: Option<String>,
+    /// Opt-in for P46's "chief" mechanism — only an agent with this set to `true` gets the
+    /// `delegate_to_agent` tool attached to its turns (see `build_delegate_to_agent_tool`). No
+    /// Settings/CLI UI to toggle it yet — hand-edit `config.toml`.
+    /// `#[serde(default)]` (not `Option`) so every config.toml written before this field existed
+    /// still parses — same reasoning as `McpServerConfig::Http::oauth`.
+    #[serde(default)]
+    pub can_delegate_to_agents: bool,
 }
 
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
@@ -603,6 +611,56 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
     })
 }
 
+/// Builds the `delegate_to_agent` tool (P46's opt-in "chief" mechanism) from every configured
+/// agent — call once per turn, after resolving which model/persona is active, only when the
+/// active agent has `can_delegate_to_agents: true` (a caller attaches the result via
+/// `Orchestrator::with_tool`). `orchestrator` should be the same orchestrator this turn is about
+/// to use: each target agent gets a clone of it (`with_model` swapped in only if that agent's
+/// `provider_id` differs), so every target inherits the exact same tool set/delegation depth as
+/// everyone else, just its own persona/model layered on top.
+///
+/// An agent invoked as a *target* here never gets `delegate_to_agent` itself, even if its own
+/// `can_delegate_to_agents` is `true` — that flag is only consulted by the caller for whichever
+/// agent is the conversation's *active* one, never for a delegation target. Deliberate: avoids an
+/// uncontrolled chief-of-chief chain without needing another depth limit (see `PENDING.md` P60,
+/// same spirit as `DELEGATE_MAX_DEPTH`/`delegate_max_depth` for `delegate_task`).
+///
+/// Returns `None` when there's nothing to delegate to — no agents configured, or every one of
+/// them failed to resolve a valid provider (logged via `eprintln!`, not fatal — one broken agent
+/// shouldn't take down every other agent's ability to delegate).
+pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator) -> Option<Arc<dyn Tool>> {
+    let mut targets = Vec::new();
+    for agent in &config.agents {
+        let target_orchestrator = match &agent.provider_id {
+            Some(provider_id) => {
+                let Some(provider) = config.providers.iter().find(|p| &p.id == provider_id) else {
+                    eprintln!(
+                        "note: agent '{}' references unknown provider '{provider_id}' — delegate_to_agent won't be able to reach it\n",
+                        agent.id
+                    );
+                    continue;
+                };
+                match build_model_provider(provider, None) {
+                    Ok(model) => orchestrator.with_model(model),
+                    Err(err) => {
+                        eprintln!("note: agent '{}' has an invalid provider — delegate_to_agent won't be able to reach it: {err:#}\n", agent.id);
+                        continue;
+                    }
+                }
+            }
+            None => orchestrator.clone(),
+        };
+        let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
+        targets.push(NamedSubAgent {
+            id: agent.id.clone(),
+            description: agent.persona.clone(),
+            orchestrator: target_orchestrator,
+            persona,
+        });
+    }
+    (!targets.is_empty()).then(|| Arc::new(DelegateToAgentTool::new(targets)) as Arc<dyn Tool>)
+}
+
 /// Resolves which `ModelProvider` to build, in order: an explicit `overrides.provider_id` or
 /// `config.active_provider` naming an entry in `config.providers` (the registry, Sessão 35);
 /// otherwise, when `config.providers` is empty, a single provider synthesized from the older
@@ -1005,6 +1063,7 @@ oauth = true
                 id: "pirate".to_string(),
                 persona: "You are a pirate. Speak in pirate slang.".to_string(),
                 provider_id: Some("ollama-local".to_string()),
+                can_delegate_to_agents: true,
             }],
         };
 
@@ -1254,7 +1313,12 @@ oauth = true
     }
 
     fn agent_config(id: &str, provider_id: Option<&str>) -> AgentConfig {
-        AgentConfig { id: id.to_string(), persona: String::new(), provider_id: provider_id.map(str::to_string) }
+        AgentConfig {
+            id: id.to_string(),
+            persona: String::new(),
+            provider_id: provider_id.map(str::to_string),
+            can_delegate_to_agents: false,
+        }
     }
 
     #[test]

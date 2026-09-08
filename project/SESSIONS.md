@@ -6,6 +6,65 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 6)
+
+- **Objetivo**: usuário disse "pode seguir primeiro" (deixando o push do commit anterior pra
+  depois). Perguntado por onde seguir dentro do P46, escolhido **`delegate_to_agent`**: uma tool
+  que deixa um agente endereçar um agente **configurado** específico por id (persona/provider
+  próprios), em vez de só uma tarefa anônima (`delegate_task`). Confirmado com o usuário: opt-in
+  por agente (`AgentConfig.can_delegate_to_agents`), não "todo agente pode" nem "só sem agente
+  selecionado". Planejado em modo formal (`/plan`) — no meio do design, achado que mudou o escopo
+  real: existe **um único `Orchestrator` compartilhado** por todas as conversas (tools fixas desde
+  `bootstrap()`, só persona/modelo trocam por turno), então o opt-in de verdade exigiria mexer em
+  cada canal que resolve `agent_id`, não só registrar a tool em algum lugar central. Apresentado
+  esse achado ao usuário com 3 caminhos (opt-in de verdade tocando desktop+CLI / inverter o eixo
+  pro alvo / simplificar pra "todo agente pode") — escolhido **opt-in de verdade**, aceitando o
+  custo maior.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`):
+
+- **`crates/warden-core/src/tool/delegate_to_agent.rs` novo** — `NamedSubAgent`
+  (id/description/orchestrator já com `with_model` aplicado/persona) + `DelegateToAgentTool`
+  (`delegate_to_agent`, despacha por `agent_id`, erro claro em id desconhecido/argumento
+  faltando). `warden-core` continua sem conhecer `AgentConfig` — recebe a lista já resolvida de
+  fora. 5 testes novos (falta de argumento, despacho por id, erro em id desconhecido, persona
+  chega de verdade como mensagem de sistema, spec lista todo agente).
+- **`Orchestrator::with_tool` novo** (`orchestrator/mod.rs`), mesmo padrão exato de `with_model`
+  (clone + registra uma tool a mais) — é o que permite anexar `delegate_to_agent` a um turno
+  específico sem tocar a instância compartilhada que toda outra conversa usa.
+- **`AgentConfig.can_delegate_to_agents: bool` novo** (`#[serde(default)]`, retrocompatível).
+  Ajustados os 4 pontos que constroem `AgentConfig` literalmente (fixture/helper de teste do
+  `warden-bootstrap`; `desktop::save_settings`, que reconstrói `agents` inteiro do payload da UI —
+  precisou mover o carregamento de `existing` pro topo da função, antes só acontecia depois do
+  loop de agentes; CLI `wizard_agents_create`/`wizard_agents_edit`) pra não perder o valor
+  hand-edited no `config.toml` a cada save, mesmo cuidado já dado a `telegram_bot_token`/
+  `delegate_max_depth`.
+- **`warden_bootstrap::build_delegate_to_agent_tool(config, orchestrator)` novo** — monta a lista
+  de `NamedSubAgent` a partir de `config.agents`, reaproveitando o `orchestrator` do turno como
+  base de cada alvo (herda base_tools/profundidade de delegação de graça); pula com aviso (não
+  fatal) um agente cujo `provider_id` não resolve.
+- **Fiação nos dois únicos canais que já resolvem `agent_id` por turno**: `desktop/src-tauri/src/
+  lib.rs::send_message` (dentro do `if let Some(id) = &agent_id`, confere `can_delegate_to_agents`
+  e anexa a tool) e `crates/warden-cli/src/interactive.rs` (`TurnContext` ganhou um terceiro
+  elemento, `resolve_turn_context` ganhou um parâmetro `orchestrator: &Orchestrator`, `run_turn`
+  ganhou `extra_tool: Option<Arc<dyn Tool>>`). Telegram/WhatsApp/`warden-server` não têm suporte a
+  agente nomeado nenhum hoje — nada mudou neles.
+- **Limitação aceita e documentada**: um agente invocado como *alvo* de `delegate_to_agent` nunca
+  ganha a tool ele mesmo, mesmo com `can_delegate_to_agents: true` — a flag só é consultada pro
+  agente ativo da conversa, nunca pra um alvo. Evita cadeia chefe-de-chefe descontrolada sem
+  precisar de outro limite de profundidade.
+- `cargo test -p warden-core -p warden-bootstrap -p warden-cli` (70+36+34+5 testes, nenhum
+  quebrado), `cargo check --workspace`/`cargo clippy --workspace --all-targets` e `npm run build`
+  (tsc+vite, zero mudança de TS esperada) limpos.
+- Atualizados `ARCHITECTURE.md` (entrada nova), `PENDING.md` (P46 — mais uma fatia; segue em
+  aberto UI/CLI pra ligar a flag, fila de jobs, custo, isolamento), `ROADMAP.md`.
+
+**Próximo passo**: dentro do P46, seguem em aberto UI/CLI pra ligar `can_delegate_to_agents`, fila
+de jobs, controle de custo, isolamento de tools por sub-agente. Fora do P46: Fase 7.6, P8,
+P47-P51, P59/P60. Push do commit anterior (profundidade configurável) e deste ainda pendente.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 5)
 
 - **Objetivo**: usuário disse "bora continuar no 46 ent". Com o núcleo recursivo já feito

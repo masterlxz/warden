@@ -72,8 +72,11 @@ aberto. Ver P46, complementa P8/a seção "Sub-agentes autônomos" abaixo.
 
 **Núcleo técnico feito (Sessão 57)**: delegação recursiva com profundidade limitada
 (`DelegateTool`/`build_delegating_orchestrator`, ver P46/`ARCHITECTURE.md`) — agentes já podem
-criar sub-agentes que criam sub-agentes (não só um nível). Os dois modos em si (UI/config pra
-"chefe" vs. "funcionários") e o resto do pacote (fila de jobs, custo, isolamento) seguem em aberto.
+criar sub-agentes que criam sub-agentes (não só um nível). **Modo centralizado, mecanismo
+concreto também feito (mesma sessão)**: tool `delegate_to_agent` deixa um agente opt-in
+(`AgentConfig.can_delegate_to_agents`) endereçar um agente **configurado** específico por id
+(persona/provider próprios), não só um sub-agente anônimo. Falta ainda: UI/CLI pra ligar essa flag
+(só hand-edit do `config.toml` por enquanto) e o resto do pacote (fila de jobs, custo, isolamento).
 
 ### SSH — conectar com VPS e máquinas externas
 

@@ -59,11 +59,12 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_model_provider, default_model_for, load_config_from_path, remove_provider_references, rename_provider_cascade, save_config, AgentConfig,
-    FileConfig, Provider, ProviderConfig,
+    build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
+    rename_provider_cascade, save_config, AgentConfig, FileConfig, Provider, ProviderConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
+use warden_core::tool::Tool;
 
 use crate::commands::{self, Command, ParseOutcome};
 
@@ -775,11 +776,16 @@ async fn run_turn(
     terminal: &mut CliTerminal,
     model_override: Option<Arc<dyn ModelProvider>>,
     system_prompt: Option<&str>,
+    extra_tool: Option<Arc<dyn Tool>>,
 ) -> anyhow::Result<Option<MessageOutcome>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
     let orchestrator = match model_override {
         Some(model) => orchestrator.with_model(model),
         None => orchestrator.clone(),
+    };
+    let orchestrator = match extra_tool {
+        Some(tool) => orchestrator.with_tool(tool),
+        None => orchestrator,
     };
     let history_owned = history.to_vec();
     let input_owned = input.to_string();
@@ -974,28 +980,31 @@ async fn prompt_field(terminal: &mut CliTerminal, title: &str, initial: &str) ->
     }
 }
 
-type TurnContext = (Option<Arc<dyn ModelProvider>>, Option<String>);
+type TurnContext = (Option<Arc<dyn ModelProvider>>, Option<String>, Option<Arc<dyn Tool>>);
 
 /// Resolves what this turn should actually use, given the session's `provider_id`/`agent_id`
 /// selections — a model override (only when it differs from whatever `run()`'s own `orchestrator`
-/// parameter already is) and a persona to pass as `system_prompt`. Reloads config fresh only when
-/// at least one selection is active; when neither is, returns `(None, None)` immediately with no
-/// disk access at all, so a session that never touches `/models`/`/agents` behaves exactly as
-/// before this feature existed. An explicit `/models use` always wins over an active agent's own
+/// parameter already is), a persona to pass as `system_prompt`, and (P46) a `delegate_to_agent`
+/// tool to attach when the active agent has opted into being a "chief"
+/// (`AgentConfig.can_delegate_to_agents`). Reloads config fresh only when at least one selection
+/// is active; when neither is, returns `(None, None, None)` immediately with no disk access at
+/// all, so a session that never touches `/models`/`/agents` behaves exactly as before this
+/// feature existed. An explicit `/models use` always wins over an active agent's own
 /// `provider_id` (which only pre-fills when nothing more specific was chosen) — same precedence
 /// the desktop's chat header uses between its agent and provider selectors.
-fn resolve_turn_context(session: &CliSession) -> anyhow::Result<TurnContext> {
+fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> anyhow::Result<TurnContext> {
     if session.provider_id.is_none() && session.agent_id.is_none() {
-        return Ok((None, None));
+        return Ok((None, None, None));
     }
 
     let config = load_fresh_config(session.config_path.as_deref())?;
 
-    let system_prompt = session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id)).map(|a| a.persona.clone());
+    let active_agent = session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id));
+    let system_prompt = active_agent.map(|a| a.persona.clone());
+    let extra_tool =
+        active_agent.filter(|a| a.can_delegate_to_agents).and_then(|_| build_delegate_to_agent_tool(&config, orchestrator));
 
-    let effective_provider_id = session.provider_id.clone().or_else(|| {
-        session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id)).and_then(|a| a.provider_id.clone())
-    });
+    let effective_provider_id = session.provider_id.clone().or_else(|| active_agent.and_then(|a| a.provider_id.clone()));
 
     let model_override = match effective_provider_id {
         Some(provider_id) => {
@@ -1009,7 +1018,7 @@ fn resolve_turn_context(session: &CliSession) -> anyhow::Result<TurnContext> {
         None => None,
     };
 
-    Ok((model_override, system_prompt))
+    Ok((model_override, system_prompt, extra_tool))
 }
 
 async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
@@ -1300,7 +1309,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
 
-    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id });
+    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents: false });
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
@@ -1324,7 +1333,8 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     };
 
     let old_id = current.id.clone();
-    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id };
+    config.agents[index] =
+        AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents: current.can_delegate_to_agents };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
     }
@@ -1556,7 +1566,7 @@ pub async fn run(
         insert_card(&mut terminal, vec![("você".to_string(), dim_style)], dim_style, plain_body_rows(trimmed), None)?;
         terminal.insert_before(1, |_buf| {})?;
 
-        let (model_override, system_prompt) = match resolve_turn_context(&session) {
+        let (model_override, system_prompt, extra_tool) = match resolve_turn_context(&session, orchestrator) {
             Ok(resolved) => resolved,
             Err(err) => {
                 render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
@@ -1564,7 +1574,7 @@ pub async fn run(
             }
         };
 
-        match run_turn(orchestrator, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref()).await {
+        match run_turn(orchestrator, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tool).await {
             Ok(Some(outcome)) => {
                 session.turn_count += 1;
                 if let Some(usage) = &outcome.usage {
