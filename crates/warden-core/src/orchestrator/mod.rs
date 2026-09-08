@@ -138,6 +138,17 @@ impl Orchestrator {
             }
         }
 
+        // Fixed/standard memory (P52) — unlike the search block below, not keyed off relevance to
+        // this turn's input: always injected in full when non-empty, so the model has standing
+        // context (user profile, behavior rules, accumulated feedback) on every single turn, not
+        // just when a grep/embedding match happens to surface it.
+        let standing_memory = self.vault.standing_memory();
+        if !standing_memory.is_empty() {
+            messages.push(Message::system(format!(
+                "Standing memory from the user's vault (always included, not relevance-dependent):\n\n{standing_memory}"
+            )));
+        }
+
         // Semantic search runs ONNX inference (blocking, CPU-heavy) — `spawn_blocking` keeps it
         // off the async runtime thread. Falls back to the plain grep on any error (model download
         // failed offline, corrupt index, panic) so vault context injection never breaks outright.
@@ -346,6 +357,44 @@ mod tests {
         let orchestrator = Orchestrator::new(Arc::new(EchoesFirstMessageModel), temp_vault());
 
         let result = orchestrator.handle_turn(&[], "hi", Vec::new(), Some("   ")).await.unwrap();
+        assert_eq!(result.content, "User:hi");
+    }
+
+    /// Joins every message's role/content into one string, "|"-separated — lets a test assert on
+    /// the full ordering `handle_turn` built, not just the first message.
+    struct EchoesAllMessagesModel;
+
+    #[async_trait]
+    impl ModelProvider for EchoesAllMessagesModel {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let joined = messages.iter().map(|m| format!("{:?}:{}", m.role, m.content)).collect::<Vec<_>>().join("|");
+            Ok(response_stream(Response { content: joined, tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    #[tokio::test]
+    async fn standing_memory_is_injected_between_persona_and_history() {
+        let vault = temp_vault();
+        vault.write("_profile.md", "Name: Ada.").unwrap();
+        let orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault);
+
+        let history = [Message::user("earlier message".to_string())];
+        let result =
+            orchestrator.handle_turn(&history, "hi", Vec::new(), Some("You are a pirate.")).await.unwrap();
+
+        let parts: Vec<&str> = result.content.split('|').collect();
+        assert_eq!(parts[0], "System:You are a pirate.");
+        assert_eq!(parts[1], "System:Standing memory from the user's vault (always included, not relevance-dependent):\n\n## User profile\n\nName: Ada.");
+        assert_eq!(parts[2], "User:earlier message");
+        assert_eq!(parts[3], "User:hi");
+    }
+
+    #[tokio::test]
+    async fn no_standing_memory_message_when_vault_has_none_of_the_fixed_files() {
+        let orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), temp_vault());
+
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
+
         assert_eq!(result.content, "User:hi");
     }
 

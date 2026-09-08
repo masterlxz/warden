@@ -113,12 +113,12 @@ P51, substitui/evolui P12.
 
 ### Estrutura padrão do vault + visualização pela interface
 
-Ideia nova (2026-09-06) pra Fase 4 (Vault & Memória): dentro da memória compartilhada entre
-agentes, o usuário quer uma parte **fixa/padrão** (perfil do usuário, comportamento da IA) e o
-resto **livre**, a critério da própria IA organizar (ex. arquivo sobre o cachorro, família,
-estudos). Também quer que o vault seja bem organizado e legível — não só pra IA, mas de fácil
-visualização **pela interface** (não só arquivos markdown crus). Ver P52, relacionado a P37
-(que cobre "como sincronizar" via Arweave, não "como estruturar").
+**Parte 1 (estrutura fixa) feita (Sessão 57)** — `_profile.md`/`_behavior.md`/`_feedback.md` na
+raiz do vault, sempre injetados no prompt (não dependentes de busca). Ver `PENDING.md` P52 e
+`ARCHITECTURE.md`.
+
+**Parte 2 (visualização pela interface) segue em aberto** — nenhuma tela nova de vault existe
+ainda no desktop, só o campo de path nas Settings. Ver P52.
 
 ### Canal Terminal (estilo Claude Code)
 

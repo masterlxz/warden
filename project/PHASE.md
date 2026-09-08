@@ -129,6 +129,25 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   ponta com o modelo real baixado de verdade nesta sessão (rede disponível no ambiente) — ranking
   correto distinguindo "consulta médica" de "compromisso com dentista" sem nenhuma palavra em
   comum*
+- [x] 4.6 — Estrutura fixa/padrão do vault (P52, parte 1 — sem a UI de visualização, essa é a
+  parte 2, em aberto) *(Sessão 57) — três arquivos reservados na raiz do vault (`_profile.md`,
+  `_behavior.md`, `_feedback.md`, cobrindo perfil do usuário/comportamento da IA/feedback e lições
+  aprendidas, escolhidos explicitamente pelo usuário), seedados com um template curto em português
+  na primeira vez que cada um é usado (`warden-bootstrap::seed_default_vault_files`, idempotente —
+  nunca sobrescreve um arquivo já existente, então um vault restaurado via `warden-sync` de outro
+  device não é tocado). `Vault::standing_memory()` novo em `warden-core` monta um bloco único a
+  partir deles (pulando seção vazia/ausente) e `Orchestrator::handle_turn_streaming` injeta esse
+  bloco como mensagem de sistema **sempre**, independente de busca por relevância — ao contrário do
+  bloco de busca (grep/semântica) já existente, que só aparece quando há hit. Como o hook fica no
+  único ponto real de implementação (`handle_turn_streaming`), todos os canais herdam de graça (CLI,
+  desktop, Telegram, WhatsApp, mobile via `warden-server`), sem tocar em nenhum deles. Os 3 arquivos
+  fixos passam a ser excluídos de `search`/`search_semantic` (evita duplicar o conteúdo já injetado
+  fixo, e evita que consumam o orçamento de 8 hits da busca livre) mas continuam em
+  `list_all_files`/sync normalmente — zero mudança em `warden-sync`. Verificado de ponta a ponta com
+  o Gemini real (não mockado): editado `_profile.md` com um fato fictício ("tenho um dragão de
+  estimação chamado Fumaça") sem nunca mencionar isso na conversa, perguntado sobre o "bicho de
+  estimação" — resposta refletiu o fato corretamente, confirmando que a injeção chega no modelo de
+  verdade*
 
 ---
 

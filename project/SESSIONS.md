@@ -53,6 +53,50 @@ mobile, aguardando o usuário testar no celular real dele antes de mexer no visu
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação)
+
+- **Objetivo**: usuário disse "bora seguir então". Perguntado por onde seguir de novo (sem sinal
+  de prioridade): escolhido **P52 — estrutura padrão do vault + visualização pela interface**,
+  especificamente a **parte 1 (estrutura fixa)**, deixando a parte 2 (UI) pra depois. Escopo
+  fechado com o usuário antes de planejar: conteúdo fixo = perfil do usuário + comportamento da
+  IA + feedback/lições aprendidas (as 3 opções oferecidas, todas escolhidas); arquivos na raiz do
+  vault com prefixo `_`; template inicial com uma linha de orientação curta (não em branco).
+  Planejado em modo formal (`/plan`, 1 agente Explore mapeando como o vault entra no contexto do
+  modelo hoje e onde inicializar os arquivos) antes de codar.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`, cinco entradas novas "Estrutura
+fixa do vault (P52, parte 1)"):
+
+- **`_profile.md`/`_behavior.md`/`_feedback.md`** — 3 arquivos reservados na raiz do vault
+  (`FIXED_VAULT_FILES`, `crates/warden-core/src/memory/mod.rs`), visíveis (não dot-prefixed, ao
+  contrário de `.warden/`) — sincronizam via `warden-sync` sem nenhuma mudança nele.
+- **`Vault::standing_memory()` novo** — lê os 3 arquivos, monta um bloco único pulando seção
+  vazia/ausente. **`collect_markdown_files`** passou a excluir os 3 (só quando na raiz — um
+  `notes/_profile.md` do usuário continua pesquisável normalmente) de `search`/`search_semantic`,
+  evitando duplicar o conteúdo já injetado fixo e evitando que consumam o orçamento de 8 hits da
+  busca livre. `list_all_files` (sync) não é tocada.
+- **`Orchestrator::handle_turn_streaming`** injeta o bloco como mensagem de sistema sempre que
+  não-vazio, entre a persona e a busca por relevância (ordem final: persona → memória fixa → busca
+  → histórico → turno atual). Por estar no único ponto real de implementação, todos os canais
+  (CLI, desktop, Telegram, WhatsApp, mobile) herdam de graça, sem tocar em nenhum deles.
+  `seed_default_vault_files` novo em `warden-bootstrap`, chamado logo após `Vault::new(vault_path)`
+  em `bootstrap()` — idempotente (só escreve se o arquivo ainda não existe), então um vault
+  restaurado via `warden-sync` de outro device não é tocado.
+- **Verificado de ponta a ponta com o Gemini real** (via `warden-cli`, chave já configurada) —
+  harness em pty Python (mesma técnica de sessões anteriores) editando `_profile.md` com um fato
+  fictício ("tenho um dragão de estimação chamado Fumaça") sem nunca mencionar isso na conversa;
+  perguntado sobre o "bicho de estimação", o modelo respondeu refletindo o fato corretamente —
+  prova de que a injeção chega no modelo de verdade, não só nos testes automatizados.
+- `cargo test -p warden-core -p warden-bootstrap` (99 testes, todos os novos inclusos),
+  `cargo check --workspace` e `cargo clippy --workspace --all-targets` limpos.
+- Atualizados `PHASE.md` (Fase 4.6 nova), `PENDING.md` (P52 — parte 1 marcada resolvida, parte 2
+  segue aberta), `ROADMAP.md`.
+
+**Próximo passo**: parte 2 da P52 (UI de visualização do vault no desktop) segue em aberto, sem
+data definida — mesma lista de frentes soltas de antes (Fase 7.6, P8, P46-P51, P58).
+
+---
+
 ### 2026-09-08 — Sessão 56
 
 - **Objetivo**: usuário disse "bora continuar?". Escolhido entre as frentes em aberto (4.5 busca

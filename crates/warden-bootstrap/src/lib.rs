@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use warden_core::memory::Vault;
+use warden_core::memory::{FIXED_VAULT_FILES, Vault};
 use warden_core::model::anthropic::AnthropicProvider;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
@@ -651,6 +651,7 @@ pub async fn bootstrap(
         .unwrap_or(default_vault_path);
 
     let vault = Arc::new(Vault::new(vault_path));
+    seed_default_vault_files(&vault);
 
     let mut base_tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(vault.clone())),
@@ -718,6 +719,25 @@ pub async fn bootstrap(
     orchestrator.register_tool(Arc::new(DelegateTool::new(sub_orchestrator)));
 
     Ok(orchestrator)
+}
+
+/// Seeds the vault's "fixed/standard" memory files (P52 — `Vault::standing_memory`) with a
+/// starter template the first time each one is used. Idempotent and non-destructive: only writes
+/// a file that doesn't exist yet, so a vault restored via `warden-sync` from another device (which
+/// already has these files, possibly edited) is never touched. Templates are short and in the
+/// user's language (Portuguese, matching how they actually write vault notes) — a title plus one
+/// line of guidance for both the user and the model on what belongs there.
+fn seed_default_vault_files(vault: &Vault) {
+    const TEMPLATES: [&str; 3] = [
+        "# Perfil do usuário\n\n_Quem você é — nome, contexto, preferências gerais. Edite livremente; a IA também pode atualizar aqui quando aprender algo relevante sobre você._\n",
+        "# Comportamento da IA\n\n_Como a IA deve agir e responder — regras gerais de conduta, válidas em qualquer agente/conversa (diferente da persona de um agente específico)._\n",
+        "# Feedback e lições aprendidas\n\n_Correções e preferências de como você gosta de trabalhar, acumuladas com o tempo. A IA deve atualizar este arquivo quando aprender algo relevante._\n",
+    ];
+    for (name, template) in FIXED_VAULT_FILES.iter().zip(TEMPLATES) {
+        if vault.read(name).is_err() {
+            let _ = vault.write(name, template);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1228,5 +1248,31 @@ oauth = true
         assert_eq!(config.active_provider, None);
         assert_eq!(config.agents[0].provider_id, None);
         assert_eq!(config.agents[1].provider_id.as_deref(), Some("stays"));
+    }
+
+    #[test]
+    fn seed_default_vault_files_writes_every_fixed_file_with_nonempty_content() {
+        let vault = Vault::new(temp_dir("seed-fresh"));
+
+        seed_default_vault_files(&vault);
+
+        for name in FIXED_VAULT_FILES {
+            let content = vault.read(name).unwrap();
+            assert!(!content.trim().is_empty(), "{name} should have been seeded with a template");
+        }
+
+        std::fs::remove_dir_all(vault.root()).ok();
+    }
+
+    #[test]
+    fn seed_default_vault_files_never_overwrites_an_existing_file() {
+        let vault = Vault::new(temp_dir("seed-existing"));
+        vault.write("_profile.md", "already customized by the user").unwrap();
+
+        seed_default_vault_files(&vault);
+
+        assert_eq!(vault.read("_profile.md").unwrap(), "already customized by the user");
+
+        std::fs::remove_dir_all(vault.root()).ok();
     }
 }

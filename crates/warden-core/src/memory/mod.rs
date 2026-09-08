@@ -33,6 +33,12 @@ pub struct SearchHit {
     pub line: String,
 }
 
+/// Reserved vault-root filenames for the "fixed/standard" memory (P52) — always injected via
+/// `Vault::standing_memory`, never surfaced through `search`/`search_semantic` (would otherwise
+/// double up with the standing-memory block and eat into the free-form notes' hit budget).
+/// `warden-bootstrap::seed_default_vault_files` seeds these with a starter template on first use.
+pub const FIXED_VAULT_FILES: [&str; 3] = ["_profile.md", "_behavior.md", "_feedback.md"];
+
 impl Vault {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -114,6 +120,25 @@ impl Vault {
             }
         }
         Ok(hits)
+    }
+
+    /// The "fixed/standard" memory block (P52) — unlike `search`/`search_semantic`, not keyed off
+    /// any query: always reads `FIXED_VAULT_FILES` in order and returns one combined block, with a
+    /// heading per file, skipping any that's missing or blank (an unseeded vault, or one where the
+    /// user cleared a section on purpose). Returns an empty string when all three are empty/absent,
+    /// so callers can skip injecting an empty system message.
+    pub fn standing_memory(&self) -> String {
+        const HEADINGS: [&str; 3] = ["User profile", "AI behavior", "Feedback / lessons learned"];
+        let mut sections = Vec::new();
+        for (name, heading) in FIXED_VAULT_FILES.iter().zip(HEADINGS) {
+            if let Ok(content) = self.read(name) {
+                let content = content.trim();
+                if !content.is_empty() {
+                    sections.push(format!("## {heading}\n\n{content}"));
+                }
+            }
+        }
+        sections.join("\n\n")
     }
 
     #[cfg(feature = "semantic-search")]
@@ -224,11 +249,19 @@ fn collect_markdown_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> an
         let path = entry.path();
         if path.is_dir() {
             collect_markdown_files(root, &path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") && !is_fixed_vault_file(root, &path) {
             out.push(path.strip_prefix(root)?.to_path_buf());
         }
     }
     Ok(())
+}
+
+/// True for `_profile.md`/`_behavior.md`/`_feedback.md` at the vault root specifically — a
+/// same-named file nested under a subdirectory (e.g. a user's own `notes/_profile.md`) is a
+/// regular note, not the reserved one, so only the root-level match is excluded from search.
+fn is_fixed_vault_file(root: &Path, path: &Path) -> bool {
+    path.parent() == Some(root)
+        && path.file_name().and_then(|n| n.to_str()).is_some_and(|name| FIXED_VAULT_FILES.contains(&name))
 }
 
 fn is_dotfile(path: &Path) -> bool {
@@ -312,5 +345,46 @@ mod tests {
 
         let capped = vault.search("dentist appointment", 0).unwrap();
         assert!(capped.is_empty());
+    }
+
+    #[test]
+    fn fixed_vault_files_excluded_from_list_and_search_but_not_a_nested_same_name_file() {
+        let vault = temp_vault();
+        vault.write("_profile.md", "name: dentist appointment person").unwrap();
+        vault.write("notes/_profile.md", "a real note that happens to share the name").unwrap();
+        vault.write("a.md", "unrelated dentist appointment note").unwrap();
+
+        let mut files: Vec<String> =
+            vault.list_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+        files.sort();
+        assert_eq!(files, vec!["a.md".to_string(), "notes/_profile.md".to_string()]);
+
+        let hits = vault.search("dentist appointment", 10).unwrap();
+        assert!(hits.iter().all(|h| h.path != "_profile.md"));
+        assert!(hits.iter().any(|h| h.path == "a.md"));
+    }
+
+    #[test]
+    fn standing_memory_skips_missing_and_blank_files() {
+        let vault = temp_vault();
+        assert_eq!(vault.standing_memory(), "");
+
+        vault.write("_profile.md", "  \n").unwrap(); // blank after trim
+        assert_eq!(vault.standing_memory(), "");
+
+        vault.write("_behavior.md", "Be concise.").unwrap();
+        assert_eq!(vault.standing_memory(), "## AI behavior\n\nBe concise.");
+    }
+
+    #[test]
+    fn standing_memory_joins_present_sections_in_fixed_order() {
+        let vault = temp_vault();
+        vault.write("_feedback.md", "Prefers terse answers.").unwrap();
+        vault.write("_profile.md", "Name: Ada.").unwrap();
+
+        assert_eq!(
+            vault.standing_memory(),
+            "## User profile\n\nName: Ada.\n\n## Feedback / lessons learned\n\nPrefers terse answers."
+        );
     }
 }
