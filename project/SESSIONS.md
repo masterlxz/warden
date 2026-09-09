@@ -6,6 +6,27 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 9)
+
+- **Objetivo**: usuário deixou um arquivo novo na raiz (`JARVIS_Agentes_Autocapacitacao.md`), trazendo
+  uma ideia grande e pronta sobre evoluir o Warden pra uma plataforma de criação/autocapacitação de
+  agentes especializados ("Agent Builder") — pediu pra ler, registrar tudo no `project/`, apagar o
+  arquivo da raiz e commitar/pushar.
+
+**O que foi feito**: nenhum código, só registro — ideia levada pro `ROADMAP.md` (nova seção "Agent
+Builder — agentes que se criam e se capacitam sozinhos", brainstorm, sem `/plan`) e pro `PENDING.md`
+(P62, resumo completo do fluxo proposto: criação por linguagem natural, pesquisa autônoma com fontes
+por confiabilidade, base de conhecimento rastreável, descoberta de ferramentas, testes de competência,
+ciclo de autocorreção, registro central de agentes, separação inteligência/autoridade). Relacionada
+diretamente a P8 (sub-agentes autônomos) e P46 (orquestração — núcleo já implementado), mas mais ampla
+que os dois. Documento original apagado da raiz depois de incorporado.
+
+**Próximo passo**: nada implementado ainda — P62 é só brainstorm registrado, sem `/plan`. Quando
+retomado, os passos sugeridos pelo próprio usuário no doc original (mapear reuso no Warden atual,
+definir fluxo mínimo de criação de agente, prototipar) são o ponto de partida natural.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 8)
 
 - **Objetivo**: usuário pediu pra seguir com o resto do P46 — a lacuna que a continuação 6 tinha

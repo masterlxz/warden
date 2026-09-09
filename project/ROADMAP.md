@@ -56,6 +56,42 @@ Ordem de implementação recomendada (atualizada 2026-08-29, ver nota acima):
 
 Implementado — ver `PENDING.md` P45 (resolvida) e `ARCHITECTURE.md`. Escopo: só desktop.
 
+### "Agent Builder" — agentes que se criam e se capacitam sozinhos
+
+Ideia grande trazida pronta pelo usuário em documento próprio (2026-09-08, `JARVIS_Agentes_
+Autocapacitacao.md`, apagado da raiz e incorporado aqui — ver P62). Evolui bem além do que já
+está registrado em "Orquestração de agentes" logo abaixo e em "Sub-agentes autônomos": não é só
+sobre *coordenar* agentes já existentes, é sobre o próprio Warden **criar e capacitar** um agente
+novo a partir de uma frase em linguagem natural — ex. "crie um agente especialista em servidores
+Linux" — sem o usuário precisar escrever prompt, importar documentação ou montar base de
+conhecimento manualmente.
+
+Fluxo conceitual proposto (iterativo, não geração única de prompt): entender a especialidade →
+dividir em subáreas → pesquisar fontes confiáveis na internet (com **níveis de confiabilidade** —
+documentação oficial/RFC/spec no topo, depois livros/artigos técnicos, fóruns/posts sem autoria
+por último) → organizar conhecimento numa base rastreável até a fonte original → descobrir quais
+ferramentas o agente precisa (não só o que ele precisa *saber*, também o que precisa *conseguir
+fazer*) → gerar testes de competência representativos do domínio → avaliar o agente contra esses
+testes → achar lacunas → pesquisar de novo → reavaliar → só então liberar o agente. Depois de
+criado, o agente continua evoluindo (novas versões de software, feedback do usuário, erros
+cometidos) sem precisar reconstruir do zero — mesmo ciclo Executar → Avaliar → Encontrar lacuna →
+Pesquisar → Melhorar → Testar de novo.
+
+Distingue explicitamente **inteligência do agente** (modelo + prompt + conhecimento + ferramentas
++ memória) de **autoridade do agente** (permissões) — o agente pode decidir que precisa rodar um
+comando, mas o sistema de permissões é quem decide se ele pode, com confirmação do usuário pra
+ações perigosas. Também propõe um **registro central de agentes** (nome, especialidade, nível de
+competência, fontes, ferramentas, permissões, histórico de avaliações) pro JARVIS/Warden principal
+descobrir automaticamente qual especialista usar (ou vários, combinando resultados) — evitando
+delegar quando um único agente já resolve.
+
+O próprio documento pede que isso seja tratado como **extensão do que já existe**, não projeto
+separado — antes de implementar, comparar com o que o Warden já tem (ex. `DelegateTool`/P46,
+`config.toml` de agentes nomeados, MCP como fonte de ferramentas, o vault como base de
+conhecimento) e mapear o que já existe / precisa adaptar / precisa criar do zero. Nada disso foi
+levado a `/plan` ainda — ver P62 pro detalhamento completo e pros próximos passos sugeridos pelo
+próprio usuário no documento original.
+
 ### Orquestração de agentes — dois modos de uso
 
 Detalhado pelo usuário (2026-09-06), evoluindo a ideia de "Sub-agentes autônomos" logo abaixo:
