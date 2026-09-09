@@ -295,6 +295,19 @@ Permitir que terceiros escrevam plugins sem modificar o core:
 - MCP servers como padrão de plugins
 - Marketplace de plugins
 
+### Storage Provider plugável (desacoplar vault de TruthID)
+
+Spec trazida pronta pelo usuário (2026-09-08) propondo desacoplar **onde a memória `.md` é
+armazenada** de **qual identidade/pagamento autoriza isso** — hoje `warden-sync`/P37 já assume
+TruthID (via `pin()`/Arweave) como o único caminho de sync remoto; a proposta é abstrair isso
+atrás de duas interfaces novas no core (`StorageProvider` e `AuthProvider`, ver P61), com TruthID
+virando **um plugin opcional** (`DecentralizedVaultProvider`) entre 4 implementações propostas —
+as outras 3 sendo `LocalFSProvider` (default grátis, o que o `Vault` já faz hoje sem essa camada
+formal), `RemoteNodeProvider` (grátis, rede de nós própria do usuário — depende da Fase 9) e
+`ManagedCloudProvider` (pago pro Fabio, infra tradicional, Stripe puro — novo produto). Escopo de
+MVP sugerido na própria spec, mas **explicitamente pendente de confirmação com o usuário antes de
+codar** — ver detalhes completos em `PENDING.md` P61.
+
 ### Voz
 
 - ✅ Entrada por voz (Speech-to-Text) — feito (P28, Sessão 41), via Whisper da OpenAI

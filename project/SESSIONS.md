@@ -6,6 +6,39 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 7)
+
+- **Objetivo**: usuário trouxe uma spec pronta na raiz do repo (`spec-storage-provider-agente.md`)
+  propondo desacoplar onde a memória do agente é armazenada de qual identidade/pagamento autoriza
+  isso — pediu pra ler, incorporar tudo no `project/`, apagar o arquivo da raiz e commitar.
+
+**O que foi feito**:
+
+- Lido `spec-storage-provider-agente.md` na íntegra. Confirmado que ele generaliza o que já existe
+  (`warden-sync`/P37, TruthID como pagador Arweave via `pin()`) atrás de duas interfaces novas no
+  core (`StorageProvider`: read/write/list/delete/exportAll/importAll; `AuthProvider`:
+  getUserId/isSubscriptionActive/login/logout), com TruthID virando **plugin opcional**
+  (`DecentralizedVaultProvider`) entre 4 implementações propostas (`LocalFSProvider`,
+  `RemoteNodeProvider`, `ManagedCloudProvider`, `DecentralizedVaultProvider`), fluxo de migração
+  entre providers, e um escopo de MVP sugerido mas explicitamente marcado como "a decidir com
+  Fabio antes de começar a implementação".
+- Registrado como **P61** em `PENDING.md` (Decisões em Aberto) — conteúdo completo da spec
+  incorporado no corpo da pendência, cross-referenciando P37/P24 (o `DecentralizedVaultProvider`
+  proposto é essencialmente uma generalização do `warden-sync` já implementado).
+- Adicionada seção nova "Storage Provider plugável (desacoplar vault de TruthID)" em
+  `ROADMAP.md`, junto de "Plugin system" (seção conceitualmente mais próxima), apontando pro
+  detalhe completo em P61.
+- Apagado `spec-storage-provider-agente.md` da raiz — conteúdo já vive em `project/`.
+- Nenhuma decisão de arquitetura foi tomada nesta sessão (a spec pede confirmação de escopo com o
+  usuário antes de codar) — só a incorporação ao sistema de planejamento do projeto.
+
+**Próximo passo**: confirmar com o usuário o escopo de MVP sugerido na spec (v1 =
+`LocalFSProvider` + `DecentralizedVaultProvider`, v2 = `RemoteNodeProvider`, v3 =
+`ManagedCloudProvider`) antes de começar a implementação de P61, e decidir se `warden-sync`/P37 é
+refatorado por trás de `StorageProvider` ou se essa abstração nasce em paralelo.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 6)
 
 - **Objetivo**: usuário disse "pode seguir primeiro" (deixando o push do commit anterior pra
