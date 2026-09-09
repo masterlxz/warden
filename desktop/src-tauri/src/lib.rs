@@ -260,6 +260,8 @@ struct AgentPayload {
     id: String,
     persona: String,
     provider_id: String,
+    /// Opt-in (P46/P60) for the `delegate_to_agent` tool — see `AgentConfig::can_delegate_to_agents`.
+    can_delegate_to_agents: bool,
 }
 
 /// What the settings screen reads.
@@ -335,7 +337,12 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         agents: config
             .agents
             .into_iter()
-            .map(|a| AgentPayload { id: a.id, persona: a.persona, provider_id: a.provider_id.unwrap_or_default() })
+            .map(|a| AgentPayload {
+                id: a.id,
+                persona: a.persona,
+                provider_id: a.provider_id.unwrap_or_default(),
+                can_delegate_to_agents: a.can_delegate_to_agents,
+            })
             .collect(),
     })
 }
@@ -348,10 +355,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     }
 
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    // The Telegram bot token (Fase 2) and other config.toml/env-only fields (P46) have no
-    // Settings-screen UI yet (see PENDING.md P11) — only hand-editable via config.toml. Loaded
-    // up front so every "carry forward instead of wiping" field below (and the agents loop, which
-    // needs it for `can_delegate_to_agents`) can reference it.
+    // The Telegram bot token (Fase 2) and `delegate_max_depth` (P46/P60) have no Settings-screen
+    // UI yet (see PENDING.md P11) — only hand-editable via config.toml. Loaded up front so every
+    // "carry forward instead of wiping" field below can reference it.
     let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
     let mut providers = Vec::with_capacity(payload.providers.len());
@@ -411,8 +417,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
             }
         }
-        let can_delegate_to_agents = existing.agents.iter().find(|e| e.id == id).is_some_and(|e| e.can_delegate_to_agents);
-        agents.push(AgentConfig { id, persona: a.persona, provider_id, can_delegate_to_agents });
+        agents.push(AgentConfig { id, persona: a.persona, provider_id, can_delegate_to_agents: a.can_delegate_to_agents });
     }
 
     let active_provider = non_empty(payload.active_provider);

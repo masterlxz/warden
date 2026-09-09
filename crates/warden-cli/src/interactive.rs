@@ -1240,7 +1240,8 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let preview = if a.persona.chars().count() > 48 { format!("{preview}…") } else { preview };
             let provider = a.provider_id.clone().unwrap_or_else(|| "-".to_string());
             let marker = if session.agent_id.as_deref() == Some(a.id.as_str()) { " [ativo]" } else { "" };
-            (format!("{} ({}) — {}{}", a.id, provider, preview, marker), Style::default())
+            let delegate_marker = if a.can_delegate_to_agents { " [delega]" } else { "" };
+            (format!("{} ({}) — {}{}{}", a.id, provider, preview, marker, delegate_marker), Style::default())
         })
         .collect();
     render_message_card(terminal, "agentes", accent_style(), lines)
@@ -1296,6 +1297,23 @@ async fn prompt_agent_provider_id(terminal: &mut CliTerminal, providers: &[Provi
     }
 }
 
+/// Loops a single wizard field until it parses as yes/no. Returns `Ok(None)` if the user cancels
+/// (distinct from `Ok(Some(false))`, "answered no").
+async fn prompt_agent_can_delegate(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " pode delegar pra outros agentes? (s/n) ", if initial { "s" } else { "n" }).await? else {
+            return Ok(None);
+        };
+        match input.trim().to_lowercase().as_str() {
+            "s" | "sim" | "y" | "yes" => return Ok(Some(true)),
+            "n" | "nao" | "não" | "no" => return Ok(Some(false)),
+            _ => {
+                render_message_card(terminal, "erro", error_style(), vec![("responda 's' ou 'n'".to_string(), Style::default())])?;
+            }
+        }
+    }
+}
+
 async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
     let mut config = load_fresh_config(session.config_path.as_deref())?;
 
@@ -1308,8 +1326,11 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(provider_id) = prompt_agent_provider_id(terminal, &config.providers, "").await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_delegate_to_agents) = prompt_agent_can_delegate(terminal, false).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
-    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents: false });
+    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents });
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
@@ -1331,10 +1352,12 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(provider_id) = prompt_agent_provider_id(terminal, &config.providers, current.provider_id.as_deref().unwrap_or("")).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_delegate_to_agents) = prompt_agent_can_delegate(terminal, current.can_delegate_to_agents).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let old_id = current.id.clone();
-    config.agents[index] =
-        AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents: current.can_delegate_to_agents };
+    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
     }

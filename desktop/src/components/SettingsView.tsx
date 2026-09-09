@@ -246,6 +246,20 @@ function AgentCard({
           ))}
         </select>
       </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canDelegateToAgents}
+            onChange={(e) => onChange({ ...agent, canDelegateToAgents: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can delegate to other agents</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent hand off part of a conversation to any other configured agent by name.
+        </span>
+      </label>
     </div>
   );
 }
@@ -574,7 +588,10 @@ function SettingsView() {
   }
 
   function addAgent() {
-    setForm((f) => ({ ...f, agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "" }] }));
+    setForm((f) => ({
+      ...f,
+      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false }],
+    }));
   }
 
   function updateAgent(index: number, next: AgentEntry) {

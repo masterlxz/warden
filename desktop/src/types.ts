@@ -101,6 +101,10 @@ export interface AgentEntry {
    * default" — picking this agent just pre-fills the model selector with this when set, doesn't
    * enforce it afterward. */
   providerId: string;
+  /** Opt-in (P46/P60) — when true, a conversation using this agent gets the `delegate_to_agent`
+   * tool, letting it address any other configured agent by id. Off by default: this is the only
+   * UI surface that can turn it on (previously hand-edit of `config.toml` only). */
+  canDelegateToAgents: boolean;
 }
 
 /** One breakdown bucket of a `UsageSummary` — `key` is the `agent_id`/`provider_id` (an

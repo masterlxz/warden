@@ -6,6 +6,36 @@
 
 ---
 
+### 2026-09-08 — Sessão 57 (continuação 8)
+
+- **Objetivo**: usuário pediu pra seguir com o resto do P46 — a lacuna que a continuação 6 tinha
+  deixado em aberto: nenhuma UI/CLI ainda pra ligar `AgentConfig.can_delegate_to_agents`, só
+  hand-edit do `config.toml`.
+
+**O que foi feito** (detalhes completos em `ARCHITECTURE.md`):
+
+- Desktop: `AgentPayload` (`lib.rs`) e `AgentEntry` (`types.ts`) ganharam
+  `can_delegate_to_agents`/`canDelegateToAgents`. `save_settings` parou de sempre carregar o valor
+  antigo de `existing.agents` — passou a usar o que vem no payload do form, já que agora existe um
+  campo de verdade pra isso. `AgentCard` ganhou um checkbox "Can delegate to other agents", mesmo
+  padrão visual do checkbox de OAuth do MCP.
+- CLI: `prompt_agent_can_delegate` novo (prompt s/n) usado em `wizard_agents_create`/
+  `wizard_agents_edit`; `/agents` (list) ganhou o marcador `[delega]`.
+- `cargo test -p warden-core -p warden-bootstrap -p warden-cli` e
+  `cargo clippy --workspace --all-targets` limpos; `tsc`/`npm run build` do desktop limpo.
+- **Verificado via Playwright headless contra o dev server real** (`get_settings`/`save_settings`
+  mockados via `addInitScript`, mesmo padrão da Usage — Sessão 49): checkbox encontrado e
+  marcável, payload de save confirmado com `canDelegateToAgents: true`, zero erro de console.
+  Screenshot conferido (Settings → Agents, tema claro).
+- Atualizados `ARCHITECTURE.md` (nova entrada) e `PENDING.md` (P46 — mais uma fatia fechada).
+
+**Próximo passo**: dentro do P46, restam fora de escopo por decisão explícita: fila de jobs,
+controle de custo por sub-agente, isolamento de tools por sub-agente (ver P60). Fora do P46: P61
+(Storage Provider, escopo já confirmado, implementação não iniciada), Fase 7.6, P8, P47-P51,
+P59/P60.
+
+---
+
 ### 2026-09-08 — Sessão 57 (continuação 7)
 
 - **Objetivo**: usuário trouxe uma spec pronta na raiz do repo (`spec-storage-provider-agente.md`)
