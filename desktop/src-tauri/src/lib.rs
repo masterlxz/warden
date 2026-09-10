@@ -3,16 +3,18 @@ mod sync_cmds;
 mod vault_cmds;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, default_config_path, default_conversations_dir,
-    default_model_for, list_conversations as read_conversations, load_config, load_config_from_path, oauth_credential_store_path,
-    resolve_storage_provider, resolve_vault_path, save_config, save_conversation as write_conversation, AgentConfig, ApiKeys,
-    Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, StorageProviderKind, UsageSummary,
+    aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
+    default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
+    oauth_credential_store_path, resolve_storage_provider, resolve_vault_path, save_config, save_conversation as write_conversation,
+    AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, StorageProviderKind,
+    UsageSummary,
 };
+use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
 
@@ -323,6 +325,16 @@ fn storage_provider_kind_to_str(kind: StorageProviderKind) -> &'static str {
     }
 }
 
+/// Whether a `StorageProviderKind` has a working `StorageProvider` behind it yet — mirrors what
+/// `build_storage_provider` actually accepts. Used to decide whether `save_settings`'s migration
+/// step has something real to export *from*: there's no data to move out of `RemoteNode`/
+/// `ManagedCloud` since neither has ever been buildable, so migrating *away* from one of them (e.g.
+/// a `config.toml` hand-edited to a value the desktop's own UI never lets you pick) is just a
+/// config change, not a migration.
+fn storage_provider_kind_is_implemented(kind: StorageProviderKind) -> bool {
+    matches!(kind, StorageProviderKind::Local | StorageProviderKind::DecentralizedVault)
+}
+
 fn default_models_by_kind() -> std::collections::HashMap<String, String> {
     [("gemini", Provider::Gemini), ("openai", Provider::Openai), ("anthropic", Provider::Anthropic)]
         .into_iter()
@@ -462,6 +474,10 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         ));
     }
 
+    // Captured before `non_empty` consumes `payload.vault_path` below — the migration step needs
+    // the resolved path independently of building `config`.
+    let vault_path_override = non_empty(payload.vault_path);
+
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`
         // is empty (see `resolve_model_provider` in warden-bootstrap) — once this screen has
@@ -469,7 +485,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // leaving stale duplicate secrets sitting in the file.
         provider: None,
         model: None,
-        vault_path: non_empty(payload.vault_path),
+        vault_path: vault_path_override.clone(),
         enable_shell: Some(payload.enable_shell),
         // No Settings-screen UI yet (P46, config.toml/env-only advanced knob) — carry forward
         // whatever was on disk instead of wiping it, same reasoning as `telegram_bot_token` above.
@@ -487,6 +503,23 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         agents,
         storage_provider: Some(storage_provider),
     };
+
+    // Real migration (P61): when the user actually changes which backend the vault's memory
+    // lives behind, move everything over and verify it landed intact *before* persisting the new
+    // choice — a failed migration should leave `config.toml` pointing at the still-working
+    // previous provider, not a new one with nothing behind it. Skipped when there's nothing real
+    // to migrate *from* (see `storage_provider_kind_is_implemented`'s doc comment) or when the
+    // kind didn't actually change (every other Settings save, the overwhelming common case).
+    let previous_storage_provider = existing.storage_provider.unwrap_or(StorageProviderKind::Local);
+    if storage_provider != previous_storage_provider && storage_provider_kind_is_implemented(previous_storage_provider) {
+        let vault_path = vault_path_override.map(PathBuf::from).unwrap_or_else(desktop_default_vault_path);
+        let vault = Arc::new(Vault::new(vault_path));
+        let from_provider = build_storage_provider(previous_storage_provider, vault.clone()).map_err(|e| format!("{e:#}"))?;
+        let to_provider = build_storage_provider(storage_provider, vault).map_err(|e| format!("{e:#}"))?;
+        warden_core::storage::migrate(from_provider.as_ref(), to_provider.as_ref())
+            .await
+            .map_err(|e| format!("storage provider migration failed, settings not saved: {e:#}"))?;
+    }
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
 

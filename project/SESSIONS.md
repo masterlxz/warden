@@ -60,6 +60,49 @@ checagem real de assinatura via TruthID, e a lacuna maior sobre como (ou se) o p
 QR-interativo do `DecentralizedVaultProvider` se encaixaria numa trait genérica. Fora do P61: P62
 (Agent Builder), P51 (9Router).
 
+**Continuação (mesma sessão)** — escolhido o item de migração real entre providers.
+**Decisão de escopo tomada com o usuário antes de codar**: hoje `LocalFSProvider` e
+`DecentralizedVaultProvider` são construídos a partir do **mesmo** `Arc<Vault>` em
+`build_storage_provider` — migrar `local`↔`decentralized_vault` é, na prática, um no-op (mesmo
+diretório). Confirmado com o usuário: construir o motor de migração genérico mesmo assim (pronto pro
+dia que `RemoteNodeProvider`/`ManagedCloudProvider` existirem), e já ligar no `save_settings`, mesmo
+sabendo que hoje ele só confirma um self-copy seguro.
+
+**O que foi feito**:
+
+- `crates/warden-core/src/storage/mod.rs`: `migrate(from: &dyn StorageProvider, to: &dyn
+  StorageProvider) -> anyhow::Result<MigrationReport>` novo — `export_all` de `from`, `import_all`
+  em `to`, depois **re-exporta de `to` e compara byte-a-byte** com o snapshot original antes de
+  declarar sucesso (o `Ok(())` de `import_all` só garante que cada `write` não retornou erro, não que
+  o destino ficou com o conteúdo certo — um destino que descarta ou corrompe silenciosamente passaria
+  batido sem essa reconferência). Não apaga nada de `from` depois, e não reconcilia arquivos que já
+  existiam em `to` mas não estão em `from` — fora de escopo deste MVP (mesma nota já registrada em
+  `PENDING.md`). 2 testes novos: round-trip real entre dois `LocalFSProvider` de diretórios
+  independentes (prova que não é só self-copy), e um `LossyProvider` de teste (grava sempre conteúdo
+  vazio, mas `import_all` continua reportando `Ok(())`) provando que a reconferência de fato pega uma
+  corrupção silenciosa.
+- `desktop/src-tauri/src/lib.rs`, `save_settings`: `storage_provider_kind_is_implemented` novo — só
+  `Local`/`DecentralizedVault` têm um `StorageProvider` de verdade por trás; migrar **a partir de**
+  `RemoteNode`/`ManagedCloud` não faz sentido (nunca houve nada de fato armazenado ali), então nesse
+  caso a troca de config passa direto, sem tentar migração nenhuma — cobre o caso de alguém ter
+  editado `config.toml` à mão pra um valor que a própria UI do desktop nunca deixa escolher. Quando o
+  `storage_provider` novo é diferente do que já estava salvo (`existing.storage_provider`) **e** o
+  anterior é implementado, `save_settings` monta um `Vault` a partir do `vault_path` que está sendo
+  salvo, constrói os dois `StorageProvider` via `build_storage_provider` e chama `migrate` — só grava
+  a config nova (`save_config`) se a migração (e a reconferência de integridade dentro dela) passar;
+  uma migração que falha deixa `config.toml` intocado, ainda apontando pro provider anterior que
+  continua funcionando.
+- Verificação: `cargo check`/`clippy` limpos em `warden-core`, `warden-bootstrap`, `desktop`; `cargo
+  test -p warden-core -p warden-bootstrap` — 78 + 40 testes passando (os 2 novos de `migrate`
+  inclusos). Não tocado no frontend nesta parte (a seção "Storage" do Settings já upload da primeira
+  metade da sessão não precisou mudar — o comportamento de migração é transparente pra UI, só o
+  `save_settings` por trás ficou mais rigoroso).
+
+**Ainda em aberto dentro do P61**: `RemoteNodeProvider`/`ManagedCloudProvider` (v2/v3),
+`AuthProvider` ligado a uma checagem real de assinatura via TruthID, e a lacuna maior de como (ou se)
+o push/pull QR-interativo do `DecentralizedVaultProvider` se encaixaria numa trait genérica. Fora do
+P61: P62 (Agent Builder), P51 (9Router).
+
 ---
 
 ### 2026-09-09 — Sessão 58

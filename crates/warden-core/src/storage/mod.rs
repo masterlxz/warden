@@ -40,6 +40,40 @@ pub trait StorageProvider: Send + Sync {
     }
 }
 
+/// Result of a successful `migrate` — a count rather than bare `()`, so a caller (and its own
+/// error messages/logs) has something concrete to report; room to grow (e.g. the list of migrated
+/// paths) without another change to `migrate`'s return type.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MigrationReport {
+    pub files_migrated: usize,
+}
+
+/// Moves everything one `StorageProvider` holds into another (P61) — the real migration flow the
+/// spec asked for behind `storage_provider`'s config switch. `export_all` from `from`, `import_all`
+/// into `to`, then **re-exports from `to` and compares byte-for-byte against the original
+/// snapshot** before declaring success: `import_all`'s `Ok(())` only means every `write` call
+/// returned without erroring, not that the destination actually holds what was asked — a
+/// destination that silently drops or mangles bytes (or a partial write left over from a crash)
+/// would otherwise go unnoticed. Doesn't delete anything from `from` afterward, and doesn't
+/// reconcile files that already existed in `to` but aren't in `from` — both out of scope for this
+/// MVP (see `PENDING.md` P61); a caller that needs either builds it on top of this.
+pub async fn migrate(from: &dyn StorageProvider, to: &dyn StorageProvider) -> anyhow::Result<MigrationReport> {
+    let snapshot = from.export_all().await?;
+    let files_migrated = snapshot.len();
+
+    to.import_all(snapshot.clone()).await?;
+
+    let landed = to.export_all().await?;
+    if landed != snapshot {
+        anyhow::bail!(
+            "migration integrity check failed: destination holds {} file(s) after import, source snapshot had {files_migrated}",
+            landed.len()
+        );
+    }
+
+    Ok(MigrationReport { files_migrated })
+}
+
 /// Who's allowed to use a given `StorageProvider`, and under what subscription state — kept
 /// separate from `StorageProvider` itself so a provider that needs no identity/payment at all
 /// (`LocalFSProvider`) doesn't have to fake one. No implementation ties this to a real identity
@@ -169,6 +203,54 @@ mod tests {
         files.sort();
         assert_eq!(files, vec!["a.md".to_string(), "nested/b.md".to_string()]);
         assert_eq!(target.read("nested/b.md").await.unwrap(), b"two");
+    }
+
+    #[tokio::test]
+    async fn migrate_copies_everything_into_a_different_provider_and_reports_the_count() {
+        let source = temp_provider();
+        source.write("a.md", b"one").await.unwrap();
+        source.write("nested/b.md", b"two").await.unwrap();
+
+        let target = temp_provider();
+        let report = migrate(&source, &target).await.unwrap();
+
+        assert_eq!(report, MigrationReport { files_migrated: 2 });
+        assert_eq!(target.read("a.md").await.unwrap(), b"one");
+        assert_eq!(target.read("nested/b.md").await.unwrap(), b"two");
+    }
+
+    /// A destination that reports `import_all` as `Ok(())` while silently dropping the content it
+    /// was handed — proves `migrate`'s post-import re-export comparison actually catches this
+    /// instead of trusting `import_all`'s success alone.
+    struct LossyProvider(LocalFSProvider);
+
+    #[async_trait]
+    impl StorageProvider for LossyProvider {
+        async fn read(&self, relative_path: &str) -> anyhow::Result<Vec<u8>> {
+            self.0.read(relative_path).await
+        }
+
+        async fn write(&self, relative_path: &str, _content: &[u8]) -> anyhow::Result<()> {
+            self.0.write(relative_path, b"").await
+        }
+
+        async fn list(&self) -> anyhow::Result<Vec<String>> {
+            self.0.list().await
+        }
+
+        async fn delete(&self, relative_path: &str) -> anyhow::Result<()> {
+            self.0.delete(relative_path).await
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_fails_when_the_destination_silently_corrupts_content() {
+        let source = temp_provider();
+        source.write("a.md", b"hello").await.unwrap();
+
+        let target = LossyProvider(temp_provider());
+        let err = migrate(&source, &target).await.unwrap_err();
+        assert!(err.to_string().contains("integrity check failed"));
     }
 
     #[tokio::test]
