@@ -2,7 +2,63 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-09 (Sessão 58)
+> Última atualização: 2026-09-10 (Sessão 59)
+
+---
+
+### 2026-09-10 — Sessão 59
+
+- **Objetivo**: retomar o projeto — usuário pediu pra escolher por onde seguir; entre os itens em
+  aberto dentro do P61 (Storage Provider) e as pendências de fora (P62 Agent Builder, P51 9Router),
+  escolhida a **UI "explícita e didática" no Settings pra escolher o storage provider**, que era o
+  próximo passo registrado no fim da Sessão 58.
+
+**O que foi feito**:
+
+- `desktop/src-tauri/src/lib.rs`: `storage_provider_kind_to_str` novo (round-trip com
+  `StorageProviderKind`); `SettingsSnapshot`/`SettingsFormPayload` ganharam `storage_provider:
+  String`; `get_settings` expõe o valor atual (`"local"` como default pra config sem o campo ainda);
+  `save_settings` reaproveita `resolve_storage_provider` (já existia, pensado originalmente só pra
+  `WARDEN_STORAGE_PROVIDER`) pra parsear a string do form, e passa a **gravar de verdade** o valor
+  escolhido — antes disso a função só "carregava adiante" o que já estava em disco, já que não havia
+  UI nenhuma tocando o campo. `remote_node`/`managed_cloud` são rejeitados explicitamente no save
+  (defesa em profundidade — o frontend já os deixa `disabled`, mas nenhuma implementação real existe
+  pra eles ainda).
+- `desktop/src/components/SettingsView.tsx`: seção "Storage" nova, `StorageProviderPicker` com 4
+  cards de rádio (`STORAGE_PROVIDER_OPTIONS`) — `local` e `decentralized_vault` selecionáveis,
+  `remote_node`/`managed_cloud` com badge "Coming soon"/`disabled`. Cada opção tem uma descrição
+  curta; a de `decentralized_vault` avisa explicitamente que hoje ela **não** liga o backup Arweave
+  sozinho (isso continua só pela tela de Sync) — o ponto principal do pedido de "didático", pra não
+  o usuário achar que marcar essa opção já ativa alguma sincronização.
+- `desktop/src/types.ts`/`App.tsx`: `StorageProviderKind` novo, `Settings.storageProvider`,
+  `emptySettings` em ambos os arquivos (havia dois — um em `SettingsView.tsx`, outro em `App.tsx`).
+- `project/PENDING.md`/`ARCHITECTURE.md`: P61 atualizado com o que foi feito nesta sessão.
+
+**Verificação**: `cargo check`/`clippy -p warden-bootstrap -p desktop` limpos, `cargo test -p
+warden-bootstrap` (40 testes, incluindo os de `resolve_storage_provider`) passando, `npx tsc
+--noEmit` limpo no frontend (precisou de `npm install` — `node_modules` do `desktop` não existia,
+provavelmente uma baixa da limpeza de disco de emergência da Sessão 58). **Não** rodado o app de
+verdade (`cargo tauri dev`) — perguntado ao usuário, que preferiu não abrir a janela real desta vez;
+ficou só a verificação estática.
+
+**Incidente de toolchain no meio da sessão (não relacionado ao código)**: o `rustc` do sistema
+(instalado via `pacman`, não `rustup`) atualizou sozinho de 1.97.1 pra 1.98.1 **durante** a primeira
+tentativa de `cargo build`/`check` — gerou uma sequência de `SIGSEGV`/ICE em crates completamente
+não relacionados ao diff (`rav1e`, `tauri-plugin`, `darling_core`, `nom`, e por fim `warden-bootstrap`
+em si sob `cargo test` com paralelismo alto), até um `E0514` ("compiled by an incompatible version of
+rustc") deixar a causa óbvia: metadata de compilador misturada no `target/`. Um `cargo clean` (2.9GB,
+disco seguiu com 84G livres — nada perto do sufoco da Sessão 58) resolveu; depois disso tudo compilou
+limpo. `cargo test -p warden-bootstrap` com paralelismo alto (`-j8`) ainda gerou um SIGSEGV isolado
+mesmo pós-clean (rodar de novo com `-j1` passou 40/40) — parece contenção de recursos nesta máquina
+sob build paralelo pesado, não um bug de verdade; registrado aqui só pra uma sessão futura não
+confundir esse padrão com um problema real no código.
+
+**Próximo passo**: dentro do P61, seguem em aberto `RemoteNodeProvider`/`ManagedCloudProvider`
+(v2/v3, sem urgência), fluxo real de migração entre providers (`export_all`/`import_all` acionados de
+fato ao trocar `storage_provider`, com validação de integridade), `AuthProvider` ligado a uma
+checagem real de assinatura via TruthID, e a lacuna maior sobre como (ou se) o push/pull
+QR-interativo do `DecentralizedVaultProvider` se encaixaria numa trait genérica. Fora do P61: P62
+(Agent Builder), P51 (9Router).
 
 ---
 

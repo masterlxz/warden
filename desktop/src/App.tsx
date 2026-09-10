@@ -19,6 +19,7 @@ const emptySettings: Settings = {
   defaultModels: {},
   mcpServers: [],
   agents: [],
+  storageProvider: "local",
 };
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),

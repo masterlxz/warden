@@ -107,6 +107,12 @@ export interface AgentEntry {
   canDelegateToAgents: boolean;
 }
 
+/** Mirrors `warden_bootstrap::StorageProviderKind` (P61) — where the vault's memory lives.
+ * `remoteNode`/`managedCloud` are v2/v3 placeholders with no working implementation yet
+ * (`build_storage_provider` errors on them); the Settings screen shows them as "coming soon"
+ * and doesn't let the user select them. */
+export type StorageProviderKind = "local" | "decentralized_vault" | "remote_node" | "managed_cloud";
+
 /** One breakdown bucket of a `UsageSummary` — `key` is the `agent_id`/`provider_id` (an
  * `AgentEntry.id`/`ProviderEntry.id`, which already doubles as its display name) `null` means "no
  * override" for that conversation, mirrors `warden_bootstrap::usage::UsageByKey`. */
@@ -180,4 +186,8 @@ export interface Settings {
   defaultModels: Record<string, string>;
   mcpServers: McpServer[];
   agents: AgentEntry[];
+  /** Where the vault's memory lives (P61) — defaults to `"local"` for every install that
+   * predates this field. Picking `"decentralized_vault"` doesn't turn on Arweave backup by
+   * itself: that still goes exclusively through the separate Sync screen. */
+  storageProvider: StorageProviderKind;
 }

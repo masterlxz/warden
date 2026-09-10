@@ -10,8 +10,8 @@ use tauri::State;
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, default_config_path, default_conversations_dir,
     default_model_for, list_conversations as read_conversations, load_config, load_config_from_path, oauth_credential_store_path,
-    resolve_vault_path, save_config, save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig,
-    McpServerConfig, Overrides, Provider, ProviderConfig, UsageSummary,
+    resolve_storage_provider, resolve_vault_path, save_config, save_conversation as write_conversation, AgentConfig, ApiKeys,
+    Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, StorageProviderKind, UsageSummary,
 };
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
@@ -289,6 +289,12 @@ struct SettingsSnapshot {
     /// The agent registry (closes P3) — named personas a conversation can pick, alongside its
     /// model.
     agents: Vec<AgentPayload>,
+    /// Where the vault's memory lives (P61) — one of `"local"`, `"decentralized_vault"`,
+    /// `"remote_node"`, `"managed_cloud"` (see `storage_provider_kind_to_str`). The latter two
+    /// have no working implementation yet (`build_storage_provider` errors on them); the Settings
+    /// screen shows them as "coming soon" and doesn't let the user select them, but `save_settings`
+    /// still rejects them defensively in case a future UI ever offers them prematurely.
+    storage_provider: String,
 }
 
 #[derive(Deserialize)]
@@ -301,6 +307,20 @@ struct SettingsFormPayload {
     enable_shell: bool,
     mcp_servers: Vec<McpServerConfig>,
     agents: Vec<AgentPayload>,
+    storage_provider: String,
+}
+
+/// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
+/// values `resolve_storage_provider` parses back, so a round-trip through `get_settings`/
+/// `save_settings` is lossless. Kept as a free function rather than a `Display` impl on
+/// `warden_bootstrap`'s side: this is an IPC/frontend concern, not something the crate itself needs.
+fn storage_provider_kind_to_str(kind: StorageProviderKind) -> &'static str {
+    match kind {
+        StorageProviderKind::Local => "local",
+        StorageProviderKind::DecentralizedVault => "decentralized_vault",
+        StorageProviderKind::RemoteNode => "remote_node",
+        StorageProviderKind::ManagedCloud => "managed_cloud",
+    }
 }
 
 fn default_models_by_kind() -> std::collections::HashMap<String, String> {
@@ -344,6 +364,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 can_delegate_to_agents: a.can_delegate_to_agents,
             })
             .collect(),
+        storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
     })
 }
 
@@ -427,6 +448,20 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         }
     }
 
+    // Reuses `resolve_storage_provider`'s own parsing (it already knows the exact four accepted
+    // strings and errors clearly on anything else) by treating the form value as if it were an
+    // env override. `RemoteNode`/`ManagedCloud` parse fine there (env callers are allowed to name
+    // them) but have no working `StorageProvider` impl yet — rejected here explicitly so saving
+    // Settings can't silently pick a backend that does nothing, even though today's Settings UI
+    // already keeps those two options unselectable.
+    let storage_provider = resolve_storage_provider(Some(payload.storage_provider), None).map_err(|e| format!("{e:#}"))?;
+    if matches!(storage_provider, StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud) {
+        return Err(format!(
+            "storage provider '{}' isn't implemented yet (planned for v2/v3 — see PENDING.md P61)",
+            storage_provider_kind_to_str(storage_provider)
+        ));
+    }
+
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`
         // is empty (see `resolve_model_provider` in warden-bootstrap) — once this screen has
@@ -450,9 +485,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         active_provider,
         mcp_servers,
         agents,
-        // No Settings-screen UI yet (P61, config.toml/env-only advanced knob) — carry forward
-        // whatever was on disk instead of wiping it, same reasoning as `delegate_max_depth` above.
-        storage_provider: existing.storage_provider,
+        storage_provider: Some(storage_provider),
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

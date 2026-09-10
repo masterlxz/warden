@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, Settings } from "../types";
+import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, Settings, StorageProviderKind } from "../types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -14,7 +14,88 @@ const emptySettings: Settings = {
   defaultModels: {},
   mcpServers: [],
   agents: [],
+  storageProvider: "local",
 };
+
+/** The four `StorageProviderKind` options (P61), in display order — the copy here is the
+ * "explicit and didactic" explanation the spec asked for instead of a bare technical dropdown.
+ * `remoteNode`/`managedCloud` are listed for visibility into what's planned, but `comingSoon`
+ * keeps them unselectable: neither has a working `StorageProvider` implementation yet
+ * (`build_storage_provider` errors on both), and `save_settings` rejects them defensively even
+ * if a later UI bug ever let one through. */
+const STORAGE_PROVIDER_OPTIONS: {
+  value: StorageProviderKind;
+  label: string;
+  price: string;
+  description: string;
+  comingSoon?: boolean;
+}[] = [
+  {
+    value: "local",
+    label: "Local disk",
+    price: "Free",
+    description: "Your vault lives only on this machine's disk. The default for every install.",
+  },
+  {
+    value: "decentralized_vault",
+    label: "Decentralized vault (TruthID)",
+    price: "Paid subscription",
+    description:
+      "Backed by TruthID/Arweave. Set up pairing and push/pull on the Sync screen. Reading and writing here " +
+      "behaves the same as Local disk today — this only picks the backend label, it doesn't move your files.",
+  },
+  {
+    value: "remote_node",
+    label: "Remote node",
+    price: "Free",
+    description: "Another machine you own, over the node network (Phase 9). Not implemented yet.",
+    comingSoon: true,
+  },
+  {
+    value: "managed_cloud",
+    label: "Managed cloud",
+    price: "Paid",
+    description: "Traditional hosted infrastructure, no Web3. Not implemented yet.",
+    comingSoon: true,
+  },
+];
+
+function StorageProviderPicker({
+  value,
+  onChange,
+}: {
+  value: StorageProviderKind;
+  onChange: (next: StorageProviderKind) => void;
+}) {
+  return (
+    <div className="storage-provider-list">
+      {STORAGE_PROVIDER_OPTIONS.map((opt) => (
+        <label
+          key={opt.value}
+          className={`storage-provider-option${value === opt.value ? " storage-provider-option-selected" : ""}${
+            opt.comingSoon ? " storage-provider-option-disabled" : ""
+          }`}
+        >
+          <input
+            type="radio"
+            name="storage-provider"
+            value={opt.value}
+            checked={value === opt.value}
+            disabled={opt.comingSoon}
+            onChange={() => onChange(opt.value)}
+          />
+          <div className="storage-provider-option-body">
+            <div className="storage-provider-option-header">
+              <span className="settings-label">{opt.label}</span>
+              <span className="storage-provider-badge">{opt.comingSoon ? "Coming soon" : opt.price}</span>
+            </div>
+            <span className="settings-hint">{opt.description}</span>
+          </div>
+        </label>
+      ))}
+    </div>
+  );
+}
 
 const PROVIDER_KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
   { value: "gemini", label: "Gemini" },
@@ -685,6 +766,7 @@ function SettingsView() {
           enable_shell: form.enableShell,
           mcp_servers: form.mcpServers,
           agents: form.agents,
+          storage_provider: form.storageProvider,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -779,6 +861,17 @@ function SettingsView() {
               <McpServerCard key={i} server={s} onChange={(next) => updateMcpServer(i, next)} onDelete={() => deleteMcpServer(i)} />
             ))}
           </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Storage</h3>
+          </div>
+          <p className="settings-hint">Where your agent's memory (the vault) is read from and written to.</p>
+          <StorageProviderPicker
+            value={form.storageProvider}
+            onChange={(storageProvider) => setForm((f) => ({ ...f, storageProvider }))}
+          />
         </section>
 
         <label className="settings-field">
