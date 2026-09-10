@@ -10,6 +10,7 @@
 //! device without ever touching TruthID or Arweave).
 
 pub mod arweave;
+pub mod auth_provider;
 pub mod bundle;
 pub mod diff;
 pub mod manifest;
@@ -25,6 +26,7 @@ use std::path::PathBuf;
 use warden_core::memory::Vault;
 
 pub use arweave::ArweaveClient;
+pub use auth_provider::TruthIdAuthProvider;
 pub use manifest::{SyncManifest, SyncSecrets};
 pub use pull::PullOutcome;
 pub use push::PushOutcome;

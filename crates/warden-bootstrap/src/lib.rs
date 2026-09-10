@@ -640,6 +640,26 @@ pub fn build_storage_provider(kind: StorageProviderKind, vault: Arc<Vault>) -> a
     })
 }
 
+/// Builds the `AuthProvider` for a resolved `StorageProviderKind` (P61) — mirrors
+/// `build_storage_provider`'s per-kind dispatch, and shares its "additive machinery, nothing in
+/// `bootstrap()` calls this yet" posture. Only `DecentralizedVault` needs real identity/payment
+/// gating: `warden_sync::TruthIdAuthProvider`, backed by the pairing manifest already written by
+/// `SyncEngine` — see its own doc comment for why `is_subscription_active` there is a pairing
+/// check, not a real subscription check (no billing system exists anywhere in this codebase yet).
+/// Every other kind gets `NoAuthProvider`: `Local` genuinely needs no identity to write to disk,
+/// and `RemoteNode`/`ManagedCloud` have no `StorageProvider` implementation to gate in the first
+/// place (`build_storage_provider` already errors on both before an `AuthProvider` would ever
+/// matter) — never errors, unlike `build_storage_provider`, since `NoAuthProvider` is always a
+/// valid (if trivial) answer for any kind.
+pub fn build_auth_provider(kind: StorageProviderKind, manifest_path: PathBuf) -> Arc<dyn warden_core::storage::AuthProvider> {
+    match kind {
+        StorageProviderKind::DecentralizedVault => Arc::new(warden_sync::TruthIdAuthProvider::new(manifest_path)),
+        StorageProviderKind::Local | StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud => {
+            Arc::new(warden_core::storage::NoAuthProvider)
+        }
+    }
+}
+
 /// Builds the one `ModelProvider` the orchestrator will use, from a resolved `ProviderConfig` —
 /// shared by both the registry path and the legacy-fallback path in `resolve_model_provider`, and
 /// (public since the per-conversation model selector) by the desktop's `send_message` to build a
@@ -1314,6 +1334,37 @@ oauth = true
         assert!(build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone()).is_ok());
         assert!(build_storage_provider(StorageProviderKind::RemoteNode, vault.clone()).is_err());
         assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault).is_err());
+    }
+
+    #[tokio::test]
+    async fn build_auth_provider_gates_only_decentralized_vault_on_truthid_pairing() {
+        let manifest_path = std::env::temp_dir().join(format!(
+            "warden-bootstrap-auth-provider-manifest-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+
+        // Every non-decentralized kind gets `NoAuthProvider` — always "active", never errors,
+        // regardless of whether `manifest_path` even exists.
+        for kind in [StorageProviderKind::Local, StorageProviderKind::RemoteNode, StorageProviderKind::ManagedCloud] {
+            let auth = build_auth_provider(kind, manifest_path.clone());
+            assert!(auth.is_subscription_active().await.unwrap());
+            assert_eq!(auth.get_user_id().await.unwrap(), None);
+        }
+
+        // `DecentralizedVault` reads the real manifest — unpaired (missing file) reports inactive
+        // with no user id, matching `TruthIdAuthProvider`'s own tests.
+        let auth = build_auth_provider(StorageProviderKind::DecentralizedVault, manifest_path.clone());
+        assert!(!auth.is_subscription_active().await.unwrap());
+        assert_eq!(auth.get_user_id().await.unwrap(), None);
+
+        warden_sync::manifest::save_manifest(
+            &manifest_path,
+            &warden_sync::SyncManifest { version: 1, owner_address: Some("wallet-abc".to_string()), ..Default::default() },
+        )
+        .unwrap();
+        let auth = build_auth_provider(StorageProviderKind::DecentralizedVault, manifest_path);
+        assert!(auth.is_subscription_active().await.unwrap());
+        assert_eq!(auth.get_user_id().await.unwrap(), Some("wallet-abc".to_string()));
     }
 
     /// `Arc<dyn ModelProvider>` isn't `Debug`, so `Result::unwrap_err` (which requires the `Ok`

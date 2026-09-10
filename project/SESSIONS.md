@@ -103,6 +103,39 @@ sabendo que hoje ele só confirma um self-copy seguro.
 o push/pull QR-interativo do `DecentralizedVaultProvider` se encaixaria numa trait genérica. Fora do
 P61: P62 (Agent Builder), P51 (9Router).
 
+**Continuação 2 (mesma sessão)** — escolhido o `AuthProvider` real via TruthID.
+**Bloqueio real encontrado e confirmado com o usuário antes de codar**: uma busca no repo inteiro por
+`subscription`/billing não achou nada — `warden-truthid` é só o cliente do protocolo `pin()` (QR +
+LAN, paga por publicação via a carteira do próprio celular), sem contas nem assinatura recorrente.
+`AuthProvider::is_subscription_active()` não tem o que checar de verdade. Decisão: `get_user_id()`
+honesto (mapeado pro `owner_address` real do `SyncManifest`), `is_subscription_active()` vira um
+**proxy de pareamento documentado como tal** (não finge ser uma checagem de assinatura de verdade).
+
+**O que foi feito**:
+
+- `crates/warden-sync/src/auth_provider.rs` novo — `TruthIdAuthProvider`, lendo
+  `manifest::load_manifest` direto (não precisa do `SyncEngine` inteiro, que também exige um
+  vault/config path que essa trait não usa). `get_user_id()` → `owner_address` do manifesto (`None`
+  se nunca pareou); `is_subscription_active()` → `manifest.is_paired()`. `login()`/`logout()`
+  retornam erro explícito em vez de fingir suportar — a assinatura da trait não recebe parâmetro
+  nenhum, mas o pareamento de verdade (`SyncEngine::pairing_host`/`pairing_join`) é QR-mediado e
+  assíncrono; documentado no código pra quem precisar parear/desparear de verdade usar `SyncEngine`
+  diretamente. 3 testes novos (sem manifesto, com manifesto pareado, `login`/`logout` errando).
+- `crates/warden-bootstrap/src/lib.rs`: `build_auth_provider(kind, manifest_path)` novo, espelhando
+  o despacho por `StorageProviderKind` de `build_storage_provider` — só `DecentralizedVault` usa
+  `TruthIdAuthProvider`, todo o resto (`Local`/`RemoteNode`/`ManagedCloud`) usa `NoAuthProvider`
+  (nunca erra, ao contrário de `build_storage_provider` — `NoAuthProvider` é sempre uma resposta
+  válida, mesmo trivial). 1 teste novo cobrindo os 4 kinds.
+- Verificação: `cargo check`/`clippy` limpos em `warden-sync`+`warden-bootstrap`; `cargo test`
+  — 32 testes em `warden-sync` (3 novos) + 41 em `warden-bootstrap` (1 novo), todos passando.
+  **Não ligado em `bootstrap()`/desktop** — mesma postura "maquinário aditivo" que
+  `build_storage_provider` teve antes desta sessão; nenhuma UI mostra status de autenticação ainda.
+
+**Ainda em aberto dentro do P61**: `RemoteNodeProvider`/`ManagedCloudProvider` (v2/v3), a lacuna do
+push/pull QR-interativo numa trait genérica, e uma checagem de assinatura de verdade — bloqueada até
+existir alguma infra de billing real pro TruthID (não é um "próximo passo" simples, é um bloqueio de
+produto). Fora do P61: P62 (Agent Builder), P51 (9Router).
+
 ---
 
 ### 2026-09-09 — Sessão 58
