@@ -502,6 +502,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         mcp_servers,
         agents,
         storage_provider: Some(storage_provider),
+        // No Settings-screen UI yet (P61 v2, config.toml/env-only) — carry forward, same
+        // reasoning as `delegate_max_depth` above.
+        remote_node: existing.remote_node.clone(),
     };
 
     // Real migration (P61): when the user actually changes which backend the vault's memory
@@ -514,8 +517,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     if storage_provider != previous_storage_provider && storage_provider_kind_is_implemented(previous_storage_provider) {
         let vault_path = vault_path_override.map(PathBuf::from).unwrap_or_else(desktop_default_vault_path);
         let vault = Arc::new(Vault::new(vault_path));
-        let from_provider = build_storage_provider(previous_storage_provider, vault.clone()).map_err(|e| format!("{e:#}"))?;
-        let to_provider = build_storage_provider(storage_provider, vault).map_err(|e| format!("{e:#}"))?;
+        let from_provider =
+            build_storage_provider(previous_storage_provider, vault.clone(), existing.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
+        let to_provider = build_storage_provider(storage_provider, vault, existing.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
         warden_core::storage::migrate(from_provider.as_ref(), to_provider.as_ref())
             .await
             .map_err(|e| format!("storage provider migration failed, settings not saved: {e:#}"))?;

@@ -12,8 +12,8 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
 
-use crate::protocol::{ClientMessage, ServerMessage};
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use warden_server_protocol::{ClientMessage, ServerMessage};
 
 type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 

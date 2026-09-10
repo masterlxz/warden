@@ -261,6 +261,53 @@ enquanto `RemoteNodeProvider::connect` precisa ser assíncrono — decisão de d
 resolvida nesta rodada). `ManagedCloudProvider` (v3, sem urgência) e a lacuna do push/pull
 QR-interativo numa trait genérica seguem sem tocar.
 
+**Continuação 6 (mesma sessão)** — pediu explicitamente pra eu usar `EnterPlanMode` antes de
+executar de agora em diante (registrado em memória). Voltado pra ligar o `RemoteNodeProvider` no
+`build_storage_provider`: escrito e explorado um plano, achado um bloqueio real de arquitetura —
+`warden-bootstrap` não podia depender de onde `RemoteNodeProvider` mora, porque `warden-server`
+**já** depende de `warden-bootstrap` (ciclo, impossível no Cargo). Confirmado com o usuário via
+`AskUserQuestion` (dentro do plano) qual dos dois caminhos seguir — separar o crate agora, ou só o
+agente-de-nó e adiar a ligação — escolhido **separar o crate**. Plano escrito, `ExitPlanMode`
+aprovado antes de qualquer edição.
+
+**O que foi feito**:
+
+- `crates/warden-server-protocol` novo — `protocol.rs`/`client.rs`/`remote_node.rs` movidos
+  verbatim (`git mv`, zero mudança de conteúdo nos três) do `warden-server`, já que nenhum dos três
+  tinha dependência de `warden-bootstrap` pra começo de conversa (só `server.rs`/`main.rs` do hub
+  tinham). `remote_tool.rs` (Fase 7.4) **ficou** em `warden-server` — só o hub usa.
+- `warden-server` (hub, mais magro): `lib.rs` reexporta tudo do crate novo
+  (`pub use warden_server_protocol::{ClientMessage, RemoteNodeProvider, ServerConnection,
+  ServerMessage};`) — **nenhum dos 5 arquivos de teste precisou mudar import**, todos continuam
+  resolvendo via `warden_server::{...}`. `server.rs` só precisou de um import ajustado
+  (`crate::protocol::...` → `warden_server_protocol::...`); `remote_tool.rs` idem.
+- `warden-bootstrap`: ganhou a dependência do crate novo (sem ciclo). `RemoteNodeConfig` novo
+  (`server_url`/`device_id`/`device_name`/`auth_key`/`target_device_id`), `FileConfig.remote_node:
+  Option<RemoteNodeConfig>` novo (config.toml/env-only, mesma postura de `delegate_max_depth` — e
+  sem como preencher com proveito ainda, já que o lado alvo não existe). `build_storage_provider`
+  virou `async fn` com um terceiro parâmetro `remote_node: Option<&RemoteNodeConfig>` — arm de
+  `RemoteNode` erra com clareza se `None` ("requires a [remote_node] config section"), senão chama
+  `RemoteNodeProvider::connect(...).await` de verdade. Teste antigo renomeado/dividido em 3: os
+  casos Local/DecentralizedVault/ManagedCloud (agora `#[tokio::test]`), `RemoteNode` sem config
+  errando, `RemoteNode` com config apontando pra um endereço que nada escuta errando também (a
+  prova de "funciona de ponta a ponta" já está nos 6 testes do `RemoteNodeProvider`, não precisava
+  duplicar aqui). `FileConfig`'s round-trip test ganhou um `remote_node: Some(...)` real.
+- `desktop/src-tauri/src/lib.rs`, `save_settings`: os dois pontos que já chamavam
+  `build_storage_provider` (fluxo de migração) ganharam `.await` + `existing.remote_node.as_ref()`
+  — **sem mudar a UI**: `remote_node` continua "Coming soon"/rejeitado pelo Settings, decisão
+  explícita de manter fora de escopo.
+- Correção de passagem: o doc comment de `FileConfig.storage_provider` ainda dizia "no Settings
+  screen UI yet", desatualizado desde a Sessão 59 principal (que deu UI a esse campo) — corrigido
+  já que estava mexendo na struct mesmo.
+- Verificação: `cargo check`/`clippy --workspace --all-targets` limpos (todo o workspace, não só os
+  crates tocados); `cargo test -p warden-server-protocol` (10, movidos verbatim) + `-p warden-server`
+  (23) + `-p warden-bootstrap` (43, 3 novos) todos passando.
+
+**Ainda em aberto**: o agente-de-nó real do lado alvo — sem ele, `[remote_node]` no config.toml não
+tem com quem falar de verdade ainda. `ManagedCloudProvider` (v3), UI de Settings pro `remote_node`,
+checagem de assinatura real, e a lacuna do push/pull QR-interativo numa trait genérica seguem sem
+tocar.
+
 ---
 
 ### 2026-09-09 — Sessão 58

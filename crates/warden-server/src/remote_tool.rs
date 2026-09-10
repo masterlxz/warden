@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use warden_core::tool::{Tool, ToolSpec};
 
-use crate::protocol::ServerMessage;
+use warden_server_protocol::ServerMessage;
 
 /// A model call taking this long to answer is already unusual (Fase 7.3's `Chat` has no timeout
 /// at all, since a slow model reply is expected); a *local file read* on a phone taking this long

@@ -104,6 +104,25 @@ pub struct AgentConfig {
     pub can_delegate_to_agents: bool,
 }
 
+/// Config for `StorageProviderKind::RemoteNode` (P61, v2) — which `warden-server` hub both this
+/// device and the one actually holding the vault connect through, and which of its registered
+/// devices is the target. No Settings-screen UI yet (config.toml/env only, same posture as
+/// `AgentConfig`/`delegate_max_depth`) — and there's no way to usefully fill this in yet either,
+/// since the target-side "vault node agent" process this would point at doesn't exist.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteNodeConfig {
+    /// The `warden-server` hub both sides connect through, e.g. `"ws://100.x.x.x:7420"`.
+    pub server_url: String,
+    /// This device's own id when it connects to `server_url` as a client.
+    pub device_id: String,
+    pub device_name: String,
+    /// Shared secret for `server_url`'s `Hello` handshake.
+    pub auth_key: String,
+    /// The *other* device (already connected to the same hub) that actually holds the vault.
+    pub target_device_id: String,
+}
+
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -149,9 +168,13 @@ pub struct FileConfig {
     pub agents: Vec<AgentConfig>,
     /// Where the vault's memory lives (P61). `None` means "not migrated yet" — resolved to
     /// `StorageProviderKind::Local` by `resolve_storage_provider`, same as every install already
-    /// implicitly was before this field existed. No Settings-screen UI yet — config.toml/env only
-    /// (`WARDEN_STORAGE_PROVIDER`), same posture as `delegate_max_depth`.
+    /// implicitly was before this field existed. Has a desktop Settings screen (the "Storage"
+    /// section) as of this session; `RemoteNode`/`ManagedCloud` are still shown there as "coming
+    /// soon" and can't be selected through it.
     pub storage_provider: Option<StorageProviderKind>,
+    /// Only meaningful when `storage_provider` is `RemoteNode` — see `RemoteNodeConfig`'s own doc
+    /// comment for why there's no UI for this yet either.
+    pub remote_node: Option<RemoteNodeConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -622,20 +645,40 @@ pub fn resolve_vault_path(overrides: &Overrides, config: &FileConfig, default_va
 }
 
 /// Builds the `StorageProvider` for a resolved `StorageProviderKind` (P61) — the factory
-/// `storage_provider`/`WARDEN_STORAGE_PROVIDER` select between. `RemoteNode`/`ManagedCloud` are v2/v3
-/// (see `PENDING.md` P61) — not yet implemented, so selecting either errors clearly rather than
-/// silently falling back to `Local`. Not yet called from `bootstrap()` itself: `Orchestrator` uses
-/// `Vault` directly for chat/memory (search, standing memory, ...) — none of which are
-/// `StorageProvider` concerns — so this is additive machinery for the sync subsystem to adopt, not
-/// a replacement for how `Orchestrator` already reads/writes the vault.
-pub fn build_storage_provider(kind: StorageProviderKind, vault: Arc<Vault>) -> anyhow::Result<Arc<dyn warden_core::storage::StorageProvider>> {
+/// `storage_provider`/`WARDEN_STORAGE_PROVIDER` select between. `async` (unlike every other
+/// `build_*` helper in this file) because `RemoteNode` needs a real network round-trip
+/// (`RemoteNodeProvider::connect`) to construct — `Local`/`DecentralizedVault` never touch
+/// `.await` internally, but the signature has to accommodate the one variant that does.
+/// `ManagedCloud` (v3, see `PENDING.md` P61) is still not implemented, and errors clearly rather
+/// than silently falling back to `Local`. Not yet called from `bootstrap()` itself: `Orchestrator`
+/// uses `Vault` directly for chat/memory (search, standing memory, ...) — none of which are
+/// `StorageProvider` concerns — so this is additive machinery for the sync subsystem (and now
+/// `RemoteNodeProvider`'s caller-side wiring) to adopt, not a replacement for how `Orchestrator`
+/// already reads/writes the vault.
+pub async fn build_storage_provider(
+    kind: StorageProviderKind,
+    vault: Arc<Vault>,
+    remote_node: Option<&RemoteNodeConfig>,
+) -> anyhow::Result<Arc<dyn warden_core::storage::StorageProvider>> {
     Ok(match kind {
         StorageProviderKind::Local => Arc::new(warden_core::storage::LocalFSProvider::new(vault)),
         StorageProviderKind::DecentralizedVault => Arc::new(warden_sync::DecentralizedVaultProvider::new(vault)),
-        StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud => {
-            return Err(anyhow::anyhow!(
-                "storage_provider '{kind:?}' is not implemented yet (planned for v2/v3 — see PENDING.md P61)"
-            ));
+        StorageProviderKind::RemoteNode => {
+            let cfg = remote_node
+                .ok_or_else(|| anyhow::anyhow!("storage_provider 'remote_node' requires a [remote_node] config section"))?;
+            Arc::new(
+                warden_server_protocol::RemoteNodeProvider::connect(
+                    &cfg.server_url,
+                    &cfg.device_id,
+                    &cfg.device_name,
+                    &cfg.auth_key,
+                    cfg.target_device_id.clone(),
+                )
+                .await?,
+            )
+        }
+        StorageProviderKind::ManagedCloud => {
+            return Err(anyhow::anyhow!("storage_provider 'managed_cloud' is not implemented yet (planned for v3 — see PENDING.md P61)"));
         }
     })
 }
@@ -1160,6 +1203,13 @@ oauth = true
                 can_delegate_to_agents: true,
             }],
             storage_provider: Some(StorageProviderKind::DecentralizedVault),
+            remote_node: Some(RemoteNodeConfig {
+                server_url: "ws://100.64.0.1:7420".to_string(),
+                device_id: "dev-caller".to_string(),
+                device_name: "Caller Device".to_string(),
+                auth_key: "shared-secret".to_string(),
+                target_device_id: "dev-target".to_string(),
+            }),
         };
 
         save_config(&path, &config).unwrap();
@@ -1324,16 +1374,41 @@ oauth = true
         assert_eq!(resolve_vault_path(&Overrides::default(), &FileConfig::default(), default.clone()), default);
     }
 
-    #[test]
-    fn build_storage_provider_supports_local_and_decentralized_vault_but_not_v2_v3_yet() {
+    #[tokio::test]
+    async fn build_storage_provider_supports_local_and_decentralized_vault_but_not_managed_cloud_yet() {
         let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
             "warden-bootstrap-storage-provider-vault-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ))));
-        assert!(build_storage_provider(StorageProviderKind::Local, vault.clone()).is_ok());
-        assert!(build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone()).is_ok());
-        assert!(build_storage_provider(StorageProviderKind::RemoteNode, vault.clone()).is_err());
-        assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault).is_err());
+        assert!(build_storage_provider(StorageProviderKind::Local, vault.clone(), None).await.is_ok());
+        assert!(build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone(), None).await.is_ok());
+        assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn build_storage_provider_remote_node_requires_a_config_section() {
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-bootstrap-storage-provider-remote-node-no-config-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let err = expect_err(build_storage_provider(StorageProviderKind::RemoteNode, vault, None).await);
+        assert!(err.contains("requires a"), "error was: {err}");
+    }
+
+    #[tokio::test]
+    async fn build_storage_provider_remote_node_errors_clearly_when_the_hub_is_unreachable() {
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-bootstrap-storage-provider-remote-node-unreachable-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let cfg = RemoteNodeConfig {
+            server_url: "ws://127.0.0.1:1".to_string(),
+            device_id: "dev-caller".to_string(),
+            device_name: "Caller".to_string(),
+            auth_key: "test-key".to_string(),
+            target_device_id: "dev-target".to_string(),
+        };
+        assert!(build_storage_provider(StorageProviderKind::RemoteNode, vault, Some(&cfg)).await.is_err());
     }
 
     #[tokio::test]
