@@ -136,6 +136,42 @@ push/pull QR-interativo numa trait genérica, e uma checagem de assinatura de ve
 existir alguma infra de billing real pro TruthID (não é um "próximo passo" simples, é um bloqueio de
 produto). Fora do P61: P62 (Agent Builder), P51 (9Router).
 
+**Continuação 3 (mesma sessão)** — usuário perguntou se a integração com TruthID usava o SDK de
+verdade; resposta honesta foi não (`TruthIdAuthProvider` só lê estado local em disco, nunca chama o
+protocolo). Usuário pediu pra trabalhar nisso de verdade — escopo confirmado antes de codar: **não
+existe SDK oficial do TruthID em Rust** (só Dart/Python/Ruby/TypeScript, `~/Documents/workspace/
+truthid/sdk/`), então "usar o SDK" virou **validar `warden-truthid` (Rust) contra o SDK Dart real
+rodando de verdade**, fechando o P38 (risco da convenção ECDH nunca confirmada) — sem o Dart virar
+dependência de runtime, que continua sendo o `warden-truthid` em Rust.
+
+**O que foi feito**:
+
+- Dart SDK instalado via `pacman -S dart` (usuário rodou o `sudo` manualmente) — não precisa do
+  Flutter inteiro, o pacote `sdk/dart` (`truthid_sdk`) só depende de `web3dart`/`elliptic`/
+  `cryptography`/`crypto`. `dart pub get` resolveu as dependências (`elliptic-0.3.12` entre elas).
+- Lido o código real do SDK: `elliptic-0.3.12/lib/src/ecdh.dart`'s `computeSecret` (X-coordinate do
+  ponto, big-endian, zero-padded a `byteLen` bytes) e `sdk/dart/lib/src/internal/{hkdf,
+  pin_content_cipher}.dart` (HKDF-SHA256 de bloco único, RFC 5869-shaped) — confirma, por leitura,
+  que a convenção bate com `k256::ecdh::diffie_hellman(...).raw_secret_bytes()`.
+- Confirmado com execução real, não só leitura: um script descartável (`bin/_warden_verify.dart`,
+  escrito dentro do checkout do TruthID pra poder importar os arquivos internos via caminho
+  relativo, rodado, **apagado logo depois** — `git status` do repo do TruthID confirmado limpo, nada
+  ficou lá) computou, com entradas fixas (chaves privadas `1`/`2`, sessionId
+  `00112233445566778899aabbccddeeff`): a chave `pin_content_key` derivada por HKDF, e o segredo ECDH
+  compartilhado nos dois sentidos (`computeSecret(privA, pubB)` == `computeSecret(privB, pubA)`,
+  ambos a coordenada X de `2*G`) + `SHA-256` dele (a chave AES real que o `EciesService.dart` usaria).
+- `crates/warden-truthid/src/crypto.rs` ganhou 2 testes novos travando esses vetores reais como
+  regressão permanente: `matches_the_real_dart_sdk_pin_content_key_vector` e
+  `ecdh_shared_secret_matches_the_real_dart_sdk_elliptic_package` — bati cada string hex contra o
+  arquivo de saída do script Dart programaticamente (não só copiado à mão) antes de commitar, pra não
+  arriscar erro de transcrição num teste que existe justamente pra ser a fonte de verdade.
+- **Resultado: convenção idêntica**, confirmado com execução real, não só leitura de código —
+  fecha o maior risco do P38. `cargo test -p warden-truthid` — 11 testes passando (2 novos);
+  `clippy` limpo.
+
+**Ainda em aberto**: o resto do P38 (nunca testado contra o app TruthID de verdade rodando num
+celular físico) continua igual — isso exige hardware, fora do que dava pra fazer nesta sessão.
+
 ---
 
 ### 2026-09-09 — Sessão 58

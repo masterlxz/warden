@@ -146,6 +146,56 @@ mod tests {
         assert_eq!(hex::encode(okm), expected);
     }
 
+    /// Real vectors generated 2026-09-10 by actually running the TruthID Dart SDK's own crypto
+    /// code (`sdk/dart/lib/src/internal/{hkdf,pin_content_cipher}.dart`, `elliptic`'s
+    /// `computeSecret`) against fixed inputs — not re-derived by reading source, the Dart SDK was
+    /// installed and executed for real. Closes P38's biggest open risk: whether `k256`'s
+    /// `diffie_hellman(...).raw_secret_bytes()` (the X-coordinate, big-endian, zero-padded to 32
+    /// bytes) is the same convention as `elliptic`'s `computeSecret` (confirmed identical by
+    /// reading `elliptic-0.3.12/lib/src/ecdh.dart`, but never run side-by-side until this test).
+    /// See `project/PENDING.md` P38 for how this was produced and what it does/doesn't cover.
+    #[test]
+    fn matches_the_real_dart_sdk_pin_content_key_vector() {
+        // `dart run bin/_warden_verify.dart` from `truthid/sdk/dart`, same session id as
+        // `pin_content_round_trips` below.
+        let key = derive_pin_content_key("00112233445566778899aabbccddeeff").unwrap();
+        assert_eq!(hex::encode(key), "0fb347626731fa0f1b34ceff29470170c69bc06c6c3940dedcc433f55938080d");
+    }
+
+    #[test]
+    fn ecdh_shared_secret_matches_the_real_dart_sdk_elliptic_package() {
+        // privA = 1, privB = 2 (both valid secp256k1 scalars) — `elliptic`'s `computeSecret`
+        // gives the same shared secret from either side (the X-coordinate of `2*G`), and so does
+        // `k256`'s `diffie_hellman`, byte-for-byte against what the real Dart SDK computed.
+        let mut priv_a_bytes = [0u8; 32];
+        priv_a_bytes[31] = 1;
+        let mut priv_b_bytes = [0u8; 32];
+        priv_b_bytes[31] = 2;
+
+        let secret_a = SecretKey::from_slice(&priv_a_bytes).unwrap();
+        let secret_b = SecretKey::from_slice(&priv_b_bytes).unwrap();
+
+        assert_eq!(
+            hex::encode(secret_a.public_key().to_sec1_bytes()),
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
+        assert_eq!(
+            hex::encode(secret_b.public_key().to_sec1_bytes()),
+            "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+        );
+
+        let shared_a_to_b = diffie_hellman(secret_a.to_nonzero_scalar(), secret_b.public_key().as_affine());
+        let shared_b_to_a = diffie_hellman(secret_b.to_nonzero_scalar(), secret_a.public_key().as_affine());
+        let expected = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+
+        assert_eq!(hex::encode(shared_a_to_b.raw_secret_bytes().as_slice()), expected);
+        assert_eq!(hex::encode(shared_b_to_a.raw_secret_bytes().as_slice()), expected);
+        assert_eq!(
+            hex::encode(derive_aes_key(shared_a_to_b.raw_secret_bytes().as_slice())),
+            "0135da2f8acf7b9e3090939432e47684eb888ea38c2173054d4eedffdf152ca5"
+        );
+    }
+
     #[test]
     fn derive_pin_content_key_rejects_invalid_hex() {
         assert!(derive_pin_content_key("not-hex").is_err());
