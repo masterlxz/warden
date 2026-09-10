@@ -374,7 +374,11 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   + `CallDeviceTool`/`DeviceToolResult`/`DeviceToolError` no `warden-server` (Sessão 59), testado
   com dois clientes reais na mesma suíte de integração; falta o lado cliente que de fato usaria
   isso (ex. P61's `RemoteNodeProvider`) — ver `PENDING.md`
-- [ ] 9.5 — Cliente executa tool localmente e devolve resultado
+- [x] 9.5 — Cliente executa tool localmente e devolve resultado — `warden-node` (Sessão 59,
+  `crates/warden-server/src/bin/warden-node.rs`), o agente-de-nó real do P61: conecta como cliente,
+  anuncia `vault_read`/`vault_write`/`vault_list`/`vault_delete`, executa contra seu próprio `Vault`
+  local e devolve o resultado — escopado só a essas 4 tools de vault, não um nó genérico de
+  qualquer tool ainda; ver `PENDING.md` P61
 - [ ] 9.6 — Workspace de máquinas (ver/gerenciar nós conectados)
 - [ ] 9.7 — Pareamento de cliente novo via QR code (mesmo padrão TruthID)
 

@@ -308,6 +308,40 @@ tem com quem falar de verdade ainda. `ManagedCloudProvider` (v3), UI de Settings
 checagem de assinatura real, e a lacuna do push/pull QR-interativo numa trait genérica seguem sem
 tocar.
 
+**Continuação 7 (mesma sessão)** — última peça grande do P61 v2: o agente-de-nó real. Plano escrito
+e aprovado antes de codar (`EnterPlanMode`/`ExitPlanMode`).
+
+**O que foi feito** (`crates/warden-server`):
+
+- `vault_node.rs` novo — `connect()` (conecta como cliente via `ServerConnection::
+  connect_with_tools`, anunciando `vault_read`/`vault_write`/`vault_list`/`vault_delete`) e
+  `serve()` (loop recebendo `ToolCallRequest`, despachando por nome de tool pra um
+  `LocalFSProvider` — **zero código de I/O novo**, só a marshalling JSON/base64 que já era o
+  contrato documentado pelo `RemoteNodeProvider` desde a continuação 5). Tool desconhecida erra com
+  clareza em vez de panicar.
+- `src/bin/warden-node.rs` novo — binário, mesmo shape de CLI/precedência do `main.rs` do
+  `warden-server` (`--server-url`/`--device-id`/`--device-name`/`--auth-key` com fallback
+  `WARDEN_SERVER_AUTH_KEY`/`--vault-path`/`--config`), resolve o vault path via
+  `warden_bootstrap::{load_config, resolve_vault_path}` igual todo outro canal.
+- `Cargo.toml`: `base64` saiu de `[dev-dependencies]` e virou dependência de verdade (agora usado
+  em código de produção, não só no teste que já existia); `[[bin]]` novo pro `warden-node`.
+- `tests/vault_node_end_to_end.rs` novo — **primeira vez que o `RemoteNodeProvider` fala com um
+  alvo real**, não mais roteirizado: `Server` real + `vault_node::serve` real contra um `Vault` num
+  diretório temporário real + `RemoteNodeProvider` real do outro lado. 2 testes: write/read/list/
+  delete conferindo o arquivo de verdade em disco em cada passo (não só o round-trip do RPC —
+  depois do `write`, `std::fs::read` direto no diretório do nó; depois do `delete`, confere que o
+  arquivo sumiu de verdade); e um `read` de um path nunca escrito errando com clareza através do nó
+  real.
+- Verificação: `cargo check`/`clippy --workspace --all-targets` limpos; `cargo test -p warden-server`
+  — 25 testes (23 + 2 novos); `cargo run --bin warden-node -- --help` confirma o binário de
+  verdade. `PHASE.md` Fase 9.5 marcada `[x]` (escopada às 4 tools de vault, não um nó genérico de
+  qualquer tool ainda).
+
+**Ainda em aberto**: `ManagedCloudProvider` (v3), UI de Settings pro `remote_node` (incluindo os
+campos de `RemoteNodeConfig`), checagem de assinatura real (bloqueada por billing), a lacuna do
+push/pull QR-interativo numa trait genérica, e qualquer história de deploy/systemd/empacotamento
+pro `warden-node` rodar de verdade numa máquina remota (fora de escopo, decisão explícita).
+
 ---
 
 ### 2026-09-09 — Sessão 58

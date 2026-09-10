@@ -17,9 +17,15 @@
 //! `warden-server` (this crate, the hub) already depends on `warden-bootstrap`. Re-exported below
 //! for backward compatibility; only `RemoteTool`/`RemoteToolChannel` (Fase 7.4's own-connection
 //! routing, used solely by `server.rs`) still live here.
+//!
+//! `vault_node` (this session) is the target side `RemoteNodeProvider` was missing — the
+//! `warden-node` binary (`src/bin/warden-node.rs`) connects as a client and serves
+//! `vault_read`/`vault_write`/`vault_list`/`vault_delete` against its own local `Vault`, so
+//! `[remote_node]` in `config.toml` finally has something real to point at.
 
 pub mod remote_tool;
 pub mod server;
+pub mod vault_node;
 
 pub use remote_tool::{RemoteTool, RemoteToolChannel};
 pub use server::Server;
