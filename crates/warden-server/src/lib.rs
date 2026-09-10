@@ -8,16 +8,20 @@
 //! every connected device and `ClientMessage::CallDeviceTool` lets one connection route a tool
 //! call to a *specific different* one, answered by `ServerMessage::DeviceToolResult`/
 //! `DeviceToolError` — the server-side foundation P61's `RemoteNodeProvider` (a `StorageProvider`
-//! backed by another machine's vault) would sit on top of, though that client-side piece doesn't
-//! exist yet. Workspace management (9.6) and QR-mediated pairing (9.7) still build on top of
-//! this later.
+//! backed by another machine's vault) sits on top of. The caller side is now implemented
+//! (`remote_node.rs`, this session's continuation), tested against a scripted fake target; the
+//! target side (a process that actually connects and serves `vault_read`/`vault_write`/
+//! `vault_list`/`vault_delete` against its own local `Vault`) doesn't exist yet. Workspace
+//! management (9.6) and QR-mediated pairing (9.7) still build on top of this later.
 
 pub mod client;
 pub mod protocol;
+pub mod remote_node;
 pub mod remote_tool;
 pub mod server;
 
 pub use client::ServerConnection;
 pub use protocol::{ClientMessage, ServerMessage};
+pub use remote_node::RemoteNodeProvider;
 pub use remote_tool::{RemoteTool, RemoteToolChannel};
 pub use server::Server;

@@ -223,6 +223,44 @@ parecido existe hoje (só o mobile Dart e o CLI/desktop usam `warden-server`, e 
 `Chat`). `ManagedCloudProvider` (v3, sem urgência) e a lacuna do push/pull QR-interativo numa trait
 genérica também seguem sem tocar.
 
+**Continuação 5 (mesma sessão)** — usuário pediu explicitamente, a partir daqui, pra eu usar
+**Plan mode** antes de começar a executar tarefas não-triviais, pra poder ler e aprovar antes
+(registrado em memória — `feedback_use_plan_mode`). Voltado pro `RemoteNodeProvider` deixado em
+aberto: `EnterPlanMode`, explorado o resto do que faltava (nenhum cliente Rust de produção usa
+`ServerConnection` hoje — só os testes), escrito um plano (`RemoteNodeClient` interno +
+`RemoteNodeProvider` público, testados contra um alvo roteirizado), confirmado com o usuário via
+`AskUserQuestion` que esta rodada cobre só o lado que chama (não o agente-de-nó real nem a ligação
+em `build_storage_provider`), e `ExitPlanMode` aprovado antes de qualquer edição.
+
+**O que foi feito** (`crates/warden-server`):
+
+- `remote_node.rs` novo — `RemoteNodeClient` (interno): uma única task de fundo por conexão
+  (`tokio::select!` entre um canal de saída `mpsc` e `conn.recv()` do `ServerConnection`), mesmo
+  formato de alocador de `call_id`/mapa de pendências de `RemoteToolChannel::call` (própria struct,
+  não reaproveita o código diretamente — aponta pra um `target_device_id` fixo em vez de responder
+  localmente). Sem reconexão automática (limitação aceita e documentada — uma chamada após a
+  conexão cair simplesmente erra "connection closed", mesma postura que `RemoteToolChannel::call`
+  já tem do lado servidor). `RemoteNodeProvider` (público): implementa `StorageProvider` com 4
+  operações fixas — `vault_read`/`vault_write` (conteúdo em base64 nos dois sentidos)/`vault_list`
+  (`{"paths": [...]}`)/`vault_delete` — esse é o contrato que um futuro agente-de-nó (lado alvo,
+  ainda não existe) precisaria implementar igual. Respostas malformadas (ex. `content_base64`
+  faltando) erram com mensagem clara em vez de panicar. `export_all`/`import_all` usam os defaults
+  da trait (já construídos sobre os 4 primitivos).
+- `Cargo.toml` ganhou `base64.workspace = true` (já `"0.22"` no workspace, mesmo uso do
+  `desktop/src-tauri`).
+- `tests/remote_node_provider.rs` novo — 6 testes contra um alvo roteirizado (`ServerConnection`
+  puro, mesmo padrão de `device_routing.rs`): `read`, `write`+`read` (prova o base64 nos dois
+  sentidos, não só que uma chamada foi feita), `list`, `delete`, erro do alvo repassado, resposta
+  malformada tratada sem panic.
+- `cargo test -p warden-server` — 33 testes passando (27 + 6 novos); `clippy --all-targets` limpo.
+
+**Ainda em aberto**: o agente-de-nó de verdade (processo que rodaria numa segunda máquina física,
+servindo essas 4 operações contra seu próprio `Vault` — nada faz isso ainda) e a ligação em
+`build_storage_provider`/`FileConfig` (bloqueada por `build_storage_provider` ser síncrona hoje
+enquanto `RemoteNodeProvider::connect` precisa ser assíncrono — decisão de design própria, não
+resolvida nesta rodada). `ManagedCloudProvider` (v3, sem urgência) e a lacuna do push/pull
+QR-interativo numa trait genérica seguem sem tocar.
+
 ---
 
 ### 2026-09-09 — Sessão 58

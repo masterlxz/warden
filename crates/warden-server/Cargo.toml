@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs.workspace = true
 futures-util = "0.3"
