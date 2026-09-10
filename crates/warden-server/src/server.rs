@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
@@ -16,16 +17,29 @@ use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOT
 
 type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
+/// Every currently-connected device's `RemoteToolChannel`, keyed by `device_id` — populated on a
+/// successful `Hello` (Fase 9.3), regardless of whether that device advertised any `Hello.tools`
+/// (a device is a valid routing *target* just by being connected; advertising tools only matters
+/// for Fase 7.4's "the model chatting with this same device can invoke them"). Consulted by
+/// `ClientMessage::CallDeviceTool` (Fase 9.4) to reach a specific *other* connection. Known
+/// limitation, not handled here: a device that reconnects while its previous connection's cleanup
+/// is still unwinding could have the new registration clobbered by the old one's removal — no
+/// reconnect scenario exists yet to make that a real problem.
+type DeviceRegistry = Arc<Mutex<HashMap<String, RemoteToolChannel>>>;
+
 /// The server side of the Fase 9 client↔server WebSocket protocol.
 ///
-/// As of Fase 7.3, hosts a real `Orchestrator` and answers `Chat` messages with it — routing a
-/// tool call to a *specific* connected client (Fase 9.4/9.5) is still out of scope, but "the
-/// server has a model to talk to" no longer is.
+/// As of Fase 7.3, hosts a real `Orchestrator` and answers `Chat` messages with it. As of this
+/// session (Fase 9.3/9.4), also keeps a registry of every connected device and routes
+/// `CallDeviceTool` from one connection to a specific other one — the client-side piece that
+/// would actually *use* this routing (e.g. a `StorageProvider` backed by another machine's vault,
+/// P61's `RemoteNodeProvider`) doesn't exist yet; this is the server-side foundation for it.
 pub struct Server {
     listener: TcpListener,
     auth_key: Arc<str>,
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
+    devices: DeviceRegistry,
 }
 
 impl Server {
@@ -41,6 +55,7 @@ impl Server {
             auth_key: auth_key.into(),
             orchestrator,
             conversations_dir: Arc::new(conversations_dir),
+            devices: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -57,8 +72,9 @@ impl Server {
             let auth_key = self.auth_key.clone();
             let orchestrator = self.orchestrator.clone();
             let conversations_dir = self.conversations_dir.clone();
+            let devices = self.devices.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, peer, auth_key, orchestrator, conversations_dir).await {
+                if let Err(err) = handle_connection(stream, peer, auth_key, orchestrator, conversations_dir, devices).await {
                     eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
                 }
             });
@@ -72,6 +88,7 @@ async fn handle_connection(
     auth_key: Arc<str>,
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
+    devices: DeviceRegistry,
 ) -> anyhow::Result<()> {
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
@@ -137,11 +154,16 @@ async fn handle_connection(
         }
     });
 
+    // Fase 9.3: every connected device is a valid routing target for `CallDeviceTool`, whether or
+    // not it advertised any `Hello.tools` — registered before the loop starts so a routed call
+    // arriving right after this device's own Hello can never race the registration.
+    let tool_channel = RemoteToolChannel::new(tx.clone());
+    devices.lock().unwrap().insert(device_id.clone(), tool_channel.clone());
+
     // Fase 7.4: a client that advertised tools in Hello gets its own Orchestrator (cheap clone —
     // Orchestrator is Arc-backed) with a RemoteTool proxy per advertised spec, so the model can
     // invoke a capability that only exists on *this* device (mobile's file access, to start). A
     // client with nothing to advertise (tools empty) just reuses the shared, server-wide instance.
-    let tool_channel = RemoteToolChannel::new(tx.clone());
     let orchestrator: Arc<Orchestrator> = if tools.is_empty() {
         orchestrator
     } else {
@@ -185,6 +207,23 @@ async fn handle_connection(
                 Ok(ClientMessage::ToolCallError { call_id, message }) => {
                     tool_channel.resolve(call_id, Err(message));
                 }
+                Ok(ClientMessage::CallDeviceTool { call_id, target_device_id, tool, arguments }) => {
+                    let target_channel = devices.lock().unwrap().get(&target_device_id).cloned();
+                    let reply_tx = tx.clone();
+                    tokio::spawn(async move {
+                        let reply = match target_channel {
+                            Some(channel) => match channel.call(tool, arguments, REMOTE_TOOL_TIMEOUT).await {
+                                Ok(result) => ServerMessage::DeviceToolResult { call_id, result },
+                                Err(err) => ServerMessage::DeviceToolError { call_id, message: format!("{err:#}") },
+                            },
+                            None => ServerMessage::DeviceToolError {
+                                call_id,
+                                message: format!("device '{target_device_id}' is not connected"),
+                            },
+                        };
+                        let _ = reply_tx.send(reply);
+                    });
+                }
                 Ok(ClientMessage::Goodbye { reason }) => {
                     eprintln!("warden-server: {device_id} said goodbye ({reason:?})");
                     break;
@@ -202,6 +241,7 @@ async fn handle_connection(
         }
     }
 
+    devices.lock().unwrap().remove(&device_id);
     drop(tx);
     writer_task.await.ok();
 

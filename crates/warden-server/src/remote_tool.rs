@@ -41,6 +41,36 @@ impl RemoteToolChannel {
             let _ = tx.send(result);
         }
     }
+
+    /// Sends a `ToolCallRequest` for `tool(arguments)` down this connection and waits (up to
+    /// `timeout`) for the matching `ToolCallResult`/`ToolCallError` — the one call-id allocator
+    /// and pending map this connection has, shared by every caller that needs to ask *this*
+    /// device to run something. `RemoteTool::call` (Fase 7.4, the model invoking a tool it
+    /// registered for its own chat) and `server::handle_connection`'s cross-device routing
+    /// (Fase 9.4, a *different* device asking this one to run a tool) both go through here —
+    /// neither could safely allocate call-ids independently without risking two concurrent
+    /// requests to the same connection colliding on the same id.
+    pub async fn call(&self, tool: String, arguments: Value, timeout: Duration) -> anyhow::Result<Value> {
+        let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
+        let (result_tx, result_rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(call_id, result_tx);
+
+        let request = ServerMessage::ToolCallRequest { call_id, tool: tool.clone(), arguments };
+        if self.tx.send(request).is_err() {
+            self.pending.lock().unwrap().remove(&call_id);
+            anyhow::bail!("'{tool}' failed: connection closed before the request could be sent");
+        }
+
+        match tokio::time::timeout(timeout, result_rx).await {
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(message))) => anyhow::bail!("remote tool '{tool}' failed: {message}"),
+            Ok(Err(_canceled)) => anyhow::bail!("'{tool}' failed: connection closed while waiting for a reply"),
+            Err(_elapsed) => {
+                self.pending.lock().unwrap().remove(&call_id);
+                anyhow::bail!("remote tool '{tool}' timed out after {timeout:?}")
+            }
+        }
+    }
 }
 
 /// A `Tool` that proxies `call()` over a connection instead of running locally — the mechanism
@@ -66,25 +96,7 @@ impl Tool for RemoteTool {
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
-        let call_id = self.channel.next_call_id.fetch_add(1, Ordering::Relaxed);
-        let (result_tx, result_rx) = oneshot::channel();
-        self.channel.pending.lock().unwrap().insert(call_id, result_tx);
-
-        let request = ServerMessage::ToolCallRequest { call_id, tool: self.spec.name.clone(), arguments: args };
-        if self.channel.tx.send(request).is_err() {
-            self.channel.pending.lock().unwrap().remove(&call_id);
-            anyhow::bail!("'{}' failed: connection closed before the request could be sent", self.spec.name);
-        }
-
-        match tokio::time::timeout(self.timeout, result_rx).await {
-            Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(message))) => anyhow::bail!("remote tool '{}' failed: {message}", self.spec.name),
-            Ok(Err(_canceled)) => anyhow::bail!("'{}' failed: connection closed while waiting for a reply", self.spec.name),
-            Err(_elapsed) => {
-                self.channel.pending.lock().unwrap().remove(&call_id);
-                anyhow::bail!("remote tool '{}' timed out after {:?}", self.spec.name, self.timeout)
-            }
-        }
+        self.channel.call(self.spec.name.clone(), args, self.timeout).await
     }
 }
 

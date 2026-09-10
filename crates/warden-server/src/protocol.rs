@@ -38,6 +38,20 @@ pub enum ClientMessage {
         call_id: u64,
         message: String,
     },
+    /// Asks the server to route a tool call to a *different* connected device (Fase 9.3/9.4) —
+    /// unlike `Hello.tools`/`ToolCallRequest` (Fase 7.4, always a round-trip back to the same
+    /// connection that advertised the tool), this lets any connected client reach a specific
+    /// other one by `target_device_id`. `call_id` is this connection's own id (allocated the same
+    /// way `Ping`'s `nonce` is, by the caller) — echoed back on the matching
+    /// `ServerMessage::DeviceToolResult`/`DeviceToolError` so concurrent calls stay correlated.
+    /// The server never inspects `tool`/`arguments`; only the target device's own code decides
+    /// what they mean.
+    CallDeviceTool {
+        call_id: u64,
+        target_device_id: String,
+        tool: String,
+        arguments: Value,
+    },
     Goodbye {
         reason: Option<String>,
     },
@@ -74,6 +88,20 @@ pub enum ServerMessage {
         call_id: u64,
         tool: String,
         arguments: Value,
+    },
+    /// Reply to a `ClientMessage::CallDeviceTool` (Fase 9.4) — the target device answered. Same
+    /// `call_id` the caller allocated for that request.
+    DeviceToolResult {
+        call_id: u64,
+        result: Value,
+    },
+    /// A routed `CallDeviceTool` didn't succeed — covers both "the target device isn't connected"
+    /// and "the target device ran the tool but it failed", same "one error variant, descriptive
+    /// text" posture as `ChatError`; the caller has no separate branch to handle differently
+    /// between those two cases anyway.
+    DeviceToolError {
+        call_id: u64,
+        message: String,
     },
     Goodbye {
         reason: Option<String>,
@@ -152,6 +180,38 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"type":"authError","reason":"invalid auth key"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn client_call_device_tool_round_trips_through_json() {
+        let msg = ClientMessage::CallDeviceTool {
+            call_id: 1,
+            target_device_id: "dev-2".into(),
+            tool: "vault_read".into(),
+            arguments: serde_json::json!({"path": "notes/a.md"}),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"callDeviceTool","callId":1,"targetDeviceId":"dev-2","tool":"vault_read","arguments":{"path":"notes/a.md"}}"#
+        );
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_device_tool_result_round_trips_through_json() {
+        let msg = ServerMessage::DeviceToolResult { call_id: 1, result: serde_json::json!({"content": "hi"}) };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"deviceToolResult","callId":1,"result":{"content":"hi"}}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_device_tool_error_round_trips_through_json() {
+        let msg = ServerMessage::DeviceToolError { call_id: 1, message: "device 'dev-2' is not connected".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"deviceToolError","callId":1,"message":"device 'dev-2' is not connected"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
     }
 

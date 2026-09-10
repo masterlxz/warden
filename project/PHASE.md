@@ -368,8 +368,12 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 - [ ] 9.1 — Setup Tailscale (todos os nós na mesma subnet)
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
-- [ ] 9.3 — Registrar cliente no servidor (pareamento)
-- [ ] 9.4 — Rotear requisição de tool para o cliente correto
+- [ ] 9.3 — Registrar cliente no servidor (pareamento) — só um registro efêmero em memória
+  (Sessão 59) existe hoje, não pareamento persistente/com aprovação; ver 9.4
+- [x] 9.4 — Rotear requisição de tool para o cliente correto — registro de dispositivos conectados
+  + `CallDeviceTool`/`DeviceToolResult`/`DeviceToolError` no `warden-server` (Sessão 59), testado
+  com dois clientes reais na mesma suíte de integração; falta o lado cliente que de fato usaria
+  isso (ex. P61's `RemoteNodeProvider`) — ver `PENDING.md`
 - [ ] 9.5 — Cliente executa tool localmente e devolve resultado
 - [ ] 9.6 — Workspace de máquinas (ver/gerenciar nós conectados)
 - [ ] 9.7 — Pareamento de cliente novo via QR code (mesmo padrão TruthID)

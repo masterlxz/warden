@@ -172,6 +172,57 @@ dependência de runtime, que continua sendo o `warden-truthid` em Rust.
 **Ainda em aberto**: o resto do P38 (nunca testado contra o app TruthID de verdade rodando num
 celular físico) continua igual — isso exige hardware, fora do que dava pra fazer nesta sessão.
 
+**Continuação 4 (mesma sessão)** — voltado pro P61, escolhido atacar o `RemoteNodeProvider` (v2).
+
+**Bloqueio real encontrado e confirmado com o usuário antes de codar**: `RemoteNodeProvider` supõe
+"máquina A lê/escreve no vault de outra máquina B via a rede de nós" — investigado
+`crates/warden-server` (o protocolo da Fase 9) e descoberto que o roteamento de tool call hoje
+(Fase 7.4) só faz **round-trip pro mesmo dispositivo** que anunciou a tool (o modelo, rodando pro
+dispositivo B, pede pra B rodar uma tool que B mesmo ofereceu) — nunca "dispositivo A pede pro
+servidor rotear pro dispositivo B". Não tinha como simplesmente reaproveitar isso; três caminhos
+levados ao usuário (estender o `warden-server` de vez / protocolo P2P dedicado tipo o LAN sweep do
+`warden-sync` / só a interface sem transporte) — escolhido **estender o `warden-server`** (Fase
+9.3/9.4 de verdade), e dentro disso, fatiar: só o lado servidor nesta rodada, o `RemoteNodeProvider`
+em si (que precisaria de um cliente WS persistente novo, peça grande por conta própria) fica pra
+depois.
+
+**O que foi feito** (`crates/warden-server`):
+
+- `protocol.rs`: `ClientMessage::CallDeviceTool { call_id, target_device_id, tool, arguments }`
+  novo — dispositivo A pede pro servidor rotear pro `target_device_id`. Respostas:
+  `ServerMessage::DeviceToolResult`/`DeviceToolError` (um variant só de erro, cobre "alvo não
+  conectado" e "alvo rodou e falhou", mesma postura de `ChatError`). 3 testes de round-trip JSON
+  novos, mesmo estilo dos já existentes.
+- `remote_tool.rs`: extraído `RemoteToolChannel::call(tool, arguments, timeout)` do corpo que antes
+  só existia dentro de `RemoteTool::call` (que agora só delega) — **essencial pra evitar colisão de
+  `call_id`**: a Fase 7.4 (modelo pedindo pra própria conexão rodar uma tool anunciada) e o
+  roteamento cross-device novo (uma conexão *diferente* pedindo a mesma coisa) agora compartilham o
+  mesmo alocador de id/mapa de pendências por conexão, em vez de dois contadores independentes que
+  poderiam gerar o mesmo id pra chamadas concorrentes na mesma conexão.
+- `server.rs`: `Server` ganhou `devices: Arc<Mutex<HashMap<String, RemoteToolChannel>>>` — todo
+  dispositivo que faz `Hello` com sucesso é registrado (não só os que anunciam tools Fase 7.4; ser
+  alvo de roteamento não depende disso), removido no fim da conexão. Handler novo pra
+  `CallDeviceTool`: busca o canal do alvo no registro, chama `channel.call(...)` num spawn (não
+  bloqueia o loop de leitura, mesmo padrão já usado pro `Chat`), devolve `DeviceToolResult`/
+  `DeviceToolError` pro chamador. **Limitação aceita, documentada**: reconexão rápida do alvo
+  correndo com a limpeza da conexão antiga pode remover o registro novo — sem cenário de
+  reconexão de verdade ainda pra isso importar.
+- `tests/device_routing.rs` novo — 4 testes de ponta a ponta com dois `ServerConnection` reais
+  contra o mesmo `Server`: roteamento com sucesso (resultado real indo e voltando), erro do lado
+  do alvo repassado com a mensagem real, alvo que nunca conectou, alvo que mandou `Goodbye` e foi
+  desregistrado (com um `tokio::time::sleep(100ms)` pra dar tempo do servidor processar, mesmo
+  padrão já usado em `tests/chat.rs`).
+- `cargo test -p warden-server` — 27 testes passando (14 unitários + 13 de integração, os 7 novos
+  inclusos); `cargo clippy -p warden-server --all-targets` limpo. `PHASE.md` Fase 9.4 marcada `[x]`
+  com a ressalva do que falta; 9.3 continua `[ ]` (o que existe é só um registro efêmero em
+  memória, não pareamento persistente/com aprovação).
+
+**Ainda em aberto**: o `RemoteNodeProvider` (`StorageProvider`) em si, e o cliente WS persistente
+que ele precisaria (conexão de vida longa, Hello, reconexão) pra de fato usar essa rota nova — nada
+parecido existe hoje (só o mobile Dart e o CLI/desktop usam `warden-server`, e só pro papel de
+`Chat`). `ManagedCloudProvider` (v3, sem urgência) e a lacuna do push/pull QR-interativo numa trait
+genérica também seguem sem tocar.
+
 ---
 
 ### 2026-09-09 — Sessão 58
