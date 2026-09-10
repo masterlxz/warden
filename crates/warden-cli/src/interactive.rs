@@ -60,7 +60,8 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
     build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
-    rename_provider_cascade, save_config, AgentConfig, FileConfig, Provider, ProviderConfig,
+    rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
+    Provider, ProviderConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
@@ -916,15 +917,14 @@ struct CliSession {
     turn_count: usize,
 }
 
-/// Mirrors `warden_bootstrap::bootstrap`'s own vault-path precedence (override, then the config
-/// file, then a default) — needed here because `Orchestrator` doesn't expose its `Vault`'s root
-/// back out, and `/sync` needs the exact same path the running session already reads/writes.
+/// Uses `warden_bootstrap::resolve_vault_path` (P61) — needed here because `Orchestrator` doesn't
+/// expose its `Vault`'s root back out, and `/sync` needs the exact same path the running session
+/// already reads/writes. Previously reimplemented the same override-then-config-then-default
+/// precedence by hand; now shares the one implementation `bootstrap()` itself uses.
 fn resolve_vault_path(config_path: Option<&Path>, vault_path_override: Option<&str>) -> anyhow::Result<PathBuf> {
-    if let Some(path) = vault_path_override {
-        return Ok(PathBuf::from(path));
-    }
     let config = load_fresh_config(config_path)?;
-    Ok(config.vault_path.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("vault")))
+    let overrides = Overrides { vault_path: vault_path_override.map(String::from), ..Default::default() };
+    Ok(bootstrap_resolve_vault_path(&overrides, &config, PathBuf::from("vault")))
 }
 
 /// Builds a `SyncEngine` pointed at the same vault/config this CLI session already uses — called

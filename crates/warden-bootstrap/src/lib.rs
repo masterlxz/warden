@@ -38,6 +38,28 @@ pub enum Provider {
     OpenaiCompatible,
 }
 
+/// Where the vault's memory actually lives (P61) — selects the `warden_core::storage::StorageProvider`
+/// `build_storage_provider` constructs. Unlike `Provider` above, this isn't a registry (there's
+/// only ever one active storage backend per install, not several pre-configured ones to switch
+/// between) — a single config field is enough. `RemoteNode`/`ManagedCloud` are placeholders for
+/// v2/v3 (see `PENDING.md` P61) — `build_storage_provider` errors clearly if either is selected,
+/// since neither has an implementation yet.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageProviderKind {
+    /// Free, local disk — the absolute default, and what every install already does today
+    /// (`Vault` itself, before this abstraction existed).
+    Local,
+    /// Paid-by-subscription, backed by TruthID/Arweave (`warden-sync`'s `SyncEngine`) — the only
+    /// kind depending on TruthID. See `warden_sync::DecentralizedVaultProvider`'s doc comment for
+    /// what it does and doesn't do yet.
+    DecentralizedVault,
+    /// v2, not implemented yet — another machine the user owns, via the node network (Fase 9).
+    RemoteNode,
+    /// v3, not implemented yet — traditional hosted infra, paid to Fabio, no Web3.
+    ManagedCloud,
+}
+
 /// One configured model provider (Sessão 35's provider registry) — the desktop Settings screen
 /// lets the user add/edit/delete any number of these, each independently selectable as the
 /// active one. Kept as a flat list rather than a map so ordering is stable for display and `id`
@@ -125,6 +147,11 @@ pub struct FileConfig {
     /// no `agent_id` just runs with no persona, the same behavior as before this existed.
     #[serde(default)]
     pub agents: Vec<AgentConfig>,
+    /// Where the vault's memory lives (P61). `None` means "not migrated yet" — resolved to
+    /// `StorageProviderKind::Local` by `resolve_storage_provider`, same as every install already
+    /// implicitly was before this field existed. No Settings-screen UI yet — config.toml/env only
+    /// (`WARDEN_STORAGE_PROVIDER`), same posture as `delegate_max_depth`.
+    pub storage_provider: Option<StorageProviderKind>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -532,6 +559,28 @@ pub fn resolve_delegate_max_depth(from_env: Option<String>, from_file: Option<u3
     from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_DELEGATE_MAX_DEPTH)
 }
 
+/// Env-wins-over-file precedence for `storage_provider` (P61), but unlike `resolve_flag`/
+/// `resolve_delegate_max_depth` — both permissive about a malformed env value — an unrecognized
+/// `WARDEN_STORAGE_PROVIDER` is a hard error: silently falling back to the file/default value would
+/// mean a typo changes *where the user's memory lives* without any indication anything went wrong.
+/// Defaults to `Local` when neither is set, matching what every install already did before this
+/// field existed.
+pub fn resolve_storage_provider(from_env: Option<String>, from_file: Option<StorageProviderKind>) -> anyhow::Result<StorageProviderKind> {
+    match from_env {
+        Some(value) => match value.trim().to_lowercase().as_str() {
+            "local" => Ok(StorageProviderKind::Local),
+            "decentralized_vault" => Ok(StorageProviderKind::DecentralizedVault),
+            "remote_node" => Ok(StorageProviderKind::RemoteNode),
+            "managed_cloud" => Ok(StorageProviderKind::ManagedCloud),
+            other => Err(anyhow::anyhow!(
+                "WARDEN_STORAGE_PROVIDER='{other}' is not a recognized storage provider — expected one of \
+                 local, decentralized_vault, remote_node, managed_cloud"
+            )),
+        },
+        None => Ok(from_file.unwrap_or(StorageProviderKind::Local)),
+    }
+}
+
 /// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
 /// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
 /// take down the whole orchestrator, same graceful-degradation spirit as a missing
@@ -560,6 +609,35 @@ pub struct Overrides {
     pub provider_id: Option<String>,
     pub model: Option<String>,
     pub vault_path: Option<String>,
+}
+
+/// Resolves the vault path with the same override-then-config-then-default precedence `bootstrap()`
+/// itself uses — extracted out (P61) so callers that need a `Vault`/`StorageProvider` outside of
+/// `bootstrap()` (e.g. the sync subsystem in CLI/desktop/mobile) don't have to re-derive this
+/// independently. Previously duplicated by hand in `warden-cli`'s own `resolve_vault_path` and
+/// missing entirely from the desktop's `SyncEngine` construction (which just hardcoded its own
+/// default, ignoring `config.vault_path` — see `PENDING.md` P61).
+pub fn resolve_vault_path(overrides: &Overrides, config: &FileConfig, default_vault_path: PathBuf) -> PathBuf {
+    overrides.vault_path.clone().map(PathBuf::from).or_else(|| config.vault_path.clone().map(PathBuf::from)).unwrap_or(default_vault_path)
+}
+
+/// Builds the `StorageProvider` for a resolved `StorageProviderKind` (P61) — the factory
+/// `storage_provider`/`WARDEN_STORAGE_PROVIDER` select between. `RemoteNode`/`ManagedCloud` are v2/v3
+/// (see `PENDING.md` P61) — not yet implemented, so selecting either errors clearly rather than
+/// silently falling back to `Local`. Not yet called from `bootstrap()` itself: `Orchestrator` uses
+/// `Vault` directly for chat/memory (search, standing memory, ...) — none of which are
+/// `StorageProvider` concerns — so this is additive machinery for the sync subsystem to adopt, not
+/// a replacement for how `Orchestrator` already reads/writes the vault.
+pub fn build_storage_provider(kind: StorageProviderKind, vault: Arc<Vault>) -> anyhow::Result<Arc<dyn warden_core::storage::StorageProvider>> {
+    Ok(match kind {
+        StorageProviderKind::Local => Arc::new(warden_core::storage::LocalFSProvider::new(vault)),
+        StorageProviderKind::DecentralizedVault => Arc::new(warden_sync::DecentralizedVaultProvider::new(vault)),
+        StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud => {
+            return Err(anyhow::anyhow!(
+                "storage_provider '{kind:?}' is not implemented yet (planned for v2/v3 — see PENDING.md P61)"
+            ));
+        }
+    })
 }
 
 /// Builds the one `ModelProvider` the orchestrator will use, from a resolved `ProviderConfig` —
@@ -717,11 +795,7 @@ pub async fn bootstrap(
     let config = load_config(explicit_config_path)?;
     let model_provider = resolve_model_provider(&config, &overrides)?;
 
-    let vault_path = overrides
-        .vault_path
-        .map(PathBuf::from)
-        .or_else(|| config.vault_path.map(PathBuf::from))
-        .unwrap_or(default_vault_path);
+    let vault_path = resolve_vault_path(&overrides, &config, default_vault_path);
 
     let vault = Arc::new(Vault::new(vault_path));
     seed_default_vault_files(&vault);
@@ -1065,6 +1139,7 @@ oauth = true
                 provider_id: Some("ollama-local".to_string()),
                 can_delegate_to_agents: true,
             }],
+            storage_provider: Some(StorageProviderKind::DecentralizedVault),
         };
 
         save_config(&path, &config).unwrap();
@@ -1200,6 +1275,45 @@ oauth = true
         assert_eq!(resolve_delegate_max_depth(Some("nonsense".to_string()), Some(1)), 1);
         assert_eq!(resolve_delegate_max_depth(None, Some(4)), 4);
         assert_eq!(resolve_delegate_max_depth(None, None), DEFAULT_DELEGATE_MAX_DEPTH);
+    }
+
+    #[test]
+    fn resolve_storage_provider_prefers_env_over_file_and_defaults_to_local() {
+        assert_eq!(
+            resolve_storage_provider(Some("decentralized_vault".to_string()), Some(StorageProviderKind::Local)).unwrap(),
+            StorageProviderKind::DecentralizedVault
+        );
+        assert_eq!(resolve_storage_provider(None, Some(StorageProviderKind::DecentralizedVault)).unwrap(), StorageProviderKind::DecentralizedVault);
+        assert_eq!(resolve_storage_provider(None, None).unwrap(), StorageProviderKind::Local);
+    }
+
+    #[test]
+    fn resolve_storage_provider_errors_on_an_unrecognized_env_value_instead_of_falling_back() {
+        let err = resolve_storage_provider(Some("dropbox".to_string()), Some(StorageProviderKind::Local)).unwrap_err();
+        assert!(err.to_string().contains("dropbox"));
+    }
+
+    #[test]
+    fn resolve_vault_path_prefers_override_then_config_then_default() {
+        let default = PathBuf::from("/default/vault");
+        let config = FileConfig { vault_path: Some("/from/config".to_string()), ..Default::default() };
+        let overridden = Overrides { vault_path: Some("/from/override".to_string()), ..Default::default() };
+
+        assert_eq!(resolve_vault_path(&overridden, &config, default.clone()), PathBuf::from("/from/override"));
+        assert_eq!(resolve_vault_path(&Overrides::default(), &config, default.clone()), PathBuf::from("/from/config"));
+        assert_eq!(resolve_vault_path(&Overrides::default(), &FileConfig::default(), default.clone()), default);
+    }
+
+    #[test]
+    fn build_storage_provider_supports_local_and_decentralized_vault_but_not_v2_v3_yet() {
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-bootstrap-storage-provider-vault-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        assert!(build_storage_provider(StorageProviderKind::Local, vault.clone()).is_ok());
+        assert!(build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone()).is_ok());
+        assert!(build_storage_provider(StorageProviderKind::RemoteNode, vault.clone()).is_err());
+        assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault).is_err());
     }
 
     /// `Arc<dyn ModelProvider>` isn't `Debug`, so `Result::unwrap_err` (which requires the `Ok`

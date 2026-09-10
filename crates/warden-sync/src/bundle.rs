@@ -117,13 +117,15 @@ pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> a
         files_written += 1;
     }
 
+    // Goes through `Vault::delete` (P61) rather than `std::fs::remove_file` directly, now that
+    // `Vault` has a delete method — kept the pre-existing idempotent-on-already-gone behavior via
+    // an `exists()` check instead of matching on `std::io::ErrorKind`, since `Vault::delete`
+    // returns `anyhow::Error`, not `std::io::Error`, once past the `?`.
     let mut files_deleted = 0;
     for relative in &bundle.deleted_vault_files {
-        let path = vault.root().join(relative);
-        match std::fs::remove_file(path) {
-            Ok(()) => files_deleted += 1,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
+        if vault.root().join(relative).exists() {
+            vault.delete(relative)?;
+            files_deleted += 1;
         }
     }
 

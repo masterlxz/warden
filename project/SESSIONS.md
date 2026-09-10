@@ -2,7 +2,71 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-08 (Sessão 57)
+> Última atualização: 2026-09-09 (Sessão 58)
+
+---
+
+### 2026-09-09 — Sessão 58
+
+- **Objetivo**: retomar o projeto (usuário pediu pra escolher por onde seguir); escolhido **P61**
+  (Storage Provider plugável) entre as opções em aberto (P62 Agent Builder, P51 9Router). Implementar
+  o núcleo técnico: interfaces `StorageProvider`/`AuthProvider` + `LocalFSProvider` +
+  `DecentralizedVaultProvider` (refatorando `warden-sync`) + config field/factory — sem UI nova, sem
+  tocar nos comandos `/sync` já funcionando.
+
+**Decisão de escopo tomada com o usuário antes de codar**: pesquisa encontrou uma ambiguidade real —
+`read`/`write`/`list`/`delete` do `DecentralizedVaultProvider` não podem chamar Arweave de verdade por
+arquivo (`pin()` não tem leitura seletiva, cada push exige aprovação física no celular via QR).
+Confirmado: os 6 métodos delegam pro `Vault` local, idênticos ao `LocalFSProvider` — a interface existe
+(piso pedido pela spec), o push/pull real segue exclusivamente pelo `SyncEngine` já existente. Detalhes
+completos em `ARCHITECTURE.md`.
+
+**O que foi feito**:
+
+- `crates/warden-core/src/storage/mod.rs` novo — `StorageProvider` (`read`/`write`/`list`/`delete`
+  obrigatórios; `export_all`/`import_all` com default construído sobre eles, mesmo padrão de
+  `ModelProvider::chat` sobre `chat_stream`), `AuthProvider` (`get_user_id`/`is_subscription_active`/
+  `login`/`logout`) + `NoAuthProvider` (sem gate, nenhuma implementação real de auth existe ainda),
+  `LocalFSProvider` (casca sobre `Vault`). Nomeação `snake_case`, não `exportAll`/`importAll` como no
+  português da spec — convenção Rust do resto do código.
+- `Vault::delete` novo em `crates/warden-core/src/memory/mod.rs` — não existia; `warden-sync`'s
+  `bundle::apply_bundle` contornava isso com `std::fs::remove_file` direto, ajustado pra usar
+  `vault.delete` (mantendo o comportamento idempotente de "já deletado" via um `exists()` antes,
+  já que `Vault::delete` devolve `anyhow::Error`, não `std::io::Error`, depois do `?`).
+- `crates/warden-sync/src/storage_provider.rs` novo — `DecentralizedVaultProvider`, delegando os 6
+  métodos pro `LocalFSProvider` interno (ver decisão de escopo acima).
+- `warden-bootstrap`: `StorageProviderKind` (`local`/`decentralized_vault`/`remote_node`/
+  `managed_cloud`), `FileConfig.storage_provider: Option<StorageProviderKind>` (sem UI ainda),
+  `resolve_storage_provider` (env `WARDEN_STORAGE_PROVIDER` vence, mas erro explícito num valor não
+  reconhecido — diferente de `resolve_flag`/`resolve_delegate_max_depth`, permissivos), e
+  `build_storage_provider` (factory — `RemoteNode`/`ManagedCloud` erram "não implementado, v2/v3").
+  `resolve_vault_path` extraído do bloco inline que já existia em `bootstrap()`, agora público.
+- Efeitos colaterais bons habilitados pelo `resolve_vault_path` compartilhado: corrigido um bug real
+  no desktop (`SyncEngine` sempre usava `desktop_default_vault_path()` fixo, ignorando
+  `config.vault_path` — o `Orchestrator` do chat já respeitava, o sync sincronizava outro diretório
+  sem avisar ninguém) e removida a duplicação de precedência que o CLI mantinha à mão em
+  `interactive.rs::resolve_vault_path`. `desktop::save_settings` ganhou o carry-forward de
+  `storage_provider` (mesmo tratamento de `delegate_max_depth`/`telegram_bot_token`).
+- `cargo build/test/clippy` limpos pros crates tocados (`warden-core`, `warden-sync`,
+  `warden-bootstrap`, `warden-cli`, `desktop`) — **não** rodado contra `--workspace` inteiro (ver
+  nota de disco abaixo).
+
+**Incidente de disco no meio da sessão**: o `/home` chegou a **877M livres** durante a verificação
+(rodar `cargo build/test --workspace` do zero depois de um `cargo clean` estava prestes a lotar o
+disco de novo). Usuário pediu limpeza de emergência: `cargo clean` liberou ~50.6GB de `target/`;
+`mobile/build`, `.dart_tool`, `ios/Pods`, `android/.gradle`/`android/app/build` removidos à mão
+(Flutter não estava no PATH pra rodar `flutter clean`) liberaram mais ~13GB. Disco terminou a sessão
+em 57GB livres. Usuário também pediu explicitamente, depois disso, pra **não** recompilar o workspace
+inteiro do zero de novo sem necessidade — verificação desta sessão ficou escopada só aos crates
+tocados.
+
+**Próximo passo**: dentro do P61, seguem em aberto `RemoteNodeProvider`/`ManagedCloudProvider` (v2/v3),
+UI "explícita e didática" no Settings pra escolher o provider (mecanismo primeiro, UI depois — mesmo
+padrão do P46), fluxo real de migração entre providers (`export_all`/`import_all` de fato acionados ao
+trocar `storage_provider`, com validação de integridade), `AuthProvider` ligado a uma checagem real de
+assinatura via TruthID, e a lacuna maior: como (ou se) o push/pull QR-interativo do
+`DecentralizedVaultProvider` algum dia se encaixa numa trait genérica. Fora do P61: P62 (Agent
+Builder), P51 (9Router), P8, P47-P51, P59/P60.
 
 ---
 

@@ -68,6 +68,13 @@ impl Vault {
         Ok(std::fs::write(path, content)?)
     }
 
+    /// Removes a file from the vault. Added for `StorageProvider`/`LocalFSProvider` (P61) — before
+    /// this, the only deletion path (`warden-sync`'s bundle-apply, P37) reached past `Vault`
+    /// straight into `std::fs::remove_file`; that call site now goes through here instead.
+    pub fn delete(&self, relative_path: &str) -> anyhow::Result<()> {
+        Ok(std::fs::remove_file(self.root.join(relative_path))?)
+    }
+
     /// All markdown files in the vault, relative to its root.
     pub fn list_files(&self) -> anyhow::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
@@ -301,6 +308,14 @@ mod tests {
         let vault = temp_vault();
         vault.write("notes/todo.md", "buy milk").unwrap();
         assert_eq!(vault.read("notes/todo.md").unwrap(), "buy milk");
+    }
+
+    #[test]
+    fn delete_removes_a_written_file() {
+        let vault = temp_vault();
+        vault.write("notes/todo.md", "buy milk").unwrap();
+        vault.delete("notes/todo.md").unwrap();
+        assert!(vault.read("notes/todo.md").is_err());
     }
 
     #[test]

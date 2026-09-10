@@ -17,6 +17,7 @@ pub mod pairing;
 pub mod paths;
 pub mod pull;
 pub mod push;
+pub mod storage_provider;
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ pub use arweave::ArweaveClient;
 pub use manifest::{SyncManifest, SyncSecrets};
 pub use pull::PullOutcome;
 pub use push::PushOutcome;
+pub use storage_provider::DecentralizedVaultProvider;
 
 #[derive(Debug)]
 pub struct SyncStatus {

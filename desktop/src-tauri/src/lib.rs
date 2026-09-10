@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, default_config_path, default_conversations_dir,
-    default_model_for, list_conversations as read_conversations, load_config_from_path, oauth_credential_store_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
-    ProviderConfig, UsageSummary,
+    default_model_for, list_conversations as read_conversations, load_config, load_config_from_path, oauth_credential_store_path,
+    resolve_vault_path, save_config, save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig,
+    McpServerConfig, Overrides, Provider, ProviderConfig, UsageSummary,
 };
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
@@ -450,6 +450,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         active_provider,
         mcp_servers,
         agents,
+        // No Settings-screen UI yet (P61, config.toml/env-only advanced knob) — carry forward
+        // whatever was on disk instead of wiping it, same reasoning as `delegate_max_depth` above.
+        storage_provider: existing.storage_provider,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
@@ -536,7 +539,16 @@ pub fn run() {
     let orchestrator = tauri::async_runtime::block_on(bootstrap(None, Overrides::default(), desktop_default_vault_path()))
         .map_err(|e| format!("{e:#}"));
     let sync_config_path = default_config_path().unwrap_or_else(|| PathBuf::from("config.toml"));
-    let sync = warden_sync::SyncEngine::new(desktop_default_vault_path(), sync_config_path, sync_secrets_path(), sync_manifest_path());
+    // Was hardcoded to `desktop_default_vault_path()` regardless of `config.vault_path` — a bug
+    // (P61): the chat `Orchestrator` above already respects a custom vault path via `bootstrap()`,
+    // but sync silently kept mirroring `~/Warden/vault` instead. Resolved the same way `bootstrap()`
+    // does internally, via the now-shared `resolve_vault_path`; falls back to the old hardcoded
+    // default if the config can't even be loaded (same resilience as the `Orchestrator` above —
+    // the window still opens either way).
+    let sync_vault_path = load_config(None)
+        .map(|config| resolve_vault_path(&Overrides::default(), &config, desktop_default_vault_path()))
+        .unwrap_or_else(|_| desktop_default_vault_path());
+    let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
