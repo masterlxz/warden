@@ -11,8 +11,8 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_storage_provider, resolve_vault_path, save_config, save_conversation as write_conversation,
-    AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, StorageProviderKind,
-    UsageSummary,
+    AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, RemoteNodeConfig,
+    StorageProviderKind, UsageSummary,
 };
 use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
@@ -266,6 +266,26 @@ struct AgentPayload {
     can_delegate_to_agents: bool,
 }
 
+/// IPC shape for `RemoteNodeConfig` (P61 v2 Settings UI) — same "dedicated payload struct for
+/// `camelCase` field names" reasoning as `ProviderPayload`/`AgentPayload`. All-or-nothing: either
+/// every field is filled in (parses to `Some(RemoteNodeConfig)`) or the whole section is left
+/// blank (`None`) — `save_settings` rejects anything in between before it ever reaches disk.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RemoteNodeConfigPayload {
+    server_url: String,
+    device_id: String,
+    device_name: String,
+    auth_key: String,
+    target_device_id: String,
+}
+
+impl From<RemoteNodeConfig> for RemoteNodeConfigPayload {
+    fn from(c: RemoteNodeConfig) -> Self {
+        RemoteNodeConfigPayload { server_url: c.server_url, device_id: c.device_id, device_name: c.device_name, auth_key: c.auth_key, target_device_id: c.target_device_id }
+    }
+}
+
 /// What the settings screen reads.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -294,9 +314,13 @@ struct SettingsSnapshot {
     /// Where the vault's memory lives (P61) — one of `"local"`, `"decentralized_vault"`,
     /// `"remote_node"`, `"managed_cloud"` (see `storage_provider_kind_to_str`). The latter two
     /// have no working implementation yet (`build_storage_provider` errors on them); the Settings
-    /// screen shows them as "coming soon" and doesn't let the user select them, but `save_settings`
-    /// still rejects them defensively in case a future UI ever offers them prematurely.
+    /// screen shows `managed_cloud` as "coming soon" and doesn't let the user select it, but
+    /// `save_settings` still rejects it defensively in case a future UI ever offers it prematurely.
+    /// `remote_node` is selectable — see `remote_node` below for its connection details.
     storage_provider: String,
+    /// Connection details for `storage_provider: "remote_node"` (P61 v2) — `None` until the user
+    /// fills in the form on the Storage section. See `RemoteNodeConfigPayload`.
+    remote_node: Option<RemoteNodeConfigPayload>,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +334,7 @@ struct SettingsFormPayload {
     mcp_servers: Vec<McpServerConfig>,
     agents: Vec<AgentPayload>,
     storage_provider: String,
+    remote_node: Option<RemoteNodeConfigPayload>,
 }
 
 /// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
@@ -327,12 +352,13 @@ fn storage_provider_kind_to_str(kind: StorageProviderKind) -> &'static str {
 
 /// Whether a `StorageProviderKind` has a working `StorageProvider` behind it yet — mirrors what
 /// `build_storage_provider` actually accepts. Used to decide whether `save_settings`'s migration
-/// step has something real to export *from*: there's no data to move out of `RemoteNode`/
-/// `ManagedCloud` since neither has ever been buildable, so migrating *away* from one of them (e.g.
-/// a `config.toml` hand-edited to a value the desktop's own UI never lets you pick) is just a
-/// config change, not a migration.
+/// step has something real to export *from*: `RemoteNode` joined `Local`/`DecentralizedVault` here
+/// once its Settings UI landed (P61 v2) — it has a real `RemoteNodeProvider` behind it now, so
+/// migrating *away* from it should export/verify like any other backend. `ManagedCloud` (v3) is
+/// still nothing — migrating away from it (e.g. a `config.toml` hand-edited to a value no UI lets
+/// you pick) is just a config change, not a migration.
 fn storage_provider_kind_is_implemented(kind: StorageProviderKind) -> bool {
-    matches!(kind, StorageProviderKind::Local | StorageProviderKind::DecentralizedVault)
+    matches!(kind, StorageProviderKind::Local | StorageProviderKind::DecentralizedVault | StorageProviderKind::RemoteNode)
 }
 
 fn default_models_by_kind() -> std::collections::HashMap<String, String> {
@@ -377,6 +403,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
             })
             .collect(),
         storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
+        remote_node: config.remote_node.map(RemoteNodeConfigPayload::from),
     })
 }
 
@@ -462,16 +489,42 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
 
     // Reuses `resolve_storage_provider`'s own parsing (it already knows the exact four accepted
     // strings and errors clearly on anything else) by treating the form value as if it were an
-    // env override. `RemoteNode`/`ManagedCloud` parse fine there (env callers are allowed to name
-    // them) but have no working `StorageProvider` impl yet — rejected here explicitly so saving
-    // Settings can't silently pick a backend that does nothing, even though today's Settings UI
-    // already keeps those two options unselectable.
+    // env override. `ManagedCloud` (v3) parses fine there (env callers are allowed to name it) but
+    // has no working `StorageProvider` impl yet — rejected here explicitly so saving Settings can't
+    // silently pick a backend that does nothing, even though today's Settings UI already keeps it
+    // unselectable. `RemoteNode` (v2) is real now — see the `remote_node` parsing below instead.
     let storage_provider = resolve_storage_provider(Some(payload.storage_provider), None).map_err(|e| format!("{e:#}"))?;
-    if matches!(storage_provider, StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud) {
+    if storage_provider == StorageProviderKind::ManagedCloud {
         return Err(format!(
-            "storage provider '{}' isn't implemented yet (planned for v2/v3 — see PENDING.md P61)",
+            "storage provider '{}' isn't implemented yet (planned for v3 — see PENDING.md P61)",
             storage_provider_kind_to_str(storage_provider)
         ));
+    }
+
+    // All-or-nothing (P61 v2): a `RemoteNodeConfig` with some fields set and others blank can't be
+    // used to connect to anything, so it's rejected here rather than silently written half-formed.
+    // Independent of which `storage_provider` is currently selected — the user may be filling this
+    // in ahead of switching, or leaving it configured while using a different backend.
+    let remote_node = match payload.remote_node {
+        Some(r) => {
+            let server_url = r.server_url.trim().to_string();
+            let device_id = r.device_id.trim().to_string();
+            let device_name = r.device_name.trim().to_string();
+            let auth_key = r.auth_key.trim().to_string();
+            let target_device_id = r.target_device_id.trim().to_string();
+            let filled = [&server_url, &device_id, &device_name, &auth_key, &target_device_id].iter().filter(|s| !s.is_empty()).count();
+            if filled == 0 {
+                None
+            } else if filled == 5 {
+                Some(RemoteNodeConfig { server_url, device_id, device_name, auth_key, target_device_id })
+            } else {
+                return Err("remote node connection fields must be filled in together, or left entirely blank".to_string());
+            }
+        }
+        None => None,
+    };
+    if storage_provider == StorageProviderKind::RemoteNode && remote_node.is_none() {
+        return Err("storage provider 'remote_node' needs its connection fields filled in below".to_string());
     }
 
     // Captured before `non_empty` consumes `payload.vault_path` below — the migration step needs
@@ -502,9 +555,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         mcp_servers,
         agents,
         storage_provider: Some(storage_provider),
-        // No Settings-screen UI yet (P61 v2, config.toml/env-only) — carry forward, same
-        // reasoning as `delegate_max_depth` above.
-        remote_node: existing.remote_node.clone(),
+        remote_node,
     };
 
     // Real migration (P61): when the user actually changes which backend the vault's memory
@@ -519,7 +570,10 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         let vault = Arc::new(Vault::new(vault_path));
         let from_provider =
             build_storage_provider(previous_storage_provider, vault.clone(), existing.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
-        let to_provider = build_storage_provider(storage_provider, vault, existing.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
+        // Uses `config.remote_node` (the value just parsed from this save), not `existing` — if
+        // the new selection is `RemoteNode`, it must connect with whatever the user just typed in,
+        // not stale connection details from before this save.
+        let to_provider = build_storage_provider(storage_provider, vault, config.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
         warden_core::storage::migrate(from_provider.as_ref(), to_provider.as_ref())
             .await
             .map_err(|e| format!("storage provider migration failed, settings not saved: {e:#}"))?;

@@ -2,7 +2,57 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-10 (Sessão 59)
+> Última atualização: 2026-09-11 (Sessão 60)
+
+---
+
+### 2026-09-11 — Sessão 60
+
+- **Objetivo**: usuário pediu pra continuar o projeto sem um item travado — apresentadas as
+  pendências em aberto (P61 pontas soltas, P63 sync via git, Fase 9 rede de nós), escolhido dentro
+  do P61 fechar a UI de Settings pro `RemoteNodeConfig` (o `RemoteNodeProvider`/`warden-node` já
+  funcionavam de ponta a ponta desde a Sessão 59, mas só configuráveis via hand-edit de
+  `config.toml`).
+
+**O que foi feito** (plano escrito e aprovado via `EnterPlanMode`/`ExitPlanMode` antes de codar):
+
+- `desktop/src-tauri/src/lib.rs`: `RemoteNodeConfigPayload` novo (IPC, camelCase, mesmo papel que
+  `ProviderPayload` tem pra `ProviderConfig`); `SettingsSnapshot`/`SettingsFormPayload` ganharam
+  `remote_node: Option<RemoteNodeConfigPayload>`. `save_settings` parseia os 5 campos
+  (`server_url`/`device_id`/`device_name`/`auth_key`/`target_device_id`) com validação tudo-ou-nada
+  (algum preenchido → os 5 precisam estar, senão erro) e passa a **gravar de verdade** o valor —
+  antes só existia hand-edit. A rejeição que cobria `remote_node`/`managed_cloud` juntos ficou só
+  com `managed_cloud` (v3); selecionar `remote_node` sem preencher os campos erra com mensagem
+  própria.
+- **Bug real encontrado e corrigido**: o passo de migração (Sessão 59) construía o `to_provider`
+  com `existing.remote_node` (a config *antiga*) mesmo quando o destino novo era `remote_node` —
+  corrigido pra usar `config.remote_node` (o valor recém-parseado nesta mesma chamada), senão a
+  primeira troca pra `remote_node` preenchendo os campos ia tentar conectar com a config errada.
+  `storage_provider_kind_is_implemented` ganhou `RemoteNode` no conjunto "implementado" (tem
+  `StorageProvider` de verdade agora), então migrar *pra fora* dele também aciona o
+  export/import/reconferência real.
+- Frontend: `STORAGE_PROVIDER_OPTIONS`'s `remote_node` perdeu `comingSoon` (agora selecionável),
+  descrição reescrita explicando a dependência de um hub `warden-server` alcançável + um
+  `warden-node` rodando no alvo. `RemoteNodeForm` novo (mesmo padrão condicional do campo "Base
+  URL" do `ProviderCard`) renderiza os 5 campos quando `remote_node` está selecionado (`auth_key`
+  via `ApiKeyField`, com toggle de revelar). `types.ts` ganhou `RemoteNodeConfig`,
+  `Settings.remoteNode`; `emptySettings` (duas cópias, `App.tsx`/`SettingsView.tsx`) atualizados.
+- Verificação: `cargo check`/`clippy -p desktop --all-targets` limpos; `cargo test -p
+  warden-bootstrap` (43 testes, sem mudança de comportamento no crate) segue verde; `npx tsc
+  --noEmit` e `npm run build` limpos no frontend. **Não verificado com Chrome/Playwright real** — a
+  extensão do Claude in Chrome não estava conectada neste ambiente (diferente de sessões anteriores
+  que conseguiram esse tipo de verificação); ficou só em checagem estática + revisão manual do
+  diff. Também não testado contra um `warden-server`+`warden-node` reais rodando (só a suíte
+  automatizada já existente cobre esse caminho).
+- `project/PENDING.md` (P61 atualizado) e `project/ARCHITECTURE.md` (entrada da decisão) — nota:
+  o registro do P63 (decisão de sync via git, fechado no fim da Sessão 59) nunca tinha ganhado uma
+  entrada própria aqui em `SESSIONS.md`; não preenchido retroativamente nesta sessão, só sinalizado
+  aqui pra não confundir uma sessão futura procurando por ele.
+
+**Próximo passo**: dentro do P61, seguem em aberto `ManagedCloudProvider` (v3), checagem de
+assinatura real (bloqueada por billing), e a lacuna do push/pull QR-interativo numa trait genérica.
+Fora do P61: P63 (sync via git, baixa prioridade), Fase 9 (9.1 Tailscale, 9.3 pareamento
+persistente, 9.6 workspace de máquinas, 9.7 QR), P62 (Agent Builder), P51 (9Router).
 
 ---
 

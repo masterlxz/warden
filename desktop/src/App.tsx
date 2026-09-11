@@ -20,6 +20,7 @@ const emptySettings: Settings = {
   mcpServers: [],
   agents: [],
   storageProvider: "local",
+  remoteNode: null,
 };
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),

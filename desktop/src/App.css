@@ -1157,6 +1157,15 @@ body {
   white-space: nowrap;
 }
 
+.storage-provider-remote-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-left: 1rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--color-accent);
+}
+
 /* Sync view (P37) */
 
 .sync-status-grid {

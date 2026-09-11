@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, Settings, StorageProviderKind } from "../types";
+import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, StorageProviderKind } from "../types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -15,14 +15,15 @@ const emptySettings: Settings = {
   mcpServers: [],
   agents: [],
   storageProvider: "local",
+  remoteNode: null,
 };
 
 /** The four `StorageProviderKind` options (P61), in display order — the copy here is the
  * "explicit and didactic" explanation the spec asked for instead of a bare technical dropdown.
- * `remoteNode`/`managedCloud` are listed for visibility into what's planned, but `comingSoon`
- * keeps them unselectable: neither has a working `StorageProvider` implementation yet
- * (`build_storage_provider` errors on both), and `save_settings` rejects them defensively even
- * if a later UI bug ever let one through. */
+ * `managedCloud` is listed for visibility into what's planned, but `comingSoon` keeps it
+ * unselectable: it has no working `StorageProvider` implementation yet (`build_storage_provider`
+ * errors on it), and `save_settings` rejects it defensively even if a later UI bug ever let it
+ * through. `remoteNode` (v2) is real — selecting it reveals `RemoteNodeForm` below. */
 const STORAGE_PROVIDER_OPTIONS: {
   value: StorageProviderKind;
   label: string;
@@ -48,8 +49,9 @@ const STORAGE_PROVIDER_OPTIONS: {
     value: "remote_node",
     label: "Remote node",
     price: "Free",
-    description: "Another machine you own, over the node network (Phase 9). Not implemented yet.",
-    comingSoon: true,
+    description:
+      "Another machine you own, reached through a warden-server hub (Phase 9). Needs that hub running and a " +
+      "warden-node process serving your vault on the target machine — fill in the connection details below.",
   },
   {
     value: "managed_cloud",
@@ -93,6 +95,66 @@ function StorageProviderPicker({
           </div>
         </label>
       ))}
+    </div>
+  );
+}
+
+const emptyRemoteNode: RemoteNodeConfig = { serverUrl: "", deviceId: "", deviceName: "", authKey: "", targetDeviceId: "" };
+
+/** Connection form for `StorageProviderKind: "remote_node"` (P61 v2) — same conditional-field
+ * pattern as `ProviderCard`'s Base URL row, but at the section level since this isn't tied to a
+ * list of entries. `value` is `null` until the user starts typing; `onChange` always passes a
+ * complete object back so partial edits never get lost between keystrokes. */
+function RemoteNodeForm({ value, onChange }: { value: RemoteNodeConfig | null; onChange: (next: RemoteNodeConfig) => void }) {
+  const current = value ?? emptyRemoteNode;
+
+  function set<K extends keyof RemoteNodeConfig>(key: K, v: RemoteNodeConfig[K]) {
+    onChange({ ...current, [key]: v });
+  }
+
+  return (
+    <div className="storage-provider-remote-form">
+      <label className="settings-field">
+        <span className="settings-label">Hub server URL</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="ws://100.x.x.x:7420"
+          value={current.serverUrl}
+          onChange={(e) => set("serverUrl", e.currentTarget.value)}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">This device's id</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="e.g. my-laptop"
+          value={current.deviceId}
+          onChange={(e) => set("deviceId", e.currentTarget.value)}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">This device's name</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="e.g. Fabio's laptop"
+          value={current.deviceName}
+          onChange={(e) => set("deviceName", e.currentTarget.value)}
+        />
+      </label>
+      <ApiKeyField label="Hub auth key" value={current.authKey} onChange={(v) => set("authKey", v)} />
+      <label className="settings-field">
+        <span className="settings-label">Target device id</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="the device on the hub that actually holds the vault"
+          value={current.targetDeviceId}
+          onChange={(e) => set("targetDeviceId", e.currentTarget.value)}
+        />
+      </label>
     </div>
   );
 }
@@ -754,6 +816,21 @@ function SettingsView() {
       return;
     }
 
+    // Mirrors save_settings's own all-or-nothing check — catches it before the IPC round-trip.
+    const remoteNodeFilled = form.remoteNode
+      ? [form.remoteNode.serverUrl, form.remoteNode.deviceId, form.remoteNode.deviceName, form.remoteNode.authKey, form.remoteNode.targetDeviceId].filter(
+          (s) => s.trim() !== "",
+        ).length
+      : 0;
+    if (remoteNodeFilled > 0 && remoteNodeFilled < 5) {
+      setError("Remote node connection fields must be filled in together, or left entirely blank.");
+      return;
+    }
+    if (form.storageProvider === "remote_node" && remoteNodeFilled === 0) {
+      setError("Storage provider 'Remote node' needs its connection fields filled in below.");
+      return;
+    }
+
     setIsSaving(true);
     try {
       await invoke("save_settings", {
@@ -767,6 +844,7 @@ function SettingsView() {
           mcp_servers: form.mcpServers,
           agents: form.agents,
           storage_provider: form.storageProvider,
+          remote_node: remoteNodeFilled === 5 ? form.remoteNode : null,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -872,6 +950,9 @@ function SettingsView() {
             value={form.storageProvider}
             onChange={(storageProvider) => setForm((f) => ({ ...f, storageProvider }))}
           />
+          {form.storageProvider === "remote_node" && (
+            <RemoteNodeForm value={form.remoteNode} onChange={(remoteNode) => setForm((f) => ({ ...f, remoteNode }))} />
+          )}
         </section>
 
         <label className="settings-field">

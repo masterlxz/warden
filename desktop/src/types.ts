@@ -108,10 +108,22 @@ export interface AgentEntry {
 }
 
 /** Mirrors `warden_bootstrap::StorageProviderKind` (P61) — where the vault's memory lives.
- * `remoteNode`/`managedCloud` are v2/v3 placeholders with no working implementation yet
- * (`build_storage_provider` errors on them); the Settings screen shows them as "coming soon"
- * and doesn't let the user select them. */
+ * `remoteNode` (v2) is selectable — see `RemoteNodeConfig` for its connection form. `managedCloud`
+ * (v3) has no working implementation yet (`build_storage_provider` errors on it); the Settings
+ * screen shows it as "coming soon" and doesn't let the user select it. */
 export type StorageProviderKind = "local" | "decentralized_vault" | "remote_node" | "managed_cloud";
+
+/** Mirrors `warden_bootstrap::RemoteNodeConfig` (P61 v2) — connection details for
+ * `StorageProviderKind: "remote_node"`: which `warden-server` hub both this device and the one
+ * actually holding the vault connect through, and which of its registered devices is the target.
+ * All-or-nothing on save — see `save_settings`'s validation. */
+export interface RemoteNodeConfig {
+  serverUrl: string;
+  deviceId: string;
+  deviceName: string;
+  authKey: string;
+  targetDeviceId: string;
+}
 
 /** One breakdown bucket of a `UsageSummary` — `key` is the `agent_id`/`provider_id` (an
  * `AgentEntry.id`/`ProviderEntry.id`, which already doubles as its display name) `null` means "no
@@ -190,4 +202,6 @@ export interface Settings {
    * predates this field. Picking `"decentralized_vault"` doesn't turn on Arweave backup by
    * itself: that still goes exclusively through the separate Sync screen. */
   storageProvider: StorageProviderKind;
+  /** Connection details for `storageProvider: "remote_node"` — `null` until filled in. */
+  remoteNode: RemoteNodeConfig | null;
 }
