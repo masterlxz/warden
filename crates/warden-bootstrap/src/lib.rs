@@ -123,6 +123,21 @@ pub struct RemoteNodeConfig {
     pub target_device_id: String,
 }
 
+/// Config for `warden_sync::GitSyncEngine` (P63, v1) — a self-hosted/remote git repo (Gitea,
+/// GitHub, ...) as an alternative to Arweave/TruthID for syncing the vault, for whoever doesn't
+/// want that dependency. HTTPS + token only in v1 (SSH/deploy-key is v2); the token is only ever
+/// read here and passed to `git` as a per-invocation URL credential — `GitSyncEngine` never writes
+/// it to disk. No Settings-screen UI yet (config.toml only), same posture `RemoteNodeConfig` had
+/// before P61 v2.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GitSyncConfig {
+    /// The bare repo URL, no credentials — e.g. `"https://gitea.example.com/user/vault.git"`.
+    pub remote_url: String,
+    /// Personal access token for `remote_url`'s HTTPS auth.
+    pub token: String,
+}
+
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -175,6 +190,10 @@ pub struct FileConfig {
     /// Only meaningful when `storage_provider` is `RemoteNode` — see `RemoteNodeConfig`'s own doc
     /// comment for why there's no UI for this yet either.
     pub remote_node: Option<RemoteNodeConfig>,
+    /// Sync via a remote git repo instead of Arweave/TruthID (P63) — `None` means this backend
+    /// isn't configured; unrelated to `storage_provider`/`remote_node` above, which are about
+    /// where the vault's *primary copy* lives, not how it's synced between devices.
+    pub git_sync: Option<GitSyncConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -1285,6 +1304,7 @@ oauth = true
                 auth_key: "shared-secret".to_string(),
                 target_device_id: "dev-target".to_string(),
             }),
+            git_sync: Some(GitSyncConfig { remote_url: "https://gitea.example.com/user/vault.git".to_string(), token: "pat-secret".to_string() }),
         };
 
         save_config(&path, &config).unwrap();

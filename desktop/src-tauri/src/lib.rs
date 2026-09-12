@@ -558,6 +558,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         agents,
         storage_provider: Some(storage_provider),
         remote_node,
+        // No Settings-screen UI yet (P63, config.toml-only) — same carry-forward reasoning as
+        // `delegate_max_depth` above.
+        git_sync: existing.git_sync,
     };
 
     // Real migration (P61): when the user actually changes which backend the vault's memory

@@ -3,16 +3,22 @@
 //! client-side before it ever reaches TruthID/Arweave. See `project/ARCHITECTURE.md` ("Sync
 //! descentralizado (Fase 4)") for the full design rationale.
 //!
-//! `SyncEngine` is the one surface callers (desktop, CLI) need — everything else in this crate is
-//! internal plumbing it composes: `manifest` (on-disk secrets/tracking state), `diff` (what
-//! changed), `bundle` (the encrypted envelope for one push), `arweave` (GraphQL discovery + tx
-//! fetch), `push`/`pull` (the two directions), `pairing` (how the vault key spreads to a new
-//! device without ever touching TruthID or Arweave).
+//! `SyncEngine` is the one surface callers (desktop, CLI) need for the Arweave backend —
+//! everything else in this crate is internal plumbing it composes: `manifest` (on-disk secrets/
+//! tracking state), `diff` (what changed), `bundle` (the encrypted envelope for one push),
+//! `arweave` (GraphQL discovery + tx fetch), `push`/`pull` (the two directions), `pairing` (how
+//! the vault key spreads to a new device without ever touching TruthID or Arweave).
+//!
+//! `git` (P63) is a sibling engine — `GitSyncEngine` — for whoever wants to sync via a
+//! self-hosted/remote git repo instead of Arweave/TruthID. It reuses `manifest`/`bundle`/`diff`/
+//! `pairing` exactly as `SyncEngine` does (init/pairing/status stay on `SyncEngine`, backend-
+//! agnostic already); only the transport differs.
 
 pub mod arweave;
 pub mod auth_provider;
 pub mod bundle;
 pub mod diff;
+pub mod git;
 pub mod manifest;
 pub mod pairing;
 pub mod paths;
@@ -27,6 +33,7 @@ use warden_core::memory::Vault;
 
 pub use arweave::ArweaveClient;
 pub use auth_provider::TruthIdAuthProvider;
+pub use git::{GitPullOutcome, GitPushOutcome, GitSyncEngine};
 pub use manifest::{SyncManifest, SyncSecrets};
 pub use pull::PullOutcome;
 pub use push::PushOutcome;

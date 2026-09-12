@@ -937,6 +937,24 @@ fn make_sync_engine(session: &CliSession) -> anyhow::Result<warden_sync::SyncEng
     Ok(warden_sync::SyncEngine::new(vault_path, config_path, secrets_path, manifest_path))
 }
 
+/// Builds a `GitSyncEngine` (P63) — same vault/secrets/manifest paths `make_sync_engine` uses
+/// (the two backends share init/pairing/status, only push/pull differ), plus `[git_sync]` read
+/// fresh from `config.toml`. Errors clearly if that section isn't configured yet, same "tell the
+/// user exactly what to do" posture as `SyncEngine::load_secrets`'s own error.
+fn make_git_sync_engine(session: &CliSession) -> anyhow::Result<warden_sync::GitSyncEngine> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    let git_sync = config
+        .git_sync
+        .ok_or_else(|| anyhow::anyhow!("configure [git_sync] (remote_url + token) no config.toml antes de usar /sync git"))?;
+
+    let vault_path = resolve_vault_path(session.config_path.as_deref(), session.vault_path_override.as_deref())?;
+    let config_path = session.config_path.clone().unwrap_or_else(|| PathBuf::from("config.toml"));
+    let secrets_path = warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"));
+    let manifest_path = warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"));
+    let git_repo_path = warden_sync::paths::default_git_sync_repo_path().unwrap_or_else(|| PathBuf::from("git-sync-repo"));
+    Ok(warden_sync::GitSyncEngine::new(vault_path, config_path, secrets_path, manifest_path, git_repo_path, git_sync.remote_url, git_sync.token))
+}
+
 /// Reads `config.toml` fresh — never cached across turns/commands (see `CliSession`'s doc
 /// comment). A missing file (no path configured, or a path that doesn't exist yet — e.g. before
 /// the very first `/models add`) is treated as an empty config, not an error; a malformed file
@@ -1043,6 +1061,8 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/sync pull — buscar a versão mais recente",
         "/sync pair — mostrar um código de pareamento e esperar outro device",
         "/sync pair <code> — parear com um device que já mostrou um código",
+        "/sync git push — enviar mudanças locais via git remoto (precisa de [git_sync] no config.toml)",
+        "/sync git pull — buscar as mudanças novas via git remoto",
     ]
     .into_iter()
     .map(|line| (line.to_string(), style))
@@ -1500,6 +1520,45 @@ async fn cmd_sync_pair_join(terminal: &mut CliTerminal, session: &CliSession, co
     render_message_card(terminal, "sync", accent_style(), vec![("pareado com sucesso!".to_string(), Style::default())])
 }
 
+/// `/sync git push` (P63) — no QR/phone step like `/sync push` has: a git remote needs no
+/// per-push approval, so this is a single call straight through.
+async fn cmd_sync_git_push(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_git_sync_engine(session)?;
+    let Some(outcome) = engine.push().await? else {
+        return render_message_card(
+            terminal,
+            "sync",
+            accent_style(),
+            vec![("nada para enviar — vault e config já batem com o último Enviar".to_string(), Style::default())],
+        );
+    };
+    render_message_card(
+        terminal,
+        "sync",
+        accent_style(),
+        vec![(format!("enviado — commit {} ({} arquivo(s))", &outcome.commit_sha[..12.min(outcome.commit_sha.len())], outcome.files_changed), Style::default())],
+    )
+}
+
+async fn cmd_sync_git_pull(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let engine = make_git_sync_engine(session)?;
+    let outcome = engine.pull().await?;
+    let mut lines = vec![(
+        format!(
+            "pull concluído — {} commit(s), {} escrito(s), {} removido(s){}",
+            outcome.commits_applied,
+            outcome.files_written,
+            outcome.files_deleted,
+            if outcome.config_updated { ", config.toml atualizado" } else { "" }
+        ),
+        Style::default(),
+    )];
+    for warning in &outcome.warnings {
+        lines.push((warning.clone(), Style::default()));
+    }
+    render_message_card(terminal, "sync", accent_style(), lines)
+}
+
 async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
     match command {
         Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
@@ -1521,6 +1580,8 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::SyncPull => cmd_sync_pull(terminal, session).await,
         Command::SyncPairShow => cmd_sync_pair_show(terminal, session).await,
         Command::SyncPairJoin(code) => cmd_sync_pair_join(terminal, session, code).await,
+        Command::SyncGitPush => cmd_sync_git_push(terminal, session).await,
+        Command::SyncGitPull => cmd_sync_git_pull(terminal, session).await,
     }
 }
 

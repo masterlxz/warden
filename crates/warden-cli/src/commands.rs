@@ -25,6 +25,8 @@ pub enum Command {
     SyncPull,
     SyncPairShow,
     SyncPairJoin(String),
+    SyncGitPush,
+    SyncGitPull,
 }
 
 /// What a line of input turned out to be, once checked against the slash-command grammar.
@@ -70,6 +72,8 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("sync", ["pull"]) => Command::SyncPull,
         ("sync", ["pair"]) => Command::SyncPairShow,
         ("sync", ["pair", code]) => Command::SyncPairJoin(code.to_string()),
+        ("sync", ["git", "push"]) => Command::SyncGitPush,
+        ("sync", ["git", "pull"]) => Command::SyncGitPull,
         _ => return ParseOutcome::Unrecognized(trimmed.to_string()),
     };
     ParseOutcome::Recognized(command)
@@ -101,7 +105,7 @@ pub fn kind_label(kind: Provider) -> &'static str {
 const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "sync"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
-const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair"];
+const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair", "git"];
 
 /// Parses the word currently being typed (the last whitespace-separated token) out of a
 /// `/`-prefixed `input`, along with its candidate completions from the fixed part of the grammar
@@ -212,6 +216,12 @@ mod tests {
     }
 
     #[test]
+    fn sync_git_subcommands_parse() {
+        assert!(matches!(assert_recognized("/sync git push"), Command::SyncGitPush));
+        assert!(matches!(assert_recognized("/sync git pull"), Command::SyncGitPull));
+    }
+
+    #[test]
     fn command_matching_is_case_insensitive_on_the_head_word() {
         assert!(matches!(assert_recognized("/EXIT"), Command::Exit));
         assert!(matches!(assert_recognized("/Models"), Command::ModelsList));
@@ -249,6 +259,7 @@ mod tests {
         assert_eq!(candidates_for("/models u"), vec!["use"]);
         assert_eq!(candidates_for("/agents "), vec!["create", "edit", "remove", "use"]);
         assert_eq!(candidates_for("/sync pu"), vec!["pull", "push"]);
+        assert_eq!(candidates_for("/sync g"), vec!["git"]);
     }
 
     #[test]

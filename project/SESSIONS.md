@@ -2,7 +2,74 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-12 (Sessão 61)
+> Última atualização: 2026-09-12 (Sessão 62)
+
+---
+
+### 2026-09-12 — Sessão 62
+
+- **Objetivo**: usuário pediu pra continuar o projeto sem item travado — apresentadas 4 frentes em
+  aberto (P64 file-generation, P63 sync via git, Fase 9.1 Tailscale, testar o APK do pareamento por
+  QR num emulador); escolhido P63 — implementar o motor de sync via git remoto cuja decisão de
+  arquitetura já tinha sido fechada numa sessão anterior (registrada em `PENDING.md`). Plano escrito
+  e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar, resolvendo os dois pontos técnicos que
+  a decisão anterior tinha deixado em aberto: `SyncManifest` não precisou de nenhum campo novo
+  (`last_tx_id` já é uma string genérica — um commit sha cabe de graça, a URL do remoto é
+  config, não estado de sync) e o motor virou um tipo novo e separado (`GitSyncEngine`), não métodos
+  a mais no `SyncEngine` existente.
+
+**O que foi feito**:
+
+- `crates/warden-sync/src/git.rs` (novo) — `GitSyncEngine` com `push()`/`pull()`, shell-out pro
+  `git` do sistema (`std::process::Command`, não `git2`/`gix` — ver justificativa no P63). Reaproveita
+  `bundle::build_bundle`/`encrypt_bundle`/`decrypt_bundle`/`apply_bundle`/`fold_into_manifest` e
+  `diff::diff_vault`/`config_changed` **inalterados** — só troca o transporte. Branch sempre `main`,
+  nunca depende do branch padrão do repo remoto. Credencial (`x-access-token:<token>@`) só como
+  argumento posicional em `fetch`/`push`/`ls-remote`, nunca gravada em `.git/config`; erro de rede
+  tem o token redigido antes de virar `anyhow::Error` (`git` às vezes ecoa a URL de volta no
+  "fatal: unable to access..."). `push()`/`pull()` persistem o manifesto sozinhos (o engine já é
+  dono do `manifest_path`) — desenhado assim depois de um bug real pego pelos próprios testes (ver
+  abaixo).
+- **Dois bugs reais achados e corrigidos pelos testes, não achados por inspeção**: (1) `push()`
+  originalmente fazia um "fetch + fast-forward local pra HEAD remoto" antes de commitar, pra evitar
+  falso-positivo de conflito — mas isso silenciosamente absorvia mudanças remotas sem nunca aplicá-las
+  no vault/manifesto do device, quebrando exatamente a garantia que o replay do `pull` deveria dar
+  (um teste dedicado, "push sem pull antes deveria ser rejeitado", pegou isso: o push passava quando
+  devia falhar). Corrigido removendo esse pré-fetch: `push()` agora só faz `checkout` local pra
+  exatamente a posição que o próprio device já tinha aplicado (`manifest.last_tx_id`, ou um histórico
+  órfão novo se `None`) — sem isso, o `git push` nativo rejeita sozinho qualquer avanço concorrente,
+  sem heurística nenhuma da nossa parte. (2) o helper de teste `bare_remote()` usava sempre o mesmo
+  sufixo de nome — sob execução paralela dos testes (`cargo test` roda em threads), dois testes
+  puderam colidir no mesmo diretório de timestamp e compartilhar sem querer o mesmo "remote" fake,
+  inflando a contagem de commits replayed; corrigido dando um sufixo único por teste.
+- `crates/warden-sync/src/paths.rs`: `default_git_sync_repo_path()` (mesmo padrão dos outros paths
+  deste arquivo) — onde o clone local de trabalho do `GitSyncEngine` vive.
+- `crates/warden-bootstrap/src/lib.rs`: `GitSyncConfig { remote_url, token }` +
+  `FileConfig.git_sync: Option<GitSyncConfig>` — schema só, sem UI (mesma postura que
+  `RemoteNodeConfig` teve antes do P61 v2). `desktop/src-tauri/src/lib.rs`'s `save_settings` carrega
+  o valor existente adiante (mesmo tratamento que `delegate_max_depth` já tinha) pra um save da tela
+  Settings geral não apagar um `[git_sync]` editado à mão.
+- `crates/warden-cli`: `/sync git push`/`/sync git pull` novos (`commands.rs` — enum/parser/
+  autocomplete; `interactive.rs` — `make_git_sync_engine` lendo `[git_sync]` do config com erro
+  claro se ausente, `cmd_sync_git_push`/`cmd_sync_git_pull` no mesmo estilo de card que os `/sync
+  push`/`pull` do Arweave já usam, sem QR já que git não tem etapa de aprovação por celular).
+- Verificação: `cargo build/test/clippy --workspace` limpos — 8 testes novos em `git.rs` (contra um
+  **bare repo local de verdade**, não mock, mesmo espírito hermético de `fake_arweave_gateway.rs`):
+  push cria commit e atualiza manifesto; push é `None` sem mudança; pull num remoto vazio é no-op;
+  device novo faz replay do histórico inteiro; device parcialmente sincronizado só replaya o que é
+  novo; push sem pull antes é rejeitado com mensagem clara e o pull seguinte resolve. Mais 2 testes
+  de parser em `commands.rs`. **Não verificado**: um teste manual via terminal de verdade (dois
+  processos `warden` reais conversando pelo mesmo bare repo) não rolou — a REPL rica
+  (`interactive.rs`, onde `/sync` é reconhecido) só ativa com TTY real; stdin via pipe cai no loop
+  simples de `main.rs`, que não tem slash-commands — mesma lacuna que P34 já registra pra outros
+  testes de terminal.
+- `project/PENDING.md` (P63 atualizado com o status de implementação) e `project/ARCHITECTURE.md`
+  (decisão marcada como implementada) atualizados.
+
+**Próximo passo**: fica pendente um teste manual num terminal de verdade (fora deste ambiente) pra
+fechar de vez a lacuna de verificação acima. Fora isso, sem pendência travando — v2/v3 do P63
+(SSH, UI de Settings, mobile) seguem sem urgência; outras frentes em aberto: P64 (debate de escopo),
+Fase 9.1 (Tailscale), testar o APK do pareamento por QR (P65) num emulador/hardware real.
 
 ---
 
