@@ -407,12 +407,13 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   digitação, a aprovação do dispositivo continua manual no Workspace (9.3/9.6), inalterada.
   Verificado: `cargo build/test/clippy --workspace` limpos (round-trip de
   `load_hub_pairing_config`/`save_hub_pairing_config`, formato JSON do payload travado por teste);
-  `npm run build` (tsc+vite) limpo no desktop. **Lado mobile não verificado nesta sessão** — este
-  container não tem o SDK Flutter instalado (`flutter: command not found`, `dart pub get` confirma
-  que `flutter_test` do SDK não existe aqui), então `mobile_scanner` nunca foi de fato resolvido/
-  compilado nem `flutter analyze`/`flutter test` rodaram; o código (`hub_pairing_qr.dart`,
-  `qr_scan_screen.dart`, mudanças em `connection_screen.dart`) foi revisado à mão contra a API real
-  do `mobile_scanner` mas fica pendente confirmar num ambiente com Flutter — ver `PENDING.md` P65
+  `npm run build` (tsc+vite) limpo no desktop. SDK Flutter instalado depois, na continuação
+  seguinte desta mesma sessão (`~/.local/opt/flutter`, stable, via `PATH` em `~/.bashrc`):
+  `flutter pub get` resolveu `mobile_scanner 7.4.1` de verdade, `flutter analyze` limpo, `flutter
+  test` verde (39 testes, os 6 novos de `parseHubPairingQr` inclusos). **Ainda falta** um build
+  Android/emulador real — sem Android SDK instalado nesta máquina, e o disco está em ~97% de uso
+  (5.5GB livres), então instalar o SDK Android só acontece se o usuário confirmar que vale o
+  espaço — ver `PENDING.md` P65
 
 ---
 

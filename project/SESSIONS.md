@@ -86,6 +86,25 @@ idealmente ponta a ponta com o emulador Android real (gerar o QR no desktop, esc
 virtual, ver os campos preenchidos). Fora disso, seguem em aberto P64 (debate de escopo), P63
 (sync via git) e o restante da Fase 9 (9.1 Tailscale).
 
+**Continuação (mesma sessão)** — usuário pediu pra commitar o trabalho e instalar o SDK Flutter
+pra fechar a lacuna acima.
+
+- `git commit` do pareamento por QR (16 arquivos).
+- SDK Flutter instalado nesta máquina: clone raso (`--depth 1 -b stable`) em
+  `~/.local/opt/flutter`, `PATH` persistido via `~/.bashrc`. Obstáculo real: o `bin/internal/
+  update_dart_sdk.sh` do Flutter exige `unzip`, que não está instalado aqui e não há `sudo` sem
+  senha nesta sessão pra instalar via `pacman` — contornado com um shim `~/.local/bin/unzip` (só
+  cobre a chamada exata que o script faz, `unzip -o -q FILE -d DIR`) que delega pro `bsdtar`
+  (`libarchive`) já presente no sistema.
+- Com o SDK de pé: `flutter pub get` (resolveu `mobile_scanner 7.4.1` de verdade), `flutter
+  analyze` (limpo) e `flutter test` (39 testes verdes, os 6 de `parseHubPairingQr` inclusos) — a
+  parte de P65 que não dependia de hardware Android está fechada.
+- **Não avançado**: `flutter doctor` acusa nenhum Android SDK instalado nesta máquina, e o disco
+  está em ~97% de uso (5.5GB livres) — instalar o SDK Android (+ eventualmente um emulador) pra
+  chegar num `flutter build apk`/teste de câmera real foi deliberadamente deixado pro usuário
+  confirmar antes, dado o espaço em disco apertado. `PENDING.md` (P65) e `PHASE.md` (9.7)
+  atualizados refletindo exatamente esse corte.
+
 ---
 
 ### 2026-09-11 — Sessão 60
