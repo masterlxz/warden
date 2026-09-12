@@ -5,9 +5,11 @@ use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolSpec};
 
-/// v1 of `generate_document` (P64) only knows how to write plain text — CSV/PDF/XLSX are planned
-/// but each needs its own new dependency decision, out of scope for this slice.
-const SUPPORTED_EXTENSIONS: [&str; 2] = ["txt", "md"];
+/// `generate_document` (P64) grows one format at a time, cheapest first. TXT/MD/CSV are all
+/// plain-text writes — the model already produces well-formed CSV as a string, no parsing/
+/// validation needed here. PDF/XLSX are planned but each needs its own new dependency decision,
+/// out of scope for this slice.
+const SUPPORTED_EXTENSIONS: [&str; 3] = ["txt", "md", "csv"];
 
 /// Writes a standalone deliverable file — for the user to open outside the conversation, not a
 /// note the orchestrator injects back into context — into a dedicated directory separate from the
@@ -29,18 +31,18 @@ impl Tool for GenerateDocumentTool {
         ToolSpec {
             name: "generate_document".to_string(),
             description: "Create a standalone document file for the user to open/download — not for the memory vault. \
-                v1 only supports .txt and .md filenames; PDF/CSV/XLSX are not implemented yet."
+                Supports .txt, .md and .csv filenames; PDF/XLSX are not implemented yet."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "File name with extension, e.g. 'relatorio.md'. Only .txt and .md are supported today."
+                        "description": "File name with extension, e.g. 'relatorio.md'. Only .txt, .md and .csv are supported today."
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write"
+                        "description": "Full file content to write. For .csv, this must already be well-formed CSV text (header row + comma-separated values, quoted as needed)."
                     }
                 },
                 "required": ["filename", "content"]
@@ -54,7 +56,7 @@ impl Tool for GenerateDocumentTool {
 
         let extension = std::path::Path::new(filename).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
         if !extension.as_deref().is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e)) {
-            anyhow::bail!("unsupported file extension for 'generate_document' — only .txt and .md are supported today (PDF/CSV/XLSX are planned but not implemented yet)");
+            anyhow::bail!("unsupported file extension for 'generate_document' — only .txt, .md and .csv are supported today (PDF/XLSX are planned but not implemented yet)");
         }
 
         std::fs::create_dir_all(&self.root)?;
@@ -98,12 +100,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writes_a_csv_file() {
+        let root = temp_root();
+        let tool = GenerateDocumentTool::new(root.clone());
+
+        let content = "nome,idade\nAna,30\nBia,25";
+        tool.call(json!({ "filename": "pessoas.csv", "content": content })).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join("pessoas.csv")).unwrap(), content);
+    }
+
+    #[tokio::test]
     async fn rejects_unsupported_extension() {
         let tool = GenerateDocumentTool::new(temp_root());
 
         let err = tool.call(json!({ "filename": "relatorio.pdf", "content": "x" })).await.unwrap_err();
 
-        assert!(err.to_string().contains("only .txt and .md"));
+        assert!(err.to_string().contains("only .txt, .md and .csv"));
     }
 
     #[tokio::test]
@@ -112,7 +125,7 @@ mod tests {
 
         let err = tool.call(json!({ "filename": "relatorio", "content": "x" })).await.unwrap_err();
 
-        assert!(err.to_string().contains("only .txt and .md"));
+        assert!(err.to_string().contains("only .txt, .md and .csv"));
     }
 
     #[tokio::test]

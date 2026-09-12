@@ -408,6 +408,9 @@ Warden como interface de IA para casa inteligente.
   XLSX-com-fórmulas); sem UI de chat nova nesta rodada (só o caminho do arquivo na resposta,
   igual `write_file`). Tool `generate_document` nova (TXT/MD só, v1) — ver `PENDING.md` P64 pro
   detalhamento técnico completo.
+- **Fatia 2 implementada (Sessão 64, 2026-09-12, continuação)**: `.csv` adicionado ao mesmo tool
+  `generate_document` — mesmo caminho de escrita direta do TXT/MD (o modelo já entrega o texto
+  formatado como CSV, sem lib nova nem parsing/validação). Ver `PENDING.md` P64.
 
 ---
 
