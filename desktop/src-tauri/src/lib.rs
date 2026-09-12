@@ -1,3 +1,4 @@
+mod qr;
 mod recording;
 mod sync_cmds;
 mod vault_cmds;
@@ -705,7 +706,10 @@ pub fn run() {
             vault_cmds::read_vault_file,
             workspace_cmds::list_paired_devices,
             workspace_cmds::approve_paired_device,
-            workspace_cmds::revoke_paired_device
+            workspace_cmds::revoke_paired_device,
+            workspace_cmds::get_hub_pairing_config,
+            workspace_cmds::save_hub_pairing_config,
+            workspace_cmds::hub_pairing_qr_svg
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

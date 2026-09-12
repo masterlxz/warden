@@ -157,6 +157,14 @@ export interface PairedDevice {
   lastSeenMs: number;
 }
 
+/** Mirrors `warden_bootstrap::HubPairingConfig` (via `workspace_cmds::HubPairingConfigPayload`,
+ * Fase 9.7) — what the Workspace screen's "Pareamento por QR" section saves and embeds in the QR
+ * a new client scans, so it doesn't have to type `serverUrl`/`authKey` by hand. */
+export interface HubPairingConfig {
+  serverUrl: string;
+  authKey: string;
+}
+
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's
  * status card. `null` fields mean "not applicable yet" (e.g. `deviceId` before `sync_init`/
  * pairing, `ownerAddress`/`lastTxId`/`lastSyncedAtMs` before the first push or pull). */

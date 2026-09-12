@@ -23,6 +23,71 @@
 
 ---
 
+### 2026-09-12 — Sessão 61 (continuação)
+
+- **Objetivo**: usuário pediu pra continuar o projeto sem item travado. Apresentadas 3 frentes
+  em aberto (P64 file-generation, P63 sync via git, Fase 9.7 QR); escolhida 9.7 — pareamento de
+  cliente novo via QR code. Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de
+  codar, incluindo uma pergunta de direção resolvida com o usuário antes de finalizar o plano:
+  **desktop mostra o QR, mobile escaneia** (não o inverso do padrão TruthID — quem precisa
+  aprender host/porta/chave é o cliente novo, não o hub), e a `auth_key` embutida vem de um campo
+  que o operador digita uma vez direto na tela Workspace (não mexe no `config.toml`
+  compartilhado nem no `warden-server`/protocolo).
+
+**O que foi feito**:
+
+- `crates/warden-bootstrap/src/lib.rs`: `HubPairingConfig { server_url, auth_key }` novo — arquivo
+  JSON próprio (`default_hub_pairing_config_path`, `dirs::config_dir()/warden/hub_pairing.json`),
+  deliberadamente fora do `FileConfig`/`config.toml` principal (é uma preocupação só do Workspace,
+  não das configurações gerais de providers/agents/mcp). `load_hub_pairing_config`/
+  `save_hub_pairing_config` seguem o mesmo padrão read/write de `save_config`.
+- `desktop/src-tauri/src/qr.rs` (novo): `render_qr_svg` extraído de `sync_cmds.rs` (era privada
+  ali) pra ser reaproveitado também pelo pareamento novo — evita duplicar a chamada ao crate
+  `qrcode`.
+- `desktop/src-tauri/src/workspace_cmds.rs`: 3 comandos novos — `get_hub_pairing_config`,
+  `save_hub_pairing_config` (valida os dois campos não-vazios), `hub_pairing_qr_svg` (carrega a
+  config salva, erro claro se ainda não preenchida, serializa `{"serverUrl","authKey"}` e chama
+  `qr::render_qr_svg`). Registrados em `lib.rs`.
+- `desktop/src/components/WorkspaceView.tsx`: nova seção "Pareamento por QR" (`HubPairingQrSection`)
+  acima da lista de dispositivos — dois campos (Server URL, Auth key) carregados de
+  `get_hub_pairing_config`, botão "Salvar e gerar QR" que salva e busca o SVG, renderizado
+  reaproveitando as classes `.sync-qr-card`/`.sync-qr-image` já existentes (mesmo visual do QR de
+  Sync, zero CSS novo). `types.ts` ganhou `HubPairingConfig`.
+- Mobile: `mobile_scanner` novo em `pubspec.yaml` (não existia scanner nenhum, só `qr_flutter`
+  gerador) + permissão `CAMERA` no `AndroidManifest.xml`. `mobile/lib/services/hub_pairing_qr.dart`
+  (novo) — `parseHubPairingQr` isolado como função pura (decodifica o JSON, valida `serverUrl`
+  como URI com host+porta e `authKey` não-vazio), mesmo padrão de `chat_notifications.dart::
+  shouldNotifyFor` (Fase 7.5) de manter a lógica testável fora de câmera/platform channel — testado
+  em `mobile/test/services/hub_pairing_qr_test.dart` (JSON válido, inválido, campo faltando, sem
+  porta, array em vez de objeto). `mobile/lib/screens/qr_scan_screen.dart` (novo) — `MobileScanner`
+  simples, `onDetect` chama `parseHubPairingQr` no primeiro código lido. `connection_screen.dart`
+  ganhou um botão de câmera na `AppBar` (só visível antes de conectar) que abre a tela de scan e
+  preenche host/porta/chave sem auto-conectar — o usuário ainda confere o nome do device e aperta
+  "Connect" como já fazia.
+- Payload do QR é só `{serverUrl, authKey}` — sem `device_id`, que continua escolhido/persistido
+  pelo próprio cliente (mobile já tem `getOrCreateDeviceId`). Nenhuma mudança em
+  `warden-server-protocol`/`PairingStore`: o QR só evita digitação, o dispositivo escaneado ainda
+  aparece como `Pending` no Workspace até ser aprovado manualmente (9.3/9.6, comportamento
+  inalterado).
+
+**Verificação**: `cargo build/test/clippy --workspace` limpos (2 testes novos de round-trip em
+`warden-bootstrap`, 1 teste travando o JSON camelCase do payload do QR em `workspace_cmds.rs`);
+`npm run build` (tsc+vite) limpo no desktop. **Lado mobile não verificado de verdade** — este
+container não tem o SDK Flutter instalado (`flutter: command not found`; `dart pub get` confirma
+que `flutter_test` do SDK nem existe aqui), então `mobile_scanner` nunca foi resolvido/compilado, e
+`flutter analyze`/`flutter test` nunca rodaram. O código novo foi revisado à mão contra a API real
+do `mobile_scanner`, mas fica como lacuna registrada (`PENDING.md` P65) até confirmar num ambiente
+com Flutter — mesma honestidade de gap que P39/P44 já registram pra outras limitações de ambiente.
+
+- `PHASE.md` (9.7 concluída, com a ressalva do lado mobile) e `PENDING.md` (P65 nova) atualizados.
+
+**Próximo passo**: confirmar o lado mobile num ambiente com Flutter de verdade (fecha P65) —
+idealmente ponta a ponta com o emulador Android real (gerar o QR no desktop, escanear com a câmera
+virtual, ver os campos preenchidos). Fora disso, seguem em aberto P64 (debate de escopo), P63
+(sync via git) e o restante da Fase 9 (9.1 Tailscale).
+
+---
+
 ### 2026-09-11 — Sessão 60
 
 - **Objetivo**: usuário pediu pra continuar o projeto sem um item travado — apresentadas as

@@ -4,9 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../services/connection_settings.dart';
+import '../services/hub_pairing_qr.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 import 'chat_screen.dart';
+import 'qr_scan_screen.dart';
 import 'sync_screen.dart';
 
 /// Fase 7.2 scope: prove connectivity to a warden-server over WebSocket.
@@ -123,6 +125,18 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     }
   }
 
+  Future<void> _scanQr() async {
+    final payload = await Navigator.of(context).push<HubPairingPayload>(
+      MaterialPageRoute(builder: (_) => const QrScanScreen()),
+    );
+    if (payload == null || !mounted) return;
+    setState(() {
+      _hostController.text = payload.host;
+      _portController.text = '${payload.port}';
+      _authKeyController.text = payload.authKey;
+    });
+  }
+
   Future<void> _disconnect() async {
     await _connection?.goodbye('user disconnected');
   }
@@ -147,6 +161,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       appBar: AppBar(
         title: const Text('Warden — Server Connection'),
         actions: [
+          // Fase 9.7 — scans the desktop Workspace screen's pairing QR to fill in host/port/auth
+          // key below, instead of typing them by hand. Only useful before connecting.
+          if (!_isConnected && !_isBusy)
+            IconButton(
+              icon: const Icon(Icons.qr_code_scanner),
+              tooltip: 'Scan QR to fill in connection',
+              onPressed: _scanQr,
+            ),
           // Fase 4.4 — sync doesn't depend on being connected to warden-server (it only talks to
           // a paired device over LAN and to Arweave/TruthID), so it's reachable independent of
           // this screen's connection state.

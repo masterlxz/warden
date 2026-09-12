@@ -70,7 +70,7 @@ pub fn sync_push_begin(state: State<'_, AppState>) -> Result<PushBeginPayload, S
         .ok_or_else(|| "Nada para enviar — vault e config já batem com o último Enviar".to_string())?;
 
     let qr_json = begin.pending.qr_payload_json().map_err(|e| format!("{e:#}"))?;
-    let qr_svg = render_qr_svg(&qr_json)?;
+    let qr_svg = crate::qr::render_qr_svg(&qr_json)?;
     let files_changed = begin.bundle.vault_files.len() + begin.bundle.deleted_vault_files.len();
     let config_changed = begin.bundle.config_toml.is_some() || begin.bundle.config_deleted;
 
@@ -154,14 +154,4 @@ pub async fn pairing_start(app: AppHandle, state: State<'_, AppState>) -> Result
 #[tauri::command]
 pub async fn pairing_join(state: State<'_, AppState>, code: String) -> Result<(), String> {
     state.sync.pairing_join(&code).await.map_err(|e| format!("{e:#}"))
-}
-
-fn render_qr_svg(data: &str) -> Result<String, String> {
-    let code = qrcode::QrCode::new(data.as_bytes()).map_err(|e| format!("failed to build QR code: {e}"))?;
-    Ok(code
-        .render::<qrcode::render::svg::Color>()
-        .min_dimensions(256, 256)
-        .dark_color(qrcode::render::svg::Color("#000000"))
-        .light_color(qrcode::render::svg::Color("#ffffff"))
-        .build())
 }

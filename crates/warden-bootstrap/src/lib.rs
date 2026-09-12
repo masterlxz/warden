@@ -463,6 +463,49 @@ pub fn default_server_devices_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("devices.json"))
 }
 
+/// What the desktop's Workspace screen embeds in the QR code a new client scans (Fase 9.7) — the
+/// two fields a `RemoteNodeConfig`/mobile `ConnectionScreen` would otherwise need typed by hand:
+/// which hub to connect to, and its shared secret. Deliberately its own tiny JSON file, not a
+/// field on `FileConfig`: it's a Workspace-only concern (generating a QR), unrelated to the
+/// providers/agents/mcp settings that file's Settings-screen form already covers, and — unlike
+/// `RemoteNodeConfig` — it never gets read by `bootstrap()`/`build_storage_provider`.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HubPairingConfig {
+    /// The `warden-server` hub to embed in the QR, e.g. `"ws://192.168.1.10:7420"`.
+    pub server_url: String,
+    /// Shared secret for that hub's `Hello` handshake — same value the operator passed it via
+    /// `WARDEN_SERVER_AUTH_KEY`/`--auth-key` when starting it.
+    pub auth_key: String,
+}
+
+/// Where `HubPairingConfig` lives (Fase 9.7) — same `dirs::config_dir()` base as
+/// `default_server_devices_path`, separate file since it's JSON (no reason to force it into TOML)
+/// and has nothing to do with `devices.json`'s pairing *records*.
+pub fn default_hub_pairing_config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("hub_pairing.json"))
+}
+
+/// `None` when the file doesn't exist yet (the operator hasn't filled in the Workspace form) —
+/// same "missing file is just an empty/default state, not an error" posture as
+/// `device_registry.rs::load`.
+pub fn load_hub_pairing_config(path: &Path) -> anyhow::Result<Option<HubPairingConfig>> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(serde_json::from_str(&contents)?)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+pub fn save_hub_pairing_config(path: &Path, config: &HubPairingConfig) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory at {}", parent.display()))?;
+    }
+    let contents = serde_json::to_string_pretty(config).context("failed to serialize hub pairing config")?;
+    std::fs::write(path, contents).with_context(|| format!("failed to write hub pairing config at {}", path.display()))
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
@@ -990,6 +1033,31 @@ mod tests {
             "warden-bootstrap-config-test-{name}-{}.toml",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ))
+    }
+
+    fn temp_json_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "warden-bootstrap-hub-pairing-test-{name}-{}.json",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))
+    }
+
+    #[test]
+    fn hub_pairing_config_is_none_when_never_saved() {
+        let path = temp_json_path("missing");
+        assert_eq!(load_hub_pairing_config(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn hub_pairing_config_round_trips_through_save_and_load() {
+        let path = temp_json_path("round-trip");
+        let config = HubPairingConfig { server_url: "ws://192.168.1.10:7420".to_string(), auth_key: "secret".to_string() };
+
+        save_hub_pairing_config(&path, &config).unwrap();
+        let loaded = load_hub_pairing_config(&path).unwrap();
+
+        assert_eq!(loaded, Some(config));
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

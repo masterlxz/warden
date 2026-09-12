@@ -389,7 +389,30 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   `warden-server` (lê `devices.json` local direto via nova dependência no crate `warden-server`),
   não uma superfície admin nova no protocolo WS — isso fica pra quando um cenário multi-máquina
   de verdade existir
-- [ ] 9.7 — Pareamento de cliente novo via QR code (mesmo padrão TruthID)
+- [x] 9.7 — Pareamento de cliente novo via QR code *(Sessão 61, continuação)* — direção escolhida
+  com o usuário: **desktop mostra o QR, mobile escaneia** (não o inverso do TruthID — quem precisa
+  aprender host/porta/chave é o cliente novo). Novo arquivo local `hub_pairing.json`
+  (`warden_bootstrap::HubPairingConfig`/`default_hub_pairing_config_path`, fora do `config.toml`
+  principal, mesmo espírito de arquivo dedicado que `devices.json` já tinha) guarda o server URL +
+  auth key que o operador digita uma vez na nova seção "Pareamento por QR" do `WorkspaceView.tsx`;
+  três comandos Tauri novos em `workspace_cmds.rs` (`get_hub_pairing_config`/
+  `save_hub_pairing_config`/`hub_pairing_qr_svg`) geram o SVG reaproveitando `render_qr_svg`
+  (extraído de `sync_cmds.rs` pro módulo novo `qr.rs`, evitando duplicar a chamada ao crate
+  `qrcode`). Payload do QR é só `{serverUrl, authKey}` — sem `deviceId`, que continua escolhido
+  pelo próprio cliente. Lado mobile: `mobile_scanner` novo (`pubspec.yaml`, mais a permissão
+  `CAMERA` no `AndroidManifest.xml`), `parseHubPairingQr` (`hub_pairing_qr.dart`) isolado como
+  função pura testável sem câmera (mesmo padrão de `chat_notifications.dart::shouldNotifyFor` da
+  Fase 7.5), `QrScanScreen` novo, botão de câmera na `ConnectionScreen` que preenche host/porta/
+  chave sem auto-conectar. Zero mudança em `warden-server-protocol`/`PairingStore` — o QR só evita
+  digitação, a aprovação do dispositivo continua manual no Workspace (9.3/9.6), inalterada.
+  Verificado: `cargo build/test/clippy --workspace` limpos (round-trip de
+  `load_hub_pairing_config`/`save_hub_pairing_config`, formato JSON do payload travado por teste);
+  `npm run build` (tsc+vite) limpo no desktop. **Lado mobile não verificado nesta sessão** — este
+  container não tem o SDK Flutter instalado (`flutter: command not found`, `dart pub get` confirma
+  que `flutter_test` do SDK não existe aqui), então `mobile_scanner` nunca foi de fato resolvido/
+  compilado nem `flutter analyze`/`flutter test` rodaram; o código (`hub_pairing_qr.dart`,
+  `qr_scan_screen.dart`, mudanças em `connection_screen.dart`) foi revisado à mão contra a API real
+  do `mobile_scanner` mas fica pendente confirmar num ambiente com Flutter — ver `PENDING.md` P65
 
 ---
 
