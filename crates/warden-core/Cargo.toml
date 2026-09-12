@@ -42,6 +42,13 @@ fastembed = { version = "6.0.3", optional = true, default-features = false, feat
 # sha2 major compiling into the workspace) — `cargo add` defaults to the newest 0.11 otherwise.
 sha2 = { version = "0.10", optional = true }
 dirs = { workspace = true, optional = true }
+# generate_document's PDF support (P64 fatia 3). Chosen over `printpdf` (its current major dropped
+# base-14-font support and now requires embedding a TTF/OTF asset just to write plain text — a
+# licensing/binary-asset question we don't need) — `lopdf` writes PDFs referencing a standard
+# Helvetica font directly, no font embedding needed, and is itself printpdf's own low-level
+# backend. Pure Rust, no OpenSSL/native-tls in its dependency tree, same rationale already applied
+# to `fastembed` above and to choosing git shell-out over `git2` in P63.
+lopdf = "0.45"
 
 [features]
 default = ["semantic-search"]

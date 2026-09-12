@@ -411,6 +411,9 @@ Warden como interface de IA para casa inteligente.
 - **Fatia 2 implementada (Sessão 64, 2026-09-12, continuação)**: `.csv` adicionado ao mesmo tool
   `generate_document` — mesmo caminho de escrita direta do TXT/MD (o modelo já entrega o texto
   formatado como CSV, sem lib nova nem parsing/validação). Ver `PENDING.md` P64.
+- **Fatia 3 implementada (Sessão 64, 2026-09-12, continuação)**: `.pdf` adicionado ao mesmo tool —
+  primeira fatia com dependência nova (`lopdf`, pure-Rust, sem embedding de fonte). PDF simples,
+  paginado, sem parsing de Markdown. Ver `PENDING.md` P64 pro detalhamento completo.
 
 ---
 
