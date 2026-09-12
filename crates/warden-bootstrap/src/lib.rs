@@ -456,6 +456,13 @@ pub fn default_server_conversations_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("conversations-server"))
 }
 
+/// Where `warden-server`'s persistent device pairing registry lives (Fase 9.3) — same
+/// `dirs::config_dir()` base as `default_server_conversations_dir`, not overridable via CLI yet
+/// (same posture that function already has).
+pub fn default_server_devices_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("devices.json"))
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }

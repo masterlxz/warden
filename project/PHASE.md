@@ -368,8 +368,12 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 - [ ] 9.1 — Setup Tailscale (todos os nós na mesma subnet)
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
-- [ ] 9.3 — Registrar cliente no servidor (pareamento) — só um registro efêmero em memória
-  (Sessão 59) existe hoje, não pareamento persistente/com aprovação; ver 9.4
+- [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro
+  **persistente** em JSON (`crates/warden-server/src/device_registry.rs`, `PairingStore`),
+  substituindo o registro efêmero em memória (Sessão 59). Escopo confirmado com o usuário: a
+  aprovação vale só pro **roteamento** (`CallDeviceTool`) — `Hello`/`Chat`/`Ping` seguem
+  funcionando pra qualquer dispositivo com o `auth_key` certo, sem exigir aprovação prévia.
+  Gerenciamento via CLI (`warden-server devices list/approve/revoke`, sem UI ainda — isso é 9.6)
 - [x] 9.4 — Rotear requisição de tool para o cliente correto — registro de dispositivos conectados
   + `CallDeviceTool`/`DeviceToolResult`/`DeviceToolError` no `warden-server` (Sessão 59), testado
   com dois clientes reais na mesma suíte de integração; falta o lado cliente que de fato usaria

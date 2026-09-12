@@ -2,10 +2,10 @@ mod support;
 
 use std::sync::Arc;
 
-use support::{spin_up_server, MockProvider};
+use support::{spin_up_server_with_devices_path, MockProvider};
 use warden_core::memory::Vault;
 use warden_core::storage::StorageProvider;
-use warden_server::{vault_node, RemoteNodeProvider};
+use warden_server::{vault_node, PairingStore, RemoteNodeProvider};
 
 fn temp_vault_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("warden-vault-node-e2e-{name}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
@@ -18,13 +18,15 @@ fn temp_vault_dir(name: &str) -> std::path::PathBuf {
 /// vault directory, not just that an RPC round-tripped.
 #[tokio::test]
 async fn write_read_list_and_delete_round_trip_against_a_real_node_and_a_real_vault_on_disk() {
-    let addr = spin_up_server(MockProvider::replying("unused")).await;
+    let (addr, devices_path) = spin_up_server_with_devices_path(MockProvider::replying("unused")).await;
     let node_vault_dir = temp_vault_dir("node");
 
     let node_conn = vault_node::connect(&format!("ws://{addr}"), "dev-node", "Vault Node", "test-key").await.unwrap();
     tokio::spawn(vault_node::serve(node_conn, Arc::new(Vault::new(node_vault_dir.clone()))));
+    PairingStore::new(devices_path.clone()).approve("dev-node").unwrap();
 
     let caller = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-node").await.unwrap();
+    PairingStore::new(devices_path.clone()).approve("dev-caller").unwrap();
 
     // write() — the file must exist on disk in the node's own vault directory afterward.
     caller.write("notes/a.md", b"buy milk").await.unwrap();
@@ -53,13 +55,15 @@ async fn write_read_list_and_delete_round_trip_against_a_real_node_and_a_real_va
 /// the routing as a real `DeviceToolError`.
 #[tokio::test]
 async fn reading_a_path_that_was_never_written_errors_clearly() {
-    let addr = spin_up_server(MockProvider::replying("unused")).await;
+    let (addr, devices_path) = spin_up_server_with_devices_path(MockProvider::replying("unused")).await;
     let node_vault_dir = temp_vault_dir("missing-path");
 
     let node_conn = vault_node::connect(&format!("ws://{addr}"), "dev-node", "Vault Node", "test-key").await.unwrap();
     tokio::spawn(vault_node::serve(node_conn, Arc::new(Vault::new(node_vault_dir.clone()))));
+    PairingStore::new(devices_path.clone()).approve("dev-node").unwrap();
 
     let caller = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-node").await.unwrap();
+    PairingStore::new(devices_path.clone()).approve("dev-caller").unwrap();
 
     let err = caller.read("never-written.md").await.unwrap_err();
     assert!(err.to_string().contains("remote node"), "error was: {err}");

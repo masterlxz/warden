@@ -90,17 +90,34 @@ impl ModelProvider for MockProvider {
 /// Spins up a real `Server` (bound to an OS-assigned localhost port) with `provider` as its
 /// model — used by every integration test in this crate so none of them need a real API key.
 pub async fn spin_up_server(provider: MockProvider) -> std::net::SocketAddr {
+    spin_up_server_with_devices_path(provider).await.0
+}
+
+/// Same as `spin_up_server`, but also hands back the path of this server's (fresh, empty)
+/// pairing registry — needed by any test that exercises `CallDeviceTool` (Fase 9.3 requires the
+/// caller and target to be `Approved` there first, see `warden_server::PairingStore`).
+pub async fn spin_up_server_with_devices_path(provider: MockProvider) -> (std::net::SocketAddr, std::path::PathBuf) {
     let temp_dir = std::env::temp_dir().join(format!(
         "warden-server-test-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     ));
     let vault = Arc::new(Vault::new(temp_dir.join("vault")));
     let orchestrator = Orchestrator::new(Arc::new(provider), vault);
+    let devices_path = temp_dir.join("devices.json");
 
-    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", Arc::new(orchestrator), temp_dir.join("conversations"))
+    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", Arc::new(orchestrator), temp_dir.join("conversations"), devices_path.clone())
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
-    addr
+    (addr, devices_path)
+}
+
+/// Connects `device_id` (registering it as `Pending` in the pairing registry via a real `Hello`),
+/// then immediately approves it — the common setup every `CallDeviceTool` test needs for a device
+/// to be allowed to call or be called. Returns the now-approved connection.
+pub async fn connect_and_approve(addr: std::net::SocketAddr, devices_path: &std::path::Path, device_id: &str, device_name: &str) -> warden_server::ServerConnection {
+    let conn = warden_server::ServerConnection::connect(&format!("ws://{addr}"), device_id, device_name, "test-key").await.unwrap();
+    warden_server::PairingStore::new(devices_path.to_path_buf()).approve(device_id).unwrap();
+    conn
 }

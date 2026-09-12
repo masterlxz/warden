@@ -49,10 +49,62 @@
   entrada própria aqui em `SESSIONS.md`; não preenchido retroativamente nesta sessão, só sinalizado
   aqui pra não confundir uma sessão futura procurando por ele.
 
-**Próximo passo**: dentro do P61, seguem em aberto `ManagedCloudProvider` (v3), checagem de
-assinatura real (bloqueada por billing), e a lacuna do push/pull QR-interativo numa trait genérica.
-Fora do P61: P63 (sync via git, baixa prioridade), Fase 9 (9.1 Tailscale, 9.3 pareamento
-persistente, 9.6 workspace de máquinas, 9.7 QR), P62 (Agent Builder), P51 (9Router).
+**Próximo passo (antes desta continuação)**: dentro do P61, seguem em aberto `ManagedCloudProvider`
+(v3), checagem de assinatura real (bloqueada por billing), e a lacuna do push/pull QR-interativo
+numa trait genérica. Fora do P61: P63 (sync via git, baixa prioridade), Fase 9 (9.1 Tailscale, 9.3
+pareamento persistente, 9.6 workspace de máquinas, 9.7 QR), P62 (Agent Builder), P51 (9Router).
+
+**Continuação (mesma sessão)** — usuário pediu pra continuar de novo; entre os itens em aberto na
+Fase 9 (9.1 Tailscale, 9.3 pareamento persistente, 9.6 workspace, 9.7 QR), escolhido 9.3 por ser
+pré-requisito natural dos outros dois (9.6/9.7 não fazem sentido sem uma fonte de verdade
+persistida por trás). Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar.
+
+**O que foi feito**: fechado um buraco de segurança real que vinha desde a Sessão 59 — qualquer
+dispositivo que soubesse o `auth_key` compartilhado do `warden-server` conseguia rotear
+`CallDeviceTool` pra (ou como) qualquer `device_id`, sem noção nenhuma de "este dispositivo
+específico foi autorizado". **Escopo confirmado no plano**: aprovação passou a valer só pro
+**roteamento** (`CallDeviceTool`) — `Hello`/`Chat`/`Ping` continuam funcionando pra qualquer
+dispositivo com a chave certa, sem exigir aprovação prévia, pra não quebrar a UX/testes
+existentes.
+
+- `crates/warden-server/src/device_registry.rs` (novo): `PairingStore` — registro persistido em
+  JSON (`Pending`/`Approved`/`Revoked` por `device_id`), deliberadamente sem cache em memória (cada
+  método relê o arquivo do disco) porque o `warden-server` (processo longo) e um
+  `warden-server devices approve <id>` (processo separado, one-shot) só têm esse arquivo como
+  coordenação — uma aprovação feita com o servidor já rodando precisa valer na próxima chamada sem
+  reiniciar nada. `warden-bootstrap` ganhou `default_server_devices_path()` (mesmo padrão de
+  `default_server_conversations_dir`).
+- `server.rs`: todo `Hello` bem-sucedido chama `record_seen` (silencioso, dispositivo novo vira
+  `Pending` mas segue recebendo `HelloAck` normal); `CallDeviceTool` passou a checar `Approved`
+  tanto do chamador quanto do alvo. **Ordem de checagem deliberada**: "não conectado" vence sobre
+  "não aprovado" pro alvo — um `approve` exige que o dispositivo já tenha dado `Hello` alguma vez
+  (`record_seen` já rodou), então um id que nunca conectou não tem como ser aprovado; liderar com
+  "não aprovado" mandaria o operador atrás de algo estruturalmente impossível de resolver. Revogar
+  não força-desconecta uma sessão já aberta — a checagem por chamada já basta.
+- `main.rs` virou subcomandos `clap` (`serve`, com as mesmas flags de sempre; `devices
+  list/approve/revoke`, que não chamam `bootstrap()` — não precisam de API key configurada, só
+  abrem o `PairingStore`). Sem histórico de deploy real ainda pra esse binário, mudar o formato de
+  invocação não quebra nada em produção.
+- Testes: 7 novos em `device_registry.rs` (persistência sobrevivendo a um "restart" simulado,
+  reconectar não reseta status, approve/revoke em id desconhecido erra); `device_routing.rs` ganhou
+  `connect_and_approve`/`spin_up_server_with_devices_path` em `tests/support/mod.rs` e 3 testes
+  novos (chamador não aprovado, alvo conectado mas não aprovado, revogado deixa de rotear sem
+  reconectar); `remote_node_provider.rs`/`vault_node_end_to_end.rs` ajustados pra aprovar os
+  dispositivos envolvidos antes do fluxo real + 1 teste novo (`RemoteNodeProvider` cujo próprio
+  device nunca foi aprovado erra claro em vez de travar). `cargo test -p warden-server` — 43 testes
+  (era 34), `cargo clippy --workspace --all-targets` limpo.
+- Verificado manualmente via CLI, sem precisar de API key (mesma limitação de sempre neste ambiente
+  pra rodar `warden-server serve` de verdade, que chama `bootstrap()`): `devices list` vazio,
+  `devices approve`/`revoke` num id nunca visto erram com mensagem clara, e o ciclo completo
+  list→approve→list→revoke→list contra um `devices.json` simulado à mão (já que subir o servidor de
+  verdade pra popular um `Pending` via `Hello` real exigiria uma API key real).
+- `PHASE.md` (9.3 marcada `[x]`), `ARCHITECTURE.md` (entrada da decisão), `PENDING.md` (P61
+  atualizado com a nota de segurança fechada).
+
+**Próximo passo**: dentro da Fase 9, 9.6 (workspace de máquinas — UI pra ver/aprovar/revogar
+visualmente em vez de CLI) e 9.7 (pareamento via QR) agora têm uma fonte de verdade persistida pra
+se apoiar; 9.1 (Tailscale) segue como configuração de infra, não trabalho de código no Warden em
+si.
 
 ---
 

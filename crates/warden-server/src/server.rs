@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
 
+use crate::device_registry::{PairingStatus, PairingStore};
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
@@ -40,6 +41,7 @@ pub struct Server {
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
+    devices_path: Arc<PathBuf>,
 }
 
 impl Server {
@@ -48,6 +50,7 @@ impl Server {
         auth_key: impl Into<Arc<str>>,
         orchestrator: Arc<Orchestrator>,
         conversations_dir: PathBuf,
+        devices_path: PathBuf,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
@@ -56,6 +59,7 @@ impl Server {
             orchestrator,
             conversations_dir: Arc::new(conversations_dir),
             devices: Arc::new(Mutex::new(HashMap::new())),
+            devices_path: Arc::new(devices_path),
         })
     }
 
@@ -73,8 +77,9 @@ impl Server {
             let orchestrator = self.orchestrator.clone();
             let conversations_dir = self.conversations_dir.clone();
             let devices = self.devices.clone();
+            let devices_path = self.devices_path.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, peer, auth_key, orchestrator, conversations_dir, devices).await {
+                if let Err(err) = handle_connection(stream, peer, auth_key, orchestrator, conversations_dir, devices, devices_path).await {
                     eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
                 }
             });
@@ -89,6 +94,7 @@ async fn handle_connection(
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
+    devices_path: Arc<PathBuf>,
 ) -> anyhow::Result<()> {
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
@@ -133,6 +139,14 @@ async fn handle_connection(
     }
 
     eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}");
+
+    // Fase 9.3: record this device in the persistent pairing registry — silent from the client's
+    // perspective (still gets a normal `HelloAck` below even as `Pending`), only surfaced via
+    // `warden-server devices list`/`approve`. Only `CallDeviceTool` actually checks the status.
+    if let Err(err) = PairingStore::new(devices_path.as_ref().clone()).record_seen(&device_id, &device_name) {
+        eprintln!("warden-server: failed to record '{device_id}' in the pairing registry: {err:#}");
+    }
+
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: "warden-server".into(),
     })
@@ -210,15 +224,29 @@ async fn handle_connection(
                 Ok(ClientMessage::CallDeviceTool { call_id, target_device_id, tool, arguments }) => {
                     let target_channel = devices.lock().unwrap().get(&target_device_id).cloned();
                     let reply_tx = tx.clone();
+                    let caller_id = device_id.clone();
+                    let devices_path = devices_path.clone();
                     tokio::spawn(async move {
-                        let reply = match target_channel {
-                            Some(channel) => match channel.call(tool, arguments, REMOTE_TOOL_TIMEOUT).await {
-                                Ok(result) => ServerMessage::DeviceToolResult { call_id, result },
-                                Err(err) => ServerMessage::DeviceToolError { call_id, message: format!("{err:#}") },
-                            },
-                            None => ServerMessage::DeviceToolError {
-                                call_id,
-                                message: format!("device '{target_device_id}' is not connected"),
+                        let store = PairingStore::new(devices_path.as_ref().clone());
+                        let reply = match check_caller_approved(&store, &caller_id) {
+                            Err(message) => ServerMessage::DeviceToolError { call_id, message },
+                            Ok(()) => match target_channel {
+                                // "not connected" wins over "not approved" here on purpose: a
+                                // device that never Hello'd can never be approved either (`approve`
+                                // requires a prior `record_seen`), so leading with "not approved"
+                                // for that case would send the operator chasing something they
+                                // structurally cannot do anything about.
+                                None => ServerMessage::DeviceToolError {
+                                    call_id,
+                                    message: format!("device '{target_device_id}' is not connected"),
+                                },
+                                Some(channel) => match check_target_approved(&store, &target_device_id) {
+                                    Err(message) => ServerMessage::DeviceToolError { call_id, message },
+                                    Ok(()) => match channel.call(tool, arguments, REMOTE_TOOL_TIMEOUT).await {
+                                        Ok(result) => ServerMessage::DeviceToolResult { call_id, result },
+                                        Err(err) => ServerMessage::DeviceToolError { call_id, message: format!("{err:#}") },
+                                    },
+                                },
                             },
                         };
                         let _ = reply_tx.send(reply);
@@ -246,6 +274,31 @@ async fn handle_connection(
     writer_task.await.ok();
 
     Ok(())
+}
+
+/// Fase 9.3 gate on `CallDeviceTool`: the calling device must be `Approved` in the persistent
+/// pairing registry — being connected and knowing the shared `auth_key` is no longer enough on
+/// its own to route a call *to* someone else.
+fn check_caller_approved(store: &PairingStore, caller_id: &str) -> Result<(), String> {
+    match store.status(caller_id).map_err(|e| format!("failed to check pairing status: {e:#}"))? {
+        Some(PairingStatus::Approved) => Ok(()),
+        Some(PairingStatus::Revoked) => Err(format!("your device '{caller_id}' has been revoked and can no longer route tool calls")),
+        Some(PairingStatus::Pending) | None => {
+            Err(format!("your device '{caller_id}' is not approved for routing yet — ask the operator to run `warden-server devices approve {caller_id}`"))
+        }
+    }
+}
+
+/// Same gate as `check_caller_approved`, for the target side — only called once the target is
+/// known to be connected (see the "not connected wins over not approved" note at the call site).
+fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), String> {
+    match store.status(target_id).map_err(|e| format!("failed to check pairing status: {e:#}"))? {
+        Some(PairingStatus::Approved) => Ok(()),
+        Some(PairingStatus::Revoked) => Err(format!("device '{target_id}' has been revoked and can no longer be routed to")),
+        Some(PairingStatus::Pending) | None => {
+            Err(format!("device '{target_id}' is not approved for routing yet — ask the operator to run `warden-server devices approve {target_id}`"))
+        }
+    }
 }
 
 async fn send(sink: &mut WsSink, msg: &ServerMessage) -> anyhow::Result<()> {
