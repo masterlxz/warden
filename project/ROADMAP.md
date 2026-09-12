@@ -373,6 +373,36 @@ Vários Wardens (um por contexto) compartilhando um vault comum:
 
 Warden como interface de IA para casa inteligente.
 
+### Geração de arquivos como entregável (documentos, planilhas, imagens, áudio, vídeo)
+
+> Trazido pelo usuário em 2026-09-12, só pra registro — sem decisão de arquitetura nem
+> prioridade ainda, ver `PENDING.md` P64.
+
+- Quer que o Warden consiga **gerar arquivos de vários formatos** como resultado de uma
+  conversa: PDF, TXT, Markdown, XLSX (planilha) e CSV, no mínimo.
+- Pra **planilhas (XLSX)** a fasquia é alta: montar a planilha "bonita" de acordo com o que o
+  usuário pedir, com **fórmulas de verdade** (não só dado estático) e formatação visual
+  (cabeçalho, cores, largura de coluna) — não um dump de CSV com extensão trocada.
+- O mesmo padrão de capricho vale pros outros formatos — PDF e TXT também devem sair "bonitos",
+  não só texto cru.
+- **Imagens**: o usuário já assume que a geração em si só deve rolar via **integração MCP** (não
+  um motor de geração embutido no core) — mas quer que a **conversa suporte exibir essas imagens
+  inline** quando o MCP gerar o arquivo, não só apontar o caminho.
+- **Vídeo e áudio**: mesma lógica — também via MCP, mas com **boa qualidade** de integração. O
+  pedido não é só "conseguir chamar o MCP", é o software tratar isso como cidadão de primeira
+  classe: exibir imagem, tocar áudio, reproduzir vídeo direto na conversa, com boa UX, não devolver
+  um caminho de arquivo cru.
+- Hoje não existe nenhum write path opcional pra deliverable de conversa em arquivo (nem
+  documento, nem planilha, nem imagem/áudio/vídeo) — é ideia nova de ponta a ponta. Provavelmente
+  vira duas frentes de trabalho distintas: (1) motor de geração de documentos/planilhas
+  (PDF/TXT/MD/XLSX/CSV), e (2) pipeline de exibir mídia MCP-gerada na conversa
+  (imagem/áudio/vídeo).
+- Relaciona com "Voz" acima (STT/TTS já existe, mas é conversa falada em tempo real — isso aqui é
+  diferente: **arquivo de mídia como entregável**, não fala) e com "Tela de gerenciamento de
+  integrações MCP" (ambas dependem de MCP amadurecer no Warden).
+- Sem decisão de prioridade, sequenciamento nem escopo técnico ainda — só registro pra debater
+  depois.
+
 ---
 
 ## Backlog

@@ -2,7 +2,24 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-11 (Sessão 60)
+> Última atualização: 2026-09-12 (Sessão 61)
+
+---
+
+### 2026-09-12 — Sessão 61
+
+- **Objetivo**: usuário trouxe uma ideia nova só pra registro (sem código nesta rodada) —
+  discutir e possivelmente implementar depois.
+- **O que foi feito**: registrada em `PENDING.md` (P64, "Decisões em Aberto") e detalhada em
+  `ROADMAP.md` (nova seção "Geração de arquivos como entregável") a ideia de o Warden gerar
+  arquivos como resultado de uma conversa — PDF, TXT, Markdown, XLSX (planilha, com fórmulas de
+  verdade e formatação bonita, não só dado cru) e CSV — além de suportar geração de imagem,
+  áudio e vídeo via **integração MCP** (não motor embutido no core), com a conversa passando a
+  **exibir/reproduzir essa mídia inline**, não só apontar o caminho do arquivo. Sem decisão de
+  arquitetura, prioridade ou sequenciamento — só o registro pra debate futuro.
+- **Próximo passo**: debater com o usuário escopo/prioridade de P64 (provavelmente cindir em
+  duas frentes: motor de geração de documento/planilha vs. pipeline de exibição de mídia
+  MCP-gerada) antes de codar qualquer coisa.
 
 ---
 
