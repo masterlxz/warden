@@ -105,6 +105,27 @@ pra fechar a lacuna acima.
   confirmar antes, dado o espaço em disco apertado. `PENDING.md` (P65) e `PHASE.md` (9.7)
   atualizados refletindo exatamente esse corte.
 
+**Continuação (mesma sessão)** — usuário confirmou: commitar o trabalho e instalar Android SDK só
+o mínimo pra compilar (sem emulador).
+
+- `git commit` do QR pairing (16 arquivos) e outro dos docs/verificação mobile (4 arquivos).
+- JDK 21 (Temurin, portátil) em `~/.local/opt/jdk-21.0.12.1+1`; Android cmdline-tools/
+  platform-tools/platforms 35+36/build-tools 28.0.3+35.0.0 via `sdkmanager` em
+  `~/.local/opt/android-sdk` (`flutter config --android-sdk` apontado pra lá).
+- `flutter build apk --debug` chegou a rodar o Gradle de verdade, mas falhou baixando a **NDK**
+  (`android-ndk-r28c`) com "No space left on device" — o `warden_mobile_bridge` (ponte Rust do
+  projeto) precisa dela pra compilar a lib nativa Android, e ela sozinha pede ~2GB que não coube:
+  o disco foi de 97% (5.5GB livres) pra 99% (2.8GB livres) só com JDK+SDK instalados. Nada
+  corrompido, sem lixo residual relevante do download parcial.
+- Perguntado se o usuário queria liberar espaço pra tentar de novo — escolheu parar por aqui.
+  `PENDING.md` (P65) atualizado registrando o estado exato: SDK completo instalado e pronto,
+  só falta a NDK/o build de fato quando houver espaço em disco.
+
+**Próximo passo**: quando houver espaço em disco (~2GB+ livres), retomar com
+`flutter build apk --debug` direto (SDK/JDK já instalados, só falta a NDK baixar) pra fechar P65
+de vez. Fora isso, mesmas pendências de sempre: P64 (debate de escopo), P63 (sync via git), Fase
+9.1 (Tailscale).
+
 ---
 
 ### 2026-09-11 — Sessão 60

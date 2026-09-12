@@ -410,10 +410,13 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   `npm run build` (tsc+vite) limpo no desktop. SDK Flutter instalado depois, na continuação
   seguinte desta mesma sessão (`~/.local/opt/flutter`, stable, via `PATH` em `~/.bashrc`):
   `flutter pub get` resolveu `mobile_scanner 7.4.1` de verdade, `flutter analyze` limpo, `flutter
-  test` verde (39 testes, os 6 novos de `parseHubPairingQr` inclusos). **Ainda falta** um build
-  Android/emulador real — sem Android SDK instalado nesta máquina, e o disco está em ~97% de uso
-  (5.5GB livres), então instalar o SDK Android só acontece se o usuário confirmar que vale o
-  espaço — ver `PENDING.md` P65
+  test` verde (39 testes, os 6 novos de `parseHubPairingQr` inclusos). JDK 21 + Android SDK
+  (cmdline-tools/platforms 35+36/build-tools) instalados na sequência com o ok do usuário, e
+  `flutter build apk --debug` chegou a rodar o Gradle de verdade — mas parou baixando a **NDK**
+  (exigida pelo `warden_mobile_bridge` pra compilar a lib nativa Android) com o disco cheio (99%,
+  2.8GB livres): a NDK sozinha pede ~2GB que não coube. Usuário optou por não liberar espaço agora.
+  **Ainda falta**, portanto: a NDK baixar e um build/emulador Android real — SDK/JDK já instalados
+  e prontos, só falta espaço em disco — ver `PENDING.md` P65
 
 ---
 
