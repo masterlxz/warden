@@ -1418,3 +1418,67 @@ body {
 .env-var-row .settings-input:first-child {
   flex: 0 0 40%;
 }
+
+/* Workspace view (Fase 9.6) */
+
+.workspace-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.workspace-device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+  padding: 0.8rem 1rem;
+}
+
+.workspace-device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.workspace-device-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.workspace-device-name {
+  font-weight: 600;
+}
+
+.workspace-device-meta {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+  word-break: break-word;
+}
+
+.workspace-device-actions {
+  flex-shrink: 0;
+}
+
+.workspace-status-badge--pending {
+  color: var(--color-text-muted);
+}
+
+.workspace-status-badge--approved {
+  color: var(--color-accent-dark);
+  border-color: var(--color-accent);
+  background-color: var(--color-accent-soft);
+}
+
+.workspace-status-badge--revoked {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background-color: color-mix(in srgb, var(--color-danger) 12%, transparent);
+}

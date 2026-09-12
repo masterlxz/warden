@@ -145,6 +145,18 @@ export interface UsageSummary {
   byProvider: UsageByKey[];
 }
 
+/** Mirrors `warden_server::PairedDevice` (via `workspace_cmds::PairedDeviceInfo`) — one row of the
+ * "Workspace" nav view's device list (Fase 9.6). `firstSeenMs`/`lastSeenMs` are epoch
+ * milliseconds. Assumes the desktop app runs on the same machine as the `warden-server` hub whose
+ * `devices.json` this reads — see `workspace_cmds.rs`'s module docs for why. */
+export interface PairedDevice {
+  deviceId: string;
+  deviceName: string;
+  status: "pending" | "approved" | "revoked";
+  firstSeenMs: number;
+  lastSeenMs: number;
+}
+
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's
  * status card. `null` fields mean "not applicable yet" (e.g. `deviceId` before `sync_init`/
  * pairing, `ownerAddress`/`lastTxId`/`lastSyncedAtMs` before the first push or pull). */

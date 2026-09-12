@@ -81,6 +81,16 @@ export function VaultIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function DevicesIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <rect x="2" y="3" width="20" height="7" rx="1.8" />
+      <rect x="2" y="14" width="20" height="7" rx="1.8" />
+      <path d="M6 6.5h.01M6 17.5h.01" />
+    </svg>
+  );
+}
+
 export function SendIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">

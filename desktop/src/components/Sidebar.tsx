@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon, VaultIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon, VaultIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -10,7 +10,8 @@ interface SidebarProps {
   onOpenUsage: () => void;
   onOpenSync: () => void;
   onOpenVault: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault";
+  onOpenWorkspace: () => void;
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -24,6 +25,7 @@ function Sidebar({
   onOpenUsage,
   onOpenSync,
   onOpenVault,
+  onOpenWorkspace,
   view,
   collapsed,
   onToggleCollapsed,
@@ -104,6 +106,15 @@ function Sidebar({
         >
           <VaultIcon size={17} />
           {!collapsed && "Vault"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "workspace" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenWorkspace}
+          title="Workspace"
+        >
+          <DevicesIcon size={17} />
+          {!collapsed && "Workspace"}
         </button>
         <button
           type="button"

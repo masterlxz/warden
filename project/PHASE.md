@@ -383,7 +383,12 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   anuncia `vault_read`/`vault_write`/`vault_list`/`vault_delete`, executa contra seu próprio `Vault`
   local e devolve o resultado — escopado só a essas 4 tools de vault, não um nó genérico de
   qualquer tool ainda; ver `PENDING.md` P61
-- [ ] 9.6 — Workspace de máquinas (ver/gerenciar nós conectados)
+- [x] 9.6 — Workspace de máquinas (ver/gerenciar nós conectados) *(Sessão 60, continuação)* — tela
+  nova no desktop (`WorkspaceView.tsx`), lista/aprova/revoga dispositivos do `PairingStore` (9.3).
+  Escopo confirmado com o usuário: assume que o desktop roda na **mesma máquina** do
+  `warden-server` (lê `devices.json` local direto via nova dependência no crate `warden-server`),
+  não uma superfície admin nova no protocolo WS — isso fica pra quando um cenário multi-máquina
+  de verdade existir
 - [ ] 9.7 — Pareamento de cliente novo via QR code (mesmo padrão TruthID)
 
 ---

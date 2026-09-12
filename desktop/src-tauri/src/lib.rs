@@ -1,6 +1,7 @@
 mod recording;
 mod sync_cmds;
 mod vault_cmds;
+mod workspace_cmds;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -701,7 +702,10 @@ pub fn run() {
             sync_cmds::pairing_start,
             sync_cmds::pairing_join,
             vault_cmds::list_vault_files,
-            vault_cmds::read_vault_file
+            vault_cmds::read_vault_file,
+            workspace_cmds::list_paired_devices,
+            workspace_cmds::approve_paired_device,
+            workspace_cmds::revoke_paired_device
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

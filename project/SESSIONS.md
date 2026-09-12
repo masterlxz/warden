@@ -101,10 +101,51 @@ existentes.
 - `PHASE.md` (9.3 marcada `[x]`), `ARCHITECTURE.md` (entrada da decisão), `PENDING.md` (P61
   atualizado com a nota de segurança fechada).
 
-**Próximo passo**: dentro da Fase 9, 9.6 (workspace de máquinas — UI pra ver/aprovar/revogar
-visualmente em vez de CLI) e 9.7 (pareamento via QR) agora têm uma fonte de verdade persistida pra
-se apoiar; 9.1 (Tailscale) segue como configuração de infra, não trabalho de código no Warden em
-si.
+**Próximo passo (antes desta continuação)**: dentro da Fase 9, 9.6 (workspace de máquinas — UI pra
+ver/aprovar/revogar visualmente em vez de CLI) e 9.7 (pareamento via QR) agora têm uma fonte de
+verdade persistida pra se apoiar; 9.1 (Tailscale) segue como configuração de infra, não trabalho de
+código no Warden em si.
+
+**Continuação (mesma sessão)** — usuário pediu pra seguir de novo ("pode seguir então"). Investigado
+antes de planejar (agente de pesquisa) como a UI do desktop chegaria no `PairingStore`: hoje
+`desktop/src-tauri` não depende de `warden-server`/`warden-server-protocol` nenhum, o servidor é
+sempre um processo separado (não necessariamente na mesma máquina), e o protocolo WS não tem
+nenhuma mensagem tipo "admin" — só `Hello`/`Chat`/`Ping`/`CallDeviceTool`. **Decisão de topologia
+confirmada com o usuário antes de planejar**: assumir mesma máquina (desktop lê o `devices.json`
+local direto, nova dependência no crate `warden-server`) em vez de um protocolo admin novo sobre WS
+(que exigiria mensagens novas e uma decisão de confiança/credencial sem resposta em lugar nenhum do
+código) — fatia bem menor, cobre o caso de uso real de hoje. Plano escrito e aprovado
+(`EnterPlanMode`/`ExitPlanMode`) antes de codar.
+
+**O que foi feito**:
+
+- `desktop/src-tauri/Cargo.toml` ganhou dependência em `warden-server`. `workspace_cmds.rs` novo
+  (mesmo padrão de módulo próprio que `vault_cmds.rs`/`sync_cmds.rs`) — 3 comandos
+  (`list_paired_devices`/`approve_paired_device`/`revoke_paired_device`), sem `AppState` novo já
+  que `PairingStore` é stateless por design (relê o arquivo a cada chamada). `PairedDeviceInfo`
+  (DTO local, `camelCase`) separa o formato de IPC do formato do arquivo em disco
+  (`PairedDevice`/`PairingStatus`, que ficam em `snake_case`) — mesma separação já usada por
+  `RemoteNodeConfigPayload`/`RemoteNodeConfig`.
+- Frontend: `WorkspaceView.tsx` novo (mesmo esqueleto de `UsageView.tsx` — fetch no mount,
+  loading/erro/vazio), lista de dispositivos com badge de status (reaproveita o visual de
+  `.storage-provider-badge`, cor por status) e botão de ação contextual (`Approve` pra `pending`,
+  `Revoke` pra `approved`) — reaprovar um dispositivo revogado fica de fora do MVP, a CLI continua
+  disponível pra isso. Aviso didático explícito na tela: só enxerga o hub rodando *nesta* máquina.
+  `DevicesIcon` novo em `Icons.tsx` (mesmo estilo outline dos outros); `Sidebar.tsx`/`App.tsx`
+  ganharam a view `"workspace"`, mesmo padrão dos outros 4 itens de rodapé.
+- Testes: 1 teste novo (`workspace_cmds::tests::paired_device_info_serializes_as_camel_case`) —
+  primeiro teste Rust do crate `desktop` (nenhum existia antes; os comandos de
+  `vault_cmds.rs`/`sync_cmds.rs` nunca tiveram, por precisarem de `AppState`/Tauri de verdade —
+  este pôde ser isolado extraindo `to_info` como função pura, sem tocar disco). `cargo test/clippy
+  -p desktop`, `cargo clippy --workspace --all-targets`, `npx tsc --noEmit`, `npm run build`
+  limpos. **Não verificado com Chrome/Playwright real** — extensão não conectada neste ambiente
+  (confirmado via `tabs_context_mcp`), mesma lacuna de sessões anteriores.
+- `PHASE.md` (9.6 marcada `[x]`), `ARCHITECTURE.md` (entrada da decisão), `PENDING.md` (P61
+  atualizado).
+
+**Próximo passo**: 9.7 (pareamento via QR, mesmo padrão TruthID) e, se algum dia fizer sentido, a
+superfície admin sobre WS pra cobrir hub numa máquina diferente do desktop (fora de escopo desta
+fatia). Fora da Fase 9: P62 (Agent Builder), P51 (9Router), P63 (sync via git).
 
 ---
 

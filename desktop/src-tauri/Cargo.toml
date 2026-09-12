@@ -35,5 +35,6 @@ hound = "3.5"
 qrcode = "0.14"
 warden-bootstrap = { path = "../../crates/warden-bootstrap" }
 warden-core = { path = "../../crates/warden-core" }
+warden-server = { path = "../../crates/warden-server" }
 warden-sync = { path = "../../crates/warden-sync" }
 
