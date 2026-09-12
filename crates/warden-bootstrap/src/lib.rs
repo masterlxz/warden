@@ -18,6 +18,7 @@ use warden_core::model::{Attachment, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::delegate_to_agent::{DelegateToAgentTool, NamedSubAgent};
+use warden_core::tool::document::GenerateDocumentTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
 use warden_core::tool::shell::ShellTool;
@@ -151,6 +152,13 @@ pub struct FileConfig {
     /// Same deprecation as `provider` above.
     pub model: Option<String>,
     pub vault_path: Option<String>,
+    /// Where `generate_document` (P64 v1) writes deliverable files — deliberately separate from
+    /// the memory vault (not synced, not part of `search`/`search_semantic`). `None` derives a
+    /// default as a sibling of the resolved `vault_path` (`<vault_path>/../generated`), same
+    /// human-browsable-folder convention `desktop_default_vault_path()` already uses for the
+    /// vault itself. No UI/CLI flag yet — config.toml only, same posture `enable_shell` had before
+    /// it grew a Settings toggle.
+    pub generated_path: Option<String>,
     /// Opt-in gate for the `shell` tool (Phase 5.5) — off unless explicitly turned on, since it
     /// lets the model run arbitrary commands on this machine with no sandboxing.
     pub enable_shell: Option<bool>,
@@ -713,6 +721,20 @@ pub fn resolve_vault_path(overrides: &Overrides, config: &FileConfig, default_va
     overrides.vault_path.clone().map(PathBuf::from).or_else(|| config.vault_path.clone().map(PathBuf::from)).unwrap_or(default_vault_path)
 }
 
+/// Resolves where `generate_document` (P64 v1) writes deliverable files. `config.generated_path`
+/// wins when set; otherwise derives a sibling of the already-resolved `vault_path`
+/// (`<vault_path>/../generated`) — the same human-browsable-folder convention
+/// `desktop_default_vault_path()` uses for the vault itself (e.g. `~/Warden/vault` ->
+/// `~/Warden/generated`), without `bootstrap()` needing a second caller-supplied default
+/// parameter alongside `default_vault_path`.
+pub fn resolve_generated_path(config: &FileConfig, resolved_vault_path: &Path) -> PathBuf {
+    config
+        .generated_path
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| resolved_vault_path.parent().unwrap_or_else(|| Path::new(".")).join("generated"))
+}
+
 /// Builds the `StorageProvider` for a resolved `StorageProviderKind` (P61) — the factory
 /// `storage_provider`/`WARDEN_STORAGE_PROVIDER` select between. `async` (unlike every other
 /// `build_*` helper in this file) because `RemoteNode` needs a real network round-trip
@@ -928,6 +950,7 @@ pub async fn bootstrap(
     let model_provider = resolve_model_provider(&config, &overrides)?;
 
     let vault_path = resolve_vault_path(&overrides, &config, default_vault_path);
+    let generated_path = resolve_generated_path(&config, &vault_path);
 
     let vault = Arc::new(Vault::new(vault_path));
     seed_default_vault_files(&vault);
@@ -935,6 +958,7 @@ pub async fn bootstrap(
     let mut base_tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(vault.clone())),
         Arc::new(WriteFileTool::new(vault.clone())),
+        Arc::new(GenerateDocumentTool::new(generated_path)),
         Arc::new(UsageStatsTool::new(default_conversations_dir())),
     ];
 
@@ -1259,6 +1283,7 @@ oauth = true
             provider: Some(Provider::Openai),
             model: Some("gpt-4o-mini".to_string()),
             vault_path: Some("/tmp/some-vault".to_string()),
+            generated_path: Some("/tmp/some-generated".to_string()),
             enable_shell: Some(true),
             delegate_max_depth: Some(3),
             api_keys: ApiKeys {
@@ -1467,6 +1492,27 @@ oauth = true
         assert_eq!(resolve_vault_path(&overridden, &config, default.clone()), PathBuf::from("/from/override"));
         assert_eq!(resolve_vault_path(&Overrides::default(), &config, default.clone()), PathBuf::from("/from/config"));
         assert_eq!(resolve_vault_path(&Overrides::default(), &FileConfig::default(), default.clone()), default);
+    }
+
+    #[test]
+    fn resolve_generated_path_defaults_to_a_sibling_of_the_resolved_vault_path() {
+        let vault_path = PathBuf::from("/home/user/Warden/vault");
+
+        assert_eq!(resolve_generated_path(&FileConfig::default(), &vault_path), PathBuf::from("/home/user/Warden/generated"));
+    }
+
+    #[test]
+    fn resolve_generated_path_derives_from_a_relative_vault_path_too() {
+        let vault_path = PathBuf::from("vault");
+
+        assert_eq!(resolve_generated_path(&FileConfig::default(), &vault_path), PathBuf::from("generated"));
+    }
+
+    #[test]
+    fn resolve_generated_path_prefers_the_config_override() {
+        let config = FileConfig { generated_path: Some("/custom/output".to_string()), ..Default::default() };
+
+        assert_eq!(resolve_generated_path(&config, &PathBuf::from("/home/user/Warden/vault")), PathBuf::from("/custom/output"));
     }
 
     #[tokio::test]

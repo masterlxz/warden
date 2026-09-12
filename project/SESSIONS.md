@@ -2,7 +2,62 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-12 (Sessão 63)
+> Última atualização: 2026-09-12 (Sessão 64)
+
+---
+
+### 2026-09-12 — Sessão 64
+
+- **Objetivo**: usuário pediu pra continuar — apresentadas 3 frentes em aberto (P64
+  file-generation, Fase 9.1 Tailscale, testar o APK do pareamento por QR/P65), escolhido P64.
+  Dentro de P64 (duas frentes distintas no registro: motor de documentos/planilhas vs. exibir
+  mídia MCP-gerada na conversa), escolhido o motor de documentos/planilhas primeiro. Escopo
+  fechado com o usuário antes de codar (`AskUserQuestion`): arquivos gerados numa pasta separada
+  do vault (não syncam, não entram em busca); formatos evoluem do mais simples pro mais caro
+  (TXT/MD → CSV → PDF → XLSX-com-fórmulas por último); sem UI de chat nova nesta rodada (só o
+  caminho do arquivo na resposta, igual `write_file` já faz hoje). Plano escrito e aprovado
+  (`EnterPlanMode`/`ExitPlanMode`) antes de implementar a fatia 1 (TXT/MD).
+
+**O que foi feito**:
+
+- `crates/warden-core/src/tool/document.rs` (novo) — `GenerateDocumentTool`, mesmo formato de
+  `Tool` que `ReadFileTool`/`WriteFileTool` (`file_tools.rs`). Infere o formato pela extensão do
+  `filename` (sem parâmetro `format` separado); v1 só aceita `.txt`/`.md`, rejeitando qualquer
+  outra extensão com mensagem explícita citando que PDF/CSV/XLSX vêm depois (evita o modelo tentar
+  e receber um erro confuso). Devolve `{"status":"ok","path":<caminho absoluto>}`. Registrada
+  sempre em `bootstrap()`, sem gate — mesmo nível de "sempre disponível" que `read_file`/
+  `write_file`, não opt-in como `shell`. Mesma ausência de proteção contra path traversal que
+  `Vault::write`/`WriteFileTool` já têm hoje — não introduzida aqui por consistência, não é
+  regressão nova.
+- `crates/warden-bootstrap/src/lib.rs`: `FileConfig.generated_path: Option<String>` novo
+  (config.toml only, sem UI/flag ainda — mesma postura que `enable_shell`/`delegate_max_depth`
+  tiveram antes de ganhar tela) + `resolve_generated_path(config, vault_path)` novo — vence quando
+  presente; senão deriva como **irmão do vault_path já resolvido**
+  (`<vault_path>/../generated`), reaproveitando a mesma convenção de pasta humano-navegável que
+  `desktop_default_vault_path()` já usa pro vault (`~/Warden/vault` → `~/Warden/generated`; CLI:
+  `./vault` → `./generated`) — escolhido deliberadamente pra não precisar adicionar um segundo
+  parâmetro `default_generated_path` em `bootstrap()`, o que mudaria a assinatura em 6+ call sites
+  (CLI/`warden-server`/WhatsApp/Telegram/`warden-mcp-server`/desktop).
+- `desktop/src-tauri/src/lib.rs`'s `save_settings` carrega `existing.generated_path` adiante (não
+  apaga um valor editado à mão no `config.toml` — mesmo tratamento que `git_sync`/
+  `delegate_max_depth` já tinham).
+- Verificação: `cargo test -p warden-core -p warden-bootstrap` (6 testes novos na tool + 3 em
+  `resolve_generated_path`) e depois `cargo test --workspace` inteiro — 100% verde, nenhuma
+  regressão; `cargo clippy --workspace --all-targets` limpo (precisou de dois ajustes em structs
+  `FileConfig { .. }` literais sem `..Default::default()` — um teste em `warden-bootstrap`, o
+  `save_settings` do desktop — pra incluir o campo novo). **Smoke real de ponta a ponta, não só
+  unitário**: um `cargo run --example` temporário rodou `bootstrap()` de verdade (chave dummy,
+  nenhuma chamada ao modelo), confirmou `generate_document` na lista de tools do `Orchestrator`,
+  chamou a tool de verdade e conferiu o arquivo real em disco no caminho esperado
+  (`.../generated/smoke.md`, irmão do vault) — o example foi removido depois, não versionado.
+- `project/PENDING.md` (P64 atualizado com o status de implementação) e `project/ROADMAP.md`
+  (seção de geração de arquivos, escopo fechado registrado) atualizados.
+
+**Próximo passo**: sem pendência travando esta fatia. Seguem em aberto dentro do próprio P64: CSV,
+PDF, XLSX-com-fórmulas (cada um traz sua própria decisão de dependência nova, não escolhida
+ainda), UI de Settings pro `generated_path`, qualquer affordance no desktop pra abrir o arquivo
+direto da conversa, e a frente de exibir mídia MCP-gerada inline (não tocada nesta rodada). Fora
+do P64: Fase 9.1 (Tailscale), testar o APK do pareamento por QR (P65).
 
 ---
 

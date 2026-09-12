@@ -402,6 +402,12 @@ Warden como interface de IA para casa inteligente.
   integrações MCP" (ambas dependem de MCP amadurecer no Warden).
 - Sem decisão de prioridade, sequenciamento nem escopo técnico ainda — só registro pra debater
   depois.
+- **Escopo fechado com o usuário e fatia 1 implementada (Sessão 64, 2026-09-12)**: frente (1)
+  escolhida primeiro; arquivos gerados numa pasta separada do vault (não syncam, não entram em
+  busca); formatos evoluem do mais simples pro mais caro (TXT/MD → CSV → PDF →
+  XLSX-com-fórmulas); sem UI de chat nova nesta rodada (só o caminho do arquivo na resposta,
+  igual `write_file`). Tool `generate_document` nova (TXT/MD só, v1) — ver `PENDING.md` P64 pro
+  detalhamento técnico completo.
 
 ---
 

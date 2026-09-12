@@ -541,6 +541,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         provider: None,
         model: None,
         vault_path: vault_path_override.clone(),
+        // No Settings-screen UI yet (P64, config.toml-only) — same carry-forward reasoning as
+        // `delegate_max_depth`/`git_sync` below.
+        generated_path: existing.generated_path,
         enable_shell: Some(payload.enable_shell),
         // No Settings-screen UI yet (P46, config.toml/env-only advanced knob) — carry forward
         // whatever was on disk instead of wiping it, same reasoning as `telegram_bot_token` above.
