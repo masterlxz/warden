@@ -2,7 +2,54 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-12 (Sessão 62)
+> Última atualização: 2026-09-12 (Sessão 63)
+
+---
+
+### 2026-09-12 — Sessão 63
+
+- **Objetivo**: usuário pediu pra continuar sem item travado — apresentadas 4 frentes em aberto
+  (teste manual do git sync/P63, P64 file-generation, Fase 9.1 Tailscale, testar o APK do
+  pareamento por QR/P65), escolhido fechar a lacuna de verificação do P63 registrada no fim da
+  Sessão 62. Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de executar.
+
+**O que foi feito**:
+
+- Teste manual de ponta a ponta do `GitSyncEngine` via CLI de verdade — dois processos `warden`
+  reais (binário buildado, não `cargo run`), cada um representando um device isolado
+  (`XDG_CONFIG_HOME`/vault/`config.toml` próprios em diretórios separados na scratchpad), contra
+  um repo bare local de verdade (`git init --bare`, sem host git real necessário).
+- **Achado no caminho, não previsto no plano**: a REPL rica do `warden-cli` (`ratatui`, onde
+  `/sync` é reconhecido) trava esperando indefinidamente a posição do cursor
+  (`crossterm`/`ESC[6n`) quando rodada sob um pty puro sem um terminal de verdade respondendo —
+  um script Python (`pty.fork` + fake reply `ESC[24;1R` + `TIOCSWINSZ`) foi necessário pra simular
+  isso; sem essa resposta, nenhuma sessão headless/scriptada consegue nunca exercitar a REPL do
+  `warden-cli`, não só pra este teste. Enter também precisou ser enviado como `\r` (tecla real),
+  não `\n` — `\n` sozinho nunca é tratado como Enter pelo parser raw-mode do `crossterm`.
+- Roteiro completo confirmado com o conteúdo real em disco de cada vault, não só a mensagem da
+  CLI: device A escreve um arquivo e empurra (`/sync git push`) — 4 arquivos no primeiro commit
+  (o novo + os 3 fixos que `bootstrap()` semeia); device B puxa (`/sync git pull`) e recebe os 4
+  arquivos byte-a-byte idênticos; device B cria um arquivo e empurra; device A puxa e recebe;
+  cenário de conflito — B avança o remoto de novo sem A saber, A edita local e tenta empurrar
+  **sem** puxar antes → rejeitado com mensagem clara ("push rejeitado — outro dispositivo
+  publicou primeiro; rode pull e tente de novo"), A puxa (resolve) e um novo push funciona.
+  Nenhum bug de produção encontrado — o motor da Sessão 62 funcionou de primeira via CLI real,
+  igual aos 8 testes automatizados já previam.
+- **Achado tangencial, não um bug do P63**: não existe nenhum comando `/sync` no `warden-cli`
+  equivalente ao `init_fresh()` que o desktop expõe (`sync_cmds.rs`) — só o desktop consegue gerar
+  o primeiro `sync_secrets.json` de um device novo (Arweave e git compartilham essa mesma lacuna,
+  pré-existente, não introduzida por esta sessão). Contornado pra este teste gerando os secrets do
+  device A diretamente (mesmo formato JSON) e copiando pro device B, simulando pareamento já
+  concluído — deliberado, já que o alvo era validar o transporte git, não repetir o pareamento
+  (agnóstico de transporte, coberto em outro lugar).
+- `cargo test -p warden-sync -p warden-cli` rodado depois — 100% verde, nenhuma regressão (não
+  esperada, já que nenhum código de produção mudou nesta sessão).
+- `project/PENDING.md` (P63 atualizado, fecha a lacuna de verificação) atualizado. Scripts do
+  teste ficaram inteiramente na scratchpad, removidos ao final — nada versionado.
+
+**Próximo passo**: sem pendência travando o P63. Outras frentes em aberto sem ordem definida:
+P64 (debate de escopo, geração de arquivos como entregável), Fase 9.1 (Tailscale), testar o APK
+do pareamento por QR (P65) num emulador/hardware real.
 
 ---
 
