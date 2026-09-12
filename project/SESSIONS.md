@@ -126,6 +126,36 @@ o mínimo pra compilar (sem emulador).
 de vez. Fora isso, mesmas pendências de sempre: P64 (debate de escopo), P63 (sync via git), Fase
 9.1 (Tailscale).
 
+**Continuação (mesma sessão)** — usuário pediu pra dar `git push` e pra passar a usar o segundo
+HD desta máquina (1TB, `/mnt/hd1tb`, 680GB livres) pra tirar peso do disco principal.
+
+- `git push`: o `origin` estava em HTTPS sem credencial configurada (travava esperando login sem
+  dar erro nenhum) — trocado pra SSH (`git@github.com:masterlxz/warden.git`), que já tinha chave
+  confiada no GitHub; push dos 3 commits desta sessão passou de primeira.
+- **Causa raiz do disco cheio encontrada**: `warden/target` (build do Cargo) sozinha tinha **76GB**
+  no disco principal — não eram "documentos" ocupando espaço, era build output acumulado de
+  sessões anteriores. Junto de `~/.gradle` (1.6GB, resíduo da tentativa de build anterior),
+  `~/.pub-cache` (319MB) e `mobile/build` (7.5GB, removido direto por ser puramente descartável —
+  `git check-ignore` confirmou). Tudo movido pra `/mnt/hd1tb/dev-tools/` com symlink no lugar
+  original (`~/.local/opt/flutter`, `~/.local/opt/android-sdk`, `~/.local/opt/jdk-21.0.12.1+1`,
+  `~/.gradle`, `~/.pub-cache`, `~/.cargo`, `~/.rustup`, `warden/target`, `mobile/build`) — 100%
+  transparente pra qualquer tool que resolva esses paths via `$HOME` ou o path do projeto. Disco
+  principal foi de 99% (2.8GB livres) pra ~53% de uso (83GB livres).
+- Com espaço de sobra, retomado o P65: faltava só o `rustup` (o `cargokit` do
+  `warden_mobile_bridge` exige ele especificamente, não aceita o `cargo`/`rustc` do `pacman`) —
+  instalado (também relocado pro HD de 1TB antes de baixar os targets Android, pra não repetir o
+  mesmo problema), targets `aarch64`/`armv7`/`x86_64`/`i686-linux-android` adicionados.
+  `flutter build apk --debug` **compilou de verdade** dessa vez: `warden_mobile_bridge` built pras
+  4 arquiteturas, APK de 200MB gerado em `mobile/build/app/outputs/flutter-apk/app-debug.apk`.
+  `JAVA_HOME`/`ANDROID_HOME`/`PATH` persistidos em `~/.bashrc` pra não precisar reexportar depois.
+- P65 fechada de vez (`PENDING.md` movido pra "Resolvidas", `PHASE.md` 9.7 atualizado) — falta só,
+  como nota menor e não bloqueante, testar o app de verdade num emulador/celular (instalar o APK,
+  escanear a câmera).
+
+**Próximo passo**: nenhuma pendência travando — Fase 9.7 fechada de ponta a ponta (build incluso).
+Seguem em aberto pra quando o usuário quiser: P64 (debate de escopo do file-generation), P63 (sync
+via git), Fase 9.1 (Tailscale), e opcionalmente testar o APK num emulador/hardware real.
+
 ---
 
 ### 2026-09-11 — Sessão 60

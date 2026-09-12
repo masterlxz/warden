@@ -411,12 +411,15 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   seguinte desta mesma sessão (`~/.local/opt/flutter`, stable, via `PATH` em `~/.bashrc`):
   `flutter pub get` resolveu `mobile_scanner 7.4.1` de verdade, `flutter analyze` limpo, `flutter
   test` verde (39 testes, os 6 novos de `parseHubPairingQr` inclusos). JDK 21 + Android SDK
-  (cmdline-tools/platforms 35+36/build-tools) instalados na sequência com o ok do usuário, e
-  `flutter build apk --debug` chegou a rodar o Gradle de verdade — mas parou baixando a **NDK**
-  (exigida pelo `warden_mobile_bridge` pra compilar a lib nativa Android) com o disco cheio (99%,
-  2.8GB livres): a NDK sozinha pede ~2GB que não coube. Usuário optou por não liberar espaço agora.
-  **Ainda falta**, portanto: a NDK baixar e um build/emulador Android real — SDK/JDK já instalados
-  e prontos, só falta espaço em disco — ver `PENDING.md` P65
+  (cmdline-tools/platforms 35+36/build-tools) instalados na sequência com o ok do usuário; achada a
+  causa raiz do disco cheio no meio do caminho — `warden/target` do Cargo sozinha tinha **76GB** no
+  disco principal, junto de `~/.gradle`/`~/.pub-cache`/`mobile/build`. Resolvido de vez movendo tudo
+  isso (mais `~/.cargo`/`~/.rustup`, instalado nesta sessão pro `cargokit` cross-compilar) pro HD de
+  1TB (`/mnt/hd1tb/dev-tools/`) com symlinks no lugar de sempre — disco principal caiu de 99% pra
+  ~53% de uso. Com espaço de sobra e o `rustup` (+ targets Android) instalado, `flutter build apk
+  --debug` **compilou de verdade**: `warden_mobile_bridge` (a ponte Rust) built pras 4 arquiteturas
+  Android, APK de 200MB gerado. Fecha P65. Ainda sem teste em emulador/hardware real (instalar o
+  APK e escanear a câmera de fato) — lacuna menor, não bloqueia a fase
 
 ---
 
