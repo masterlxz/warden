@@ -136,7 +136,7 @@ function App() {
     setSendError(null);
     setIsSending(true);
     try {
-      const reply = await invoke<{ content: string; usage?: Usage }>("send_message", {
+      const reply = await invoke<{ content: string; usage?: Usage; attachments?: Attachment[] }>("send_message", {
         history,
         content,
         attachments,
@@ -151,6 +151,9 @@ function App() {
         content: reply.content,
         createdAt: Date.now(),
         usage: reply.usage,
+        // Media an MCP tool produced this turn (P64 frente 2) — omitted entirely when empty, same
+        // convention as the user message's `attachments` above.
+        ...(reply.attachments && reply.attachments.length > 0 ? { attachments: reply.attachments } : {}),
       });
     } catch (err) {
       setSendError(String(err));

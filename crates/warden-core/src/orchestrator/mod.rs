@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use serde_json::Value;
+
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
@@ -20,6 +22,11 @@ const MAX_TOOL_ITERATIONS: usize = 8;
 pub struct MessageOutcome {
     pub content: String,
     pub usage: Option<Usage>,
+    /// Media (image/audio/video) extracted from an MCP tool's `CallToolResult` content blocks
+    /// during this turn (P64 frente 2) — never round-tripped back into the model's own context
+    /// (that would re-inflate every subsequent turn with base64), only surfaced here for the
+    /// caller to persist/render. Empty when no tool call this turn produced any.
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Clone)]
@@ -195,6 +202,7 @@ impl Orchestrator {
 
         let mut usage = Usage::default();
         let mut has_usage = false;
+        let mut attachments: Vec<Attachment> = Vec::new();
 
         for _ in 0..MAX_TOOL_ITERATIONS {
             let stream = self.model.chat_stream(messages.clone(), tool_specs.clone()).await?;
@@ -208,14 +216,18 @@ impl Orchestrator {
             }
 
             if response.tool_calls.is_empty() {
-                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage) });
+                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments });
             }
 
             messages.push(Message::assistant_tool_calls(response.tool_calls.clone()));
 
             for tool_call in &response.tool_calls {
                 let content = match self.run_tool(tool_call).await {
-                    Ok(value) => value.to_string(),
+                    Ok(value) => {
+                        let (content, extracted) = extract_media_from_tool_result(&value);
+                        attachments.extend(extracted);
+                        content
+                    }
                     Err(err) => format!("error: {err:#}"),
                 };
                 messages.push(Message::tool_result(tool_call, content));
@@ -233,6 +245,78 @@ impl Orchestrator {
             .ok_or_else(|| anyhow::anyhow!("model requested unknown tool '{}'", tool_call.name))?;
         tool.call(tool_call.arguments.clone()).await
     }
+}
+
+/// Above this, an image/audio/video content block is left as raw text instead of becoming an
+/// `Attachment` (P64 frente 2) — big enough for a still image or a short audio clip, not enough
+/// for real video (no attempt to raise this for video; that needs a file-reference path instead
+/// of inline base64, a future slice). Checked against the base64 string's decoded byte length.
+const MAX_INLINE_MEDIA_BYTES: usize = 8 * 1024 * 1024;
+
+fn within_media_size_cap(base64_data: &str) -> bool {
+    base64_data.len() * 3 / 4 <= MAX_INLINE_MEDIA_BYTES
+}
+
+/// Turns a tool's raw JSON result into (text fed back to the model, media extracted as
+/// attachments). Only tool results shaped like an MCP `CallToolResult` (rmcp) — a `content` array
+/// where every item has a recognized `type` (`text`/`image`/`audio`/`resource`/`resource_link`) —
+/// are parsed structurally; anything else (`generate_document`, `shell`, `read_file`, ...) falls
+/// through to the exact same `value.to_string()` this replaced, unchanged.
+///
+/// `image`/`audio` blocks and `resource` blocks whose `mimeType` is image/audio/video become an
+/// `Attachment` when their base64 payload fits `MAX_INLINE_MEDIA_BYTES` — the model only ever sees
+/// a short placeholder for these (never the base64 itself, which would otherwise re-inflate every
+/// subsequent turn's context). A `resource_link` (a URI, no inline bytes) is deliberately never
+/// auto-fetched — fetching an arbitrary URL an MCP server hands back would be an outbound network
+/// call driven by untrusted tool output (SSRF-shaped risk) — so it always falls through as text.
+fn extract_media_from_tool_result(value: &Value) -> (String, Vec<Attachment>) {
+    let known_type = |item: &Value| matches!(item.get("type").and_then(Value::as_str), Some("text" | "image" | "audio" | "resource" | "resource_link"));
+    let Some(content) = value.get("content").and_then(Value::as_array).filter(|blocks| blocks.iter().all(known_type)) else {
+        return (value.to_string(), Vec::new());
+    };
+
+    let mut text_parts = Vec::new();
+    let mut attachments = Vec::new();
+
+    for block in content {
+        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+        match block_type {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    text_parts.push(text.to_string());
+                }
+            }
+            "image" | "audio" => {
+                let data = block.get("data").and_then(Value::as_str);
+                let mime_type = block.get("mimeType").and_then(Value::as_str);
+                match (data, mime_type) {
+                    (Some(data), Some(mime_type)) if within_media_size_cap(data) => {
+                        attachments.push(Attachment { mime_type: mime_type.to_string(), data: data.to_string() });
+                        text_parts.push(format!("[{block_type} attached: {mime_type}]"));
+                    }
+                    _ => text_parts.push(block.to_string()),
+                }
+            }
+            "resource" => {
+                let resource = block.get("resource");
+                let blob = resource.and_then(|r| r.get("blob")).and_then(Value::as_str);
+                let mime_type = resource.and_then(|r| r.get("mimeType")).and_then(Value::as_str);
+                match (blob, mime_type) {
+                    (Some(data), Some(mime_type))
+                        if (mime_type.starts_with("image/") || mime_type.starts_with("audio/") || mime_type.starts_with("video/")) && within_media_size_cap(data) =>
+                    {
+                        attachments.push(Attachment { mime_type: mime_type.to_string(), data: data.to_string() });
+                        text_parts.push(format!("[resource attached: {mime_type}]"));
+                    }
+                    _ => text_parts.push(block.to_string()),
+                }
+            }
+            // "resource_link" (a URI, never auto-fetched) and any other block type.
+            _ => text_parts.push(block.to_string()),
+        }
+    }
+
+    (text_parts.join("\n"), attachments)
 }
 
 #[cfg(test)]
@@ -485,5 +569,126 @@ mod tests {
         let orchestrator = Orchestrator::new(Arc::new(MidStreamErrorModel), temp_vault());
         let result = orchestrator.handle_message(&[], "hi").await;
         assert!(result.is_err());
+    }
+
+    // --- P64 frente 2: media extracted from an MCP-shaped tool result ---
+
+    /// Returns whatever `serde_json::Value` is handed to it in its constructor — lets a test drive
+    /// an arbitrary MCP `CallToolResult`-shaped (or not) payload through the orchestrator's tool
+    /// loop without needing a real MCP server.
+    struct FixedResultTool(Value);
+
+    #[async_trait]
+    impl Tool for FixedResultTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "mcp_tool".to_string(), description: "returns a fixed value".to_string(), parameters: json!({}) }
+        }
+
+        async fn call(&self, _args: Value) -> anyhow::Result<Value> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Calls `mcp_tool` once, then asserts the tool-result message text (what the model itself
+    /// would see next) matches `expects`, before returning a final plain answer.
+    struct AssertsToolResultTextModel {
+        calls: AtomicUsize,
+        expects: &'static str,
+    }
+
+    #[async_trait]
+    impl ModelProvider for AssertsToolResultTextModel {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "mcp_tool".to_string(), arguments: json!({}), thought_signature: None }],
+                    usage: None,
+                }))
+            } else {
+                let last = messages.last().expect("tool result should have been appended");
+                assert_eq!(last.role, Role::Tool);
+                assert!(last.content.contains(self.expects), "expected tool-result text to contain {:?}, got {:?}", self.expects, last.content);
+                Ok(response_stream(Response { content: "done".to_string(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn extracts_an_image_block_as_an_attachment_and_keeps_base64_out_of_the_models_context() {
+        let tool_result = json!({
+            "content": [
+                { "type": "text", "text": "here is your image" },
+                { "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" }
+            ]
+        });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "[image attached: image/png]" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "make an image").await.unwrap();
+
+        assert_eq!(result.content, "done");
+        assert_eq!(result.attachments, vec![Attachment { mime_type: "image/png".to_string(), data: "aGVsbG8=".to_string() }]);
+    }
+
+    #[tokio::test]
+    async fn extracts_a_video_resource_block_the_same_way_as_image_audio() {
+        let tool_result = json!({
+            "content": [
+                { "type": "resource", "resource": { "uri": "file:///clip.mp4", "mimeType": "video/mp4", "blob": "dmlkZW8=" } }
+            ]
+        });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "[resource attached: video/mp4]" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "make a video").await.unwrap();
+
+        assert_eq!(result.attachments, vec![Attachment { mime_type: "video/mp4".to_string(), data: "dmlkZW8=".to_string() }]);
+    }
+
+    #[tokio::test]
+    async fn a_resource_link_is_never_auto_fetched_into_an_attachment() {
+        let tool_result = json!({
+            "content": [
+                { "type": "resource_link", "uri": "https://example.com/report.pdf", "mimeType": "application/pdf" }
+            ]
+        });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "resource_link" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "fetch a report").await.unwrap();
+
+        assert!(result.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_non_mcp_shaped_tool_result_falls_back_to_the_old_plain_stringify() {
+        // No "content" array at all — the shape every non-MCP tool (generate_document, shell, ...)
+        // actually returns.
+        let tool_result = json!({ "status": "ok", "path": "/tmp/relatorio.pdf" });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "/tmp/relatorio.pdf" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "generate a report").await.unwrap();
+
+        assert!(result.attachments.is_empty());
+    }
+
+    #[test]
+    fn within_media_size_cap_accepts_small_payloads_and_rejects_large_ones() {
+        let small = "A".repeat(1_000);
+        assert!(within_media_size_cap(&small));
+
+        // Comfortably over MAX_INLINE_MEDIA_BYTES once decoded (~0.75 bytes per base64 char) —
+        // not an exact-boundary check, since base64 only encodes in whole groups of 3 bytes/4
+        // chars and `within_media_size_cap` itself is a byte-length approximation, not an exact
+        // decode.
+        let large = "A".repeat((MAX_INLINE_MEDIA_BYTES + 1_000_000) * 4 / 3);
+        assert!(!within_media_size_cap(&large));
     }
 }

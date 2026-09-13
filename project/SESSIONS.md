@@ -41,10 +41,46 @@
 - `project/PENDING.md` (P64 atualizado com a fatia 4, fechando a frente de motor de
   documentos/planilhas por completo) e `project/ROADMAP.md` (linha da fatia 4) atualizados.
 
-**Próximo passo**: motor de documentos/planilhas do P64 completo. Seguem em aberto: UI de Settings
-pro `generated_path`, affordance no desktop pra abrir o arquivo direto da conversa, e a frente 2
-do P64 (exibir mídia MCP-gerada inline na conversa), nenhuma tocada nesta rodada. Fora do P64:
-Fase 9.1 (Tailscale), testar o APK do pareamento por QR (P65).
+**Continuação (mesma sessão)**: motor de documentos/planilhas fechado, usuário pediu pra escolher
+o próximo passo (`AskUserQuestion` com 3 opções + "outro") — escolhida a frente 2 do P64 (exibir
+mídia MCP-gerada inline), que nunca teve arquitetura decidida. 3 agentes `Explore` em paralelo
+levantaram o terreno (fluxo do resultado MCP até a mensagem final; renderização de mensagens/
+anexos no desktop; capacidade de mídia no Telegram/WhatsApp/mobile) antes de entrar em
+`EnterPlanMode`.
+
+- Achado central: `rmcp::model::CallToolResult` (que já pode ter blocos `image`/`audio`/`resource`
+  com base64 inline) chega intacto até `McpTool::call`, mas `Orchestrator::handle_turn_streaming`
+  (`crates/warden-core/src/orchestrator/mod.rs`) achatava tudo com `value.to_string()` antes de
+  realimentar o modelo — inclusive bytes de mídia, inflando o contexto sem necessidade.
+- `extract_media_from_tool_result` nova (privada, `orchestrator/mod.rs`): só interpreta
+  estruturalmente resultados no formato de `CallToolResult` (todo item do `content` com um `type`
+  reconhecido); qualquer outro tool (`generate_document`, `shell`, ...) mantém o `to_string()` de
+  sempre. Blocos `image`/`audio`/`resource` (este último cobre vídeo, que não tem um
+  `VideoContent` dedicado no MCP) dentro de um teto de ~8MB decodificado (`MAX_INLINE_MEDIA_BYTES`)
+  viram um `Attachment` (mesmo tipo do anexo de entrada do usuário, P28); o texto de volta ao
+  modelo ganha só um placeholder, nunca o base64. Um `resource_link` (URI sem bytes) nunca é
+  baixado automaticamente — decisão de segurança deliberada (risco de SSRF).
+- `MessageOutcome` ganhou `attachments: Vec<Attachment>`, acumulado no loop de tool calls — nunca
+  injetado de volta em `Message`/no histórico enviado ao provedor (evita risco de compatibilidade
+  de um provedor com conteúdo multimodal num papel assistant/tool).
+- `crates/warden-bootstrap/src/lib.rs`'s `handle_turn` (Telegram/WhatsApp) passou a persistir
+  `outcome.attachments` na `ConversationMessage` do assistente (antes hardcoded vazio) — esses
+  canais ainda não reenviam a mídia pro usuário, mas já não a perdem na persistência.
+- Desktop: `SendMessageResult` ganhou `attachments`; `App.tsx` anexa isso na `ChatMessage` do
+  assistente; `MessageBubble.tsx` ganhou `AttachmentPreview` (escolhe `<img>`/`<audio controls>`/
+  `<video controls>` pelo prefixo do `mimeType`), usado no balão do usuário (substituindo o `<img>`
+  fixo de antes) e, pela primeira vez, no do assistente.
+- Verificação: `cargo test -p warden-core` (5 testes novos no orchestrator) e `cargo test
+  --workspace` inteiro, 100% verdes; `cargo clippy --workspace --all-targets` limpo; `npx tsc
+  --noEmit`/`npm run build` limpos no desktop. Sem MCP real neste ambiente pra gerar mídia de
+  verdade — verificação ficou em teste automatizado (tool fake) + build estático, registrado como
+  P66.
+- `project/PENDING.md` (P64 atualizado, P66 novo) e `project/ROADMAP.md` atualizados.
+
+**Próximo passo**: P66 (teste de ponta a ponta contra um MCP real quando houver um disponível;
+Telegram/WhatsApp/mobile ainda texto-only). Fora do P64: UI de Settings pro `generated_path`,
+affordance no desktop pra abrir arquivo gerado direto da conversa, Fase 9.1 (Tailscale), testar o
+APK do pareamento por QR (P65).
 
 ---
 

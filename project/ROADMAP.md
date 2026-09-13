@@ -421,6 +421,15 @@ Warden como interface de IA para casa inteligente.
   (`content` continua sendo string pros outros formatos). Fecha o motor de
   documentos/planilhas (frente 1) do P64 por completo. Ver `PENDING.md` P64 pro detalhamento
   técnico completo.
+- **Frente 2, fatia 1 implementada (Sessão 65, 2026-09-13, continuação)**: mídia gerada por uma
+  tool MCP (blocos `image`/`audio`/`resource` de um `CallToolResult`) agora vira anexo estruturado
+  em vez de virar texto — `Orchestrator::handle_turn_streaming` extrai essa mídia (em vez de
+  achatar tudo com `to_string()`) e devolve num `MessageOutcome.attachments` novo, reaproveitando o
+  mesmo `Attachment` do anexo de entrada do usuário (P28). Renderizado inline **só no desktop**
+  nesta fatia (`<img>`/`<audio controls>`/`<video controls>` conforme o `mimeType`) — o cliente
+  mais rico pra estender; Telegram/WhatsApp/mobile continuam texto-only (registrado em P66).
+  Teto de ~8MB por item inline; um `resource_link` (URI sem bytes) nunca é baixado automaticamente
+  (risco de SSRF). Ver `PENDING.md` P64/P66 pro detalhamento técnico completo.
 
 ---
 

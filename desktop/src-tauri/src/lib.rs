@@ -59,6 +59,14 @@ impl From<AttachmentPayload> for Attachment {
     }
 }
 
+/// The inverse — media extracted from an MCP tool result (P64 frente 2) comes back from the
+/// orchestrator as `Attachment` and needs to cross the IPC boundary as `AttachmentPayload`.
+impl From<Attachment> for AttachmentPayload {
+    fn from(a: Attachment) -> Self {
+        AttachmentPayload { mime_type: a.mime_type, data: a.data }
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatTurn {
     role: ChatRole,
@@ -118,6 +126,9 @@ fn desktop_default_vault_path() -> PathBuf {
 struct SendMessageResult {
     content: String,
     usage: Option<warden_core::model::Usage>,
+    /// Media extracted from an MCP tool's result during this turn (P64 frente 2) — empty when no
+    /// tool call produced any.
+    attachments: Vec<AttachmentPayload>,
 }
 
 /// `agent_id`/`provider_id` are the per-conversation selectors (closes P3) — the frontend sends
@@ -162,7 +173,11 @@ async fn send_message(
 
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
-    Ok(SendMessageResult { content: outcome.content, usage: outcome.usage })
+    Ok(SendMessageResult {
+        content: outcome.content,
+        usage: outcome.usage,
+        attachments: outcome.attachments.into_iter().map(Into::into).collect(),
+    })
 }
 
 /// Filename handed to the Whisper API for a recorded clip — only the extension matters (the API

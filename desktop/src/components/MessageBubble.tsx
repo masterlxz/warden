@@ -61,6 +61,21 @@ function SpeakButton({ text }: { text: string }) {
   );
 }
 
+/** Renders one `Attachment` as the right native media element for its `mimeType` — an `<img>`
+ * for images (the only kind before P64 frente 2, user-attached only), and native browser
+ * controls (no custom player needed, unlike `SpeakButton`) for audio/video that an MCP tool
+ * produced during a turn. */
+function AttachmentPreview({ attachment }: { attachment: Attachment }) {
+  const src = `data:${attachment.mimeType};base64,${attachment.data}`;
+  if (attachment.mimeType.startsWith("audio/")) {
+    return <audio controls src={src} />;
+  }
+  if (attachment.mimeType.startsWith("video/")) {
+    return <video controls src={src} />;
+  }
+  return <img src={src} alt="" />;
+}
+
 // Links must open in the user's default browser, not navigate the app's own webview away.
 // Exported for reuse by `VaultView` (P52 part 2), which renders markdown outside chat bubbles.
 export function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -87,6 +102,13 @@ function MessageBubble({ message }: MessageBubbleProps) {
           <LogoMark size={18} />
         </div>
         <div className="message-assistant-body">
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="message-bubble-attachments">
+              {message.attachments.map((attachment, index) => (
+                <AttachmentPreview key={index} attachment={attachment} />
+              ))}
+            </div>
+          )}
           <div className="message-bubble-content">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
               {message.content}
@@ -107,7 +129,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-bubble-attachments">
             {message.attachments.map((attachment, index) => (
-              <img key={index} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt="" />
+              <AttachmentPreview key={index} attachment={attachment} />
             ))}
           </div>
         )}

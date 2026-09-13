@@ -369,8 +369,9 @@ pub struct ConversationMessage {
     /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub usage: Option<Usage>,
-    /// Images attached to this turn (P28, user messages only). `#[serde(default)]` so
-    /// conversations saved before this field existed still load.
+    /// Media attached to this message — user-attached images on the user turn (P28), or media
+    /// extracted from an MCP tool's `CallToolResult` on the assistant turn (P64 frente 2).
+    /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
 }
@@ -606,7 +607,7 @@ pub async fn handle_turn(
         content: outcome.content.clone(),
         created_at: now_millis(),
         usage: outcome.usage,
-        attachments: Vec::new(),
+        attachments: outcome.attachments.clone(),
     });
     conversation.updated_at = now_millis();
 

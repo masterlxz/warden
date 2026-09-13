@@ -846,6 +846,19 @@ body {
   object-fit: cover;
 }
 
+.message-bubble-attachments video {
+  max-width: 320px;
+  max-height: 320px;
+  border-radius: 12px;
+  display: block;
+}
+
+.message-bubble-attachments audio {
+  display: block;
+  width: 260px;
+  max-width: 100%;
+}
+
 .message-bubble-attachments + .message-bubble-content {
   margin-top: 0.5rem;
 }
