@@ -414,6 +414,13 @@ Warden como interface de IA para casa inteligente.
 - **Fatia 3 implementada (Sessão 64, 2026-09-12, continuação)**: `.pdf` adicionado ao mesmo tool —
   primeira fatia com dependência nova (`lopdf`, pure-Rust, sem embedding de fonte). PDF simples,
   paginado, sem parsing de Markdown. Ver `PENDING.md` P64 pro detalhamento completo.
+- **Fatia 4 implementada (Sessão 65, 2026-09-13)**: `.xlsx` adicionado ao mesmo tool — última
+  fatia combinada, fórmulas de verdade (`rust_xlsxwriter`, pure-Rust) + formatação visual
+  (cabeçalho fixo em negrito/cor de destaque, largura de coluna opcional com autofit, formato
+  numérico opcional por coluna). Schema da tool ganhou um `sheets` estruturado só pra `.xlsx`
+  (`content` continua sendo string pros outros formatos). Fecha o motor de
+  documentos/planilhas (frente 1) do P64 por completo. Ver `PENDING.md` P64 pro detalhamento
+  técnico completo.
 
 ---
 

@@ -2,7 +2,49 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-12 (Sessão 64)
+> Última atualização: 2026-09-13 (Sessão 65)
+
+---
+
+### 2026-09-13 — Sessão 65
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"). Padrão dos commits recentes
+  (P64 fatias 1-3: TXT/MD → CSV → PDF) apontava claramente pra fatia 4 — XLSX com fórmulas de
+  verdade, a última do escopo combinado com o usuário na Sessão 64. Plano escrito e aprovado
+  (`EnterPlanMode`/`ExitPlanMode`) antes de codar; duas decisões de escopo confirmadas com o
+  usuário antes disso via `AskUserQuestion`: biblioteca (`rust_xlsxwriter`) e nível de controle de
+  estilo exposto no schema da tool (padrão fixo, não motor de estilo por célula).
+
+**O que foi feito**:
+
+- `crates/warden-core/src/tool/document.rs`: `.xlsx` adicionado a `SUPPORTED_EXTENSIONS`. Schema
+  da tool mudou — `content` (string) só é exigido pra `.txt`/`.md`/`.csv`/`.pdf`; `.xlsx` exige um
+  novo parâmetro `sheets` estruturado (`SheetSpec`/`ColumnSpec`, `serde::Deserialize`) — array de
+  planilhas, cada uma com `columns` (cabeçalho + largura opcional + formato de exibição opcional)
+  e `rows` (célula string/number/bool/null; string começando com `=` vira fórmula de verdade).
+  `write_xlsx` nova função, mesmo padrão de `write_pdf` já existente no arquivo: cabeçalho sempre
+  em negrito/fundo de destaque (cor única fixa), `Worksheet::autofit()` seguido de
+  `set_column_width` explícito só nas colunas que pediram largura, `num_format` por coluna quando
+  `format` foi passado.
+- `crates/warden-core/Cargo.toml`: `rust_xlsxwriter` 0.95 como dependência real (mesmo racional do
+  `lopdf` na fatia 3 — pure Rust, só `zip` na árvore, sem OpenSSL/native-tls); `calamine` 0.36
+  como **dev-dependency apenas**, pra reler o `.xlsx` gerado nos testes (nunca compila no binário
+  de produção).
+- Testes novos no mesmo módulo, com round-trip de verdade via `calamine` (mesmo espírito do
+  `lopdf::Document::load` da fatia 3): `writes_an_xlsx_file` (cabeçalho, valor literal e as duas
+  fórmulas via `worksheet_formula`), `writes_an_xlsx_with_multiple_sheets` (nomes de aba),
+  `rejects_missing_sheets_for_xlsx`. `rejects_unsupported_extension`/`rejects_missing_extension`
+  ajustados pra mensagem nova.
+- Verificação: `cargo test -p warden-core` (12 testes no módulo) e `cargo test --workspace`
+  inteiro, ambos 100% verdes; `cargo clippy --workspace --all-targets` limpo. Sem smoke manual
+  extra desta vez — o round-trip via `calamine` já cobre cabeçalho/fórmula/multi-sheet de verdade.
+- `project/PENDING.md` (P64 atualizado com a fatia 4, fechando a frente de motor de
+  documentos/planilhas por completo) e `project/ROADMAP.md` (linha da fatia 4) atualizados.
+
+**Próximo passo**: motor de documentos/planilhas do P64 completo. Seguem em aberto: UI de Settings
+pro `generated_path`, affordance no desktop pra abrir o arquivo direto da conversa, e a frente 2
+do P64 (exibir mídia MCP-gerada inline na conversa), nenhuma tocada nesta rodada. Fora do P64:
+Fase 9.1 (Tailscale), testar o APK do pareamento por QR (P65).
 
 ---
 

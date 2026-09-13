@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use lopdf::content::{Content, Operation};
 use lopdf::{dictionary, Document, Object, Stream};
+use rust_xlsxwriter::{Color, Format, Workbook, Worksheet};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolSpec};
@@ -10,9 +12,29 @@ use crate::tool::{Tool, ToolSpec};
 /// `generate_document` (P64) grows one format at a time, cheapest first. TXT/MD/CSV are all
 /// plain-text writes — the model already produces well-formed CSV as a string, no parsing/
 /// validation needed here. PDF renders the content as a simple paginated document (see
-/// `write_pdf`). XLSX-with-formulas is planned but needs its own new dependency decision, out of
-/// scope for this slice.
-const SUPPORTED_EXTENSIONS: [&str; 4] = ["txt", "md", "csv", "pdf"];
+/// `write_pdf`). XLSX (see `write_xlsx`) takes structured `sheets` instead of `content` — a flat
+/// string can't carry cell types, formulas or per-column formatting.
+const SUPPORTED_EXTENSIONS: [&str; 5] = ["txt", "md", "csv", "pdf", "xlsx"];
+
+// XLSX layout (v1): one fixed header style (bold, white-on-accent), optional per-column width
+// (autofit otherwise) and an optional per-column display format — no per-cell styling. Same
+// "capricho sem virar motor de estilo" bar already accepted for the PDF slice.
+const XLSX_HEADER_BG: u32 = 0x4472C4;
+
+#[derive(Deserialize)]
+struct SheetSpec {
+    name: Option<String>,
+    columns: Vec<ColumnSpec>,
+    #[serde(default)]
+    rows: Vec<Vec<Value>>,
+}
+
+#[derive(Deserialize)]
+struct ColumnSpec {
+    header: String,
+    width: Option<f64>,
+    format: Option<String>,
+}
 
 // PDF layout (v1): A4, plain wrapped/paginated text, no Markdown-aware styling — the same
 // "cheapest that isn't raw text" bar already accepted for CSV/TXT/MD (P64's "capricho" bar is for
@@ -47,40 +69,84 @@ impl Tool for GenerateDocumentTool {
         ToolSpec {
             name: "generate_document".to_string(),
             description: "Create a standalone document file for the user to open/download — not for the memory vault. \
-                Supports .txt, .md, .csv and .pdf filenames; XLSX-with-formulas is not implemented yet."
+                Supports .txt, .md, .csv, .pdf and .xlsx filenames. For .txt/.md/.csv/.pdf, pass 'content' as a string. \
+                For .xlsx, pass 'sheets' (structured spreadsheet data) instead — 'content' is not used for spreadsheets."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "File name with extension, e.g. 'relatorio.md'. Only .txt, .md, .csv and .pdf are supported today."
+                        "description": "File name with extension, e.g. 'relatorio.md' or 'vendas.xlsx'. Only .txt, .md, .csv, .pdf and .xlsx are supported today."
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file content to write. For .csv, this must already be well-formed CSV text (header row + comma-separated values, quoted as needed). For .pdf, plain text — it is laid out as a simple wrapped/paginated document, not rendered as Markdown/HTML."
+                        "description": "Full file content to write — required for .txt/.md/.csv/.pdf, not used for .xlsx. For .csv, this must already be well-formed CSV text (header row + comma-separated values, quoted as needed). For .pdf, plain text — it is laid out as a simple wrapped/paginated document, not rendered as Markdown/HTML."
+                    },
+                    "sheets": {
+                        "type": "array",
+                        "description": "Required for .xlsx (ignored for every other extension). One entry per worksheet, in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Sheet tab name, max 31 characters. Defaults to Sheet1, Sheet2, ..."
+                                },
+                                "columns": {
+                                    "type": "array",
+                                    "description": "Defines the header row (row 1 — always bold, white text on a highlight background) and per-column formatting.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "header": { "type": "string", "description": "Column header text." },
+                                            "width": { "type": "number", "description": "Column width in characters. Omit to auto-fit to the widest cell in the column." },
+                                            "format": {
+                                                "type": "string",
+                                                "enum": ["text", "number", "currency", "percent", "date"],
+                                                "description": "How data cells in this column are displayed. Omit for plain text/default number display."
+                                            }
+                                        },
+                                        "required": ["header"]
+                                    }
+                                },
+                                "rows": {
+                                    "type": "array",
+                                    "description": "Data rows, starting at row 2 (row 1 is the header). Each row is an array with one value per column: a string, number, boolean, or null (blank cell). A string starting with '=' is written as a real Excel formula (e.g. '=SUM(B2:B3)') — Excel/LibreOffice computes it when the file is opened, this tool does not evaluate formulas itself.",
+                                    "items": { "type": "array", "items": {} }
+                                }
+                            },
+                            "required": ["columns", "rows"]
+                        }
                     }
                 },
-                "required": ["filename", "content"]
+                "required": ["filename"]
             }),
         }
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let filename = args.get("filename").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'filename' argument"))?;
-        let content = args.get("content").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'content' argument"))?;
 
         let extension = std::path::Path::new(filename).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
         if !extension.as_deref().is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e)) {
-            anyhow::bail!("unsupported file extension for 'generate_document' — only .txt, .md, .csv and .pdf are supported today (XLSX-with-formulas is planned but not implemented yet)");
+            anyhow::bail!("unsupported file extension for 'generate_document' — only .txt, .md, .csv, .pdf and .xlsx are supported today");
         }
 
         std::fs::create_dir_all(&self.root)?;
         let path = self.root.join(filename);
-        if extension.as_deref() == Some("pdf") {
-            write_pdf(&path, content)?;
+
+        if extension.as_deref() == Some("xlsx") {
+            let sheets_value = args.get("sheets").ok_or_else(|| anyhow::anyhow!("missing required 'sheets' argument for a .xlsx file"))?;
+            let sheets: Vec<SheetSpec> = serde_json::from_value(sheets_value.clone()).map_err(|e| anyhow::anyhow!("invalid 'sheets' argument: {e}"))?;
+            write_xlsx(&path, &sheets)?;
         } else {
-            std::fs::write(&path, content)?;
+            let content = args.get("content").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'content' argument"))?;
+            if extension.as_deref() == Some("pdf") {
+                write_pdf(&path, content)?;
+            } else {
+                std::fs::write(&path, content)?;
+            }
         }
         Ok(json!({ "status": "ok", "path": path.display().to_string() }))
     }
@@ -145,6 +211,93 @@ fn write_pdf(path: &Path, content: &str) -> anyhow::Result<()> {
     doc.trailer.set("Root", catalog_id);
     doc.compress();
     doc.save(path)?;
+    Ok(())
+}
+
+/// Writes `sheets` as a real `.xlsx` workbook — one worksheet per entry, a fixed bold/highlighted
+/// header row, an optional per-column display format, and real Excel formulas for any cell string
+/// starting with `=` (written verbatim; Excel/LibreOffice computes the result on open — no Rust
+/// crate evaluates formulas itself). See module-level `XLSX_HEADER_BG`.
+fn write_xlsx(path: &Path, sheets: &[SheetSpec]) -> anyhow::Result<()> {
+    let mut workbook = Workbook::new();
+    let header_format = Format::new().set_bold().set_background_color(Color::RGB(XLSX_HEADER_BG)).set_font_color(Color::White);
+
+    for sheet in sheets {
+        let worksheet = workbook.add_worksheet();
+        if let Some(name) = &sheet.name {
+            worksheet.set_name(name)?;
+        }
+
+        for (col_idx, column) in sheet.columns.iter().enumerate() {
+            worksheet.write_string_with_format(0, col_idx as u16, &column.header, &header_format)?;
+        }
+
+        let data_formats: Vec<Option<Format>> = sheet.columns.iter().map(|c| c.format.as_deref().map(xlsx_num_format)).collect();
+
+        for (row_idx, row) in sheet.rows.iter().enumerate() {
+            let row_num = (row_idx + 1) as u32;
+            for (col_idx, cell) in row.iter().enumerate() {
+                let format = data_formats.get(col_idx).and_then(|f| f.as_ref());
+                write_xlsx_cell(worksheet, row_num, col_idx as u16, cell, format)?;
+            }
+        }
+
+        worksheet.autofit();
+        for (col_idx, column) in sheet.columns.iter().enumerate() {
+            if let Some(width) = column.width {
+                worksheet.set_column_width(col_idx as u16, width)?;
+            }
+        }
+    }
+
+    workbook.save(path)?;
+    Ok(())
+}
+
+/// Maps a `columns[].format` hint to an Excel display format. Not localized (e.g. `currency`
+/// always renders with `$`) — a known v1 limitation, same posture as the WinAnsi-only accent
+/// handling accepted for PDF.
+fn xlsx_num_format(format: &str) -> Format {
+    let pattern = match format {
+        "currency" => "$#,##0.00",
+        "percent" => "0.00%",
+        "date" => "yyyy-mm-dd",
+        "number" => "#,##0.00",
+        _ => "General",
+    };
+    Format::new().set_num_format(pattern)
+}
+
+fn write_xlsx_cell(worksheet: &mut Worksheet, row: u32, col: u16, cell: &Value, format: Option<&Format>) -> anyhow::Result<()> {
+    match cell {
+        Value::Null => {}
+        Value::Bool(b) => {
+            match format {
+                Some(f) => worksheet.write_boolean_with_format(row, col, *b, f),
+                None => worksheet.write_boolean(row, col, *b),
+            }?;
+        }
+        Value::Number(n) => {
+            let num = n.as_f64().ok_or_else(|| anyhow::anyhow!("invalid numeric cell value in 'sheets'"))?;
+            match format {
+                Some(f) => worksheet.write_number_with_format(row, col, num, f),
+                None => worksheet.write_number(row, col, num),
+            }?;
+        }
+        Value::String(s) if s.starts_with('=') => {
+            match format {
+                Some(f) => worksheet.write_formula_with_format(row, col, s.as_str(), f),
+                None => worksheet.write_formula(row, col, s.as_str()),
+            }?;
+        }
+        Value::String(s) => {
+            match format {
+                Some(f) => worksheet.write_string_with_format(row, col, s, f),
+                None => worksheet.write_string(row, col, s),
+            }?;
+        }
+        other => anyhow::bail!("unsupported cell value in 'sheets': {other}"),
+    }
     Ok(())
 }
 
@@ -262,12 +415,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writes_an_xlsx_file() {
+        use calamine::{open_workbook, Data, Reader, Xlsx};
+
+        let root = temp_root();
+        let tool = GenerateDocumentTool::new(root.clone());
+
+        let result = tool
+            .call(json!({
+                "filename": "vendas.xlsx",
+                "sheets": [{
+                    "name": "Vendas",
+                    "columns": [
+                        { "header": "Produto", "width": 24.0 },
+                        { "header": "Preço", "format": "currency" },
+                        { "header": "Qtd" },
+                        { "header": "Total", "format": "currency" }
+                    ],
+                    "rows": [
+                        ["Caneta", 2.5, 100, "=B2*C2"],
+                        ["Total geral", null, null, "=SUM(D2:D2)"]
+                    ]
+                }]
+            }))
+            .await
+            .unwrap();
+
+        let path = root.join("vendas.xlsx");
+        assert_eq!(result, json!({ "status": "ok", "path": path.display().to_string() }));
+
+        let mut workbook: Xlsx<_> = open_workbook(&path).unwrap();
+        let range = workbook.worksheet_range("Vendas").unwrap();
+        assert_eq!(range.get_value((0, 0)), Some(&Data::String("Produto".to_string())));
+        assert_eq!(range.get_value((1, 0)), Some(&Data::String("Caneta".to_string())));
+        assert_eq!(range.get_value((1, 1)), Some(&Data::Float(2.5)));
+        assert_eq!(range.get_value((2, 0)), Some(&Data::String("Total geral".to_string())));
+
+        let formulas = workbook.worksheet_formula("Vendas").unwrap();
+        assert_eq!(formulas.get_value((1, 3)).map(String::as_str), Some("B2*C2"));
+        assert_eq!(formulas.get_value((2, 3)).map(String::as_str), Some("SUM(D2:D2)"));
+    }
+
+    #[tokio::test]
+    async fn writes_an_xlsx_with_multiple_sheets() {
+        use calamine::{open_workbook, Reader, Xlsx};
+
+        let root = temp_root();
+        let tool = GenerateDocumentTool::new(root.clone());
+
+        tool.call(json!({
+            "filename": "relatorio.xlsx",
+            "sheets": [
+                { "name": "Um", "columns": [{ "header": "A" }], "rows": [["x"]] },
+                { "name": "Dois", "columns": [{ "header": "B" }], "rows": [["y"]] }
+            ]
+        }))
+        .await
+        .unwrap();
+
+        let workbook: Xlsx<_> = open_workbook(root.join("relatorio.xlsx")).unwrap();
+        assert_eq!(workbook.sheet_names(), vec!["Um".to_string(), "Dois".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_sheets_for_xlsx() {
+        let tool = GenerateDocumentTool::new(temp_root());
+
+        let err = tool.call(json!({ "filename": "vendas.xlsx" })).await.unwrap_err();
+
+        assert!(err.to_string().contains("'sheets'"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
     async fn rejects_unsupported_extension() {
         let tool = GenerateDocumentTool::new(temp_root());
 
-        let err = tool.call(json!({ "filename": "relatorio.xlsx", "content": "x" })).await.unwrap_err();
+        let err = tool.call(json!({ "filename": "relatorio.docx", "content": "x" })).await.unwrap_err();
 
-        assert!(err.to_string().contains("only .txt, .md, .csv and .pdf"));
+        assert!(err.to_string().contains("only .txt, .md, .csv, .pdf and .xlsx"));
     }
 
     #[tokio::test]
@@ -276,7 +501,7 @@ mod tests {
 
         let err = tool.call(json!({ "filename": "relatorio", "content": "x" })).await.unwrap_err();
 
-        assert!(err.to_string().contains("only .txt, .md, .csv and .pdf"));
+        assert!(err.to_string().contains("only .txt, .md, .csv, .pdf and .xlsx"));
     }
 
     #[tokio::test]
