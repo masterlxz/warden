@@ -77,10 +77,40 @@ anexos no desktop; capacidade de mídia no Telegram/WhatsApp/mobile) antes de en
   P66.
 - `project/PENDING.md` (P64 atualizado, P66 novo) e `project/ROADMAP.md` atualizados.
 
-**Próximo passo**: P66 (teste de ponta a ponta contra um MCP real quando houver um disponível;
-Telegram/WhatsApp/mobile ainda texto-only). Fora do P64: UI de Settings pro `generated_path`,
-affordance no desktop pra abrir arquivo gerado direto da conversa, Fase 9.1 (Tailscale), testar o
-APK do pareamento por QR (P65).
+**Continuação (mesma sessão, fatia 2)**: usuário pediu pra continuar de novo — escolhida (via
+`AskUserQuestion`) a fatia 2 da frente 2: levar o envio de mídia extraída pro Telegram e WhatsApp
+(o desktop já tinha; esses dois só persistiam sem entregar). Plano escrito e aprovado
+(`EnterPlanMode`/`ExitPlanMode`) — sem agentes `Explore` desta vez, os arquivos relevantes
+(`telegram.rs`/`sidecar.rs`/`index.mjs`) já tinham sido lidos por completo antes de planejar.
+
+- Telegram (`crates/warden-telegram/src/telegram.rs`): `TelegramApi` ganhou `send_attachment`;
+  `TelegramClient` implementa via upload multipart (`reqwest::multipart`, mesmo padrão já usado em
+  `crates/warden-core/src/transcribe.rs` pro Whisper — nenhuma dependência nova de HTTP, só
+  `base64.workspace` novo no `Cargo.toml` do crate pra decodificar o `Attachment`), escolhendo
+  `sendPhoto`/`sendAudio`/`sendVideo`/`sendDocument` pelo prefixo do `mimeType`
+  (`telegram_media_method`, testado isoladamente).
+- WhatsApp (`crates/warden-whatsapp/src/sidecar.rs` + `sidecar/whatsapp/index.mjs`):
+  `SidecarCommand` ganhou `SendMedia { chat_id, mime_type, data }` (mesmo base64 do `Attachment`,
+  decodificado só do lado Node); `index.mjs` monta o payload certo do Baileys
+  (`image`/`video`/`audio`/`document`) por prefixo do `mimeType` — o Baileys já suportava isso,
+  só faltava o comando.
+- Decisão de UX igual pros dois: texto e mídia vão como mensagens separadas, sem caption (evita
+  reimplementar truncamento pro limite de caption do Telegram, menor que o de texto); a mensagem
+  de texto é pulada quando vem vazia (turno só de tool call) em vez de mandar uma mensagem vazia.
+  Nenhum teto de tamanho novo — o de ~8MB da fatia 1 já cabe nos limites de upload dos dois.
+- Testes novos: `telegram_media_method` isolado + um teste de integração por canal (`Tool` fake
+  devolvendo bloco `image` MCP-shaped, confirma texto + attachment enviados); `ScriptedTelegramApi`/
+  `ScriptedSidecar` ganharam `send_attachment`.
+- Verificação: `cargo test -p warden-telegram -p warden-whatsapp` e `cargo test --workspace`
+  inteiro, 100% verdes; `cargo clippy --workspace --all-targets` limpo; `node --check index.mjs`
+  confere a sintaxe do sidecar (sem harness de teste JS, mesma lacuna de sempre).
+- `project/PENDING.md` (P64/P66 atualizados) e `project/ROADMAP.md` atualizados.
+
+**Próximo passo**: mobile via `warden-server` continua texto-only (registrado em P66, próxima
+fatia quando retomado); P66 também cobre o teste de ponta a ponta contra um MCP/Telegram/WhatsApp
+reais quando houver disponibilidade. Fora do P64: UI de Settings pro `generated_path`, affordance
+no desktop pra abrir arquivo gerado direto da conversa, Fase 9.1 (Tailscale), testar o APK do
+pareamento por QR (P65).
 
 ---
 

@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::Deserialize;
+use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
 
 const TELEGRAM_MESSAGE_LIMIT: usize = 4096;
@@ -64,6 +65,10 @@ struct ApiResponse<T> {
 pub trait TelegramApi: Send + Sync {
     async fn get_updates(&self, offset: Option<i64>, timeout_secs: u64) -> anyhow::Result<Vec<Update>>;
     async fn send_message(&self, chat_id: i64, text: &str) -> anyhow::Result<()>;
+    /// Media extracted from an MCP tool result during a turn (P64 frente 2 fatia 2) — sent as its
+    /// own message via the matching Bot API method (`sendPhoto`/`sendAudio`/`sendVideo`, falling
+    /// back to `sendDocument`), never as a caption on the text reply (see `telegram_media_method`).
+    async fn send_attachment(&self, chat_id: i64, attachment: &Attachment) -> anyhow::Result<()>;
 }
 
 pub struct TelegramClient {
@@ -116,6 +121,40 @@ impl TelegramApi for TelegramClient {
             }
         }
         Ok(())
+    }
+
+    async fn send_attachment(&self, chat_id: i64, attachment: &Attachment) -> anyhow::Result<()> {
+        let (method, field) = telegram_media_method(&attachment.mime_type);
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &attachment.data)
+            .context("failed to decode attachment base64")?;
+        let subtype = attachment.mime_type.split('/').next_back().unwrap_or("bin");
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(format!("attachment.{subtype}"))
+            .mime_str(&attachment.mime_type)
+            .context("invalid attachment mime type")?;
+        let form = reqwest::multipart::Form::new().text("chat_id", chat_id.to_string()).part(field, part);
+
+        let response = self.client.post(self.url(method)).multipart(form).send().await?;
+        let parsed: ApiResponse<serde_json::Value> = response.json().await.context("failed to parse media send response")?;
+        if !parsed.ok {
+            anyhow::bail!("Telegram {method} error: {}", parsed.description.unwrap_or_default());
+        }
+        Ok(())
+    }
+}
+
+/// Maps an attachment's mime type to the Bot API method and multipart field name that sends it
+/// natively rendered in the Telegram app — anything that isn't image/audio/video falls back to
+/// `sendDocument` (a generic file attachment Telegram still renders/downloads natively).
+fn telegram_media_method(mime_type: &str) -> (&'static str, &'static str) {
+    if mime_type.starts_with("image/") {
+        ("sendPhoto", "photo")
+    } else if mime_type.starts_with("audio/") {
+        ("sendAudio", "audio")
+    } else if mime_type.starts_with("video/") {
+        ("sendVideo", "video")
+    } else {
+        ("sendDocument", "document")
     }
 }
 
@@ -198,16 +237,27 @@ async fn handle_update(
         .and_then(|sender| sender.username.clone().or_else(|| sender.first_name.clone()))
         .unwrap_or_else(|| conversation_id.clone());
 
-    let reply = match warden_bootstrap::handle_turn(orchestrator, conversations_dir, &conversation_id, &title_seed, text).await {
-        Ok(outcome) => outcome.content,
+    let (reply, attachments) = match warden_bootstrap::handle_turn(orchestrator, conversations_dir, &conversation_id, &title_seed, text).await
+    {
+        Ok(outcome) => (outcome.content, outcome.attachments),
         Err(err) => {
             eprintln!("error handling message from chat {}: {err:#}", message.chat.id);
-            "Sorry, something went wrong handling your message.".to_string()
+            ("Sorry, something went wrong handling your message.".to_string(), Vec::new())
         }
     };
 
-    if let Err(err) = api.send_message(message.chat.id, &reply).await {
-        eprintln!("failed to send reply to chat {}: {err:#}", message.chat.id);
+    // A turn that only called a tool (no final prose) can legitimately have nothing to say here —
+    // skip the API call rather than send an empty message.
+    if !reply.trim().is_empty() {
+        if let Err(err) = api.send_message(message.chat.id, &reply).await {
+            eprintln!("failed to send reply to chat {}: {err:#}", message.chat.id);
+        }
+    }
+
+    for attachment in &attachments {
+        if let Err(err) = api.send_attachment(message.chat.id, attachment).await {
+            eprintln!("failed to send attachment to chat {}: {err:#}", message.chat.id);
+        }
     }
 }
 
@@ -217,8 +267,9 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use warden_core::model::{ChatStream, Message, ModelProvider, Response, response_stream};
-    use warden_core::tool::ToolSpec;
+    use serde_json::json;
+    use warden_core::model::{ChatStream, Message, ModelProvider, Response, ToolCall, response_stream};
+    use warden_core::tool::{Tool, ToolSpec};
 
     use super::*;
 
@@ -250,12 +301,18 @@ mod tests {
     struct ScriptedTelegramApi {
         batches: Mutex<Vec<Vec<Update>>>,
         sent: Mutex<Vec<(i64, String)>>,
+        sent_attachments: Mutex<Vec<(i64, Attachment)>>,
         get_updates_calls: AtomicUsize,
     }
 
     impl ScriptedTelegramApi {
         fn new(batches: Vec<Vec<Update>>) -> Self {
-            Self { batches: Mutex::new(batches), sent: Mutex::new(Vec::new()), get_updates_calls: AtomicUsize::new(0) }
+            Self {
+                batches: Mutex::new(batches),
+                sent: Mutex::new(Vec::new()),
+                sent_attachments: Mutex::new(Vec::new()),
+                get_updates_calls: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -268,6 +325,11 @@ mod tests {
 
         async fn send_message(&self, chat_id: i64, text: &str) -> anyhow::Result<()> {
             self.sent.lock().unwrap().push((chat_id, text.to_string()));
+            Ok(())
+        }
+
+        async fn send_attachment(&self, chat_id: i64, attachment: &Attachment) -> anyhow::Result<()> {
+            self.sent_attachments.lock().unwrap().push((chat_id, attachment.clone()));
             Ok(())
         }
     }
@@ -357,5 +419,70 @@ mod tests {
             assert!(chunk.is_char_boundary(0) && chunk.is_char_boundary(chunk.len()));
         }
         assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn telegram_media_method_maps_each_mime_prefix() {
+        assert_eq!(telegram_media_method("image/png"), ("sendPhoto", "photo"));
+        assert_eq!(telegram_media_method("audio/mpeg"), ("sendAudio", "audio"));
+        assert_eq!(telegram_media_method("video/mp4"), ("sendVideo", "video"));
+        assert_eq!(telegram_media_method("application/pdf"), ("sendDocument", "document"));
+    }
+
+    // --- P64 frente 2 fatia 2: attachments extracted from a tool call are sent to the chat ---
+
+    struct ImageTool;
+
+    #[async_trait]
+    impl Tool for ImageTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "gen_image".to_string(), description: "returns an MCP-shaped image block".to_string(), parameters: json!({}) }
+        }
+
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(json!({ "content": [{ "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" }] }))
+        }
+    }
+
+    struct CallsToolThenAnswersModel {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelProvider for CallsToolThenAnswersModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "gen_image".to_string(), arguments: json!({}), thought_signature: None }],
+                    usage: None,
+                }))
+            } else {
+                Ok(response_stream(Response { content: "here you go".to_string(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_attachment_extracted_from_a_tool_call_is_sent_after_the_text_reply() {
+        let api = ScriptedTelegramApi::new(vec![vec![text_update(1, 42, "make an image")]]);
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!(
+            "warden-telegram-test-attachment-vault-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let mut orchestrator = Orchestrator::new(std::sync::Arc::new(CallsToolThenAnswersModel { calls: AtomicUsize::new(0) }), vault);
+        orchestrator.register_tool(std::sync::Arc::new(ImageTool));
+        let conversations_dir = temp_conversations_dir();
+        let mut offset = None;
+
+        let updates = api.get_updates(offset, 30).await.unwrap();
+        process_updates(&api, &orchestrator, &conversations_dir, updates, &mut offset).await;
+
+        let sent = api.sent.lock().unwrap();
+        assert_eq!(sent[0], (42, "here you go".to_string()));
+
+        let sent_attachments = api.sent_attachments.lock().unwrap();
+        assert_eq!(sent_attachments[0], (42, Attachment { mime_type: "image/png".to_string(), data: "aGVsbG8=".to_string() }));
     }
 }

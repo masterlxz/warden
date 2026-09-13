@@ -4,6 +4,8 @@
 //              {"type":"disconnected","loggedOut":bool}
 //              {"type":"message","chatId":"...","senderName":"...","text":"..."|null}
 //   Rust -> sidecar (stdin):  {"type":"send","chatId":"...","text":"..."}
+//              {"type":"sendMedia","chatId":"...","mimeType":"...","data":"<base64>"} (P64 frente
+//              2 fatia 2 — media extracted from an MCP tool result during a turn)
 // The QR code (first-run pairing) is written as a PNG next to the auth state and the file path
 // logged to stderr — not rendered as terminal ASCII art. A terminal QR needs the half-block
 // Unicode trick to look square, which depends on the terminal font's exact character aspect
@@ -113,6 +115,25 @@ rl.on("line", async (line) => {
       await sock.sendMessage(command.chatId, { text: command.text });
     } catch (err) {
       console.error(`failed to send message to ${command.chatId}:`, err);
+    }
+  } else if (command.type === "sendMedia" && sock) {
+    try {
+      const buffer = Buffer.from(command.data, "base64");
+      const mimeType = command.mimeType;
+      let payload;
+      if (mimeType.startsWith("image/")) {
+        payload = { image: buffer, mimetype: mimeType };
+      } else if (mimeType.startsWith("video/")) {
+        payload = { video: buffer, mimetype: mimeType };
+      } else if (mimeType.startsWith("audio/")) {
+        payload = { audio: buffer, mimetype: mimeType, ptt: false };
+      } else {
+        const subtype = mimeType.split("/").pop() || "bin";
+        payload = { document: buffer, mimetype: mimeType, fileName: `attachment.${subtype}` };
+      }
+      await sock.sendMessage(command.chatId, payload);
+    } catch (err) {
+      console.error(`failed to send media to ${command.chatId}:`, err);
     }
   }
 });

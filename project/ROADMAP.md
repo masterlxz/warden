@@ -430,6 +430,13 @@ Warden como interface de IA para casa inteligente.
   mais rico pra estender; Telegram/WhatsApp/mobile continuam texto-only (registrado em P66).
   Teto de ~8MB por item inline; um `resource_link` (URI sem bytes) nunca é baixado automaticamente
   (risco de SSRF). Ver `PENDING.md` P64/P66 pro detalhamento técnico completo.
+- **Frente 2, fatia 2 implementada (Sessão 65, 2026-09-13, continuação)**: Telegram e WhatsApp
+  passam a reenviar de verdade a mídia extraída (antes só persistiam, sem entregar). Telegram via
+  upload multipart nativo do Bot API (`sendPhoto`/`sendAudio`/`sendVideo`/`sendDocument`, escolhido
+  pelo `mimeType`); WhatsApp via um `SidecarCommand` de mídia novo despachado pro Baileys
+  (`sidecar/whatsapp/index.mjs`), que já suportava isso do lado Node. Texto e mídia vão como
+  mensagens separadas (sem caption) em ambos. Mobile (via `warden-server`) continua texto-only —
+  ver `PENDING.md` P64/P66 pro detalhamento técnico completo.
 
 ---
 

@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
 
 const MEDIA_REPLY: &str = "Sorry, I can only read text messages for now.";
@@ -30,6 +31,10 @@ pub enum SidecarEvent {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum SidecarCommand {
     Send { chat_id: String, text: String },
+    /// Media extracted from an MCP tool result during a turn (P64 frente 2 fatia 2) — `data` is
+    /// the same base64 payload `Attachment` already carries, decoded on the Node side (Baileys'
+    /// `sendMessage` wants a `Buffer`, not base64 text).
+    SendMedia { chat_id: String, mime_type: String, data: String },
 }
 
 /// Reading events is inherently stateful (lines pulled one at a time off a live stream), unlike
@@ -40,6 +45,9 @@ pub trait WhatsAppSidecar: Send + Sync {
     /// `Ok(None)` means the sidecar process's stdout closed (it exited).
     async fn recv_event(&mut self) -> anyhow::Result<Option<SidecarEvent>>;
     async fn send(&mut self, chat_id: &str, text: &str) -> anyhow::Result<()>;
+    /// Media extracted from an MCP tool result during a turn (P64 frente 2 fatia 2) — sent as its
+    /// own WhatsApp message, native to whatever kind it is (image/video/audio/document).
+    async fn send_attachment(&mut self, chat_id: &str, attachment: &Attachment) -> anyhow::Result<()>;
 }
 
 pub struct ChildSidecar {
@@ -98,6 +106,18 @@ impl WhatsAppSidecar for ChildSidecar {
         self.stdin.write_all(b"\n").await.context("failed to write to the WhatsApp sidecar's stdin")?;
         Ok(())
     }
+
+    async fn send_attachment(&mut self, chat_id: &str, attachment: &Attachment) -> anyhow::Result<()> {
+        let command = SidecarCommand::SendMedia {
+            chat_id: chat_id.to_string(),
+            mime_type: attachment.mime_type.clone(),
+            data: attachment.data.clone(),
+        };
+        let json = serde_json::to_string(&command).context("failed to serialize sidecar command")?;
+        self.stdin.write_all(json.as_bytes()).await.context("failed to write to the WhatsApp sidecar's stdin")?;
+        self.stdin.write_all(b"\n").await.context("failed to write to the WhatsApp sidecar's stdin")?;
+        Ok(())
+    }
 }
 
 /// Runs forever: reads one event at a time from the sidecar and handles it. Unlike Telegram's
@@ -126,22 +146,32 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
             }
         }
         SidecarEvent::Message { chat_id, sender_name, text } => {
-            let reply = match text {
-                None => MEDIA_REPLY.to_string(),
+            let (reply, attachments) = match text {
+                None => (MEDIA_REPLY.to_string(), Vec::new()),
                 Some(text) => {
                     let title_seed = sender_name.unwrap_or_else(|| chat_id.clone());
                     match warden_bootstrap::handle_turn(orchestrator, conversations_dir, &chat_id, &title_seed, &text).await {
-                        Ok(outcome) => outcome.content,
+                        Ok(outcome) => (outcome.content, outcome.attachments),
                         Err(err) => {
                             eprintln!("error handling message from {chat_id}: {err:#}");
-                            "Sorry, something went wrong handling your message.".to_string()
+                            ("Sorry, something went wrong handling your message.".to_string(), Vec::new())
                         }
                     }
                 }
             };
 
-            if let Err(err) = sidecar.send(&chat_id, &reply).await {
-                eprintln!("failed to send reply to {chat_id}: {err:#}");
+            // A turn that only called a tool (no final prose) can legitimately have nothing to
+            // say here — skip the send rather than deliver an empty message.
+            if !reply.trim().is_empty() {
+                if let Err(err) = sidecar.send(&chat_id, &reply).await {
+                    eprintln!("failed to send reply to {chat_id}: {err:#}");
+                }
+            }
+
+            for attachment in &attachments {
+                if let Err(err) = sidecar.send_attachment(&chat_id, attachment).await {
+                    eprintln!("failed to send attachment to {chat_id}: {err:#}");
+                }
             }
         }
     }
@@ -154,8 +184,9 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use warden_core::model::{ChatStream, Message, ModelProvider, Response, response_stream};
-    use warden_core::tool::ToolSpec;
+    use serde_json::json;
+    use warden_core::model::{ChatStream, Message, ModelProvider, Response, ToolCall, response_stream};
+    use warden_core::tool::{Tool, ToolSpec};
 
     use super::*;
 
@@ -187,11 +218,12 @@ mod tests {
     struct ScriptedSidecar {
         events: Mutex<VecDeque<SidecarEvent>>,
         sent: Mutex<Vec<(String, String)>>,
+        sent_media: Mutex<Vec<(String, Attachment)>>,
     }
 
     impl ScriptedSidecar {
         fn new(events: Vec<SidecarEvent>) -> Self {
-            Self { events: Mutex::new(events.into()), sent: Mutex::new(Vec::new()) }
+            Self { events: Mutex::new(events.into()), sent: Mutex::new(Vec::new()), sent_media: Mutex::new(Vec::new()) }
         }
     }
 
@@ -203,6 +235,11 @@ mod tests {
 
         async fn send(&mut self, chat_id: &str, text: &str) -> anyhow::Result<()> {
             self.sent.lock().unwrap().push((chat_id.to_string(), text.to_string()));
+            Ok(())
+        }
+
+        async fn send_attachment(&mut self, chat_id: &str, attachment: &Attachment) -> anyhow::Result<()> {
+            self.sent_media.lock().unwrap().push((chat_id.to_string(), attachment.clone()));
             Ok(())
         }
     }
@@ -280,5 +317,69 @@ mod tests {
         handle_event(&mut sidecar, &orchestrator, &conversations_dir, SidecarEvent::Disconnected { logged_out: true }).await;
 
         assert!(sidecar.sent.lock().unwrap().is_empty());
+    }
+
+    // --- P64 frente 2 fatia 2: attachments extracted from a tool call are sent to the chat ---
+
+    struct ImageTool;
+
+    #[async_trait]
+    impl Tool for ImageTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "gen_image".to_string(), description: "returns an MCP-shaped image block".to_string(), parameters: json!({}) }
+        }
+
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(json!({ "content": [{ "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" }] }))
+        }
+    }
+
+    struct CallsToolThenAnswersModel {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelProvider for CallsToolThenAnswersModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "call_1".to_string(), name: "gen_image".to_string(), arguments: json!({}), thought_signature: None }],
+                    usage: None,
+                }))
+            } else {
+                Ok(response_stream(Response { content: "here you go".to_string(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_attachment_extracted_from_a_tool_call_is_sent_after_the_text_reply() {
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!(
+            "warden-whatsapp-test-attachment-vault-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let mut orchestrator = Orchestrator::new(std::sync::Arc::new(CallsToolThenAnswersModel { calls: AtomicUsize::new(0) }), vault);
+        orchestrator.register_tool(std::sync::Arc::new(ImageTool));
+        let conversations_dir = temp_conversations_dir();
+
+        let mut sidecar = ScriptedSidecar::new(vec![SidecarEvent::Message {
+            chat_id: "5511999999999@s.whatsapp.net".to_string(),
+            sender_name: Some("Fabio".to_string()),
+            text: Some("make an image".to_string()),
+        }]);
+
+        let event = sidecar.recv_event().await.unwrap().unwrap();
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, event).await;
+
+        let sent = sidecar.sent.lock().unwrap();
+        assert_eq!(sent[0], ("5511999999999@s.whatsapp.net".to_string(), "here you go".to_string()));
+
+        let sent_media = sidecar.sent_media.lock().unwrap();
+        assert_eq!(
+            sent_media[0],
+            ("5511999999999@s.whatsapp.net".to_string(), Attachment { mime_type: "image/png".to_string(), data: "aGVsbG8=".to_string() })
+        );
     }
 }
