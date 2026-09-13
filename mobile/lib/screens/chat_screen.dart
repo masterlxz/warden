@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 
 import '../protocol/messages.dart';
 import '../services/chat_notifications.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
+import 'attachment_kind.dart';
 
 enum _EntryRole { user, assistant, error }
 
@@ -297,11 +302,11 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-/// Media extracted from an MCP tool result (P64 frente 2 fatia 3) — only `image/*` renders for
-/// real (`Image.memory`, no new dependency needed). Audio/video (the extraction on the Rust side
-/// already allows those) show a small caption instead of vanishing silently — this app has no
-/// player for them yet, same graceful-degradation spirit as `MEDIA_REPLY` on the WhatsApp side
-/// for *received* media.
+/// Media extracted from an MCP tool result (P64 frente 2). `image/*` renders via `Image.memory`
+/// (fatia 3); `audio/*`/`video/*` play for real too now (P66) — audio straight from bytes
+/// (`audioplayers`'s `BytesSource`), video via a temp file (`video_player` has no bytes source).
+/// Anything else still falls back to a caption instead of vanishing silently, same
+/// graceful-degradation spirit as `MEDIA_REPLY` on the WhatsApp side for *received* media.
 class _AttachmentPreview extends StatelessWidget {
   const _AttachmentPreview({required this.attachment, required this.foreground});
 
@@ -310,27 +315,221 @@ class _AttachmentPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!attachment.mimeType.startsWith('image/')) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Text(
-          '📎 ${attachment.mimeType} attached (playback not supported here yet)',
-          style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
-        ),
-      );
-    }
+    return switch (attachmentKindFor(attachment.mimeType)) {
+      AttachmentKind.image => _ImageAttachment(attachment: attachment, foreground: foreground),
+      AttachmentKind.audio => _AudioAttachmentPlayer(attachment: attachment, foreground: foreground),
+      AttachmentKind.video => _VideoAttachmentPlayer(attachment: attachment, foreground: foreground),
+      AttachmentKind.unsupported => _UnsupportedAttachment(attachment: attachment, foreground: foreground),
+    };
+  }
+}
 
+class _UnsupportedAttachment extends StatelessWidget {
+  const _UnsupportedAttachment({required this.attachment, required this.foreground});
+
+  final Attachment attachment;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        '📎 ${attachment.mimeType} attached (playback not supported here yet)',
+        style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
+      ),
+    );
+  }
+}
+
+class _AttachmentError extends StatelessWidget {
+  const _AttachmentError({required this.attachment, required this.foreground, required this.verb});
+
+  final Attachment attachment;
+  final Color foreground;
+  final String verb;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      'Could not $verb ${attachment.mimeType} attachment',
+      style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
+    );
+  }
+}
+
+class _ImageAttachment extends StatelessWidget {
+  const _ImageAttachment({required this.attachment, required this.foreground});
+
+  final Attachment attachment;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Image.memory(
           base64Decode(attachment.data),
-          errorBuilder: (context, error, stackTrace) => Text(
-            'Could not decode ${attachment.mimeType} attachment',
-            style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
-          ),
+          errorBuilder: (context, error, stackTrace) =>
+              _AttachmentError(attachment: attachment, foreground: foreground, verb: 'decode'),
         ),
+      ),
+    );
+  }
+}
+
+/// Plays an `audio/*` attachment straight from the decoded bytes — `BytesSource` needs no temp
+/// file, same zero-I/O spirit as `Image.memory` above. Manual play/pause, no autoplay (same
+/// deliberate posture as the desktop's TTS `SpeakButton`, P28).
+class _AudioAttachmentPlayer extends StatefulWidget {
+  const _AudioAttachmentPlayer({required this.attachment, required this.foreground});
+
+  final Attachment attachment;
+  final Color foreground;
+
+  @override
+  State<_AudioAttachmentPlayer> createState() => _AudioAttachmentPlayerState();
+}
+
+class _AudioAttachmentPlayerState extends State<_AudioAttachmentPlayer> {
+  final _player = AudioPlayer();
+  PlayerState _state = PlayerState.stopped;
+  String? _error;
+  StreamSubscription<PlayerState>? _stateSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _stateSubscription = _player.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => _state = state);
+    });
+  }
+
+  @override
+  void dispose() {
+    _stateSubscription?.cancel();
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    if (_state == PlayerState.playing) {
+      await _player.pause();
+      return;
+    }
+    try {
+      final bytes = base64Decode(widget.attachment.data);
+      await _player.play(BytesSource(bytes));
+    } catch (_) {
+      if (mounted) setState(() => _error = 'play');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return _AttachmentError(attachment: widget.attachment, foreground: widget.foreground, verb: _error!);
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: Icon(_state == PlayerState.playing ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                color: widget.foreground),
+            onPressed: _toggle,
+          ),
+          Text(widget.attachment.mimeType, style: TextStyle(color: widget.foreground, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Plays a `video/*` attachment — `video_player` has no bytes source, so the decoded bytes are
+/// written to a temp file once and cleaned up on dispose.
+class _VideoAttachmentPlayer extends StatefulWidget {
+  const _VideoAttachmentPlayer({required this.attachment, required this.foreground});
+
+  final Attachment attachment;
+  final Color foreground;
+
+  @override
+  State<_VideoAttachmentPlayer> createState() => _VideoAttachmentPlayerState();
+}
+
+class _VideoAttachmentPlayerState extends State<_VideoAttachmentPlayer> {
+  VideoPlayerController? _controller;
+  File? _tempFile;
+  late final Future<void> _initialization = _initialize();
+
+  static const _extensionBySubtype = {'quicktime': 'mov', 'x-msvideo': 'avi'};
+
+  Future<void> _initialize() async {
+    final bytes = base64Decode(widget.attachment.data);
+    final subtype = widget.attachment.mimeType.split('/').last;
+    final extension = _extensionBySubtype[subtype] ?? subtype;
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/warden_attachment_${DateTime.now().microsecondsSinceEpoch}.$extension');
+    await file.writeAsBytes(bytes);
+    _tempFile = file;
+
+    final controller = VideoPlayerController.file(file);
+    await controller.initialize();
+    _controller = controller;
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    _tempFile?.delete().catchError((_) => _tempFile!);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: FutureBuilder<void>(
+        future: _initialization,
+        builder: (context, snapshot) {
+          if (snapshot.hasError || (snapshot.connectionState == ConnectionState.done && _controller == null)) {
+            return _AttachmentError(attachment: widget.attachment, foreground: widget.foreground, verb: 'play');
+          }
+          if (snapshot.connectionState != ConnectionState.done) {
+            return SizedBox(
+              height: 32,
+              width: 32,
+              child: CircularProgressIndicator(strokeWidth: 2, color: widget.foreground),
+            );
+          }
+          final controller = _controller!;
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: AspectRatio(
+              aspectRatio: controller.value.aspectRatio,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  VideoPlayer(controller),
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      controller.value.isPlaying ? controller.pause() : controller.play();
+                    }),
+                    child: AnimatedOpacity(
+                      opacity: controller.value.isPlaying ? 0 : 1,
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(Icons.play_circle_filled, size: 48, color: widget.foreground),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

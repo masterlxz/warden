@@ -444,6 +444,14 @@ Warden como interface de IA para casa inteligente.
   `mobile/lib/protocol/messages.dart`/`chat_screen.dart` decodificam e renderizam inline. Fecha a
   frente 2 do P64 em todo canal de texto pra imagem — ver `PENDING.md` P64/P66 pro detalhamento
   técnico completo.
+- **Frente 2, fatia 4 implementada (Sessão 66, 2026-09-13)**: áudio/vídeo tocam de verdade no
+  mobile agora — duas dependências novas (`audioplayers` via `BytesSource` direto da memória,
+  `video_player` via um arquivo temporário, já que a API do pacote não aceita bytes). Dispatch por
+  `mimeType` isolado numa função pura testável (`attachment_kind.dart`), mesmo padrão de
+  `hub_pairing_qr.dart`/`chat_notifications.dart`. `flutter build apk --debug` compilou de verdade
+  com as duas dependências nativas pras 4 ABIs — sem emulador/MCP real disponível pra confirmar
+  playback numa tela de verdade. Fecha a frente 2 do P64 em todo canal e todo tipo de mídia dentro
+  do teto de ~8MB — ver `PENDING.md` P66 pro detalhamento técnico completo.
 
 ---
 

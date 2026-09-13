@@ -2,7 +2,60 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-13 (Sessão 65)
+> Última atualização: 2026-09-13 (Sessão 66)
+
+---
+
+### 2026-09-13 — Sessão 66
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"). Frente 2 do P64 (mídia
+  MCP-gerada inline) tinha acabado de fechar imagem em todo canal na Sessão 65 sem uma próxima
+  fatia óbvia e já combinada — perguntado ao usuário via `AskUserQuestion` (4 opções: P66
+  áudio/vídeo no mobile, sobras menores do P64, outro item do roadmap, ou explicar algo novo).
+  Escolhido P66 — áudio/vídeo no mobile, a lacuna que a fatia 3 (Sessão 65) tinha deixado
+  deliberadamente aberta (sem pacote Flutter de player, sem emulador pra validar). Plano escrito
+  e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar.
+
+**O que foi feito**:
+
+- `mobile/pubspec.yaml`: duas dependências novas — `audioplayers` 6.8.1 (áudio, via `BytesSource`
+  tocando os bytes decodificados direto da memória, sem escrever em disco) e `video_player`
+  2.14.0 (vídeo — sem fonte por bytes na API do pacote, escreve os bytes num arquivo temporário
+  via `path_provider`, já dependência do projeto, apagado no `dispose()`). Nenhuma permissão nova
+  no `AndroidManifest.xml`.
+- `mobile/lib/screens/attachment_kind.dart` novo: `attachmentKindFor(mimeType)` — função pura,
+  enum `AttachmentKind{image,audio,video,unsupported}`, mesmo padrão de
+  função-testável-sem-widget de `hub_pairing_qr.dart::parseHubPairingQr`/
+  `chat_notifications.dart::shouldNotifyFor`.
+- `mobile/lib/screens/chat_screen.dart`: `_AttachmentPreview` virou um dispatcher fino sobre
+  `attachmentKindFor` — `_ImageAttachment` (extraído do código já existente),
+  `_AudioAttachmentPlayer` novo (play/pause manual via `IconButton`, sem autoplay — mesma postura
+  do `SpeakButton`/TTS do desktop, P28), `_VideoAttachmentPlayer` novo (`AspectRatio`+`VideoPlayer`
+  com botão de play/pause sobreposto, `FutureBuilder` cobrindo a inicialização assíncrona),
+  `_UnsupportedAttachment` (a legenda de fallback que já existia). Erro de decode/escrita/
+  inicialização em qualquer um dos três cai no mesmo padrão de texto de erro (`_AttachmentError`
+  novo, compartilhado).
+- Teste novo `mobile/test/screens/attachment_kind_test.dart` (5 casos: os 4 ramos do enum + string
+  vazia) — sem widget test pros players em si, mesma lacuna aceita na fatia 3 (platform channel de
+  `audioplayers`/`video_player` exigiria mock extenso, e não há emulador/dispositivo real neste
+  ambiente pra confirmar playback de verdade).
+- Verificação: `flutter analyze` limpo, `flutter test` verde (44 testes, os 5 novos inclusos) e —
+  mais forte que a fatia 3 teve — `flutter build apk --debug` **compilou de verdade** com as duas
+  dependências nativas novas pras 4 ABIs, confirmando que não há incompatibilidade de toolchain
+  Android com os pacotes escolhidos (primeira tentativa foi morta pelo meu próprio `timeout 300`
+  no meio da compilação do Gradle — não uma falha de build; refeita sem o timeout artificial e
+  terminou em ~130s de Gradle).
+- `project/PENDING.md` (P66 atualizado, fatia 4) e `project/ROADMAP.md` atualizados.
+
+**Ainda em aberto**: vídeo grande (acima do teto de ~8MB inline) em qualquer canal, e o teste de
+ponta a ponta contra um MCP/dispositivo reais (nenhum MCP gerador de mídia disponível neste
+ambiente, nem instalação do APK num emulador pra confirmar o player tocando de verdade). Com
+isso, a frente 2 do P64 está fechada em todo canal e todo tipo de mídia suportado, exceto por
+essas duas lacunas de verificação real.
+
+**Próximo passo**: nenhum item específico decidido — próxima sessão deve perguntar ao usuário o
+que atacar (mesmo padrão desta sessão), já que não há mais uma fatia óbvia em sequência dentro do
+P64.
 
 ---
 
