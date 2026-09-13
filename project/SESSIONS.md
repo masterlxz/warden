@@ -106,11 +106,38 @@ anexos no desktop; capacidade de mídia no Telegram/WhatsApp/mobile) antes de en
   confere a sintaxe do sidecar (sem harness de teste JS, mesma lacuna de sempre).
 - `project/PENDING.md` (P64/P66 atualizados) e `project/ROADMAP.md` atualizados.
 
-**Próximo passo**: mobile via `warden-server` continua texto-only (registrado em P66, próxima
-fatia quando retomado); P66 também cobre o teste de ponta a ponta contra um MCP/Telegram/WhatsApp
-reais quando houver disponibilidade. Fora do P64: UI de Settings pro `generated_path`, affordance
-no desktop pra abrir arquivo gerado direto da conversa, Fase 9.1 (Tailscale), testar o APK do
-pareamento por QR (P65).
+**Continuação (mesma sessão, fatia 3)**: usuário pediu pra continuar mais uma vez — escolhida
+(`AskUserQuestion`) a fatia 3 da frente 2: mobile via `warden-server`, último canal que faltava.
+Antes de planejar, uma segunda `AskUserQuestion` fechou o escopo: só **imagem** nesta fatia, não
+áudio/vídeo — precisariam de um pacote Flutter novo (`audioplayers`/`video_player`, nada disso
+existe no app hoje) e não há emulador/dispositivo real neste ambiente pra validar um player de
+verdade de qualquer forma (mesma lacuna já registrada em P39/P59 pro app mobile).
+
+- `crates/warden-server-protocol/src/protocol.rs`: `ServerMessage::ChatResponse` ganhou
+  `#[serde(default)] attachments: Vec<Attachment>` (mesmo motivo do `#[serde(default)]` já usado em
+  `Hello.tools` — um peer mais antigo que não manda o campo continua parseando); 2 testes novos
+  (round-trip com attachment + default vazio quando o campo falta).
+- `crates/warden-server/src/server.rs`: repassa `outcome.attachments` na construção do
+  `ChatResponse`.
+- `mobile/lib/protocol/messages.dart`: classe `Attachment` nova (mesmo shape do Rust);
+  `ChatResponseMessage` ganhou `attachments` como parâmetro **nomeado** com default `const []` —
+  não posicional, pra não quebrar os dois fixtures de teste existentes em
+  `chat_notifications_test.dart`.
+- `mobile/lib/screens/chat_screen.dart`: `_ChatEntry` ganhou `attachments`; `_MessageBubble` ganhou
+  `_AttachmentPreview` — `image/*` renderiza de verdade via `Image.memory(base64Decode(...))`
+  (`errorBuilder` pra base64 malformado não derrubar a tela); qualquer outro `mimeType` vira uma
+  legenda pequena em vez de sumir silenciosamente, mesmo espírito de degradação graciosa do
+  `MEDIA_REPLY` (P21) pra mídia recebida.
+- Verificação: `cargo test -p warden-server-protocol -p warden-server` e `cargo test --workspace`
+  inteiro, 100% verdes; `cargo clippy --workspace --all-targets` limpo; `flutter analyze` limpo e
+  `flutter test` (39 testes, fixtures existentes intactos) no `mobile/`.
+- `project/PENDING.md` (P64/P66 atualizados) e `project/ROADMAP.md` atualizados.
+
+**Próximo passo**: frente 2 do P64 fechada em todo canal de texto pra imagem. Seguem em aberto:
+áudio/vídeo no mobile e vídeo grande em qualquer canal (P66), teste de ponta a ponta contra
+MCP/Telegram/WhatsApp/dispositivo reais (P66). Fora do P64: UI de Settings pro `generated_path`,
+affordance no desktop pra abrir arquivo gerado direto da conversa, Fase 9.1 (Tailscale), testar o
+APK do pareamento por QR (P65).
 
 ---
 

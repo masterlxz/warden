@@ -117,6 +117,20 @@ class Usage {
   }
 }
 
+/// Media extracted from an MCP tool result during a turn (P64 frente 2 fatia 3). Mirrors
+/// `warden_core::model::Attachment` — `data` is base64 with no `data:...;base64,` prefix.
+class Attachment {
+  const Attachment({required this.mimeType, required this.data});
+
+  final String mimeType;
+  final String data;
+
+  static Attachment fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return Attachment(mimeType: map['mimeType'] as String, data: map['data'] as String);
+  }
+}
+
 /// Messages sent from a warden-server to this client.
 sealed class ServerMessage {
   const ServerMessage();
@@ -129,6 +143,7 @@ sealed class ServerMessage {
       'chatResponse' => ChatResponseMessage(
           json['content'] as String,
           Usage.fromJson(json['usage'] as Map<String, dynamic>?),
+          attachments: (json['attachments'] as List<dynamic>?)?.map(Attachment.fromJson).toList() ?? const [],
         ),
       'chatError' => ChatErrorMessage(json['message'] as String),
       'toolCallRequest' => ToolCallRequestMessage(
@@ -168,10 +183,11 @@ final class PongMessage extends ServerMessage {
 }
 
 final class ChatResponseMessage extends ServerMessage {
-  const ChatResponseMessage(this.content, this.usage);
+  const ChatResponseMessage(this.content, this.usage, {this.attachments = const []});
 
   final String content;
   final Usage? usage;
+  final List<Attachment> attachments;
 }
 
 final class ChatErrorMessage extends ServerMessage {

@@ -209,7 +209,7 @@ async fn handle_connection(
                         )
                         .await
                         {
-                            Ok(outcome) => ServerMessage::ChatResponse { content: outcome.content, usage: outcome.usage },
+                            Ok(outcome) => ServerMessage::ChatResponse { content: outcome.content, usage: outcome.usage, attachments: outcome.attachments },
                             Err(err) => ServerMessage::ChatError { message: format!("{err:#}") },
                         };
                         let _ = reply_tx.send(reply);

@@ -437,6 +437,13 @@ Warden como interface de IA para casa inteligente.
   (`sidecar/whatsapp/index.mjs`), que já suportava isso do lado Node. Texto e mídia vão como
   mensagens separadas (sem caption) em ambos. Mobile (via `warden-server`) continua texto-only —
   ver `PENDING.md` P64/P66 pro detalhamento técnico completo.
+- **Frente 2, fatia 3 implementada (Sessão 65, 2026-09-13, continuação)**: mobile fecha a lista de
+  canais — escopo confirmado com o usuário como só **imagem** (`Image.memory`, sem pacote Flutter
+  novo); áudio/vídeo ficam pra depois (precisariam de um player novo, sem como validar numa
+  janela/emulador real neste ambiente). `ServerMessage::ChatResponse` ganhou `attachments`;
+  `mobile/lib/protocol/messages.dart`/`chat_screen.dart` decodificam e renderizam inline. Fecha a
+  frente 2 do P64 em todo canal de texto pra imagem — ver `PENDING.md` P64/P66 pro detalhamento
+  técnico completo.
 
 ---
 

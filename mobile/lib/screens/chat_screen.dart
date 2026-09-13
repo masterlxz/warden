@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -10,10 +11,11 @@ import '../services/server_connection.dart';
 enum _EntryRole { user, assistant, error }
 
 class _ChatEntry {
-  const _ChatEntry(this.role, this.text);
+  const _ChatEntry(this.role, this.text, {this.attachments = const []});
 
   final _EntryRole role;
   final String text;
+  final List<Attachment> attachments;
 }
 
 /// Fase 7.3: the real chat UI, built on top of the connection 7.2 proved works. Messages are
@@ -74,8 +76,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _waitingForReply = false;
       switch (msg) {
-        case ChatResponseMessage(:final content):
-          _entries.add(_ChatEntry(_EntryRole.assistant, content));
+        case ChatResponseMessage(:final content, :final attachments):
+          _entries.add(_ChatEntry(_EntryRole.assistant, content, attachments: attachments));
         case ChatErrorMessage(:final message):
           _entries.add(_ChatEntry(_EntryRole.error, message));
         default:
@@ -282,7 +284,53 @@ class _MessageBubble extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
         decoration: BoxDecoration(color: background, borderRadius: BorderRadius.circular(12)),
-        child: Text(entry.text, style: TextStyle(color: foreground)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(entry.text, style: TextStyle(color: foreground)),
+            for (final attachment in entry.attachments) _AttachmentPreview(attachment: attachment, foreground: foreground),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Media extracted from an MCP tool result (P64 frente 2 fatia 3) — only `image/*` renders for
+/// real (`Image.memory`, no new dependency needed). Audio/video (the extraction on the Rust side
+/// already allows those) show a small caption instead of vanishing silently — this app has no
+/// player for them yet, same graceful-degradation spirit as `MEDIA_REPLY` on the WhatsApp side
+/// for *received* media.
+class _AttachmentPreview extends StatelessWidget {
+  const _AttachmentPreview({required this.attachment, required this.foreground});
+
+  final Attachment attachment;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!attachment.mimeType.startsWith('image/')) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(
+          '📎 ${attachment.mimeType} attached (playback not supported here yet)',
+          style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(
+          base64Decode(attachment.data),
+          errorBuilder: (context, error, stackTrace) => Text(
+            'Could not decode ${attachment.mimeType} attachment',
+            style: TextStyle(color: foreground, fontSize: 12, fontStyle: FontStyle.italic),
+          ),
+        ),
       ),
     );
   }

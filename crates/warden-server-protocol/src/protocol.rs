@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use warden_core::model::Usage;
+use warden_core::model::{Attachment, Usage};
 use warden_core::tool::ToolSpec;
 
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
@@ -74,6 +74,11 @@ pub enum ServerMessage {
     ChatResponse {
         content: String,
         usage: Option<Usage>,
+        /// Media extracted from an MCP tool result during this turn (P64 frente 2 fatia 3).
+        /// `#[serde(default)]` so a peer from before this field existed (older client build, or a
+        /// stored fixture) still parses.
+        #[serde(default)]
+        attachments: Vec<Attachment>,
     },
     /// A `Chat` message failed (missing API key, rate limit, provider error, ...) — the raw error
     /// text, since this protocol has no untrusted-public-bot audience to hide it from.
@@ -213,6 +218,30 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"type":"deviceToolError","callId":1,"message":"device 'dev-2' is not connected"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_chat_response_with_an_attachment_round_trips_through_json() {
+        let msg = ServerMessage::ChatResponse {
+            content: "here you go".into(),
+            usage: None,
+            attachments: vec![Attachment { mime_type: "image/png".into(), data: "aGVsbG8=".into() }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"chatResponse","content":"here you go","usage":null,"attachments":[{"mimeType":"image/png","data":"aGVsbG8="}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_chat_response_without_an_attachments_field_defaults_to_empty() {
+        // A peer from before this field existed (an older client build, or a stored fixture)
+        // never sends `attachments` at all — must still parse, not error.
+        let json = r#"{"type":"chatResponse","content":"hi","usage":null}"#;
+        let msg = serde_json::from_str::<ServerMessage>(json).unwrap();
+        assert!(matches!(msg, ServerMessage::ChatResponse { attachments, .. } if attachments.is_empty()));
     }
 
     #[test]
