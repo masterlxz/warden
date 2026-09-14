@@ -30,6 +30,11 @@ pub struct MessageOutcome {
     /// (that would re-inflate every subsequent turn with base64), only surfaced here for the
     /// caller to persist/render. Empty when no tool call this turn produced any.
     pub attachments: Vec<Attachment>,
+    /// Paths of files actually written to disk during this turn (P64) — `generate_document`'s
+    /// own result, and any oversized MCP media `spill_oversized_media` saved instead of dumping
+    /// inline. Lets a caller (the desktop's "Open" affordance) offer to open the file without
+    /// having to scrape a path out of the model's free-text answer.
+    pub generated_files: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -219,6 +224,7 @@ impl Orchestrator {
         let mut usage = Usage::default();
         let mut has_usage = false;
         let mut attachments: Vec<Attachment> = Vec::new();
+        let mut generated_files: Vec<String> = Vec::new();
 
         for _ in 0..MAX_TOOL_ITERATIONS {
             let stream = self.model.chat_stream(messages.clone(), tool_specs.clone()).await?;
@@ -232,7 +238,7 @@ impl Orchestrator {
             }
 
             if response.tool_calls.is_empty() {
-                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments });
+                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments, generated_files });
             }
 
             messages.push(Message::assistant_tool_calls(response.tool_calls.clone()));
@@ -240,8 +246,9 @@ impl Orchestrator {
             for tool_call in &response.tool_calls {
                 let content = match self.run_tool(tool_call).await {
                     Ok(value) => {
-                        let (content, extracted) = extract_media_from_tool_result(&value, self.media_root.as_deref());
+                        let (content, extracted, files) = extract_media_from_tool_result(&value, self.media_root.as_deref());
                         attachments.extend(extracted);
+                        generated_files.extend(files);
                         content
                     }
                     Err(err) => format!("error: {err:#}"),
@@ -273,11 +280,26 @@ fn within_media_size_cap(base64_data: &str) -> bool {
     base64_data.len() * 3 / 4 <= MAX_INLINE_MEDIA_BYTES
 }
 
+/// Recognizes `generate_document`'s exact success shape (`{"status":"ok","path":...}`, the only
+/// tool in the workspace that returns both fields together — confirmed by grepping every tool's
+/// `json!(...)` result) inside an otherwise-unstructured tool result, so its path can feed the
+/// same `generated_files` list as `spill_oversized_media`'s without misfiring on `write_file`
+/// (`{"status":"ok"}`, no `path`) or any other tool.
+fn generated_file_path(value: &Value) -> Option<String> {
+    (value.get("status").and_then(Value::as_str) == Some("ok"))
+        .then(|| value.get("path").and_then(Value::as_str).map(str::to_string))
+        .flatten()
+}
+
 /// Turns a tool's raw JSON result into (text fed back to the model, media extracted as
-/// attachments). Only tool results shaped like an MCP `CallToolResult` (rmcp) — a `content` array
-/// where every item has a recognized `type` (`text`/`image`/`audio`/`resource`/`resource_link`) —
-/// are parsed structurally; anything else (`generate_document`, `shell`, `read_file`, ...) falls
-/// through to the exact same `value.to_string()` this replaced, unchanged.
+/// attachments, paths of any file actually written to disk this call). Only tool results shaped
+/// like an MCP `CallToolResult` (rmcp) — a `content` array where every item has a recognized
+/// `type` (`text`/`image`/`audio`/`resource`/`resource_link`) — are parsed structurally; anything
+/// else (`shell`, `read_file`, ...) falls through to the exact same `value.to_string()` this
+/// replaced, unchanged, except for `generate_document`'s result specifically, which is recognized
+/// by `generated_file_path` for the third return value (its text is still the plain
+/// `value.to_string()` as before — this doesn't change what the model sees, only what a caller
+/// can additionally act on).
 ///
 /// `image`/`audio` blocks and `resource` blocks whose `mimeType` is image/audio/video become an
 /// `Attachment` when their base64 payload fits `MAX_INLINE_MEDIA_BYTES` — the model only ever sees
@@ -286,18 +308,19 @@ fn within_media_size_cap(base64_data: &str) -> bool {
 /// dedicated `VideoContent`, it only ever arrives via `resource`) is written to disk under
 /// `media_root` instead, via `spill_oversized_media`; the model sees a placeholder citing the file
 /// path, the exact same "no chat affordance, the model just cites the path" convention already
-/// used by `generate_document`/`write_file`. A `resource_link` (a URI, no inline bytes) is
-/// deliberately never auto-fetched — fetching an arbitrary URL an MCP server hands back would be
-/// an outbound network call driven by untrusted tool output (SSRF-shaped risk) — so it always
-/// falls through as text, regardless of size.
-fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (String, Vec<Attachment>) {
+/// used by `generate_document`/`write_file` — its real path also feeds the third return value. A
+/// `resource_link` (a URI, no inline bytes) is deliberately never auto-fetched — fetching an
+/// arbitrary URL an MCP server hands back would be an outbound network call driven by untrusted
+/// tool output (SSRF-shaped risk) — so it always falls through as text, regardless of size.
+fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (String, Vec<Attachment>, Vec<String>) {
     let known_type = |item: &Value| matches!(item.get("type").and_then(Value::as_str), Some("text" | "image" | "audio" | "resource" | "resource_link"));
     let Some(content) = value.get("content").and_then(Value::as_array).filter(|blocks| blocks.iter().all(known_type)) else {
-        return (value.to_string(), Vec::new());
+        return (value.to_string(), Vec::new(), generated_file_path(value).into_iter().collect());
     };
 
     let mut text_parts = Vec::new();
     let mut attachments = Vec::new();
+    let mut generated_files = Vec::new();
 
     for block in content {
         let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
@@ -316,7 +339,9 @@ fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (
                         text_parts.push(format!("[{block_type} attached: {mime_type}]"));
                     }
                     (Some(data), Some(mime_type)) => {
-                        text_parts.push(spill_oversized_media(media_root, block_type, mime_type, data));
+                        let (text, path) = spill_oversized_media(media_root, block_type, mime_type, data);
+                        generated_files.extend(path);
+                        text_parts.push(text);
                     }
                     _ => text_parts.push(block.to_string()),
                 }
@@ -332,7 +357,9 @@ fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (
                         text_parts.push(format!("[resource attached: {mime_type}]"));
                     }
                     (Some(data), Some(mime_type)) if is_media_mime(mime_type) => {
-                        text_parts.push(spill_oversized_media(media_root, "resource", mime_type, data));
+                        let (text, path) = spill_oversized_media(media_root, "resource", mime_type, data);
+                        generated_files.extend(path);
+                        text_parts.push(text);
                     }
                     _ => text_parts.push(block.to_string()),
                 }
@@ -342,7 +369,7 @@ fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (
         }
     }
 
-    (text_parts.join("\n"), attachments)
+    (text_parts.join("\n"), attachments, generated_files)
 }
 
 /// Monotonic tie-breaker for `spill_oversized_media`'s filenames — a nanosecond timestamp alone
@@ -374,28 +401,30 @@ fn extension_for_mime(mime_type: &str) -> String {
 /// spills it to disk under `media_root` (P64/P66) instead of the old behavior of dumping the raw
 /// base64 string as text into the model's context, which only made a bad situation (too big to
 /// attach) worse (also too big to keep as context). Returns the placeholder text that replaces
-/// the block in what the model sees; on success this cites the file path so the model's own
-/// answer can pass it on to the user, the same convention already used by
-/// `generate_document`/`write_file`. Never panics and never falls back to dumping the raw block —
-/// a decode/write failure just yields a short error placeholder instead.
-fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type: &str, base64_data: &str) -> String {
+/// the block in what the model sees, plus — only on an actual successful write — `Some(path)` so
+/// a caller can offer to open the real file (P64's desktop "Open" affordance) without having to
+/// scrape the path back out of that placeholder text. Never panics and never falls back to
+/// dumping the raw block — a decode/write failure just yields a short error placeholder and
+/// `None` instead.
+fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type: &str, base64_data: &str) -> (String, Option<String>) {
     use base64::Engine;
 
     let bytes = match base64::engine::general_purpose::STANDARD.decode(base64_data) {
         Ok(bytes) => bytes,
-        Err(_) => return format!("[{block_type} block had malformed data — dropped]"),
+        Err(_) => return (format!("[{block_type} block had malformed data — dropped]"), None),
     };
     let size = bytes.len();
 
     let Some(media_root) = media_root else {
-        return format!(
-            "[{block_type} too large to attach inline: {mime_type}, {size} bytes — no generated-file directory configured]"
+        return (
+            format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — no generated-file directory configured]"),
+            None,
         );
     };
 
     let dir = media_root.join("mcp-media");
     if let Err(err) = std::fs::create_dir_all(&dir) {
-        return format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]");
+        return (format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]"), None);
     }
 
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -403,8 +432,11 @@ fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type:
     let path = dir.join(format!("{nanos}-{counter}.{}", extension_for_mime(mime_type)));
 
     match std::fs::write(&path, &bytes) {
-        Ok(()) => format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — saved to {}]", path.display()),
-        Err(err) => format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]"),
+        Ok(()) => {
+            let path = path.display().to_string();
+            (format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — saved to {path}]"), Some(path))
+        }
+        Err(err) => (format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]"), None),
     }
 }
 
@@ -776,6 +808,20 @@ mod tests {
         let result = orchestrator.handle_message(&[], "generate a report").await.unwrap();
 
         assert!(result.attachments.is_empty());
+        assert_eq!(result.generated_files, vec!["/tmp/relatorio.pdf".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_status_ok_result_with_no_path_is_not_mistaken_for_a_generated_file() {
+        // write_file's exact shape (`{"status":"ok"}`, no `path`) — must not false-positive.
+        let tool_result = json!({ "status": "ok" });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "ok" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "save a note").await.unwrap();
+
+        assert!(result.generated_files.is_empty());
     }
 
     #[test]
@@ -824,6 +870,7 @@ mod tests {
         assert_eq!(written.len(), 1, "expected exactly one spilled file, got {written:?}");
         assert_eq!(written[0].extension().and_then(|e| e.to_str()), Some("mp4"));
         assert!(std::fs::read(&written[0]).unwrap().len() > MAX_INLINE_MEDIA_BYTES);
+        assert_eq!(result.generated_files, vec![written[0].display().to_string()]);
     }
 
     #[tokio::test]
@@ -846,6 +893,7 @@ mod tests {
         let result = orchestrator.handle_message(&[], "make a big video").await.unwrap();
 
         assert!(result.attachments.is_empty());
+        assert!(result.generated_files.is_empty());
     }
 
     #[tokio::test]
@@ -866,5 +914,6 @@ mod tests {
         let result = orchestrator.handle_message(&[], "make an image").await.unwrap();
 
         assert!(result.attachments.is_empty());
+        assert!(result.generated_files.is_empty());
     }
 }

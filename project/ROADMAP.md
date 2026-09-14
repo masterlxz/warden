@@ -461,6 +461,15 @@ Warden como interface de IA para casa inteligente.
   cita o caminho do arquivo, mesmo padrão sem-affordance-de-UI já usado por
   `generate_document`/`write_file`. Fecha a frente 2 do P64 por completo — só falta o teste de
   ponta a ponta contra um MCP/dispositivo reais (lacuna de ambiente, ver `PENDING.md` P66).
+- **Affordance no desktop pra abrir arquivo gerado implementada (Sessão 67, 2026-09-14,
+  continuação)**: última sobra do escopo original do P64 — botão "Open" no balão do assistente
+  pra cada arquivo escrito naquele turno (`generate_document` ou mídia grande demais salva em
+  disco), em vez de só citar o caminho em texto. Caminho capturado de forma estruturada no
+  momento em que a tool grava (`MessageOutcome.generated_files`), nunca por parsing de texto.
+  Bônus de segurança: fechado um path-traversal pré-existente em `generate_document` (`filename`
+  agora precisa ser um nome simples, sem `..`/caminho absoluto) e o novo comando de abrir arquivo
+  canonicaliza e confere que o caminho está dentro do diretório confiável antes de abrir — defesa
+  em profundidade. **Fecha o P64 por completo**, exceto a lacuna de ambiente do P66.
 
 ---
 

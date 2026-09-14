@@ -129,7 +129,7 @@ mod tests {
     use crate::ChatRole;
 
     fn message(usage: Option<Usage>) -> crate::ConversationMessage {
-        crate::ConversationMessage { id: "m".to_string(), role: ChatRole::Assistant, content: String::new(), created_at: 0, usage, attachments: Vec::new() }
+        crate::ConversationMessage { id: "m".to_string(), role: ChatRole::Assistant, content: String::new(), created_at: 0, usage, attachments: Vec::new(), generated_files: Vec::new() }
     }
 
     fn conversation(agent_id: Option<&str>, provider_id: Option<&str>, messages: Vec<crate::ConversationMessage>) -> Conversation {

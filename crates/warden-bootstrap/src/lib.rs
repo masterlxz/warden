@@ -374,6 +374,11 @@ pub struct ConversationMessage {
     /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Paths of files actually written to disk on the assistant turn (P64) — `generate_document`
+    /// or oversized MCP media spilled to disk (`Orchestrator::MessageOutcome::generated_files`).
+    /// `#[serde(default)]` so conversations saved before this field existed still load.
+    #[serde(default)]
+    pub generated_files: Vec<String>,
 }
 
 /// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
@@ -600,6 +605,7 @@ pub async fn handle_turn(
         created_at: now_millis(),
         usage: None,
         attachments: Vec::new(),
+        generated_files: Vec::new(),
     });
     conversation.messages.push(ConversationMessage {
         id: message_id(),
@@ -608,6 +614,7 @@ pub async fn handle_turn(
         created_at: now_millis(),
         usage: outcome.usage,
         attachments: outcome.attachments.clone(),
+        generated_files: outcome.generated_files.clone(),
     });
     conversation.updated_at = now_millis();
 
@@ -1379,6 +1386,7 @@ oauth = true
                 created_at: updated_at,
                 usage: None,
                 attachments: Vec::new(),
+                generated_files: Vec::new(),
             }],
             created_at: updated_at,
             updated_at,

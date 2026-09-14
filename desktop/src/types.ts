@@ -23,6 +23,9 @@ export interface ChatMessage {
   createdAt: number;
   usage?: Usage;
   attachments?: Attachment[];
+  /** Paths of files actually written to disk this turn (P64) — `generate_document`'s own
+   * result, or oversized MCP media spilled to disk. Feeds the "Open" button in `MessageBubble`. */
+  generatedFiles?: string[];
 }
 
 export interface Conversation {

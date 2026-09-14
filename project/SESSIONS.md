@@ -94,9 +94,62 @@ literalmente o mesmo padrão em 4 arquivos, não uma feature nova.
 (a outra "sobra pequena" listada, ainda não atacada); o teste de ponta a ponta do P66 contra um
 MCP/dispositivo reais continua bloqueado por ambiente.
 
-**Próximo passo**: perguntar ao usuário se quer seguir pra "affordance no desktop pra abrir o
-arquivo direto da conversa" (a outra sobra pequena) ou outra coisa da lista já levantada (Fase 8
-extensão de navegador, Fase 9.1 Tailscale, Fase 10 TruthID, P61 Storage Provider).
+Usuário confirmou seguir direto pra essa sobra ("sim pode seguir"). Escopo tinha uma decisão de
+arquitetura em aberto (como o desktop sabe *qual* caminho é seguro pra virar botão), então usei
+`EnterPlanMode` de novo — `AskUserQuestion` primeiro pra decidir a abordagem: capturar o caminho
+de forma **estruturada** no momento em que a tool grava (escolhida) vs. tentar reconhecer um
+caminho dentro do texto livre da resposta via regex (rejeitada, formato do modelo não é
+garantido). Um agente de exploração levantou o pipeline de renderização do desktop e a
+segurança do `filename` do `generate_document` antes do plano final.
+
+**Continuação (mesma sessão)**:
+
+- Achado de segurança durante a exploração: `GenerateDocumentTool::call`
+  (`crates/warden-core/src/tool/document.rs`) nunca validou `filename` contra `..`/caminho
+  absoluto — `self.root.join(filename)` sem sanitização. Pré-existente, mas ficava mais
+  consequente com um botão de um clique pra abrir esse caminho. Corrigido: `filename` agora
+  precisa ser exatamente um componente `Normal` (nem `/`, nem `..`, nem absoluto), com mensagem
+  de erro clara. Dois testes novos (`rejects_path_traversal_in_filename`,
+  `rejects_absolute_path_filename`); nenhum teste existente usava um `filename` com `/`.
+- `crates/warden-core/src/orchestrator/mod.rs`: `spill_oversized_media` passou de devolver só
+  `String` pra `(String, Option<String>)` — o placeholder de texto de sempre, mais o caminho real
+  só no branch de sucesso da escrita. `extract_media_from_tool_result` ganhou um terceiro
+  elemento de retorno (`Vec<String>`), alimentado por isso e por um helper novo
+  `generated_file_path` que reconhece a shape exclusiva do `generate_document`
+  (`{"status":"ok","path":...}` — confirmado via grep que nenhuma outra tool no workspace devolve
+  `status`+`path` juntos, então não há risco de falso positivo com `write_file`'s
+  `{"status":"ok"}` sem `path`). `MessageOutcome` ganhou `generated_files: Vec<String>`.
+- `crates/warden-bootstrap/src/lib.rs`: `ConversationMessage` ganhou `generated_files: Vec<String>`
+  (`#[serde(default)]`, mesmo padrão retrocompatível de `attachments`); `handle_turn` persiste
+  `outcome.generated_files` na mensagem do assistente.
+- `desktop/src-tauri/src/lib.rs`: `AppState` ganhou `generated_files_root: PathBuf`, resolvido
+  uma vez no `run()` de startup reaproveitando o `sync_vault_path` já computado ali (mesma fórmula
+  de `resolve_generated_path` que `bootstrap()` usa internamente). Novo comando
+  `open_generated_file`: canonicaliza o caminho pedido e `generated_files_root`, recusa abrir
+  qualquer coisa que não esteja dentro dele (defesa em profundidade — não confia só na correção do
+  lado de escrita), e chama `tauri_plugin_opener::open_path` (mesmo crate que `open_url` já usa
+  pro fluxo OAuth, nenhuma dependência nova). `SendMessageResult` ganhou `generated_files`.
+- Frontend: `ChatMessage.generatedFiles` novo (`types.ts`); `App.tsx` thread o campo do IPC pra
+  dentro da `ChatMessage`, mesmo padrão condicional-quando-vazio de `attachments`;
+  `MessageBubble.tsx` ganhou `GeneratedFileButton` (botão "📄 Open <nome>" por caminho, erro
+  inline sem `alert()`, mesmo espírito do `SpeakButton`), renderizado só no balão do assistente
+  entre o conteúdo e o rodapé. CSS novo (`.message-bubble-files`/`.message-file-btn`) reaproveita
+  o mesmo vocabulário visual de `.settings-browse-btn`.
+- Testado: os 2 testes de traversal + 2 novos em `orchestrator/mod.rs` (`generate_document`-shaped
+  result popula `generated_files`; `write_file`'s shape sem `path` não gera falso positivo) + um
+  assert extra no teste de vídeo grande já existente confirmando que o path bate;
+  `cargo test -p warden-core -p warden-bootstrap` e `cargo test --workspace` inteiro, ambos 100%
+  verdes; `cargo clippy --workspace --all-targets`, `cargo build -p desktop`, `npx tsc --noEmit`,
+  `npm run build`, todos limpos. Sem verificação visual real (mesmo motivo já registrado nesta
+  sessão — o display deste ambiente é a tela real do usuário).
+- `project/PENDING.md` (P64) e `project/ROADMAP.md` atualizados.
+
+**Isso fecha o P64 por completo** — nenhuma sobra conhecida do escopo original além da lacuna de
+ambiente já registrada em P66 (teste de ponta a ponta contra um MCP real).
+
+**Próximo passo**: nenhum item específico decidido — próxima sessão deve perguntar ao usuário o
+que atacar (Fase 8 extensão de navegador, Fase 9.1 Tailscale, Fase 10 TruthID, ou P61 Storage
+Provider são as opções já levantadas).
 
 ---
 

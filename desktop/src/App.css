@@ -863,6 +863,31 @@ body {
   margin-top: 0.5rem;
 }
 
+.message-bubble-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.message-file-btn {
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: inherit;
+  font-size: 0.85em;
+  padding: 0.4em 0.7em;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.message-file-btn:hover {
+  background-color: var(--color-accent-soft);
+  color: var(--color-accent-dark);
+}
+
 /* Settings view */
 
 .settings-view {

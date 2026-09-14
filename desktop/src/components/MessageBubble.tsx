@@ -76,6 +76,33 @@ function AttachmentPreview({ attachment }: { attachment: Attachment }) {
   return <img src={src} alt="" />;
 }
 
+/** One "Open" button for a file `generate_document`/oversized MCP media (P64) wrote to disk this
+ * turn — hands the path to the Rust `open_generated_file` command, which opens it with the OS
+ * default app (and refuses anything outside the trusted generated-files directory). Same
+ * inline-error-without-blocking-dialog pattern as `SpeakButton` above. */
+function GeneratedFileButton({ path }: { path: string }) {
+  const [error, setError] = useState<string | null>(null);
+  const name = path.split(/[/\\]/).pop() || path;
+
+  async function handleClick() {
+    setError(null);
+    try {
+      await invoke("open_generated_file", { path });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="message-file-btn" onClick={handleClick}>
+        📄 Open {name}
+      </button>
+      {error && <p className="chat-attach-error" role="alert">{error}</p>}
+    </>
+  );
+}
+
 // Links must open in the user's default browser, not navigate the app's own webview away.
 // Exported for reuse by `VaultView` (P52 part 2), which renders markdown outside chat bubbles.
 export function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -114,6 +141,13 @@ function MessageBubble({ message }: MessageBubbleProps) {
               {message.content}
             </ReactMarkdown>
           </div>
+          {message.generatedFiles && message.generatedFiles.length > 0 && (
+            <div className="message-bubble-files">
+              {message.generatedFiles.map((path, index) => (
+                <GeneratedFileButton key={index} path={path} />
+              ))}
+            </div>
+          )}
           <div className="message-bubble-footer">
             <SpeakButton text={message.content} />
             {message.usage && <span className="message-bubble-usage">{message.usage.totalTokens} tokens</span>}

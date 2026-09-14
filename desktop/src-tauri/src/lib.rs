@@ -12,9 +12,9 @@ use tauri::State;
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
-    oauth_credential_store_path, resolve_storage_provider, resolve_vault_path, save_config, save_conversation as write_conversation,
-    AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider, ProviderConfig, RemoteNodeConfig,
-    StorageProviderKind, UsageSummary,
+    oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
+    ProviderConfig, RemoteNodeConfig, StorageProviderKind, UsageSummary,
 };
 use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
@@ -30,6 +30,10 @@ struct AppState {
     /// Set by `sync_cmds::sync_push_begin`, taken by `sync_cmds::sync_push_await` — showing the
     /// QR and blocking on the TruthID phone are deliberately separate IPC calls.
     pending_push: Mutex<Option<warden_sync::push::BeginPushResult>>,
+    /// Resolved once at startup, same as `sync`'s vault path below — the trusted root
+    /// `open_generated_file` (P64) confines every path it's willing to open to, so a path a
+    /// malicious/prompt-injected tool result claimed can never be opened outside of it.
+    generated_files_root: PathBuf,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -129,6 +133,10 @@ struct SendMessageResult {
     /// Media extracted from an MCP tool's result during this turn (P64 frente 2) — empty when no
     /// tool call produced any.
     attachments: Vec<AttachmentPayload>,
+    /// Paths of files actually written to disk this turn (P64) — `generate_document`'s own
+    /// result, or oversized MCP media spilled to disk. Feeds the chat UI's "Open" affordance via
+    /// `open_generated_file`.
+    generated_files: Vec<String>,
 }
 
 /// `agent_id`/`provider_id` are the per-conversation selectors (closes P3) — the frontend sends
@@ -177,7 +185,23 @@ async fn send_message(
         content: outcome.content,
         usage: outcome.usage,
         attachments: outcome.attachments.into_iter().map(Into::into).collect(),
+        generated_files: outcome.generated_files,
     })
+}
+
+/// Opens a file `generate_document`/oversized MCP media (P64) wrote to disk with the OS default
+/// app for it, from the chat UI's "Open" affordance. Canonicalizes both `path` and the trusted
+/// `generated_files_root` and refuses anything outside it — defense in depth on top of
+/// `generate_document`'s own `filename` validation, since this command is what actually turns a
+/// path a tool claimed into a one-click action on the user's filesystem.
+#[tauri::command]
+fn open_generated_file(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let root = std::fs::canonicalize(&state.generated_files_root).map_err(|e| format!("{e:#}"))?;
+    let target = std::fs::canonicalize(&path).map_err(|e| format!("{e:#}"))?;
+    if !target.starts_with(&root) {
+        return Err("refusing to open a file outside the generated-files directory".to_string());
+    }
+    tauri_plugin_opener::open_path(target, None::<&str>).map_err(|e| format!("{e:#}"))
 }
 
 /// Filename handed to the Whisper API for a recorded clip — only the extension matters (the API
@@ -699,14 +723,29 @@ pub fn run() {
     let sync_vault_path = load_config(None)
         .map(|config| resolve_vault_path(&Overrides::default(), &config, desktop_default_vault_path()))
         .unwrap_or_else(|_| desktop_default_vault_path());
+    // Same resolution `bootstrap()` uses internally for `generate_document`'s directory (P64) —
+    // computed independently here (rather than threaded out of `bootstrap()`) because
+    // `open_generated_file` needs it outside of any chat turn, at app startup. Falls back to the
+    // exact same "sibling of the vault path" formula `resolve_generated_path` uses when there's
+    // no config override, for the rare case the config can't even be loaded.
+    let generated_files_root = load_config(None)
+        .map(|config| resolve_generated_path(&config, &sync_vault_path))
+        .unwrap_or_else(|_| sync_vault_path.parent().unwrap_or(std::path::Path::new(".")).join("generated"));
     let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { orchestrator: Mutex::new(orchestrator), recording: Mutex::new(None), sync, pending_push: Mutex::new(None) })
+        .manage(AppState {
+            orchestrator: Mutex::new(orchestrator),
+            recording: Mutex::new(None),
+            sync,
+            pending_push: Mutex::new(None),
+            generated_files_root,
+        })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            open_generated_file,
             read_attachment,
             transcribe_audio,
             synthesize_speech,

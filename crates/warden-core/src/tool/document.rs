@@ -128,6 +128,14 @@ impl Tool for GenerateDocumentTool {
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let filename = args.get("filename").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'filename' argument"))?;
 
+        // Rejects `..`, `/`, and absolute paths — `filename` must be a single plain path
+        // component, so `self.root.join(filename)` below can never escape `self.root` (a desktop
+        // "open this generated file" affordance trusts every path under `self.root`, so a
+        // traversal here would be a real path-traversal write, not just a cosmetic issue).
+        if !matches!(std::path::Path::new(filename).components().collect::<Vec<_>>().as_slice(), [std::path::Component::Normal(_)]) {
+            anyhow::bail!("'filename' must be a plain file name, not a path (no '/' or '..')");
+        }
+
         let extension = std::path::Path::new(filename).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
         if !extension.as_deref().is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e)) {
             anyhow::bail!("unsupported file extension for 'generate_document' — only .txt, .md, .csv, .pdf and .xlsx are supported today");
@@ -502,6 +510,24 @@ mod tests {
         let err = tool.call(json!({ "filename": "relatorio", "content": "x" })).await.unwrap_err();
 
         assert!(err.to_string().contains("only .txt, .md, .csv, .pdf and .xlsx"));
+    }
+
+    #[tokio::test]
+    async fn rejects_path_traversal_in_filename() {
+        let tool = GenerateDocumentTool::new(temp_root());
+
+        let err = tool.call(json!({ "filename": "../../etc/evil.md", "content": "x" })).await.unwrap_err();
+
+        assert!(err.to_string().contains("plain file name"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_absolute_path_filename() {
+        let tool = GenerateDocumentTool::new(temp_root());
+
+        let err = tool.call(json!({ "filename": "/tmp/evil.md", "content": "x" })).await.unwrap_err();
+
+        assert!(err.to_string().contains("plain file name"), "unexpected error: {err}");
     }
 
     #[tokio::test]
