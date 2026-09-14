@@ -7,6 +7,11 @@ edition.workspace = true
 anyhow.workspace = true
 async-stream = "0.3"
 async-trait.workspace = true
+# Decodes oversized MCP media (P64/P66, orchestrator/mod.rs's `spill_oversized_media`) to write it
+# to disk instead of dumping the raw base64 into the model's context — already a workspace
+# dependency (used e.g. by warden-telegram's own upload path), just not previously needed inside
+# this crate, which only ever checked the base64 *string length* against the inline cap.
+base64.workspace = true
 eventsource-stream = "0.2"
 futures-core = "0.3"
 futures-util = "0.3"

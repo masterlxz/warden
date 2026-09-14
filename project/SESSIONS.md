@@ -2,7 +2,69 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-13 (Sessão 66)
+> Última atualização: 2026-09-14 (Sessão 67)
+
+---
+
+### 2026-09-14 — Sessão 67
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"). Mesma situação da Sessão 66 — a
+  frente 2 do P64 (mídia MCP-gerada inline) tinha fechado sem uma próxima fatia óbvia. Perguntado
+  ao usuário via `AskUserQuestion` (4 opções: lacunas do P64/P66, nova fase do roadmap, P61
+  Storage Provider, ou outra coisa). Escolhida "lacunas do P64/P66" — que são duas: vídeo grande
+  acima do teto inline (acionável) e teste de ponta a ponta contra um MCP real (não acionável
+  neste ambiente, mesma lacuna já aceita em P29/P30/P31). Plano escrito e aprovado
+  (`EnterPlanMode`/`ExitPlanMode`, com 2 agentes de exploração em paralelo antes de desenhar o
+  plano) antes de codar, atacando só a lacuna acionável.
+
+**O que foi feito**:
+
+- Achado antes de codar: o comportamento de hoje pra mídia reconhecida (image/audio/video) acima
+  do teto de `MAX_INLINE_MEDIA_BYTES` (8MB) não era "não suportado" — era pior. `block.to_string()`
+  despejava o base64 inteiro (potencialmente dezenas de MB) como texto cru no contexto do modelo,
+  inflando/estourando o contexto a cada rodada de tool call.
+- Resolvido reaproveitando o mesmo padrão já validado com o usuário pra `generate_document`/
+  `write_file` (P64 fatia 1): quando não cabe inline, a tool grava em disco e a resposta do modelo
+  simplesmente cita o caminho — nenhum affordance novo de UI. Por isso a mudança ficou inteira em
+  `warden-core`/`warden-bootstrap`; nenhum canal (desktop/Telegram/WhatsApp/mobile) precisou mudar.
+- `crates/warden-core/src/orchestrator/mod.rs`: `Orchestrator` ganhou `media_root:
+  Option<PathBuf>` + builder `with_media_root` (espelhando `with_model`/`with_tool`).
+  `extract_media_from_tool_result` ganhou um parâmetro `media_root`; só nos dois pontos que já
+  tratavam mídia reconhecida-mas-grande-demais (blocos `image`/`audio`/`resource` com mime
+  image/audio/video), chama o novo helper privado `spill_oversized_media` em vez do antigo
+  `block.to_string()` — decodifica o base64, grava em `<media_root>/mcp-media/<nanos>-<contador>.
+  <ext>` (extensão via `extension_for_mime`, nome único via timestamp+`AtomicU64`, mesma ideia
+  sem-dependência-nova que `warden-bootstrap`'s `temp_toml_path` de teste já usava — sem precisar
+  de `uuid`) e devolve um placeholder citando o caminho. Base64 malformado ou falha de escrita cai
+  num placeholder de erro curto, nunca em pânico nem no despejo de texto cru antigo. `media_root`
+  `None` (orchestrator fora de `bootstrap()` — testes, `warden-mcp-server`) degrada pro mesmo
+  placeholder, só sem tamanho/caminho, nunca escrevendo nada.
+- Nova dependência direta de `warden-core`: `base64.workspace = true` (já pinada no workspace,
+  0.22 — só nunca tinha sido usada por este crate, que até agora só checava o *tamanho* da string
+  base64 pra decidir o teto, nunca decodificava de fato).
+- `crates/warden-bootstrap/src/lib.rs`: `bootstrap()` clona `generated_path` antes dele ser movido
+  pra `GenerateDocumentTool::new` e repassa o original pra `build_delegating_orchestrator`, que
+  ganhou um parâmetro `media_root` e aplica `with_media_root` em **todo nível** da cadeia de
+  sub-agentes (`DelegateTool`), não só no orchestrator de topo — um sub-agente que chama uma tool
+  MCP também precisa desse tratamento.
+- Testado: 3 testes novos em `orchestrator/mod.rs` (vídeo grande com `media_root` configurado —
+  arquivo real gravado em disco, conteúdo confere, texto de retorno cita o caminho, nenhum
+  `Attachment` produzido; mesmo cenário com `media_root: None` — degrada sem escrever nada, sem
+  pânico; base64 malformado num bloco grande — placeholder de erro, sem pânico, sem despejo de
+  texto cru), os testes já existentes da fatia 1 (mídia dentro do teto) intactos sem alteração de
+  comportamento. `cargo test -p warden-core -p warden-bootstrap` (98+48 testes) e
+  `cargo test --workspace` inteiro, ambos 100% verdes; `cargo clippy --workspace --all-targets`
+  limpo.
+- `project/PENDING.md` (P66, fatia 5) e `project/ROADMAP.md` atualizados.
+
+**Ainda em aberto**: só o teste de ponta a ponta contra um MCP/dispositivo reais continua — nenhum
+MCP gerador de mídia disponível neste ambiente, nem emulador/dispositivo real pra confirmar
+playback de verdade. Com isso, a frente 2 do P64 está fechada por completo em todo canal e todo
+tamanho/tipo de mídia, restando só essa verificação de ambiente (P66).
+
+**Próximo passo**: nenhum item específico decidido — mesmo padrão das duas últimas sessões,
+próxima sessão deve perguntar ao usuário o que atacar (P64/P66 não tem mais nenhuma fatia
+acionável neste ambiente).
 
 ---
 

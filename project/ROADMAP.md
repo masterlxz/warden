@@ -452,6 +452,15 @@ Warden como interface de IA para casa inteligente.
   com as duas dependências nativas pras 4 ABIs — sem emulador/MCP real disponível pra confirmar
   playback numa tela de verdade. Fecha a frente 2 do P64 em todo canal e todo tipo de mídia dentro
   do teto de ~8MB — ver `PENDING.md` P66 pro detalhamento técnico completo.
+- **Frente 2, fatia 5 implementada (Sessão 67, 2026-09-14)**: vídeo grande (acima do teto de
+  ~8MB) resolvido em todo canal sem tocar em nenhum deles — mídia reconhecida mas grande demais
+  passa a ser gravada em disco (`<generated>/mcp-media/`, mesma convenção de diretório do
+  `generate_document`) em vez do antigo `block.to_string()`, que despejava o base64 inteiro como
+  texto cru no contexto do modelo (pior que "não suportado" — inflava/estourava contexto).
+  `Orchestrator` ganhou um `media_root` opcional (builder `with_media_root`); a resposta do modelo
+  cita o caminho do arquivo, mesmo padrão sem-affordance-de-UI já usado por
+  `generate_document`/`write_file`. Fecha a frente 2 do P64 por completo — só falta o teste de
+  ponta a ponta contra um MCP/dispositivo reais (lacuna de ambiente, ver `PENDING.md` P66).
 
 ---
 

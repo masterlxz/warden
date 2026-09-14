@@ -959,7 +959,7 @@ pub async fn bootstrap(
     let mut base_tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(vault.clone())),
         Arc::new(WriteFileTool::new(vault.clone())),
-        Arc::new(GenerateDocumentTool::new(generated_path)),
+        Arc::new(GenerateDocumentTool::new(generated_path.clone())),
         Arc::new(UsageStatsTool::new(default_conversations_dir())),
     ];
 
@@ -1013,7 +1013,7 @@ pub async fn bootstrap(
 
     let delegate_max_depth =
         resolve_delegate_max_depth(std::env::var("WARDEN_DELEGATE_MAX_DEPTH").ok(), config.delegate_max_depth);
-    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth);
+    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path);
 
     Ok(orchestrator)
 }
@@ -1032,18 +1032,23 @@ const DEFAULT_DELEGATE_MAX_DEPTH: u32 = 2;
 /// terminal orchestrator (`depth == 0`) never gets a `DelegateTool`, so it never advertises
 /// `delegate_task` in its tool specs — that's the actual stopping criterion (structural, not a
 /// runtime check), see the doc comment on `DelegateTool` itself.
+///
+/// `media_root` (P64/P66 — where oversized MCP media gets spilled to disk instead of dumped as
+/// text) is applied at every depth, not just the top level: a sub-agent's own tool calls can
+/// return oversized media too.
 fn build_delegating_orchestrator(
     model: Arc<dyn ModelProvider>,
     vault: Arc<Vault>,
     base_tools: &[Arc<dyn Tool>],
     depth: u32,
+    media_root: PathBuf,
 ) -> Orchestrator {
-    let mut orchestrator = Orchestrator::new(model.clone(), vault.clone());
+    let mut orchestrator = Orchestrator::new(model.clone(), vault.clone()).with_media_root(media_root.clone());
     for tool in base_tools {
         orchestrator.register_tool(tool.clone());
     }
     if depth > 0 {
-        let sub = build_delegating_orchestrator(model, vault, base_tools, depth - 1);
+        let sub = build_delegating_orchestrator(model, vault, base_tools, depth - 1, media_root);
         orchestrator.register_tool(Arc::new(DelegateTool::new(sub)));
     }
     orchestrator

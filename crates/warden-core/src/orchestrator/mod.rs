@@ -1,4 +1,7 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -34,11 +37,16 @@ pub struct Orchestrator {
     model: Arc<dyn ModelProvider>,
     vault: Arc<Vault>,
     tools: Vec<Arc<dyn Tool>>,
+    /// Directory oversized MCP media (P64/P66 — over `MAX_INLINE_MEDIA_BYTES`) gets written to
+    /// instead of being dumped inline. `None` for an `Orchestrator` built directly (tests,
+    /// `warden-mcp-server`) rather than through `warden-bootstrap::bootstrap()`, which always
+    /// sets this via `with_media_root`.
+    media_root: Option<PathBuf>,
 }
 
 impl Orchestrator {
     pub fn new(model: Arc<dyn ModelProvider>, vault: Arc<Vault>) -> Self {
-        Self { model, vault, tools: Vec::new() }
+        Self { model, vault, tools: Vec::new(), media_root: None }
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -74,6 +82,14 @@ impl Orchestrator {
         let mut clone = self.clone();
         clone.register_tool(tool);
         clone
+    }
+
+    /// Returns a copy of this orchestrator that writes oversized MCP media (P64/P66) to `root`
+    /// instead of dropping it — same cheap-clone reasoning as `with_model`/`with_tool`. Called
+    /// once by `warden-bootstrap::bootstrap()` with the same "generated" directory
+    /// `generate_document` already writes into.
+    pub fn with_media_root(&self, root: PathBuf) -> Self {
+        Self { media_root: Some(root), ..self.clone() }
     }
 
     /// Every tool currently registered — used by `warden-mcp-server` to re-expose this
@@ -224,7 +240,7 @@ impl Orchestrator {
             for tool_call in &response.tool_calls {
                 let content = match self.run_tool(tool_call).await {
                     Ok(value) => {
-                        let (content, extracted) = extract_media_from_tool_result(&value);
+                        let (content, extracted) = extract_media_from_tool_result(&value, self.media_root.as_deref());
                         attachments.extend(extracted);
                         content
                     }
@@ -247,10 +263,10 @@ impl Orchestrator {
     }
 }
 
-/// Above this, an image/audio/video content block is left as raw text instead of becoming an
-/// `Attachment` (P64 frente 2) — big enough for a still image or a short audio clip, not enough
-/// for real video (no attempt to raise this for video; that needs a file-reference path instead
-/// of inline base64, a future slice). Checked against the base64 string's decoded byte length.
+/// Above this, an image/audio/video content block never becomes an `Attachment` (P64 frente 2) —
+/// big enough for a still image or a short audio clip, not enough for real video. It's spilled to
+/// disk instead (P64/P66 — `spill_oversized_media`) rather than dumped as raw base64 text into the
+/// model's context. Checked against the base64 string's decoded byte length.
 const MAX_INLINE_MEDIA_BYTES: usize = 8 * 1024 * 1024;
 
 fn within_media_size_cap(base64_data: &str) -> bool {
@@ -266,10 +282,15 @@ fn within_media_size_cap(base64_data: &str) -> bool {
 /// `image`/`audio` blocks and `resource` blocks whose `mimeType` is image/audio/video become an
 /// `Attachment` when their base64 payload fits `MAX_INLINE_MEDIA_BYTES` — the model only ever sees
 /// a short placeholder for these (never the base64 itself, which would otherwise re-inflate every
-/// subsequent turn's context). A `resource_link` (a URI, no inline bytes) is deliberately never
-/// auto-fetched — fetching an arbitrary URL an MCP server hands back would be an outbound network
-/// call driven by untrusted tool output (SSRF-shaped risk) — so it always falls through as text.
-fn extract_media_from_tool_result(value: &Value) -> (String, Vec<Attachment>) {
+/// subsequent turn's context). The same kind of block over that cap (typically video — MCP has no
+/// dedicated `VideoContent`, it only ever arrives via `resource`) is written to disk under
+/// `media_root` instead, via `spill_oversized_media`; the model sees a placeholder citing the file
+/// path, the exact same "no chat affordance, the model just cites the path" convention already
+/// used by `generate_document`/`write_file`. A `resource_link` (a URI, no inline bytes) is
+/// deliberately never auto-fetched — fetching an arbitrary URL an MCP server hands back would be
+/// an outbound network call driven by untrusted tool output (SSRF-shaped risk) — so it always
+/// falls through as text, regardless of size.
+fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (String, Vec<Attachment>) {
     let known_type = |item: &Value| matches!(item.get("type").and_then(Value::as_str), Some("text" | "image" | "audio" | "resource" | "resource_link"));
     let Some(content) = value.get("content").and_then(Value::as_array).filter(|blocks| blocks.iter().all(known_type)) else {
         return (value.to_string(), Vec::new());
@@ -294,6 +315,9 @@ fn extract_media_from_tool_result(value: &Value) -> (String, Vec<Attachment>) {
                         attachments.push(Attachment { mime_type: mime_type.to_string(), data: data.to_string() });
                         text_parts.push(format!("[{block_type} attached: {mime_type}]"));
                     }
+                    (Some(data), Some(mime_type)) => {
+                        text_parts.push(spill_oversized_media(media_root, block_type, mime_type, data));
+                    }
                     _ => text_parts.push(block.to_string()),
                 }
             }
@@ -301,12 +325,14 @@ fn extract_media_from_tool_result(value: &Value) -> (String, Vec<Attachment>) {
                 let resource = block.get("resource");
                 let blob = resource.and_then(|r| r.get("blob")).and_then(Value::as_str);
                 let mime_type = resource.and_then(|r| r.get("mimeType")).and_then(Value::as_str);
+                let is_media_mime = |m: &str| m.starts_with("image/") || m.starts_with("audio/") || m.starts_with("video/");
                 match (blob, mime_type) {
-                    (Some(data), Some(mime_type))
-                        if (mime_type.starts_with("image/") || mime_type.starts_with("audio/") || mime_type.starts_with("video/")) && within_media_size_cap(data) =>
-                    {
+                    (Some(data), Some(mime_type)) if is_media_mime(mime_type) && within_media_size_cap(data) => {
                         attachments.push(Attachment { mime_type: mime_type.to_string(), data: data.to_string() });
                         text_parts.push(format!("[resource attached: {mime_type}]"));
+                    }
+                    (Some(data), Some(mime_type)) if is_media_mime(mime_type) => {
+                        text_parts.push(spill_oversized_media(media_root, "resource", mime_type, data));
                     }
                     _ => text_parts.push(block.to_string()),
                 }
@@ -317,6 +343,69 @@ fn extract_media_from_tool_result(value: &Value) -> (String, Vec<Attachment>) {
     }
 
     (text_parts.join("\n"), attachments)
+}
+
+/// Monotonic tie-breaker for `spill_oversized_media`'s filenames — a nanosecond timestamp alone
+/// isn't guaranteed unique when a single tool result carries more than one oversized block (rare,
+/// but a wrong guess here would silently overwrite a file). Same "timestamp + counter, no new
+/// dependency" idiom `warden-bootstrap`'s test helper `temp_toml_path` already uses for the same
+/// problem.
+static MEDIA_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Maps a media MIME type to a filename extension for `spill_oversized_media` — covers the
+/// subtypes the channels already know how to route (Telegram's `telegram_media_method`, the
+/// WhatsApp sidecar's per-mime-prefix payload, mobile's `attachmentKindFor`), falling back to a
+/// sanitized subtype for anything else so a written file is never left without an extension.
+fn extension_for_mime(mime_type: &str) -> String {
+    let subtype = mime_type.split('/').nth(1).unwrap_or("");
+    match subtype {
+        "quicktime" => "mov".to_string(),
+        "mpeg" if mime_type.starts_with("audio/") => "mp3".to_string(),
+        "jpeg" => "jpg".to_string(),
+        "" => "bin".to_string(),
+        other => {
+            let sanitized: String = other.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            if sanitized.is_empty() { "bin".to_string() } else { sanitized }
+        }
+    }
+}
+
+/// Handles an image/audio/video block whose base64 payload is over `MAX_INLINE_MEDIA_BYTES` —
+/// spills it to disk under `media_root` (P64/P66) instead of the old behavior of dumping the raw
+/// base64 string as text into the model's context, which only made a bad situation (too big to
+/// attach) worse (also too big to keep as context). Returns the placeholder text that replaces
+/// the block in what the model sees; on success this cites the file path so the model's own
+/// answer can pass it on to the user, the same convention already used by
+/// `generate_document`/`write_file`. Never panics and never falls back to dumping the raw block —
+/// a decode/write failure just yields a short error placeholder instead.
+fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type: &str, base64_data: &str) -> String {
+    use base64::Engine;
+
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(base64_data) {
+        Ok(bytes) => bytes,
+        Err(_) => return format!("[{block_type} block had malformed data — dropped]"),
+    };
+    let size = bytes.len();
+
+    let Some(media_root) = media_root else {
+        return format!(
+            "[{block_type} too large to attach inline: {mime_type}, {size} bytes — no generated-file directory configured]"
+        );
+    };
+
+    let dir = media_root.join("mcp-media");
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        return format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]");
+    }
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let counter = MEDIA_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{nanos}-{counter}.{}", extension_for_mime(mime_type)));
+
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — saved to {}]", path.display()),
+        Err(err) => format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — failed to save to disk: {err:#}]"),
+    }
 }
 
 #[cfg(test)]
@@ -371,6 +460,16 @@ mod tests {
             "warden-orch-test-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ))))
+    }
+
+    /// A fresh, not-yet-created directory for `spill_oversized_media` tests — `create_dir_all`
+    /// happens lazily inside `spill_oversized_media` itself, same as `temp_vault`'s directory is
+    /// only created on first write.
+    fn temp_media_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "warden-orch-media-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))
     }
 
     #[tokio::test]
@@ -690,5 +789,82 @@ mod tests {
         // decode.
         let large = "A".repeat((MAX_INLINE_MEDIA_BYTES + 1_000_000) * 4 / 3);
         assert!(!within_media_size_cap(&large));
+    }
+
+    // --- P64/P66: oversized media spilled to disk instead of dumped as raw base64 text ---
+
+    /// "AAAA" repeated `groups` times is valid base64 (each group decodes to 3 zero bytes) —
+    /// lets a test build an oversized-but-decodable payload without a real video file.
+    fn oversized_valid_base64() -> String {
+        let groups = MAX_INLINE_MEDIA_BYTES / 3 + 10;
+        "AAAA".repeat(groups)
+    }
+
+    #[tokio::test]
+    async fn an_oversized_video_resource_is_saved_to_disk_and_cited_by_path_not_dumped_as_text() {
+        let data = oversized_valid_base64();
+        let tool_result = json!({
+            "content": [
+                { "type": "resource", "resource": { "uri": "file:///clip.mp4", "mimeType": "video/mp4", "blob": data } }
+            ]
+        });
+        let media_root = temp_media_root();
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "too large to attach inline: video/mp4" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault()).with_media_root(media_root.clone());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "make a big video").await.unwrap();
+
+        assert!(result.attachments.is_empty(), "oversized media must never become an inline Attachment");
+
+        let written = std::fs::read_dir(media_root.join("mcp-media"))
+            .expect("mcp-media dir should have been created")
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 1, "expected exactly one spilled file, got {written:?}");
+        assert_eq!(written[0].extension().and_then(|e| e.to_str()), Some("mp4"));
+        assert!(std::fs::read(&written[0]).unwrap().len() > MAX_INLINE_MEDIA_BYTES);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_video_with_no_media_root_configured_degrades_safely() {
+        let data = oversized_valid_base64();
+        let tool_result = json!({
+            "content": [
+                { "type": "resource", "resource": { "uri": "file:///clip.mp4", "mimeType": "video/mp4", "blob": data } }
+            ]
+        });
+        let model = Arc::new(AssertsToolResultTextModel {
+            calls: AtomicUsize::new(0),
+            expects: "too large to attach inline: video/mp4",
+        });
+        // Plain `Orchestrator::new`, no `with_media_root` — same as any orchestrator not built via
+        // `warden-bootstrap::bootstrap()`.
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "make a big video").await.unwrap();
+
+        assert!(result.attachments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_oversized_base64_never_gets_dumped_as_raw_text() {
+        // Long enough to fail `within_media_size_cap` (same length threshold as the boundary
+        // test above), but not valid base64 at all — must not panic, and must not fall back to
+        // dumping the raw (huge) block as text.
+        let data = "!".repeat((MAX_INLINE_MEDIA_BYTES + 1_000_000) * 4 / 3);
+        let tool_result = json!({
+            "content": [
+                { "type": "image", "data": data, "mimeType": "image/png" }
+            ]
+        });
+        let model = Arc::new(AssertsToolResultTextModel { calls: AtomicUsize::new(0), expects: "malformed data — dropped" });
+        let mut orchestrator = Orchestrator::new(model, temp_vault());
+        orchestrator.register_tool(Arc::new(FixedResultTool(tool_result)));
+
+        let result = orchestrator.handle_message(&[], "make an image").await.unwrap();
+
+        assert!(result.attachments.is_empty());
     }
 }
