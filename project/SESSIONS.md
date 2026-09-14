@@ -62,9 +62,41 @@ MCP gerador de mídia disponível neste ambiente, nem emulador/dispositivo real 
 playback de verdade. Com isso, a frente 2 do P64 está fechada por completo em todo canal e todo
 tamanho/tipo de mídia, restando só essa verificação de ambiente (P66).
 
-**Próximo passo**: nenhum item específico decidido — mesmo padrão das duas últimas sessões,
-próxima sessão deve perguntar ao usuário o que atacar (P64/P66 não tem mais nenhuma fatia
-acionável neste ambiente).
+Comitado (`30e3891`).
+
+**Continuação (mesma sessão)**: perguntado o que atacar a seguir, usuário escolheu as "sobras
+pequenas" do P64 listadas — primeiro a UI de Settings pro `generated_path` (hoje só editável no
+`config.toml`). Mudança pequena e mecânica: espelhar exatamente o padrão já existente do campo
+`vault_path` na tela de Settings, sem decisão de design nova — dispensado `EnterPlanMode` por ser
+literalmente o mesmo padrão em 4 arquivos, não uma feature nova.
+
+- `desktop/src-tauri/src/lib.rs`: `SettingsSnapshot`/`SettingsFormPayload` ganharam
+  `generated_path: String`; `get_settings` lê de `config.generated_path.unwrap_or_default()`;
+  `save_settings` trocou o antigo "carrega `existing.generated_path` adiante" (só editável via
+  config.toml) por `non_empty(payload.generated_path)`, igual `vault_path`.
+- `desktop/src/types.ts`/`App.tsx`/`SettingsView.tsx`: `Settings`/`emptySettings` ganharam
+  `generatedPath`; campo novo no formulário (texto + botão "Browse…" com o diálogo de pasta do
+  Tauri, `handleBrowseGeneratedPath`), mesmo componente/CSS já usado pro campo de vault.
+- Verificado: `cargo build`/`cargo clippy --all-targets` (crate `desktop`) limpos, `npx tsc
+  --noEmit` e `npm run build` limpos.
+- **Achado de ambiente importante**: tentei validar visualmente rodando `npm run tauri dev` e
+  tirando um screenshot fullscreen (`spectacle -b -f`) pra confirmar o campo novo renderizando —
+  o screenshot capturou a **tela real do usuário** (uma partida de xadrez em andamento no
+  chess.com, abas de navegador reais), não uma janela isolada de teste. O display deste ambiente
+  (`DISPLAY`/`WAYLAND_DISPLAY`) é a sessão KDE Plasma real do usuário, compartilhada, não um
+  sandbox. Screenshot apagado imediatamente, processo do `tauri dev` encerrado, e uma memória de
+  feedback nova salva (`feedback_shared_display_no_screenshots`) pra nunca mais tirar screenshot
+  fullscreen neste projeto sem avisar antes — verificação de UI segue só até build/typecheck/
+  clippy, sem tentativa de captura visual.
+- `project/PENDING.md` (P64) atualizado.
+
+**Ainda em aberto**: affordance no desktop pra abrir o arquivo gerado/de mídia direto da conversa
+(a outra "sobra pequena" listada, ainda não atacada); o teste de ponta a ponta do P66 contra um
+MCP/dispositivo reais continua bloqueado por ambiente.
+
+**Próximo passo**: perguntar ao usuário se quer seguir pra "affordance no desktop pra abrir o
+arquivo direto da conversa" (a outra sobra pequena) ou outra coisa da lista já levantada (Fase 8
+extensão de navegador, Fase 9.1 Tailscale, Fase 10 TruthID, P61 Storage Provider).
 
 ---
 

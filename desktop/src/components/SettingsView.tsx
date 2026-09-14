@@ -8,6 +8,7 @@ const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
   vaultPath: "",
+  generatedPath: "",
   tavilyKey: "",
   whisperKey: "",
   enableShell: false,
@@ -692,6 +693,13 @@ function SettingsView() {
     }
   }
 
+  async function handleBrowseGeneratedPath() {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string") {
+      setForm((f) => ({ ...f, generatedPath: selected }));
+    }
+  }
+
   function addProvider() {
     setForm((f) => {
       const id = nextProviderId(f.providers);
@@ -838,6 +846,7 @@ function SettingsView() {
           providers: form.providers,
           active_provider: form.activeProvider,
           vault_path: form.vaultPath,
+          generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
           whisper_key: form.whisperKey,
           enable_shell: form.enableShell,
@@ -966,6 +975,26 @@ function SettingsView() {
               onChange={(e) => setForm((f) => ({ ...f, vaultPath: e.currentTarget.value }))}
             />
             <button type="button" className="settings-browse-btn" onClick={handleBrowseVaultPath}>
+              Browse…
+            </button>
+          </div>
+        </label>
+
+        <label className="settings-field">
+          <span className="settings-label">Generated files path</span>
+          <p className="settings-hint">
+            Where files the model generates (documents, spreadsheets) or oversized media it fetches get saved. Kept
+            separate from the vault — these files aren't synced or searched.
+          </p>
+          <div className="settings-key-field">
+            <input
+              className="settings-input"
+              type="text"
+              placeholder="Default: sibling of the vault path (…/generated)"
+              value={form.generatedPath}
+              onChange={(e) => setForm((f) => ({ ...f, generatedPath: e.currentTarget.value }))}
+            />
+            <button type="button" className="settings-browse-btn" onClick={handleBrowseGeneratedPath}>
               Browse…
             </button>
           </div>

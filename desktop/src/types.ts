@@ -206,6 +206,9 @@ export interface Settings {
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
   activeProvider: string;
   vaultPath: string;
+  /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
+   * means "unset", resolving at bootstrap time to a sibling of the vault path. */
+  generatedPath: string;
   tavilyKey: string;
   /** OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of which
    * provider is active for chat, so voice input works no matter which one is selected. */

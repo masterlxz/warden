@@ -310,6 +310,10 @@ struct SettingsSnapshot {
     providers: Vec<ProviderPayload>,
     active_provider: String,
     vault_path: String,
+    /// Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
+    /// means "unset", same convention as `vault_path`, resolving at bootstrap time to a sibling
+    /// of the vault path (see `resolve_generated_path`).
+    generated_path: String,
     tavily_key: String,
     /// OpenAI API key for Whisper transcription (P28 part 2) — dedicated, independent of which
     /// provider is active for chat. Same "not set" = empty string convention as `tavily_key`.
@@ -345,6 +349,7 @@ struct SettingsFormPayload {
     providers: Vec<ProviderPayload>,
     active_provider: String,
     vault_path: String,
+    generated_path: String,
     tavily_key: String,
     whisper_key: String,
     enable_shell: bool,
@@ -404,6 +409,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
             .collect(),
         active_provider: config.active_provider.unwrap_or_default(),
         vault_path: config.vault_path.unwrap_or_default(),
+        generated_path: config.generated_path.unwrap_or_default(),
         tavily_key: config.api_keys.tavily.unwrap_or_default(),
         whisper_key: config.api_keys.whisper.unwrap_or_default(),
         enable_shell: config.enable_shell.unwrap_or(false),
@@ -556,9 +562,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         provider: None,
         model: None,
         vault_path: vault_path_override.clone(),
-        // No Settings-screen UI yet (P64, config.toml-only) — same carry-forward reasoning as
-        // `delegate_max_depth`/`git_sync` below.
-        generated_path: existing.generated_path,
+        generated_path: non_empty(payload.generated_path),
         enable_shell: Some(payload.enable_shell),
         // No Settings-screen UI yet (P46, config.toml/env-only advanced knob) — carry forward
         // whatever was on disk instead of wiping it, same reasoning as `telegram_bot_token` above.

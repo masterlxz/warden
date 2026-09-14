@@ -14,6 +14,7 @@ const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
   vaultPath: "",
+  generatedPath: "",
   tavilyKey: "",
   whisperKey: "",
   enableShell: false,
