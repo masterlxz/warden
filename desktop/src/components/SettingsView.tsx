@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
 import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, StorageProviderKind } from "../types";
@@ -678,6 +679,9 @@ function SettingsView() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Set mid-save (P61 follow-up) only when the storage-provider migration this save triggers has
+  // something real to publish to Arweave — see the `migration-qr` event emitted by `save_settings`.
+  const [migrationQrSvg, setMigrationQrSvg] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<Settings>("get_settings")
@@ -840,6 +844,9 @@ function SettingsView() {
     }
 
     setIsSaving(true);
+    const unlistenQr = await listen<{ qrSvg: string }>("migration-qr", (event) => {
+      setMigrationQrSvg(event.payload.qrSvg);
+    });
     try {
       await invoke("save_settings", {
         payload: {
@@ -862,6 +869,8 @@ function SettingsView() {
     } catch (err) {
       setError(String(err));
     } finally {
+      unlistenQr();
+      setMigrationQrSvg(null);
       setIsSaving(false);
     }
   }
@@ -1036,6 +1045,16 @@ function SettingsView() {
           {isSaving ? "Saving…" : "Save settings"}
         </button>
       </form>
+
+      {migrationQrSvg && (
+        <div className="settings-modal-backdrop">
+          <div className="sync-qr-card settings-modal-card">
+            <p className="settings-hint">Aprove no app TruthID pra publicar a memória migrada no Arweave.</p>
+            <div className="sync-qr-image" dangerouslySetInnerHTML={{ __html: migrationQrSvg }} />
+            <p className="settings-hint">Aguardando aprovação…</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

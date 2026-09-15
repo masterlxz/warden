@@ -38,6 +38,34 @@ pub trait StorageProvider: Send + Sync {
         }
         Ok(())
     }
+
+    /// Same as `export_all`, but gives a provider whose backend has a non-interactive remote step
+    /// (e.g. `DecentralizedVaultProvider` pulling the latest Arweave snapshot first) the chance to
+    /// run it before snapshotting. `on_qr` exists for signature symmetry with
+    /// `import_all_interactive` — no known provider needs it on the export/pull side (pulling from
+    /// Arweave never requires a phone approval, only publishing does), so it's always `None` here
+    /// in practice. Default: delegates to `export_all`, so every existing provider (`LocalFSProvider`,
+    /// `RemoteNodeProvider`, any future one) behaves identically unless it opts in by overriding
+    /// this method — P61.
+    async fn export_all_interactive(&self, _on_qr: Option<&(dyn Fn(String) + Send + Sync)>) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+        self.export_all().await
+    }
+
+    /// Same as `import_all`, but gives a provider whose backend needs a human-in-the-loop
+    /// approval step to actually publish (e.g. `DecentralizedVaultProvider` pushing to Arweave,
+    /// which requires scanning a QR with the TruthID phone app) a channel to surface that step.
+    /// `on_qr`, when provided, is invoked with the **raw QR payload JSON** — never a rendered
+    /// image; `warden-core`/`warden-sync` don't depend on any QR-rendering crate, so turning that
+    /// JSON into an SVG/PNG is entirely the caller's job (see `desktop/src-tauri/src/qr.rs`).
+    /// Default: delegates to `import_all` and ignores `on_qr`, so every existing provider behaves
+    /// identically unless it opts in by overriding this method — P61.
+    async fn import_all_interactive(
+        &self,
+        data: HashMap<String, Vec<u8>>,
+        _on_qr: Option<&(dyn Fn(String) + Send + Sync)>,
+    ) -> anyhow::Result<()> {
+        self.import_all(data).await
+    }
 }
 
 /// Result of a successful `migrate` — a count rather than bare `()`, so a caller (and its own
@@ -62,6 +90,38 @@ pub async fn migrate(from: &dyn StorageProvider, to: &dyn StorageProvider) -> an
     let files_migrated = snapshot.len();
 
     to.import_all(snapshot.clone()).await?;
+
+    let landed = to.export_all().await?;
+    if landed != snapshot {
+        anyhow::bail!(
+            "migration integrity check failed: destination holds {} file(s) after import, source snapshot had {files_migrated}",
+            landed.len()
+        );
+    }
+
+    Ok(MigrationReport { files_migrated })
+}
+
+/// Same as `migrate`, but drives the `_interactive` variants of `export_all`/`import_all` — P61's
+/// closing of the "QR-interactive push/pull" gap. `on_qr` is threaded straight into
+/// `to.import_all_interactive` (the only side that can ever need it — see that method's doc
+/// comment); `from.export_all_interactive` never receives it, since no known provider needs
+/// interactive approval to *read*. The post-import integrity check re-exports from `to` with the
+/// **plain** `export_all`, not `export_all_interactive` — by that point `to` already holds
+/// whatever `import_all_interactive` wrote locally, so a plain local re-export is enough to prove
+/// it landed intact; re-running the interactive path here would just repeat a remote round-trip
+/// (and, for a provider where interactive export *did* need approval, ask for it a second time)
+/// for no verification benefit. For any provider that doesn't override the `_interactive` methods,
+/// this behaves identically to `migrate`.
+pub async fn migrate_interactive(
+    from: &dyn StorageProvider,
+    to: &dyn StorageProvider,
+    on_qr: Option<&(dyn Fn(String) + Send + Sync)>,
+) -> anyhow::Result<MigrationReport> {
+    let snapshot = from.export_all_interactive(None).await?;
+    let files_migrated = snapshot.len();
+
+    to.import_all_interactive(snapshot.clone(), on_qr).await?;
 
     let landed = to.export_all().await?;
     if landed != snapshot {
@@ -250,6 +310,30 @@ mod tests {
 
         let target = LossyProvider(temp_provider());
         let err = migrate(&source, &target).await.unwrap_err();
+        assert!(err.to_string().contains("integrity check failed"));
+    }
+
+    #[tokio::test]
+    async fn migrate_interactive_behaves_like_migrate_for_providers_without_an_interactive_override() {
+        let source = temp_provider();
+        source.write("a.md", b"one").await.unwrap();
+        source.write("nested/b.md", b"two").await.unwrap();
+
+        let target = temp_provider();
+        let report = migrate_interactive(&source, &target, None).await.unwrap();
+
+        assert_eq!(report, MigrationReport { files_migrated: 2 });
+        assert_eq!(target.read("a.md").await.unwrap(), b"one");
+        assert_eq!(target.read("nested/b.md").await.unwrap(), b"two");
+    }
+
+    #[tokio::test]
+    async fn migrate_interactive_also_catches_silent_corruption() {
+        let source = temp_provider();
+        source.write("a.md", b"hello").await.unwrap();
+
+        let target = LossyProvider(temp_provider());
+        let err = migrate_interactive(&source, &target, None).await.unwrap_err();
         assert!(err.to_string().contains("integrity check failed"));
     }
 

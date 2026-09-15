@@ -761,7 +761,19 @@ pub async fn build_storage_provider(
 ) -> anyhow::Result<Arc<dyn warden_core::storage::StorageProvider>> {
     Ok(match kind {
         StorageProviderKind::Local => Arc::new(warden_core::storage::LocalFSProvider::new(vault)),
-        StorageProviderKind::DecentralizedVault => Arc::new(warden_sync::DecentralizedVaultProvider::new(vault)),
+        StorageProviderKind::DecentralizedVault => {
+            // Same default-path helpers desktop's own `AppState.sync` already uses to build a
+            // `SyncEngine` (`desktop/src-tauri/src/lib.rs`'s `sync_secrets_path`/
+            // `sync_manifest_path`) — `warden-sync` can't call `default_config_path` itself
+            // (`warden-bootstrap` depends on `warden-sync`, not the other way around), so this is
+            // the one place that can assemble the engine `DecentralizedVaultProvider` needs for
+            // its `_interactive` methods (P61 follow-up) to actually reach Arweave.
+            let config_path = default_config_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
+            let secrets_path = warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"));
+            let manifest_path = warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"));
+            let sync = warden_sync::SyncEngine::new(vault.root().to_path_buf(), config_path, secrets_path, manifest_path);
+            Arc::new(warden_sync::DecentralizedVaultProvider::new(vault, sync))
+        }
         StorageProviderKind::RemoteNode => {
             let cfg = remote_node
                 .ok_or_else(|| anyhow::anyhow!("storage_provider 'remote_node' requires a [remote_node] config section"))?;
@@ -1536,7 +1548,12 @@ oauth = true
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ))));
         assert!(build_storage_provider(StorageProviderKind::Local, vault.clone(), None).await.is_ok());
-        assert!(build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone(), None).await.is_ok());
+        let decentralized = build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone(), None).await.unwrap();
+        // Round-trip through the real provider, not just "construction didn't error" — catches a
+        // signature-wiring mistake in the `SyncEngine` this arm now builds (P61 follow-up).
+        decentralized.write("a.md", b"hello").await.unwrap();
+        assert_eq!(decentralized.read("a.md").await.unwrap(), b"hello");
+        assert_eq!(decentralized.list().await.unwrap(), vec!["a.md".to_string()]);
         assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault, None).await.is_err());
     }
 

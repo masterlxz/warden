@@ -2,7 +2,83 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-14 (Sessão 67)
+> Última atualização: 2026-09-15 (Sessão 68)
+
+---
+
+### 2026-09-15 — Sessão 68
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"), sem item travado. Apresentadas as
+  opções em aberto que a Sessão 67 deixou (P61 Storage Provider, Fase 9.1 Tailscale, Fase 10
+  TruthID, Fase 8 extensão de navegador) — escolhido P61. Dentro do P61, os itens abertos eram
+  `ManagedCloudProvider` (v3, sem urgência), checagem de assinatura real (bloqueada por billing
+  inexistente) e a lacuna do push/pull QR-interativo numa trait genérica — escolhido o terceiro,
+  o único realmente atacável agora. Perguntado o quanto fechar (só pull vs. os dois lados),
+  usuário escolheu fechar os dois.
+
+**O que foi feito**:
+
+- Descoberta chave antes de planejar: só o *push* pro Arweave exige aprovação humana por QR no
+  celular (`PendingPin`/TruthID); o *pull* é inteiramente não-interativo (GraphQL + decrypt
+  local, travado só em `owner_address` existir). Isso quebrou o problema em dois fechamentos
+  independentes em vez de um bloqueio único.
+- Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar — um agente `Plan`
+  validou o desenho e achou um problema real de direção de dependência (`warden-sync` não pode
+  chamar `warden_bootstrap::default_config_path`, dependência é de mão única) e uma correção de
+  camada (o `on_qr` deve carregar o JSON cru do payload, não um SVG — `warden-core`/`warden-sync`
+  não dependem do crate `qrcode`), além de apontar a lacuna de testabilidade do lado push (só dá
+  pra testar contra celular falso via `_with_hosts`, mesma convenção que `SyncEngine` já usa).
+- `crates/warden-core/src/storage/mod.rs`: `StorageProvider` ganhou `export_all_interactive`/
+  `import_all_interactive` (default delega pras versões planas — zero mudança de comportamento
+  pra `LocalFSProvider`/`RemoteNodeProvider`/qualquer provider futuro) e `migrate_interactive`,
+  irmã de `migrate` (não muda a assinatura existente). Decisão confirmada: a reconfirmação final
+  de `migrate_interactive` usa `to.export_all()` plano, não o interativo — nesse ponto os arquivos
+  já foram escritos localmente, reexportar de forma interativa só repetiria um pull à toa.
+- `crates/warden-sync/src/storage_provider.rs`: `DecentralizedVaultProvider` ganhou um campo
+  `sync: SyncEngine` de verdade (`new` mudou de assinatura, só 2 call sites). `export_all_interactive`
+  chama `sync.pull()` real quando inicializado+pareado (erro de pull propaga como falha dura, não
+  cai pro export local stale); `import_all_interactive` escreve local e, se inicializado, chama
+  `sync.begin_push()`, invoca `on_qr` com o payload real e `sync.finish_push()` de verdade (erro
+  real também propaga — mesma postura fail-loud que `migrate` já tinha). Sem inicialização (ou,
+  pro pull, sem pareamento), ambos degradam pro comportamento de sempre — selecionar
+  `decentralized_vault` sem nunca visitar a tela Sync continua funcionando, só sem publicar nada.
+  Novo método só-teste `import_all_interactive_with_hosts` (sweepa hosts fixos em vez do LAN real,
+  mesma convenção de `finish_push_with_hosts`).
+- `crates/warden-bootstrap/src/lib.rs`: `build_storage_provider`'s branch `DecentralizedVault`
+  monta o `SyncEngine` de verdade (mesmos helpers de path que o desktop já usa pro seu
+  `AppState.sync`).
+- `desktop/src-tauri/src/lib.rs`: `save_settings` ganhou `app: AppHandle`; a chamada de migração
+  trocou pra `migrate_interactive`, passando uma closure que renderiza o SVG
+  (`crate::qr::render_qr_svg`, reaproveitado) e emite `app.emit("migration-qr", ...)`.
+  `desktop/src/components/SettingsView.tsx` escuta esse evento durante o save e mostra um modal
+  com o QR — reaproveita o markup/CSS de QR que `SyncView.tsx` já tinha (`.sync-qr-card`/
+  `.sync-qr-image`), só com um backdrop novo (`.settings-modal-backdrop`, `App.css`).
+- Testado com fake gateway real (`tests/storage_provider_export_interactive.rs`, mesmo idioma que
+  `pull.rs`'s próprios testes) — prova que `export_all_interactive` pulha um bundle remoto mais
+  novo antes do export quando pareado, e que um erro real de pull (gateway inalcançável) propaga
+  em vez de cair pro export local stale. Fake phone real
+  (`tests/storage_provider_import_interactive.rs`, mesmo idioma de `engine_lifecycle.rs`) — prova
+  que `on_qr` recebe o payload certo, que o push completa de verdade contra o celular falso, e que
+  o manifesto em disco reflete o `tx_id` depois.
+- **Bug real pego pelos próprios testes no caminho**: dois testes que montavam o `SyncEngine` à
+  mão apontavam o vault e os arquivos de sync (`sync_secrets.json`/`sync_manifest.json`) pro
+  **mesmo diretório** — depois de `init_fresh`, esses JSONs viravam "conteúdo não rastreado do
+  vault" aos olhos do `diff_vault`, fazendo `begin_push` achar que tinha mudança real e tentar um
+  push de verdade sem celular nenhum configurado (o teste travou ~180s até estourar timeout).
+  Corrigido separando os diretórios (mesmo padrão sibling que produção sempre usou — `vault_root`
+  nunca dentro de onde `sync_secrets.json`/`sync_manifest.json` moram).
+- Verificação: `cargo test --workspace`/`cargo clippy --workspace --all-targets` limpos, `npx tsc
+  --noEmit`/`npm run build` limpos no desktop. **Não verificável neste ambiente, mesmo assim**: um
+  celular TruthID real escaneando um QR real e uma transação Arweave real de ponta a ponta — mesma
+  lacuna de sempre, cobertura via fake-phone/fake-gateway é o teto possível aqui.
+- `project/PENDING.md` (P61 atualizado) e `project/ARCHITECTURE.md` (entrada da decisão) — nota:
+  também corrigido um `use` redundante que o `clippy` pegou (import de `StorageProvider` que já
+  chegava via `use super::*` num teste de `warden-bootstrap`).
+
+**Ainda em aberto dentro do P61**: `ManagedCloudProvider` (v3, sem urgência), checagem de
+assinatura real (bloqueada por billing inexistente no TruthID), e o teste de ponta a ponta contra
+um celular TruthID/Arweave reais (bloqueado por ambiente). Fora do P61: Fase 8 (extensão de
+navegador), Fase 9.1 (Tailscale), Fase 10 (TruthID/auth) — mesmas opções de sempre.
 
 ---
 

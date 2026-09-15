@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
@@ -454,8 +454,17 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
     })
 }
 
+/// Emitted mid-`save_settings` (P61 follow-up) when migrating *into* `decentralized_vault` has
+/// something real to publish to Arweave — the frontend shows this as a modal while the command
+/// keeps awaiting the phone approval. Mirrors `sync_cmds::PushBeginPayload`'s `qr_svg` field.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MigrationQrPayload {
+    qr_svg: String,
+}
+
 #[tauri::command]
-async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload) -> Result<(), String> {
+async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: SettingsFormPayload) -> Result<(), String> {
     fn non_empty(s: String) -> Option<String> {
         let trimmed = s.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -625,7 +634,20 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // the new selection is `RemoteNode`, it must connect with whatever the user just typed in,
         // not stale connection details from before this save.
         let to_provider = build_storage_provider(storage_provider, vault, config.remote_node.as_ref()).await.map_err(|e| format!("{e:#}"))?;
-        warden_core::storage::migrate(from_provider.as_ref(), to_provider.as_ref())
+        // Interactive variant (P61 follow-up): if migrating *into* `decentralized_vault` actually
+        // has something to publish, `import_all_interactive` blocks on a real TruthID phone
+        // approval — this closure is how it hands the QR back to the UI before that blocking wait,
+        // same "show the QR, then block" split the Sync screen's own `sync_push_begin`/
+        // `sync_push_await` already do, just collapsed into one call here since Settings' Save is
+        // already a single user-paced action. A failed/ignored emit is not fatal to the migration
+        // itself — the phone approval still has to happen for `finish_push` to succeed regardless
+        // of whether the frontend managed to render the QR.
+        let on_qr = |qr_json: String| {
+            if let Ok(qr_svg) = crate::qr::render_qr_svg(&qr_json) {
+                let _ = app.emit("migration-qr", MigrationQrPayload { qr_svg });
+            }
+        };
+        warden_core::storage::migrate_interactive(from_provider.as_ref(), to_provider.as_ref(), Some(&on_qr))
             .await
             .map_err(|e| format!("storage provider migration failed, settings not saved: {e:#}"))?;
     }
