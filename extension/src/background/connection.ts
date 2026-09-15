@@ -1,0 +1,231 @@
+/**
+ * TypeScript port of `mobile/lib/services/server_connection.dart`'s `ServerConnection` — same
+ * handshake/heartbeat state machine, ported 1:1 where the platform allows. Lives in the
+ * background service worker (never the popup, which MV3 destroys on close) — see
+ * `background/index.ts` for why, and for the reasoning behind the 20s heartbeat below (Chrome
+ * 116+ resets the service worker's idle-shutdown timer on WebSocket message activity).
+ *
+ * Deliberately out of scope for this slice (Fase 8.2), same cut line `server_connection.dart`
+ * drew for Fase 7.2: no automatic reconnect on a dropped/failed connection, no tool-call handling
+ * (nothing is advertised in `Hello.tools` yet — that's Fase 8.3-8.6).
+ */
+
+import { encode, decode, type ServerMessage } from "../protocol/messages";
+
+export type ConnectionStatus =
+  | { kind: "disconnected"; reason?: string }
+  | { kind: "connecting" }
+  | { kind: "connected"; serverName: string }
+  | { kind: "failure"; message: string };
+
+export class HandshakeError extends Error {}
+
+/**
+ * One line of the conversation transcript kept in `background/index.ts`. `ServerConnection`
+ * itself only ever produces `"assistant"`/`"error"` entries (from `ChatResponse`/`ChatError`) —
+ * `"user"` is a value `background/index.ts` adds directly when it sends a `Chat` message, so the
+ * transcript stays complete (what was asked, not just what came back) even if the popup closes
+ * and reopens mid-conversation.
+ */
+export interface ChatEntry {
+  role: "user" | "assistant" | "error";
+  content: string;
+}
+
+type StatusListener = (status: ConnectionStatus) => void;
+type ChatListener = (entry: ChatEntry) => void;
+
+export interface ConnectOptions {
+  host: string;
+  port: number;
+  deviceId: string;
+  deviceName: string;
+  authKey: string;
+  handshakeTimeoutMs?: number;
+}
+
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+
+export class ServerConnection {
+  private readonly socket: WebSocket;
+  private readonly statusListeners = new Set<StatusListener>();
+  private readonly chatListeners = new Set<ChatListener>();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private nextNonce = 0;
+  private pendingPingNonce: number | null = null;
+  private goodbyeSent = false;
+  private currentStatus: ConnectionStatus;
+
+  private constructor(
+    socket: WebSocket,
+    public readonly serverName: string,
+  ) {
+    this.socket = socket;
+    this.currentStatus = { kind: "connected", serverName };
+    this.startHeartbeat();
+    socket.addEventListener("message", (event) => this.onMessage(decode(event.data as string)));
+    socket.addEventListener("error", () => {
+      this.stopHeartbeat();
+      this.setStatus({ kind: "failure", message: "WebSocket error" });
+    });
+    socket.addEventListener("close", () => {
+      this.stopHeartbeat();
+      this.setStatus(this.goodbyeSent ? { kind: "disconnected" } : { kind: "failure", message: "Connection closed unexpectedly" });
+    });
+  }
+
+  get status(): ConnectionStatus {
+    return this.currentStatus;
+  }
+
+  onStatusChange(listener: StatusListener): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  onChatMessage(listener: ChatListener): () => void {
+    this.chatListeners.add(listener);
+    return () => this.chatListeners.delete(listener);
+  }
+
+  static connect(options: ConnectOptions): Promise<ServerConnection> {
+    const socket = new WebSocket(`ws://${options.host}:${options.port}`);
+    return ServerConnection.handshake(socket, options);
+  }
+
+  private static handshake(socket: WebSocket, options: ConnectOptions): Promise<ServerConnection> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        socket.removeEventListener("message", onFirstMessage);
+        fn();
+      };
+
+      const timeoutId = setTimeout(() => {
+        finish(() => {
+          socket.close();
+          reject(new HandshakeError(`No response to Hello within ${(options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS) / 1000}s`));
+        });
+      }, options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS);
+
+      const onFirstMessage = (event: MessageEvent) => {
+        let reply: ServerMessage;
+        try {
+          reply = decode(event.data as string);
+        } catch (err) {
+          finish(() => reject(err instanceof Error ? err : new HandshakeError(String(err))));
+          return;
+        }
+        finish(() => {
+          switch (reply.type) {
+            case "helloAck":
+              resolve(new ServerConnection(socket, reply.serverName));
+              break;
+            case "authError":
+              socket.close();
+              reject(new HandshakeError(`authentication rejected: ${reply.reason}`));
+              break;
+            default:
+              socket.close();
+              reject(new HandshakeError(`expected helloAck, got ${reply.type}`));
+          }
+        });
+      };
+
+      socket.addEventListener("open", () => {
+        socket.send(
+          encode({ type: "hello", deviceId: options.deviceId, deviceName: options.deviceName, authKey: options.authKey, tools: [] }),
+        );
+      });
+      socket.addEventListener("message", onFirstMessage);
+      socket.addEventListener("error", () => {
+        finish(() => reject(new HandshakeError("connection error")));
+      });
+      socket.addEventListener("close", () => {
+        finish(() => reject(new HandshakeError("server closed the connection before replying to Hello")));
+      });
+    });
+  }
+
+  private onMessage(message: ServerMessage): void {
+    switch (message.type) {
+      case "pong":
+        if (message.nonce === this.pendingPingNonce) {
+          this.pendingPingNonce = null;
+          if (this.currentStatus.kind === "connected") {
+            this.setStatus({ kind: "connected", serverName: this.currentStatus.serverName });
+          }
+        }
+        // Nonce mismatch or an unsolicited pong: nothing here depends on strict correlation
+        // beyond dead-connection detection, so ignore it — same posture as the Dart client.
+        break;
+      case "goodbye":
+        // The server never actually sends this today (mirrors the Dart client's own comment) —
+        // handled for completeness/forward-compatibility.
+        this.stopHeartbeat();
+        this.setStatus({ kind: "disconnected" });
+        break;
+      case "chatResponse":
+        for (const listener of this.chatListeners) listener({ role: "assistant", content: message.content });
+        break;
+      case "chatError":
+        for (const listener of this.chatListeners) listener({ role: "error", content: message.message });
+        break;
+      case "helloAck":
+      case "authError":
+        // Only ever valid as the first frame, already consumed by `handshake`.
+        break;
+    }
+  }
+
+  /** Sends one chat turn. The reply arrives asynchronously via `onChatMessage`. */
+  sendChat(message: string): void {
+    this.socket.send(encode({ type: "chat", message }));
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeatTimer = setInterval(() => this.pingNow(), HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private pingNow(): void {
+    if (this.pendingPingNonce !== null) {
+      // The previous ping never got a pong within one full interval — most likely a dead
+      // connection. No auto-reconnect in this slice (see file doc) — just surface it.
+      this.stopHeartbeat();
+      this.setStatus({ kind: "failure", message: "Heartbeat timed out — connection may be dead" });
+      return;
+    }
+    const nonce = this.nextNonce++;
+    this.pendingPingNonce = nonce;
+    this.socket.send(encode({ type: "ping", nonce }));
+  }
+
+  /**
+   * Ends the connection cleanly. The server doesn't acknowledge `Goodbye` — it just stops
+   * reading and drops the connection — so no reply is awaited; the `close` handler above turns
+   * the resulting socket close into a clean `disconnected` status because `goodbyeSent` is set.
+   */
+  goodbye(reason?: string): void {
+    this.goodbyeSent = true;
+    this.stopHeartbeat();
+    this.socket.send(encode({ type: "goodbye", reason: reason ?? null }));
+    this.socket.close();
+  }
+
+  private setStatus(status: ConnectionStatus): void {
+    this.currentStatus = status;
+    for (const listener of this.statusListeners) listener(status);
+  }
+}

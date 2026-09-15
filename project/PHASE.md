@@ -347,13 +347,28 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 **Stack**: Web Extension (Manifest V3), TypeScript
 
 **Etapas**:
-- [ ] 8.1 — Setup da extensão (Manifest V3, popup, background script)
-- [ ] 8.2 — Canal de chat (popup com conversa)
+- [x] 8.1 — Setup da extensão (Manifest V3, popup, background script) *(Sessão 68, continuação) —
+  `extension/` novo (raiz do repo, irmão de `desktop`/`mobile`), Vite + React 19 + TS (mesma stack
+  de `desktop/`) mais `@crxjs/vite-plugin` (empacota Manifest V3 a partir do Vite — puro Vite não
+  gera manifest/service worker compatíveis). Chrome-only nesta fatia (Firefox fica pra 8.7/8.8,
+  mesma postura "uma plataforma primeiro" que a 7.1 do mobile teve com Android antes de iOS)*
+- [x] 8.2 — Canal de chat (popup com conversa) *(Sessão 68, continuação) — cliente WS em
+  TypeScript (`extension/src/background/connection.ts`), porta 1:1 de
+  `mobile/lib/services/server_connection.dart` (Fase 7.2/7.3): handshake com timeout, heartbeat
+  `Ping`/`Pong`, `sendChat`. A conexão mora no **background service worker**, não no popup (que a
+  MV3 destrói ao fechar) — heartbeat a 20s (mais apertado que os 30s do mobile) aproveita que
+  Chrome 116+ reseta o timer de ociosidade do service worker a cada troca de mensagem no
+  WebSocket, evitando que o SW seja descartado enquanto conectado. Isso já cobre a substância da
+  8.7 (comunicação via WebSocket) pro caminho de chat — falta só estender pra tool calls quando
+  8.3-8.6 existirem. Sem reconexão automática nem histórico persistido entre reinícios do SW —
+  mesmo corte de escopo que a 7.2 do mobile aceitou, ver `PENDING.md`*
 - [ ] 8.3 — Tool provider: ler DOM da página ativa
 - [ ] 8.4 — Tool provider: clicar em elementos
 - [ ] 8.5 — Tool provider: navegar para URL
 - [ ] 8.6 — Tool provider: extrair texto/seleção
-- [ ] 8.7 — Comunicação com o servidor Warden (WebSocket)
+- [ ] 8.7 — Comunicação com o servidor Warden (WebSocket) — *transporte já existe desde a 8.2; o
+  que falta aqui é o roteamento de `ToolCallRequest`/`ToolCallResult`/`ToolCallError` que as
+  8.3-8.6 vão precisar*
 - [ ] 8.8 — Publicação na Chrome Web Store / Firefox Add-ons
 
 ---

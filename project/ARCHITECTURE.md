@@ -784,3 +784,68 @@ secreto") respondida corretamente citando os dois arquivos reais e o conteúdo r
 ("stardust", exatamente o que foi escrito no arquivo de teste) — prova a cadeia inteira (Gemini →
 `Orchestrator` do servidor → `RemoteTool` → `ToolCallRequest` pela rede → SAF real no Android →
 `ToolCallResult` de volta → resposta final) funcionando de verdade, não só nos testes automatizados.
+
+## 8.1 + 8.2 — Extensão de navegador: setup + canal de chat (Sessão 68, continuação)
+
+Usuário escolheu atacar a Fase 8 (extensão de navegador) fora da ordem do `ROADMAP.md`, que
+colocava essa fase por último — escopo confirmado como só 8.1 (setup) + 8.2 (canal de chat), sem
+as tools de DOM (8.3-8.6) nem publicação nas lojas (8.7-8.8).
+
+**Boa notícia encontrada na pesquisa**: o protocolo servidor↔cliente (Fase 9.2,
+`crates/warden-server-protocol`) já tinha um cliente de referência completo em Dart
+(`mobile/lib/services/server_connection.dart`, Fase 7.2/7.3) fazendo exatamente o que a extensão
+precisava — nada novo de protocolo, só porta pra TypeScript.
+
+**Estrutura nova**: `extension/` na raiz do repo, irmão de `desktop/`/`mobile/`. Mesma stack de
+`desktop/` (React 19, TypeScript ~5.8, Vite ^7) mais `@crxjs/vite-plugin` (`^2.7.1`, confirmado
+compatível com Vite 7 antes de escolher — Vite puro não empacota Manifest V3 corretamente:
+service worker/manifest precisam de tratamento especial que só um plugin dedicado dá).
+Chrome-only nesta fatia — Firefox fica pra quando a publicação (8.8) existir, mesma postura "uma
+plataforma primeiro" que a 7.1 do mobile teve com Android antes de iOS.
+
+**Restrição de plataforma que definiu o desenho**: um popup de extensão MV3 é destruído toda vez
+que fecha — a conexão WS *tem* que morar no **background service worker**, não no popup (decisão
+estrutural, não de conveniência; também é o motivo de já valer a pena pra 8.3-8.6 futuras, já que
+tool calls do DOM podem chegar com o popup fechado). Pesquisado antes de codar: Chrome 116+ reseta
+o timer de ociosidade (~30s) do service worker a cada troca de mensagem pelo WebSocket — então um
+heartbeat `Ping`/`Pong` a cada **20s** (mais apertado que os 30s do mobile, que ali só tratava de
+NAT de operadora, não de manter o próprio processo do host vivo) evita que o Chrome descarte o SW
+enquanto a conexão está ativa, sem precisar de `chrome.alarms`. Se o SW morrer mesmo assim (fechar
+o Chrome, recarregar a extensão, máquina dormir), a conexão simplesmente some — igual ao gap já
+aceito pela 7.2 do mobile ("sem reconexão automática"), só que aqui é o comportamento padrão da
+plataforma, não uma escolha de escopo.
+
+`extension/src/protocol/messages.ts` — tipos TS da união discriminada por `type`
+(`ClientMessage`/`ServerMessage`), só o subconjunto que esta fatia usa (`hello`/`ping`/`chat`/
+`goodbye` do lado cliente; `helloAck`/`authError`/`pong`/`chatResponse`/`chatError`/`goodbye` do
+lado servidor — as variantes de tool call ficam de fora até 8.3 existir), com os nomes de campo
+conferidos contra os testes que travam o formato JSON em `protocol.rs` (não adivinhados).
+`extension/src/background/connection.ts` — porta 1:1 de `server_connection.dart`: handshake com
+timeout de 10s, heartbeat, `sendChat`, `goodbye`, emissor de eventos de status mínimo (sem
+dependência nova tipo `rxjs`). `extension/src/background/index.ts` — dono da única instância de
+`ServerConnection` + histórico da conversa atual em memória (nunca persistido em
+`chrome.storage` — se o SW morrer, a conexão morre junto, não é uma falha isolada a proteger),
+`deviceId` gerado uma vez e persistido em `chrome.storage.local` (mesmo padrão
+`getOrCreateDeviceId` de `mobile/lib/services/connection_settings.dart`), configurações de conexão
+persistidas pra pré-preencher o formulário depois. **Achado durante a implementação**: a mensagem
+do próprio usuário precisa ser ecoada de volta pro popup também (não só a resposta do modelo),
+senão reabrir o popup no meio de uma conversa mostra só as respostas, nunca as perguntas —
+`ChatEntry.role` ganhou `"user"` além de `"assistant"`/`"error"`, e o histórico em memória do
+`index.ts` registra a mensagem de saída antes de mandar pro servidor.
+
+`extension/src/popup/` — popup React (`ConnectionForm`/`ChatView`, decidido por `App.tsx` a
+partir do status atual), comunica com o background via `chrome.runtime.sendMessage`/`onMessage`
+(`background/popup_protocol.ts`, módulo de tipos só — deliberadamente separado de
+`background/index.ts`, que registra um listener real de `chrome.runtime.onMessage` na carga do
+módulo; importar isso dentro do bundle do popup registraria esse listener duas vezes, uma vez
+sem sentido nenhum). CSS copiado (não importado) da paleta roxa de `desktop/src/App.css` — só o
+essencial, já que `extension/`/`desktop/` são projetos JS independentes, mesma separação que
+`desktop`/`mobile` já têm entre si.
+
+**Verificação**: `npm install && npm run build` (tsc + crxjs/vite) limpo — manifest MV3 gerado
+correto (`service_worker`/`action.default_popup`/`permissions: ["storage"]`), bundle do popup e
+loader do service worker presentes em `dist/`. **Não verificado carregando a extensão de verdade
+no Chrome nem contra um `warden-server` real rodando** — sem uma janela de Chrome disponível pra
+interação manual neste ambiente e sem API key real configurada pro servidor; registrado como
+lacuna igual às de sempre no projeto (P29/P30/P31 etc.), não fingido como testado. Ver
+`PENDING.md`.

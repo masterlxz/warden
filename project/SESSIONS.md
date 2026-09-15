@@ -80,6 +80,59 @@ assinatura real (bloqueada por billing inexistente no TruthID), e o teste de pon
 um celular TruthID/Arweave reais (bloqueado por ambiente). Fora do P61: Fase 8 (extensão de
 navegador), Fase 9.1 (Tailscale), Fase 10 (TruthID/auth) — mesmas opções de sempre.
 
+Comitado (`e9d9e86`).
+
+**Continuação (mesma sessão)**: usuário pediu pra continuar de novo ("por onde podemos
+continuar?"); apresentadas as opções de sempre (Fase 9.1 Tailscale, Fase 10 TruthID, Fase 8
+extensão de navegador) — escolhida a Fase 8, fora da ordem do `ROADMAP.md` (que a colocava por
+último), decisão explícita do usuário. Escopado como só **8.1 (setup) + 8.2 (canal de chat)**, sem
+tools de DOM (8.3-8.6) nem publicação nas lojas — mesmo ritmo "scaffold + primeira fatia real" que
+Fase 6.1+6.2/7.1-7.3 tiveram. Um agente de exploração levantou o protocolo servidor↔cliente
+(`crates/warden-server-protocol`) e o cliente de referência já existente em Dart
+(`mobile/lib/services/server_connection.dart`, Fase 7.2/7.3) antes do plano — descoberta boa: o
+protocolo já existe pronto, só falta portar o cliente pra TypeScript, nada novo do lado do
+servidor. Confirmado via busca na web (Chrome 116+) que uma troca de mensagem pelo WebSocket
+reseta o timer de ociosidade do service worker MV3 — decisão de heartbeat a 20s baseada nisso, não
+em suposição. Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar.
+
+**O que foi feito**:
+
+- `extension/` novo (raiz do repo, irmão de `desktop`/`mobile`) — Vite + React 19 + TS (mesma
+  stack de `desktop/`) mais `@crxjs/vite-plugin` (`^2.7.1`, compatibilidade com Vite 7 confirmada
+  antes de escolher) pro empacotamento Manifest V3. Chrome-only nesta fatia.
+- `extension/src/protocol/messages.ts` — tipos TS pro subconjunto do protocolo que esta fatia usa
+  (sem as variantes de tool call, que só entram na 8.3), nomes de campo conferidos contra os
+  testes que travam o JSON em `protocol.rs`, não adivinhados.
+- `extension/src/background/connection.ts` — porta 1:1 de `server_connection.dart`: handshake
+  com timeout de 10s, heartbeat `Ping`/`Pong` a cada 20s, `sendChat`, `goodbye`. Mora no
+  **background service worker** (decisão estrutural, não de conveniência — popup MV3 é destruído
+  ao fechar).
+- `extension/src/background/index.ts` — dono da única `ServerConnection` + histórico da conversa
+  em memória (nunca persistido — se o SW morrer, a conexão morre junto), `deviceId`
+  gerado/persistido em `chrome.storage.local` (mesmo padrão `getOrCreateDeviceId` do mobile).
+  **Achado durante a implementação**: a mensagem do próprio usuário precisava ser ecoada de volta
+  pro popup também, senão reabrir o popup no meio de uma conversa mostrava só as respostas, nunca
+  as perguntas — `ChatEntry.role` ganhou `"user"` além de `"assistant"`/`"error"`.
+- `extension/src/background/popup_protocol.ts` — tipos só, deliberadamente separado de
+  `index.ts` (que registra um `chrome.runtime.onMessage` real na carga do módulo — importar isso
+  no bundle do popup registraria o listener duas vezes à toa).
+- `extension/src/popup/` — popup React (`ConnectionForm`/`ChatView`), comunica com o background
+  via `chrome.runtime.sendMessage`/`onMessage`. CSS copiado (não importado) da paleta roxa de
+  `desktop/src/App.css`, só o essencial.
+- `project/PHASE.md` (8.1/8.2 marcadas `[x]`, nota de que a 8.2 já cobre a substância da 8.7 pro
+  caminho de chat) e `project/ARCHITECTURE.md` (entrada da decisão) atualizados.
+- Verificação: `npm install && npm run build` (tsc + crxjs/vite) limpo — manifest MV3 gerado
+  correto, bundle do popup e loader do service worker presentes em `dist/`. **Não verificado
+  carregando a extensão de verdade no Chrome nem contra um `warden-server` real** — sem janela de
+  browser interativa nem API key real disponíveis neste ambiente; registrado como P67 em
+  `PENDING.md`, não fingido como testado.
+
+**Ainda em aberto**: dentro da Fase 8, 8.3-8.6 (tools de DOM, exigem `host_permissions`/
+`scripting` novos e estender o roteamento de tool call que hoje só existe do lado mobile), 8.7
+(roteamento de tool call em si — o transporte WS já existe), 8.8 (publicação nas lojas, Firefox).
+Ver P67 em `PENDING.md` pro detalhe completo, incluindo a verificação de ponta a ponta ainda
+pendente.
+
 ---
 
 ### 2026-09-14 — Sessão 67
