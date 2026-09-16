@@ -52,6 +52,16 @@ Ordem de implementação recomendada (atualizada 2026-08-29, ver nota acima):
 > ("são apenas ideias pro projeto"), sem `/plan` e sem decisão de prioridade ainda além do que
 > está anotado em cada uma. Ver P45-P52 em `PENDING.md`.
 
+### UI de verdade pro popup da extensão de navegador (sidebar de chat configurável)
+
+Ideia nova (2026-09-15, Sessão 68 continuação 2), depois da verificação de ponta a ponta real da
+Fase 8.1/8.2 (`PENDING.md` P67): o popup hoje é só o form de conexão + lista de mensagens
+funcional da Fase 8.1/8.2, sem nenhum polish de UI. Usuário quer, eventualmente, algo no espírito
+do Claude — uma **sidebar de chat configurável** dentro do browser, não só um popup pequeno.
+Nenhuma arquitetura definida ainda (side panel API do Chrome? popup maior? injeção de UI na
+própria página?) — só registro da visão pra quando isso for priorizado, provavelmente junto ou
+depois da Fase 8.3-8.6 (tools de DOM).
+
 ### ~~Um agente por conversa (seleção no início)~~ — feito (Sessão 57)
 
 Implementado — ver `PENDING.md` P45 (resolvida) e `ARCHITECTURE.md`. Escopo: só desktop.

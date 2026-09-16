@@ -361,7 +361,9 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   WebSocket, evitando que o SW seja descartado enquanto conectado. Isso já cobre a substância da
   8.7 (comunicação via WebSocket) pro caminho de chat — falta só estender pra tool calls quando
   8.3-8.6 existirem. Sem reconexão automática nem histórico persistido entre reinícios do SW —
-  mesmo corte de escopo que a 7.2 do mobile aceitou, ver `PENDING.md`*
+  mesmo corte de escopo que a 7.2 do mobile aceitou, ver `PENDING.md`. **Verificado de ponta a
+  ponta contra um Chrome/Brave e um `warden-server` reais na Sessão 68, continuação 2** — ver
+  `ARCHITECTURE.md`/`PENDING.md` P67*
 - [ ] 8.3 — Tool provider: ler DOM da página ativa
 - [ ] 8.4 — Tool provider: clicar em elementos
 - [ ] 8.5 — Tool provider: navegar para URL

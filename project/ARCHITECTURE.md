@@ -849,3 +849,22 @@ no Chrome nem contra um `warden-server` real rodando** — sem uma janela de Chr
 interação manual neste ambiente e sem API key real configurada pro servidor; registrado como
 lacuna igual às de sempre no projeto (P29/P30/P31 etc.), não fingido como testado. Ver
 `PENDING.md`.
+
+**Verificação de ponta a ponta real (Sessão 68, continuação 2)**: lacuna acima fechada com acesso
+a automação de Chrome real disponível nesta sessão. Limitação encontrada: o Claude in Chrome não
+consegue interagir com páginas internas do navegador (`chrome://extensions`/`brave://extensions`,
+diálogos nativos de seleção de arquivo, nem páginas `chrome-extension://...`) — carregar a
+extensão via "Load unpacked" e abrir/usar o popup de fato tiveram que ser feitos manualmente pelo
+usuário; a automação ficou limitada a acompanhar o resultado pelo log do `warden-server`
+rodando em paralelo (`cargo run -p warden-server --bin warden-server -- serve --auth-key ...
+--provider gemini --model gemini-3.6-flash`, chave Gemini real do usuário). Confirmado dos dois
+lados: log do servidor mostrou `Browser extension (<uuid>) connected from 127.0.0.1:...` no
+handshake e o dispositivo de novo no `chat`; o popup mostrou a resposta real do modelo pra uma
+mensagem de teste. Achado no caminho, sem relação com o código da extensão/servidor:
+`gemini-2.5-flash` (modelo usado como exemplo nas sessões anteriores) foi descontinuado pela API
+do Gemini (`404 NOT_FOUND`, "no longer available to new users") — trocado por `gemini-3.6-flash`
+na hora. Fecha a parte de verificação do P67; o resto do escopo pendente da Fase 8 (8.3-8.6,
+Firefox, reconexão automática, histórico persistido) segue igual. Usuário sinalizou, depois do
+teste, que quer eventualmente uma UI de verdade pro popup — uma sidebar de chat configurável, no
+espírito do Claude — registrado como ideia de polish futuro em `ROADMAP.md`, sem trabalho
+iniciado.
