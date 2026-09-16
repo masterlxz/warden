@@ -1,4 +1,4 @@
-/* Same purple palette tokens as desktop/src/App.css — only the subset this small popup needs,
+/* Same purple palette tokens as desktop/src/App.css — only the subset this side panel needs,
    copied rather than imported since extension/ and desktop/ are independent JS projects (same
    separation desktop/mobile already have). */
 :root {
@@ -30,16 +30,18 @@
 
 body {
   margin: 0;
-  width: 340px;
+  height: 100vh;
   background: var(--color-bg);
   color: var(--color-text);
 }
 
-.popup-app {
+.sidepanel-app {
+  height: 100vh;
   padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  box-sizing: border-box;
 }
 
 h1 {
@@ -53,6 +55,11 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+.chat-view {
+  flex: 1;
+  min-height: 0;
 }
 
 .connection-form label {
@@ -125,7 +132,8 @@ button:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  max-height: 280px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 

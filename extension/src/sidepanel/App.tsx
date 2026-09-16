@@ -58,7 +58,7 @@ export default function App() {
   }
 
   return (
-    <div className="popup-app">
+    <div className="sidepanel-app">
       <h1>Warden</h1>
       {status.kind === "connected" ? (
         <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />

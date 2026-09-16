@@ -1,12 +1,13 @@
 /**
  * Background service worker (Fase 8.1/8.2) — owns the single `ServerConnection` instance and
- * this session's chat history. Lives here (never in the popup, which MV3 destroys on close) so
- * the connection survives the popup opening/closing repeatedly while the user chats.
+ * this session's chat history. Lives here (never in the side panel, which the user can close
+ * independently) so the connection survives the panel opening/closing repeatedly while the user
+ * chats.
  *
  * `history` is in-memory only, not persisted to `chrome.storage` — if this service worker gets
  * evicted, the connection dies right along with it (same underlying WebSocket), so losing the
  * transcript at the same moment isn't a separate failure mode to guard against. No automatic
- * reconnect either: a fresh service worker reports `disconnected`, and the popup shows the
+ * reconnect either: a fresh service worker reports `disconnected`, and the panel shows the
  * connection form again — same accepted gap `server_connection.dart` (Fase 7.2) drew, see its doc
  * comment.
  */
@@ -14,6 +15,12 @@
 import { ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
 import type { ConnectionSettings, PopupRequest } from "./popup_protocol";
 import { toolSpecs, toolHandlers } from "./tools";
+
+// Makes clicking the toolbar icon open the docked side panel (manifest's `side_panel`) instead of
+// requiring a `default_popup`. Without this call the icon click has no effect.
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error("Falha ao configurar o painel lateral:", error));
 
 const STORAGE_KEY_DEVICE_ID = "deviceId";
 const STORAGE_KEY_SETTINGS = "connectionSettings";
@@ -36,9 +43,9 @@ async function getSavedSettings(): Promise<Partial<ConnectionSettings>> {
   return (stored[STORAGE_KEY_SETTINGS] as ConnectionSettings | undefined) ?? {};
 }
 
-/** Best-effort broadcast to any popup currently open and listening — a closed popup means no
- * receiver, which `sendMessage` reports as a rejected promise; that's the expected common case,
- * not an error worth surfacing. */
+/** Best-effort broadcast to the side panel if it's currently open and listening — a closed panel
+ * means no receiver, which `sendMessage` reports as a rejected promise; that's the expected common
+ * case, not an error worth surfacing. */
 function broadcast(message: unknown): void {
   chrome.runtime.sendMessage(message).catch(() => {});
 }
