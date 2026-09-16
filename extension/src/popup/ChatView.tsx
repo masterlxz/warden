@@ -1,5 +1,8 @@
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatEntry } from "../background/connection";
+import { PopupMarkdownLink } from "./MarkdownLink";
 
 interface Props {
   serverName: string;
@@ -32,7 +35,11 @@ export default function ChatView({ serverName, history, pending, onSend, onDisco
       <ul className="chat-history" aria-live="polite">
         {history.map((entry, i) => (
           <li key={i} className={`chat-entry chat-entry--${entry.role}`}>
-            {entry.content}
+            <div className="chat-entry-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: PopupMarkdownLink }}>
+                {entry.content}
+              </ReactMarkdown>
+            </div>
           </li>
         ))}
         {pending && <li className="chat-entry chat-entry--pending">…</li>}

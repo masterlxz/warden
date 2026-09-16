@@ -133,9 +133,63 @@ button:hover:not(:disabled) {
   padding: 0.5rem 0.6rem;
   border-radius: 8px;
   font-size: 0.85rem;
-  white-space: pre-wrap;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
+}
+
+.chat-entry-content > :first-child {
+  margin-top: 0;
+}
+
+.chat-entry-content > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-entry-content p,
+.chat-entry-content ul,
+.chat-entry-content ol,
+.chat-entry-content blockquote,
+.chat-entry-content pre {
+  margin: 0 0 0.5em 0;
+}
+
+.chat-entry-content ul,
+.chat-entry-content ol {
+  padding-left: 1.25em;
+}
+
+.chat-entry-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.chat-entry-content pre {
+  padding: 0.5em 0.6em;
+  border-radius: 6px;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.chat-entry-content pre code {
+  padding: 0;
+  background: none;
+}
+
+.chat-entry-content blockquote {
+  margin-left: 0;
+  padding-left: 0.6em;
+  border-left: 2px solid var(--color-border);
+  opacity: 0.85;
+}
+
+@media (prefers-color-scheme: dark) {
+  .chat-entry-content code,
+  .chat-entry-content pre {
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 .chat-entry--user {
