@@ -5,12 +5,17 @@
  * `background/index.ts` for why, and for the reasoning behind the 20s heartbeat below (Chrome
  * 116+ resets the service worker's idle-shutdown timer on WebSocket message activity).
  *
- * Deliberately out of scope for this slice (Fase 8.2), same cut line `server_connection.dart`
- * drew for Fase 7.2: no automatic reconnect on a dropped/failed connection, no tool-call handling
- * (nothing is advertised in `Hello.tools` yet — that's Fase 8.3-8.6).
+ * Tool-call handling (Fase 8.3-8.6) also ports `_handleToolCallRequest` from the Dart client.
+ * Deliberately still out of scope, same cut line `server_connection.dart` drew for Fase 7.2: no
+ * automatic reconnect on a dropped/failed connection.
  */
 
-import { encode, decode, type ServerMessage } from "../protocol/messages";
+import { encode, decode, type ServerMessage, type ToolSpec } from "../protocol/messages";
+
+/** A local tool this client can run when the server asks (Fase 8.3-8.6) — `args` is whatever
+ * JSON value the model passed as the tool call's arguments. Return the JSON-encodable result, or
+ * throw (any exception) to send a `toolCallError` back instead. */
+export type ToolHandler = (args: unknown) => Promise<unknown>;
 
 export type ConnectionStatus =
   | { kind: "disconnected"; reason?: string }
@@ -42,6 +47,8 @@ export interface ConnectOptions {
   deviceName: string;
   authKey: string;
   handshakeTimeoutMs?: number;
+  toolSpecs?: ToolSpec[];
+  toolHandlers?: Record<string, ToolHandler>;
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -56,12 +63,15 @@ export class ServerConnection {
   private pendingPingNonce: number | null = null;
   private goodbyeSent = false;
   private currentStatus: ConnectionStatus;
+  private readonly toolHandlers: Record<string, ToolHandler>;
 
   private constructor(
     socket: WebSocket,
     public readonly serverName: string,
+    toolHandlers: Record<string, ToolHandler>,
   ) {
     this.socket = socket;
+    this.toolHandlers = toolHandlers;
     this.currentStatus = { kind: "connected", serverName };
     this.startHeartbeat();
     socket.addEventListener("message", (event) => this.onMessage(decode(event.data as string)));
@@ -124,7 +134,7 @@ export class ServerConnection {
         finish(() => {
           switch (reply.type) {
             case "helloAck":
-              resolve(new ServerConnection(socket, reply.serverName));
+              resolve(new ServerConnection(socket, reply.serverName, options.toolHandlers ?? {}));
               break;
             case "authError":
               socket.close();
@@ -139,7 +149,13 @@ export class ServerConnection {
 
       socket.addEventListener("open", () => {
         socket.send(
-          encode({ type: "hello", deviceId: options.deviceId, deviceName: options.deviceName, authKey: options.authKey, tools: [] }),
+          encode({
+            type: "hello",
+            deviceId: options.deviceId,
+            deviceName: options.deviceName,
+            authKey: options.authKey,
+            tools: options.toolSpecs ?? [],
+          }),
         );
       });
       socket.addEventListener("message", onFirstMessage);
@@ -176,10 +192,30 @@ export class ServerConnection {
       case "chatError":
         for (const listener of this.chatListeners) listener({ role: "error", content: message.message });
         break;
+      case "toolCallRequest":
+        // Fire-and-forget: each call runs independently, so a slow one (e.g. reading a large
+        // page) never blocks this connection's heartbeat/chat handling in the meantime — same
+        // reasoning as the Dart client's `unawaited(_handleToolCallRequest(...))`.
+        void this.handleToolCallRequest(message.callId, message.tool, message.arguments);
+        break;
       case "helloAck":
       case "authError":
         // Only ever valid as the first frame, already consumed by `handshake`.
         break;
+    }
+  }
+
+  private async handleToolCallRequest(callId: number, tool: string, args: unknown): Promise<void> {
+    const handler = this.toolHandlers[tool];
+    if (!handler) {
+      this.socket.send(encode({ type: "toolCallError", callId, message: `no local handler registered for tool '${tool}'` }));
+      return;
+    }
+    try {
+      const result = await handler(args);
+      this.socket.send(encode({ type: "toolCallResult", callId, result }));
+    } catch (err) {
+      this.socket.send(encode({ type: "toolCallError", callId, message: err instanceof Error ? err.message : String(err) }));
     }
   }
 

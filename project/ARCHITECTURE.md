@@ -868,3 +868,77 @@ Firefox, reconexão automática, histórico persistido) segue igual. Usuário si
 teste, que quer eventualmente uma UI de verdade pro popup — uma sidebar de chat configurável, no
 espírito do Claude — registrado como ideia de polish futuro em `ROADMAP.md`, sem trabalho
 iniciado.
+
+## 8.3-8.7 — Tools de DOM na extensão de navegador (Sessão 68, continuação 3)
+
+**Descoberta que definiu o escopo, confirmada antes de codar**: nenhum código novo era
+necessário em `warden-server`/`warden-core`. O mecanismo genérico de "tool local por conexão"
+(Fase 7.4, hoje só usado pelo mobile pra `list_phone_files`/`read_phone_file`) já cobre este caso
+de ponta a ponta — qualquer cliente que anuncie `tools` não-vazio no `Hello` ganha,
+automaticamente, um `RemoteTool` por spec registrado no `Orchestrator` daquela conexão
+(`server.rs`), e o servidor já sabe rotear `ToolCallRequest`/casar `ToolCallResult`/
+`ToolCallError` de volta com a chamada pendente do modelo. Todo o trabalho ficou em `extension/`.
+
+**Permissão escolhida — `activeTab`, não `<all_urls>`**: decisão explícita do usuário, trade-off
+de mínimo privilégio sobre poder irrestrito. `manifest.config.ts` ganhou `"scripting"` +
+`"activeTab"` (sem `host_permissions`). Implicação documentada no código (`dom_executor.ts`):
+`activeTab` só concede acesso à aba depois de um gesto do usuário (abrir o popup conta) e esse
+acesso cai quando a aba navega — então depois de um `browser_navigate`, as tools seguintes na
+mesma aba podem falhar até o usuário reabrir o popup. Vira um `ToolCallError` com mensagem
+acionável, não uma falha silenciosa.
+
+**4 tools novas**, prefixo `browser_` pra não colidir com `read_file`/`write_file`/`shell`/
+`generate_document`/`delegate_task`/`delegate_to_agent`/`usage_stats` já registrados por
+`bootstrap()` (lição da Fase 7.4: o mobile colidiu com `read_file` e o Gemini rejeitou a chamada
+por nome duplicado — não há checagem de colisão em `server.rs`):
+- `browser_read_page` — injeta uma função autocontida via `chrome.scripting.executeScript` que
+  devolve título/URL/texto visível (truncado a ~4000 chars) e até 50 elementos interativos
+  visíveis (`a`/`button`/`input`/`select`/`textarea`/`[role=button|link]`) cada um com um seletor
+  CSS gerado (prioriza `#id`, senão caminho `tag:nth-of-type` até ficar único) — esse seletor é o
+  contrato que `browser_click_element`/`browser_extract_text` esperam receber de volta do modelo.
+- `browser_click_element` — `querySelector(selector)` + `scrollIntoView` + `.click()`; pega só o
+  primeiro match, documentado na `description` da spec.
+- `browser_navigate` — não usa `executeScript` (não roda no contexto da página): direto
+  `chrome.tabs.update`, espera `tabs.onUpdated` bater `status: "complete"` com timeout de 10s.
+- `browser_extract_text` — com `selector`, devolve `innerText` do elemento; sem `selector`,
+  devolve a seleção de texto atual da página (`window.getSelection()`) se houver, senão o texto
+  visível inteiro (mesmo teto de truncamento do `read_page`).
+
+**Restrição do Chrome que moldou o código**: a função passada a `chrome.scripting.executeScript`
+roda serializada, isolada, sem closures sobre módulos externos — cada tool define sua função
+injetada como um closure autocontido (sem `import`), só trocando dado por `args`/`return`
+(precisa ser serializável em JSON). `dom_executor.ts` centraliza a resolução da aba ativa e essa
+chamada, pra não duplicar tratamento de erro nas 4 tools.
+
+**`connection.ts`/`messages.ts`**: porte de `_handleToolCallRequest`/`ToolHandler` de
+`server_connection.dart` — `hello.tools` deixou de ser `[]` fixo, `ClientMessage` ganhou
+`toolCallResult`/`toolCallError`, `ServerMessage` ganhou `toolCallRequest`. Despacho em
+`onMessage()` é fire-and-forget (sem `await` no `case`, mesmo padrão do `unawaited` do Dart) —
+uma tool lenta (ex. ler uma página grande) não trava heartbeat/chat da mesma conexão.
+
+**Bug real encontrado e corrigido no caminho, sem relação com a extensão em si**: a primeira
+verificação de ponta a ponta (`browser_read_page` de verdade, contra `gemini-3.6-flash`) voltou
+um `400 INVALID_ARGUMENT`: *"Role 'function' is not supported. Please use a valid role: SYSTEM,
+..., MODEL, USER."* `crates/warden-core/src/model/gemini.rs`'s `to_content` mandava
+`Role::Tool` como `role: "function"` — role que a API do Gemini nunca aceitou de fato (pesquisa
+confirmou: `contents` não tem role dedicado pra resultado de function call; uma `functionResponse`
+part viaja dentro de um turno `role: "user"`). Esse caminho nunca tinha teste de regressão
+cobrindo `to_content(Role::Tool)` — corrigido pra `role: "user"` e um teste novo
+(`a_tool_result_is_sent_as_a_user_turn`) trava o formato certo. **Bug pré-existente, não
+introduzido por esta fatia** — só nunca tinha sido exercitado contra Gemini antes (mobile/outras
+sessões usaram outro provider ou nunca completaram um round-trip de tool call real contra
+Gemini), mas afeta qualquer tool call via Gemini, não só as tools de DOM.
+
+**Verificação de ponta a ponta real**: mesmo par Brave real + `warden-server` real da Sessão 68
+(automação de página segue sem alcançar `chrome://extensions`/popup da extensão — passos manuais
+do usuário, como antes). Pedido no chat forçando `browser_read_page`, respondido corretamente
+depois da correção do role do Gemini acima. Não testado nesta rodada: `browser_click_element` /
+`browser_navigate` / `browser_extract_text` individualmente contra uma página real (só
+`browser_read_page` foi exercitado pelo usuário) — ficam cobertos pela mesma revisão de código e
+pelo mesmo mecanismo genérico, mas sem confirmação manual própria; e o caso de erro esperado
+depois de um `browser_navigate` (permissão `activeTab` caindo) não foi provocado de propósito.
+Anotado como lacuna menor em `PENDING.md`.
+
+**Sem UI nova no popup nesta fatia** — o modelo chama as tools direto durante o chat, sem
+indicador visual de "ação no DOM em andamento". Fecha 8.7 como efeito colateral direto (era só o
+roteamento client-side que os itens acima já implementam).

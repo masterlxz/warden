@@ -13,6 +13,7 @@
 
 import { ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
 import type { ConnectionSettings, PopupRequest } from "./popup_protocol";
+import { toolSpecs, toolHandlers } from "./tools";
 
 const STORAGE_KEY_DEVICE_ID = "deviceId";
 const STORAGE_KEY_SETTINGS = "connectionSettings";
@@ -69,6 +70,8 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
           deviceId,
           deviceName: request.deviceName,
           authKey: request.authKey,
+          toolSpecs,
+          toolHandlers,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

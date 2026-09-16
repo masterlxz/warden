@@ -60,7 +60,10 @@ funcional da Fase 8.1/8.2, sem nenhum polish de UI. Usuário quer, eventualmente
 do Claude — uma **sidebar de chat configurável** dentro do browser, não só um popup pequeno.
 Nenhuma arquitetura definida ainda (side panel API do Chrome? popup maior? injeção de UI na
 própria página?) — só registro da visão pra quando isso for priorizado, provavelmente junto ou
-depois da Fase 8.3-8.6 (tools de DOM).
+depois da Fase 8.3-8.6 (tools de DOM, feita na Sessão 68 continuação 3 — ver `PENDING.md` P67).
+**Atualizado 2026-09-15 (Sessão 68, continuação 3)**: item concreto novo dentro dessa mesma ideia
+de polish — usuário pediu que as respostas do chat sejam renderizadas como Markdown de verdade
+(hoje é texto cru), não só a sidebar configurável. Ver `PENDING.md` P68.
 
 ### ~~Um agente por conversa (seleção no início)~~ — feito (Sessão 57)
 

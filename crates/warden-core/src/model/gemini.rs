@@ -168,8 +168,13 @@ fn to_content(message: Message) -> Content {
                 .collect(),
         },
         Role::Assistant => Content { role: Some("model"), parts: vec![Part::text(message.content)] },
+        // Gemini's `contents` array has no dedicated role for a function result — despite the
+        // `functionResponse` part type existing, the API rejects both `"function"` and `"tool"`
+        // as a `role` value (400 "Role 'function' is not supported..."). A function response is
+        // sent as a `user` turn carrying a `functionResponse` part instead — confirmed against a
+        // real `gemini-3.6-flash` call (this provider's role name was never updated for this).
         Role::Tool => Content {
-            role: Some("function"),
+            role: Some("user"),
             parts: vec![Part {
                 function_response: Some(FunctionResponsePart {
                     name: message.tool_name.unwrap_or_default(),
@@ -336,6 +341,19 @@ mod tests {
         let json = serde_json::to_value(to_content(message)).unwrap();
 
         assert!(json["parts"][0].get("thoughtSignature").is_none());
+    }
+
+    /// Regression test for a real 400 hit against `gemini-3.6-flash` (2026-09-15): the Gemini
+    /// API rejects `role: "function"` (and `"tool"`) on a `contents` entry with "Role 'function'
+    /// is not supported" — a function response has to travel as a `user` turn instead.
+    #[test]
+    fn a_tool_result_is_sent_as_a_user_turn() {
+        let tool_call = ToolCall { id: "call_1".to_string(), name: "browser_read_page".to_string(), arguments: json!({}), thought_signature: None };
+        let message = Message::tool_result(&tool_call, "{\"title\":\"Example\"}");
+        let json = serde_json::to_value(to_content(message)).unwrap();
+
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["parts"][0]["functionResponse"]["name"], "browser_read_page");
     }
 
     #[test]

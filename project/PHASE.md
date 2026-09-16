@@ -364,13 +364,19 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   mesmo corte de escopo que a 7.2 do mobile aceitou, ver `PENDING.md`. **Verificado de ponta a
   ponta contra um Chrome/Brave e um `warden-server` reais na Sessão 68, continuação 2** — ver
   `ARCHITECTURE.md`/`PENDING.md` P67*
-- [ ] 8.3 — Tool provider: ler DOM da página ativa
-- [ ] 8.4 — Tool provider: clicar em elementos
-- [ ] 8.5 — Tool provider: navegar para URL
-- [ ] 8.6 — Tool provider: extrair texto/seleção
-- [ ] 8.7 — Comunicação com o servidor Warden (WebSocket) — *transporte já existe desde a 8.2; o
-  que falta aqui é o roteamento de `ToolCallRequest`/`ToolCallResult`/`ToolCallError` que as
-  8.3-8.6 vão precisar*
+- [x] 8.3 — Tool provider: ler DOM da página ativa *(Sessão 68, continuação 3) —
+  `browser_read_page`, ver detalhamento nas notas de 8.3-8.7 abaixo*
+- [x] 8.4 — Tool provider: clicar em elementos *(Sessão 68, continuação 3) — `browser_click_element`*
+- [x] 8.5 — Tool provider: navegar para URL *(Sessão 68, continuação 3) — `browser_navigate`*
+- [x] 8.6 — Tool provider: extrair texto/seleção *(Sessão 68, continuação 3) — `browser_extract_text`*
+- [x] 8.7 — Comunicação com o servidor Warden (WebSocket) *(Sessão 68, continuação 3) —
+  transporte já existia desde a 8.2; fechado o roteamento de `ToolCallRequest`/`ToolCallResult`/
+  `ToolCallError` que as 8.3-8.6 precisavam. Nenhum código novo no `warden-server`/`warden-core`
+  pro roteamento em si — o mecanismo genérico de tool local por conexão (Fase 7.4, já usado pelo
+  mobile) cobriu de graça, ver `ARCHITECTURE.md`. Verificado de ponta a ponta contra um
+  Chrome/Brave e um `warden-server` reais — achado no caminho: bug real e pré-existente no
+  provider Gemini (`role: "function"` rejeitado pela API atual, corrigido pra `role: "user"`),
+  não relacionado à extensão em si, ver `ARCHITECTURE.md`/`PENDING.md`*
 - [ ] 8.8 — Publicação na Chrome Web Store / Firefox Add-ons
 
 ---
