@@ -11,6 +11,9 @@ import '../protocol/messages.dart';
 import '../services/chat_notifications.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
+import '../services/sync_auto_pull.dart';
+import '../services/vault_paths.dart';
+import '../src/rust/api/sync.dart' as sync_bridge;
 import 'attachment_kind.dart';
 
 enum _EntryRole { user, assistant, error }
@@ -48,6 +51,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   ConnectionStatus _status = const Disconnected();
   bool _waitingForReply = false;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
+  bool _autoPulling = false;
 
   @override
   void initState() {
@@ -73,7 +77,49 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (shouldAutoPullOnResume(_lifecycleState, state)) {
+      unawaited(_autoPullOnResume());
+    }
     _lifecycleState = state;
+  }
+
+  /// P71 fatia 2 — pulls sync changes silently when the app comes back to the foreground,
+  /// mirroring the desktop's periodic `spawn_auto_pull` (Fase 4.7 fatia 1) as closely as a
+  /// process without a long-lived background daemon allows. Skips silently when sync was never
+  /// paired on this device (`bridgeStatus` is safe to call even then — see
+  /// `warden-sync::SyncEngine::status`); any other failure (e.g. no network) is only logged, never
+  /// surfaced, same posture as the desktop's `eprintln!`.
+  Future<void> _autoPullOnResume() async {
+    if (_autoPulling) return;
+    _autoPulling = true;
+    try {
+      final paths = await VaultPaths.resolve();
+      final status = sync_bridge.bridgeStatus(
+        vaultRoot: paths.vaultRoot,
+        configPath: paths.configPath,
+        secretsPath: paths.secretsPath,
+        manifestPath: paths.manifestPath,
+      );
+      if (!status.paired) return;
+      final result = await sync_bridge.bridgePull(
+        vaultRoot: paths.vaultRoot,
+        configPath: paths.configPath,
+        secretsPath: paths.secretsPath,
+        manifestPath: paths.manifestPath,
+      );
+      final message = autoPullMessageFor(
+        filesWritten: result.filesWritten,
+        filesDeleted: result.filesDeleted,
+        configUpdated: result.configUpdated,
+      );
+      if (message != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync: $message')));
+      }
+    } catch (e) {
+      debugPrint('mobile: auto-pull on resume failed: $e');
+    } finally {
+      _autoPulling = false;
+    }
   }
 
   void _onChatMessage(ServerMessage msg) {

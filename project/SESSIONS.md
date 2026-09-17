@@ -2,7 +2,50 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-15 (Sessão 68)
+> Última atualização: 2026-09-17 (Sessão 70)
+
+---
+
+### 2026-09-17 — Sessão 70
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"), sem item travado. Apresentadas as
+  duas frentes abertas em P71 (sync automático ao reconectar): fatia 2 mobile (pull ao voltar pro
+  primeiro plano) vs. push automático via git no desktop — escolhida a fatia 2 mobile.
+
+**O que foi feito**:
+
+- Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar, depois de um agente
+  `Explore` mapear o código mobile relevante: `mobile/lib/screens/sync_screen.dart` (chamadas
+  `bridge_status`/`bridge_pull` existentes), `crates/warden-mobile-bridge/src/api/sync.rs` (sem
+  `is_configured`, só `bridge_status`), o padrão de função pura testável já usado em
+  `chat_notifications.dart`/`hub_pairing_qr.dart`/`attachment_kind.dart`, e a implementação de
+  referência do desktop (`spawn_auto_pull`/`SyncView.tsx`).
+- Confirmado lendo `crates/warden-sync/src/lib.rs`/`manifest.rs` que `SyncEngine::status()` é
+  seguro de chamar mesmo sem sync nunca configurado no device (arquivo ausente vira `Ok(None)`/
+  default, nunca erro) — permite usar `status.paired` como gate antes de chamar `bridge_pull` sem
+  precisar de uma função nova no lado Rust.
+- `mobile/lib/services/sync_auto_pull.dart` novo: duas funções puras,
+  `shouldAutoPullOnResume(previous, current)` (true só na transição *para* `resumed`) e
+  `autoPullMessageFor(...)` (monta a mesma mensagem que o `SyncView.tsx` do desktop constrói a
+  partir de um `PullResultDto`, `null` quando nada mudou).
+- `mobile/lib/screens/chat_screen.dart` (já `WidgetsBindingObserver` desde as notificações locais,
+  Fase 7.5): `didChangeAppLifecycleState` passou a chamar `_autoPullOnResume()` na transição
+  certa; esse método resolve `VaultPaths`, checa `bridgeStatus(...).paired`, pula silenciosamente
+  se não pareado, senão chama `bridgePull(...)` e mostra um `SnackBar` só quando algo mudou de
+  fato. Qualquer erro (rede indisponível, etc.) só vai pro `debugPrint`, nunca interrompe o chat —
+  mesma postura do `eprintln!` do desktop. `SyncScreen` (pull manual) não mudou.
+- Teste novo `mobile/test/services/sync_auto_pull_test.dart` (8 casos, mesmo formato de
+  `chat_notifications_test.dart`). `flutter analyze` e `flutter test` (52 testes) limpos;
+  `cargo build --workspace` confirmado limpo (nenhum arquivo Rust mudou nesta sessão).
+- Atualizados `PHASE.md` (Fase 4.7, fatia 2) e `PENDING.md` (P71: mobile fechado, só push via git
+  no desktop segue em aberto).
+- Sem emulador Android real disponível neste ambiente pra confirmar o `SnackBar` aparecendo de
+  fato num device — mesma lacuna já aceita em outras fatias mobile (ver `PENDING.md` P70).
+
+**Próximo passo**: dentro do P71, só falta o push automático via git no desktop (precisa primeiro
+ganhar comandos Tauri + UI, já que `GitSyncEngine` hoje só existe no CLI). Fora do P71, seguem
+abertas as opções já registradas em `ROADMAP.md`/`PENDING.md` (Fase 9.1 limitações menores, Fase
+10 TruthID, ideias do brainstorm da Sessão 53).
 
 ---
 

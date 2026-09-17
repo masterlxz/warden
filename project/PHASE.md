@@ -178,7 +178,26 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   configurado" provado sem nenhuma chamada de rede, e um `pull()` de verdade contra um gateway
   HTTP fake local (mesmo idioma de `crates/warden-sync/tests/fake_arweave_gateway.rs`) confirmando
   que o loop alcança a rede e completa. Ver `ARCHITECTURE.md` pro detalhamento completo e
-  `PENDING.md` P71 pro que fica pra depois (push automático via git, mobile)
+  `PENDING.md` P71 pro que fica pra depois (push automático via git, mobile). **Fatia 2 (Sessão
+  70, 2026-09-17) — mobile**: gatilho de foreground em vez de timer periódico, já que o processo
+  Flutter não é um daemon de longa duração como o desktop. `ChatScreen` (já
+  `WidgetsBindingObserver` desde a notificação local, Fase 7.5) ganhou `_autoPullOnResume()`,
+  disparado só na transição *para* `resumed` (nunca ao permanecer nele, nunca no primeiro frame) —
+  gate isolado numa função pura nova, `mobile/lib/services/sync_auto_pull.dart::
+  shouldAutoPullOnResume`, mesmo padrão de `chat_notifications.dart::shouldNotifyFor`. Checa
+  `bridgeStatus(...).paired` antes de chamar `bridgePull(...)` (`bridgeStatus` é seguro mesmo sem
+  sync nunca configurado — arquivo ausente vira `Ok(None)`/default em `warden-sync::manifest`, não
+  erro) — pula silenciosamente se nunca pareado, mesmo espírito do gate `is_initialized()` do
+  desktop. Reação de UI é um `SnackBar` (mais leve que o banner passivo do `SyncView.tsx`) só
+  quando algo mudou de fato, mensagem montada por outra função pura,
+  `autoPullMessageFor`. Qualquer outro erro (ex. sem rede) só vai pro `debugPrint`, nunca
+  interrompe o chat — mesma postura do `eprintln!` do desktop. `SyncScreen` (pull manual) não
+  mudou. Zero mudança em Rust/FFI — `bridge_status`/`bridge_pull` já existiam e já se comportavam
+  do jeito necessário. Verificado com `flutter analyze`/`flutter test` (52 testes, os 8 novos de
+  `sync_auto_pull_test.dart` inclusos) limpos — sem emulador Android real disponível neste
+  ambiente pra confirmar o SnackBar aparecendo de fato num device, mesma lacuna já aceita em
+  outras fatias mobile (ver `PENDING.md` P70). Fecha a parte "mobile" do P71 — fica só o push
+  automático via git (desktop) em aberto
 
 ---
 
