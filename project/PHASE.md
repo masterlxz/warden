@@ -402,9 +402,15 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   de descoberta (bottom sheet com a lista de hubs achados) ao lado do scanner de QR. Verificado com
   `cargo build/test/clippy --workspace` e `flutter analyze`/`flutter test` (44 testes) limpos — sem
   build/teste num emulador Android real nesta fatia (precisaria reinstalar `cargo-ndk`, que não
-  persistiu neste ambiente; mecanismo de sweep em si já provado de ponta a ponta na fatia 1). **Fora
-  desta fatia** (ver `PENDING.md` P70): extensão de navegador (reimplementação em TS, não chama
-  Rust), sweep de porta configurável (hoje só tenta 7420)
+  persistiu neste ambiente; mecanismo de sweep em si já provado de ponta a ponta na fatia 1).
+  **Fatia 3 (mesma sessão, continuação) — extensão de navegador**: como ela não chama Rust,
+  `extension/src/background/discovery.ts` reimplementa o mesmo sweep em TypeScript falando o
+  protocolo `Discover`/`DiscoverAck` idêntico contra o servidor inalterado (`chrome.system.network.
+  getNetworkInterfaces()`, permissão `system.network` nova no manifest, `WebSocket` curto por
+  candidato com concorrência limitada). Botão "Procurar hubs na rede" no `ConnectionForm.tsx`.
+  `npx tsc --noEmit`/`npm run build` limpos; sem verificação manual num Chrome/Brave real (mesma
+  lacuna já aceita em P67/P68). **Fecha as três fatias da 9.1** — ficam só as limitações menores
+  em `PENDING.md` P70: porta fixa (7420 em todas as três), build Android real (fatia 2)
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
 - [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro

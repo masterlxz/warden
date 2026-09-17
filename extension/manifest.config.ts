@@ -8,6 +8,10 @@ import { defineManifest } from "@crxjs/vite-plugin";
 // over always-on access — see `background/tools/dom_executor.ts` for the resulting error path.
 // `sidePanel` — chat UI is a docked side panel, not a popup that closes on blur (see
 // `background/index.ts`'s `setPanelBehavior` call for the click-to-open wiring).
+// `system.network` (Fase 9.1, redefined) — `background/discovery.ts` reads
+// `chrome.system.network.getNetworkInterfaces()` to learn this device's local subnet, so it can
+// sweep the LAN for a warden-server hub instead of the user typing an IP by hand. Only reads
+// interface addresses, never touches page content.
 export default defineManifest({
   manifest_version: 3,
   name: "Warden",
@@ -20,5 +24,5 @@ export default defineManifest({
     service_worker: "src/background/index.ts",
     type: "module",
   },
-  permissions: ["storage", "scripting", "activeTab", "sidePanel"],
+  permissions: ["storage", "scripting", "activeTab", "sidePanel", "system.network"],
 });

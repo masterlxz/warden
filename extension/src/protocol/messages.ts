@@ -31,6 +31,9 @@ export type ClientMessage =
   | { type: "chat"; message: string }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
+  /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
+   * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
+  | { type: "discover" }
   | { type: "goodbye"; reason: string | null };
 
 export function encode(message: ClientMessage): string {
@@ -44,6 +47,9 @@ export type ServerMessage =
   | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[] }
   | { type: "chatError"; message: string }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
+  /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
+   * this is, never a secret. */
+  | { type: "discoverAck"; serverName: string }
   | { type: "goodbye"; reason: string | null };
 
 /**
@@ -57,6 +63,7 @@ export function decode(text: string): ServerMessage {
     case "authError":
     case "pong":
     case "chatError":
+    case "discoverAck":
     case "goodbye":
       return json as ServerMessage;
     case "chatResponse": {

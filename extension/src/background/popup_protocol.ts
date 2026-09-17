@@ -6,6 +6,7 @@
  */
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
+import type { DiscoveredHub } from "./discovery";
 
 export interface ConnectionSettings {
   host: string;
@@ -18,7 +19,8 @@ export type PopupRequest =
   | { type: "getStatus" }
   | ({ type: "connect" } & ConnectionSettings)
   | { type: "disconnect" }
-  | { type: "sendChat"; message: string };
+  | { type: "sendChat"; message: string }
+  | { type: "discoverHubs" };
 
 export interface GetStatusResponse {
   status: ConnectionStatus;
@@ -28,6 +30,14 @@ export interface GetStatusResponse {
 
 export interface OkResponse {
   ok: boolean;
+  error?: string;
+}
+
+/** Reply to `{ type: "discoverHubs" }` — always `hubs` (empty on failure too), so the panel never
+ * needs to special-case `undefined` before rendering the list. */
+export interface DiscoverHubsResponse {
+  ok: boolean;
+  hubs: DiscoveredHub[];
   error?: string;
 }
 

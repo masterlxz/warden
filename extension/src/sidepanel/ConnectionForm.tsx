@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { ConnectionSettings } from "../background/popup_protocol";
+import type { DiscoveredHub } from "../background/discovery";
+import type { ConnectionSettings, DiscoverHubsResponse } from "../background/popup_protocol";
 
 const DEFAULT_PORT = 7420;
 
@@ -16,6 +17,10 @@ export default function ConnectionForm({ savedSettings, errorMessage, busy, onCo
   const [deviceName, setDeviceName] = useState(savedSettings.deviceName ?? "Browser extension");
   const [authKey, setAuthKey] = useState(savedSettings.authKey ?? "");
 
+  const [hubs, setHubs] = useState<DiscoveredHub[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | undefined>(undefined);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const parsedPort = Number.parseInt(port, 10);
@@ -23,8 +28,51 @@ export default function ConnectionForm({ savedSettings, errorMessage, busy, onCo
     onConnect({ host: host.trim(), port: parsedPort, deviceName: deviceName.trim() || "Browser extension", authKey: authKey.trim() });
   }
 
+  // Fase 9.1 (redefined) — sweeps the LAN instead of asking the user to already know the IP. Only
+  // ever fills host/port: the probe's reply never carries the auth key, so that stays manual.
+  function handleDiscover() {
+    setSearchError(undefined);
+    setSearching(true);
+    setHubs(null);
+    chrome.runtime.sendMessage({ type: "discoverHubs" }).then((res: DiscoverHubsResponse) => {
+      setSearching(false);
+      if (res.ok) {
+        setHubs(res.hubs);
+      } else {
+        setSearchError(res.error ?? "discovery failed");
+      }
+    });
+  }
+
   return (
     <form className="connection-form" onSubmit={handleSubmit}>
+      <button type="button" onClick={handleDiscover} disabled={searching}>
+        {searching ? "Procurando…" : "Procurar hubs na rede"}
+      </button>
+      {searchError && <p className="error-banner">{searchError}</p>}
+      {hubs && hubs.length === 0 && <p className="hub-empty">Nenhum hub respondeu na rede local.</p>}
+      {hubs && hubs.length > 0 && (
+        <ul className="hub-list">
+          {hubs.map((hub) => (
+            <li key={`${hub.host}:${hub.port}`}>
+              <button
+                type="button"
+                className="hub-item"
+                onClick={() => {
+                  setHost(hub.host);
+                  setPort(String(hub.port));
+                  setHubs(null);
+                }}
+              >
+                <span className="hub-item-name">{hub.serverName}</span>
+                <span className="hub-item-meta">
+                  {hub.host}:{hub.port}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <label>
         Host
         <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="127.0.0.1" required />
