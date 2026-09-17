@@ -396,9 +396,15 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   registra a sonda como dispositivo), sweep reaproveitando `warden_truthid::lan::candidate_hosts()`
   (`warden-server-protocol::discovery`), e botão "Procurar hubs na rede" no `WorkspaceView.tsx` do
   desktop. Verificado de ponta a ponta com um `warden-server` real bindado em `0.0.0.0:7420` —
-  achado pela IP real da LAN da máquina, não só loopback. **Fora desta fatia** (ver `PENDING.md`
-  P69/P70): mobile (via `warden-mobile-bridge`), extensão de navegador (reimplementação em TS,
-  não chama Rust), sweep de porta configurável (hoje só tenta 7420)
+  achado pela IP real da LAN da máquina, não só loopback. **Fatia 2 (mesma sessão, continuação)**:
+  mobile — `warden-mobile-bridge` ganhou `bridge_discover_hubs(port)` (mesma
+  `warden_server_protocol::discover_hubs` do desktop, via FFI), `ConnectionScreen` ganhou um botão
+  de descoberta (bottom sheet com a lista de hubs achados) ao lado do scanner de QR. Verificado com
+  `cargo build/test/clippy --workspace` e `flutter analyze`/`flutter test` (44 testes) limpos — sem
+  build/teste num emulador Android real nesta fatia (precisaria reinstalar `cargo-ndk`, que não
+  persistiu neste ambiente; mecanismo de sweep em si já provado de ponta a ponta na fatia 1). **Fora
+  desta fatia** (ver `PENDING.md` P70): extensão de navegador (reimplementação em TS, não chama
+  Rust), sweep de porta configurável (hoje só tenta 7420)
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
 - [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro

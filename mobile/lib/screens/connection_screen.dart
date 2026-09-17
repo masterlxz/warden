@@ -7,6 +7,7 @@ import '../services/connection_settings.dart';
 import '../services/hub_pairing_qr.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
+import '../src/rust/api/discovery.dart';
 import 'chat_screen.dart';
 import 'qr_scan_screen.dart';
 import 'sync_screen.dart';
@@ -125,6 +126,26 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     }
   }
 
+  // Fase 9.1 (redefined) — sweeps the LAN instead of asking the user to already know the IP.
+  // Reuses the same `discover_hubs` Rust already exposes to the desktop's WorkspaceView, over the
+  // mobile bridge. Only ever fills host/port — the auth key is never part of a hub's reply, so it
+  // stays manual on purpose, same security boundary as the desktop and the QR pairing flow.
+  Future<void> _discoverHubs() async {
+    if (!mounted) return;
+    final result = await showModalBottomSheet<DiscoveredHubDto>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _DiscoveredHubsSheet(
+        future: bridgeDiscoverHubs(port: ConnectionSettingsStore.defaultPort),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _hostController.text = result.host;
+      _portController.text = '${result.port}';
+    });
+  }
+
   Future<void> _scanQr() async {
     final payload = await Navigator.of(context).push<HubPairingPayload>(
       MaterialPageRoute(builder: (_) => const QrScanScreen()),
@@ -161,6 +182,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       appBar: AppBar(
         title: const Text('Warden — Server Connection'),
         actions: [
+          // Fase 9.1 (redefined) — sweeps the LAN for a warden-server hub and fills in host/port
+          // from the pick, instead of typing an IP by hand. Only useful before connecting.
+          if (!_isConnected && !_isBusy)
+            IconButton(
+              icon: const Icon(Icons.wifi_find),
+              tooltip: 'Discover hubs on the local network',
+              onPressed: _discoverHubs,
+            ),
           // Fase 9.7 — scans the desktop Workspace screen's pairing QR to fill in host/port/auth
           // key below, instead of typing them by hand. Only useful before connecting.
           if (!_isConnected && !_isBusy)
@@ -220,6 +249,61 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               child: Text(_isConnected ? 'Disconnect' : 'Connect'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiscoveredHubsSheet extends StatelessWidget {
+  const _DiscoveredHubsSheet({required this.future});
+
+  final Future<List<DiscoveredHubDto>> future;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: FutureBuilder<List<DiscoveredHubDto>>(
+          future: future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.hasError) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Text('Discovery failed: ${snapshot.error}', style: const TextStyle(color: Colors.red)),
+              );
+            }
+            final hubs = snapshot.data!;
+            if (hubs.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('No hub answered on the local network.'),
+              );
+            }
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text('Hubs found', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                for (final hub in hubs)
+                  ListTile(
+                    title: Text(hub.serverName),
+                    subtitle: Text('${hub.host}:${hub.port}'),
+                    onTap: () => Navigator.of(context).pop(hub),
+                  ),
+              ],
+            );
+          },
         ),
       ),
     );

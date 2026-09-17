@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1941701642;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1511208763;
 
 // Section: executor
 
@@ -47,6 +47,39 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
+fn wire__crate__api__discovery__bridge_discover_hubs_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "bridge_discover_hubs",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_port = <u16>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::discovery::bridge_discover_hubs(api_port)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__sync__bridge_init_fresh_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -442,6 +475,20 @@ impl SseDecode for bool {
     }
 }
 
+impl SseDecode for crate::api::discovery::DiscoveredHubDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_host = <String>::sse_decode(deserializer);
+        let mut var_port = <u16>::sse_decode(deserializer);
+        let mut var_serverName = <String>::sse_decode(deserializer);
+        return crate::api::discovery::DiscoveredHubDto {
+            host: var_host,
+            port: var_port,
+            server_name: var_serverName,
+        };
+    }
+}
+
 impl SseDecode for i64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -456,6 +503,20 @@ impl SseDecode for Vec<String> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::discovery::DiscoveredHubDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::discovery::DiscoveredHubDto>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -574,6 +635,13 @@ impl SseDecode for crate::api::sync::SyncStatusDto {
     }
 }
 
+impl SseDecode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_u16::<NativeEndian>().unwrap()
+    }
+}
+
 impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -609,21 +677,27 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__sync__bridge_init_fresh_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__sync__bridge_pairing_host_start_impl(
+        1 => wire__crate__api__discovery__bridge_discover_hubs_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        3 => {
+        2 => wire__crate__api__sync__bridge_init_fresh_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__sync__bridge_pairing_host_start_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        4 => {
             wire__crate__api__sync__bridge_pairing_host_wait_impl(port, ptr, rust_vec_len, data_len)
         }
-        4 => wire__crate__api__sync__bridge_pairing_join_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__sync__bridge_pull_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__sync__bridge_push_await_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__sync__bridge_push_begin_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__sync__bridge_pairing_join_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__sync__bridge_pull_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__sync__bridge_push_await_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__sync__bridge_push_begin_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -636,14 +710,36 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        8 => wire__crate__api__sync__bridge_status_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__simple__ping_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__sync__bridge_status_impl(ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__simple__ping_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
 
 // Section: rust2dart
 
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::discovery::DiscoveredHubDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.host.into_into_dart().into_dart(),
+            self.port.into_into_dart().into_dart(),
+            self.server_name.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::discovery::DiscoveredHubDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::discovery::DiscoveredHubDto>
+    for crate::api::discovery::DiscoveredHubDto
+{
+    fn into_into_dart(self) -> crate::api::discovery::DiscoveredHubDto {
+        self
+    }
+}
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::sync::PullResultDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -753,6 +849,15 @@ impl SseEncode for bool {
     }
 }
 
+impl SseEncode for crate::api::discovery::DiscoveredHubDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.host, serializer);
+        <u16>::sse_encode(self.port, serializer);
+        <String>::sse_encode(self.server_name, serializer);
+    }
+}
+
 impl SseEncode for i64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -766,6 +871,16 @@ impl SseEncode for Vec<String> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <String>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::discovery::DiscoveredHubDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::discovery::DiscoveredHubDto>::sse_encode(item, serializer);
         }
     }
 }
@@ -849,6 +964,13 @@ impl SseEncode for crate::api::sync::SyncStatusDto {
         <Option<i64>>::sse_encode(self.last_synced_at_ms, serializer);
         <u32>::sse_encode(self.pending_vault_changes, serializer);
         <bool>::sse_encode(self.pending_config_changed, serializer);
+    }
+}
+
+impl SseEncode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_u16::<NativeEndian>(self).unwrap();
     }
 }
 
