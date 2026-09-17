@@ -40,3 +40,6 @@ warden-core = { path = "../../crates/warden-core" }
 warden-server = { path = "../../crates/warden-server" }
 warden-sync = { path = "../../crates/warden-sync" }
 
+[dev-dependencies]
+axum = "0.8"
+

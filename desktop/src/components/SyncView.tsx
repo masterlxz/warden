@@ -52,6 +52,8 @@ function SyncView() {
   const [joinCode, setJoinCode] = useState("");
   const [joining, setJoining] = useState(false);
 
+  const [autoSyncMessage, setAutoSyncMessage] = useState<string | null>(null);
+
   const unlistenRef = useRef<(() => void) | null>(null);
 
   function refreshStatus() {
@@ -67,6 +69,25 @@ function SyncView() {
     return () => {
       unlistenRef.current?.();
     };
+  }, []);
+
+  // P71 — the background auto-pull (`sync_cmds::spawn_auto_pull`) emits this whenever it applies
+  // a real change on its own, every few minutes, for as long as this view has ever been mounted
+  // (the listener itself is cheap to keep registered — it's the pull that's throttled, not this).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ txId: string | null; filesWritten: number; filesDeleted: number; configUpdated: boolean }>("auto-sync-pulled", (event) => {
+      refreshStatus();
+      const { filesWritten, filesDeleted, configUpdated } = event.payload;
+      const parts: string[] = [];
+      if (filesWritten > 0) parts.push(`${filesWritten} arquivo(s) atualizado(s)`);
+      if (filesDeleted > 0) parts.push(`${filesDeleted} arquivo(s) removido(s)`);
+      if (configUpdated) parts.push("config.toml atualizado");
+      setAutoSyncMessage(`Sincronização automática — ${parts.join(", ")}.`);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
   }, []);
 
   async function handleInit() {
@@ -182,6 +203,7 @@ function SyncView() {
       </p>
 
       {error && <p className="settings-error-banner">{error}</p>}
+      {autoSyncMessage && <p className="settings-success-banner">{autoSyncMessage}</p>}
 
       <StatusCard status={status} />
 

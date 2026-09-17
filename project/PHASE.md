@@ -161,6 +161,24 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   pasta, seleção trocando conteúdo renderizado, placeholder de vazio, claro/escuro) e também contra
   o vault real do usuário (`npm run tauri dev`, sem mock) — app abriu sem crash e os 3 arquivos
   fixos foram seedados de verdade em `~/Warden/vault/` (antes vazio)*
+- [x] 4.7 — Sync automático ao reconectar (P71, Sessão 69, continuação) — **fatia 1: desktop,
+  auto-pull**. Até aqui o motor de sync inteiro (Fase 4.1-4.6) era 100% manual — o usuário pediu
+  que puxasse mudanças de outros dispositivos sozinho, sem precisar clicar. Confirmado com o
+  usuário antes de codar: gatilho por checagem periódica (não detecção real de evento de
+  reconexão do SO) e só desktop nesta fatia. `desktop/src-tauri/src/sync_cmds.rs::spawn_auto_pull`
+  roda em `.setup()` do Tauri (primeiro hook desse tipo no app) — a cada 5 minutos (primeiro tick
+  imediato, cobre "acabei de abrir o app"), pula silenciosamente se o sync nunca foi configurado
+  neste device, senão chama `SyncEngine::pull()` de verdade e emite `auto-sync-pulled` pro
+  frontend só quando algo realmente mudou. **Push continua manual em qualquer backend** — não é
+  limitação desta fatia, é estrutural: o backend Arweave/TruthID sempre vai exigir aprovação física
+  no celular (`finish_push` bloqueia nisso, trava de segurança proposital), e o único backend
+  totalmente automatizável (git, P63) nunca foi ligado ao desktop, só existe no CLI. `SyncView.tsx`
+  ganhou um listener pro evento novo, reaproveitando o mesmo padrão de `pairing-completed`/`app.
+  emit` já usado no pareamento. Verificado com testes reais (não mockados): gate de "nunca
+  configurado" provado sem nenhuma chamada de rede, e um `pull()` de verdade contra um gateway
+  HTTP fake local (mesmo idioma de `crates/warden-sync/tests/fake_arweave_gateway.rs`) confirmando
+  que o loop alcança a rede e completa. Ver `ARCHITECTURE.md` pro detalhamento completo e
+  `PENDING.md` P71 pro que fica pra depois (push automático via git, mobile)
 
 ---
 

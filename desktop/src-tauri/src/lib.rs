@@ -760,6 +760,10 @@ pub fn run() {
     let generated_files_root = load_config(None)
         .map(|config| resolve_generated_path(&config, &sync_vault_path))
         .unwrap_or_else(|_| sync_vault_path.parent().unwrap_or(std::path::Path::new(".")).join("generated"));
+    // Cloned before `SyncEngine::new` below consumes the originals — `spawn_auto_pull` (P71,
+    // wired in `.setup()` further down) needs its own independent `SyncEngine` on the same paths,
+    // not a shared reference to `AppState.sync`.
+    let auto_pull_paths = (sync_vault_path.clone(), sync_config_path.clone(), sync_secrets_path(), sync_manifest_path());
     let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     let app_state = AppState {
@@ -790,6 +794,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            // P71 — pulls the vault automatically every few minutes instead of requiring a manual
+            // click, for as long as the app stays open. See `sync_cmds::spawn_auto_pull`'s own doc
+            // comment for what this does and doesn't cover (auto-pull only, never auto-push).
+            let (vault_path, config_path, secrets_path, manifest_path) = auto_pull_paths;
+            sync_cmds::spawn_auto_pull(app.handle().clone(), vault_path, config_path, secrets_path, manifest_path);
+            Ok(())
+        })
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             send_message,
