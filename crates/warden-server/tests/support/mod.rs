@@ -105,7 +105,7 @@ pub async fn spin_up_server_with_devices_path(provider: MockProvider) -> (std::n
     let orchestrator = Orchestrator::new(Arc::new(provider), vault);
     let devices_path = temp_dir.join("devices.json");
 
-    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", Arc::new(orchestrator), temp_dir.join("conversations"), devices_path.clone())
+    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), temp_dir.join("conversations"), devices_path.clone())
         .await
         .unwrap();
     let addr = server.local_addr().unwrap();

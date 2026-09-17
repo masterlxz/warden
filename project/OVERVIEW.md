@@ -10,7 +10,8 @@ Stack planejada:
 - **Mobile**: Flutter (Dart) — trocado de Tauri Mobile na Sessão 50
 - **Extensão**: Web Extension (Manifest V3)
 - **Memória**: Markdown vault (Obsidian-compatível), sync manual via Arweave (paga pelo TruthID)
-- **Rede**: Tailscale (malha entre nós)
+- **Rede**: descoberta automática de hub na LAN (Fase 9.1); Tailscale (ou qualquer outro túnel) é
+  escolha opcional do próprio usuário pra estender pra fora da rede local — não é código do Warden
 - **Canais**: Baileys (Node.js sidecar) para WhatsApp, Bot API para Telegram
 - **Orquestrador**: Model-agnostic (suporta OpenAI, Anthropic, Gemini, etc.)
 
@@ -30,6 +31,8 @@ Fase 7 — App Mobile                  [~] Quase completa (7.1-7.5 concluídas �
                                           arquivos do celular + notificações locais; falta só 7.6
                                           build/deploy de release, não pedido ainda)
 Fase 8 — Extensão de Navegador       [ ] Pendente
-Fase 9 — Rede de Nós & Tailscale     [ ] Pendente
+Fase 9 — Rede de Nós & Tailscale     [x] Concluída (9.1 redefinida — descoberta de hub na LAN, não
+                                          integração nativa com Tailscale, ver ARCHITECTURE.md —
+                                          Sessão 69)
 Fase 10 — Autenticação & TruthID     [ ] Pendente
 ```

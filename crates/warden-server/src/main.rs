@@ -56,9 +56,10 @@ enum DevicesAction {
 /// Warden's server-side WebSocket endpoint (Fase 9/7.3): hosts a real `Orchestrator` (same
 /// `bootstrap()` every other channel uses) and answers chat over `ws://`.
 ///
-/// Runs over plain `ws://` — encryption is expected to come from the Tailscale tunnel (Fase
-/// 9.1), not from this listener. Only tested over localhost so far; there is no real tailnet
-/// in the dev environment this was built in.
+/// Runs over plain `ws://` — no TLS of its own. Fase 9.1 (redefined, Sessão 69) is LAN discovery,
+/// not a Tailscale integration; encryption in transit is only ever whatever tunnel the operator
+/// chooses to run this inside of (Tailscale or otherwise), entirely outside this codebase. See
+/// P36 in `PENDING.md`.
 #[derive(Parser, Debug)]
 struct ServeArgs {
     /// Address to listen on.
@@ -86,12 +87,28 @@ struct ServeArgs {
     /// Path to the config file (TOML). Defaults to the OS config dir (e.g. ~/.config/warden/config.toml on Linux).
     #[arg(long)]
     config: Option<String>,
+
+    /// Display name this hub answers with in HelloAck and to a LAN discovery sweep (Fase 9.1,
+    /// redefined — see `discover_hubs`). Falls back to WARDEN_SERVER_NAME, then the OS hostname.
+    #[arg(long)]
+    server_name: Option<String>,
 }
 
 /// Same fallback warden-telegram/the desktop app use — a background process launched by a
 /// terminal, systemd unit, etc. has no cwd a user would recognize either.
 fn default_vault_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join("Warden").join("vault")
+}
+
+/// Resolution order: `--server-name` > `WARDEN_SERVER_NAME` > OS hostname > a fixed literal —
+/// same fallback shape `crates/warden-sync/src/pairing/join.rs::device_name()` uses, so a hub with
+/// nothing configured still answers a discovery sweep with something recognizable instead of an
+/// empty string.
+fn resolve_server_name(flag: Option<String>) -> String {
+    flag.or_else(|| std::env::var("WARDEN_SERVER_NAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .unwrap_or_else(|| "warden-server".to_string())
 }
 
 fn devices_path() -> anyhow::Result<PathBuf> {
@@ -143,9 +160,10 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let conversations_dir = warden_bootstrap::default_server_conversations_dir()
         .context("could not determine the OS config directory for conversations")?;
 
-    let server = Server::bind(args.listen, auth_key, Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
+    let server_name = resolve_server_name(args.server_name.clone());
+    let server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
     let addr = server.local_addr()?;
-    eprintln!("warden-server: listening on {addr}");
+    eprintln!("warden-server: listening on {addr} as '{server_name}'");
     server.serve().await
 }
 

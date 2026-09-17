@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { HubPairingConfig, PairedDevice } from "../types";
+import type { DiscoveredHub, HubPairingConfig, PairedDevice } from "../types";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
@@ -23,6 +23,10 @@ function HubPairingQrSection() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [hubs, setHubs] = useState<DiscoveredHub[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
   useEffect(() => {
     invoke<HubPairingConfig | null>("get_hub_pairing_config")
       .then((saved) => saved && setConfig(saved))
@@ -44,6 +48,23 @@ function HubPairingQrSection() {
     }
   }
 
+  // Fase 9.1 (redefined) — sweeps the LAN instead of asking the operator to already know the IP.
+  // Only ever fills Server URL: the auth key is never part of the probe's reply, so it stays
+  // manual on purpose.
+  async function handleDiscover() {
+    setSearchError(null);
+    setSearching(true);
+    setHubs(null);
+    try {
+      const found = await invoke<DiscoveredHub[]>("discover_hubs");
+      setHubs(found);
+    } catch (err) {
+      setSearchError(String(err));
+    } finally {
+      setSearching(false);
+    }
+  }
+
   return (
     <section className="settings-section">
       <div className="settings-section-header">
@@ -53,6 +74,31 @@ function HubPairingQrSection() {
         Preencha os dados deste hub uma vez e gere um QR — escaneie no app pra preencher a conexão automaticamente, sem
         digitar o endereço e a chave na mão.
       </p>
+
+      <button type="button" className="settings-save-btn" onClick={handleDiscover} disabled={searching}>
+        {searching ? "Procurando…" : "Procurar hubs na rede"}
+      </button>
+      {searchError && <p className="settings-error-banner">{searchError}</p>}
+      {hubs && hubs.length === 0 && <p className="settings-hint">Nenhum hub respondeu na rede local.</p>}
+      {hubs && hubs.length > 0 && (
+        <div className="workspace-device-list">
+          {hubs.map((hub) => (
+            <button
+              type="button"
+              key={`${hub.host}:${hub.port}`}
+              className="workspace-device-row workspace-device-row--clickable"
+              onClick={() => setConfig((c) => ({ ...c, serverUrl: `ws://${hub.host}:${hub.port}` }))}
+            >
+              <div className="workspace-device-info">
+                <span className="workspace-device-name">{hub.serverName}</span>
+                <span className="workspace-device-meta">
+                  {hub.host}:{hub.port}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       <label className="settings-field">
         <span className="settings-label">Server URL</span>

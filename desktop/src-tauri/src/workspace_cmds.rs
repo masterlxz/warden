@@ -13,7 +13,12 @@
 
 use serde::{Deserialize, Serialize};
 use warden_bootstrap::HubPairingConfig;
-use warden_server::{PairedDevice, PairingStore};
+use warden_server::{DiscoveredHub, PairedDevice, PairingStore};
+
+/// Default port a discovery sweep probes (Fase 9.1, redefined) — same default `warden-server`
+/// binds to unless `--listen` overrides it. A hub on a non-default port won't be found by this
+/// v1 sweep; known limitation, registered in `PENDING.md`.
+const DISCOVERY_PORT: u16 = 7420;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +120,32 @@ pub fn hub_pairing_qr_svg() -> Result<String, String> {
     crate::qr::render_qr_svg(&json)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredHubPayload {
+    host: String,
+    port: u16,
+    server_name: String,
+}
+
+impl From<DiscoveredHub> for DiscoveredHubPayload {
+    fn from(hub: DiscoveredHub) -> Self {
+        DiscoveredHubPayload { host: hub.host.to_string(), port: hub.port, server_name: hub.server_name }
+    }
+}
+
+/// Sweeps the local network for `warden-server` hubs (Fase 9.1, redefined — see
+/// `warden_server_protocol::discovery`) and lets the "Pareamento por QR" section's "Server URL"
+/// field be filled by picking one instead of typing an IP by hand. Never reveals or needs the
+/// auth key — that stays manual, same security boundary the discovery probe itself keeps.
+#[tauri::command]
+pub async fn discover_hubs() -> Result<Vec<DiscoveredHubPayload>, String> {
+    warden_server::discover_hubs(DISCOVERY_PORT)
+        .await
+        .map(|hubs| hubs.into_iter().map(Into::into).collect())
+        .map_err(|e| format!("{e:#}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +175,19 @@ mod tests {
             auth_key: "secret".to_string(),
         });
         assert_eq!(serde_json::to_string(&payload).unwrap(), r#"{"serverUrl":"ws://192.168.1.10:7420","authKey":"secret"}"#);
+    }
+
+    // Locks in the exact camelCase JSON shape `desktop/src/types.ts`'s `DiscoveredHub` expects.
+    #[test]
+    fn discovered_hub_payload_serializes_as_camel_case() {
+        let payload = DiscoveredHubPayload::from(DiscoveredHub {
+            host: "192.168.1.10".parse().unwrap(),
+            port: 7420,
+            server_name: "Fabio's Desktop".to_string(),
+        });
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"host":"192.168.1.10","port":7420,"serverName":"Fabio's Desktop"}"#
+        );
     }
 }

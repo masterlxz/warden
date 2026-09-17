@@ -168,6 +168,15 @@ export interface HubPairingConfig {
   authKey: string;
 }
 
+/** Mirrors `warden_server_protocol::discovery::DiscoveredHub` (via
+ * `workspace_cmds::DiscoveredHubPayload`, Fase 9.1 redefined) — one hub found by a LAN discovery
+ * sweep, listed so the operator can pick it instead of typing `serverUrl` by hand. */
+export interface DiscoveredHub {
+  host: string;
+  port: number;
+  serverName: string;
+}
+
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's
  * status card. `null` fields mean "not applicable yet" (e.g. `deviceId` before `sync_init`/
  * pairing, `ownerAddress`/`lastTxId`/`lastSyncedAtMs` before the first push or pull). */

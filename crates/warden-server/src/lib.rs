@@ -38,4 +38,4 @@ pub mod vault_node;
 pub use device_registry::{PairedDevice, PairingStatus, PairingStore};
 pub use remote_tool::{RemoteTool, RemoteToolChannel};
 pub use server::Server;
-pub use warden_server_protocol::{ClientMessage, RemoteNodeProvider, ServerConnection, ServerMessage};
+pub use warden_server_protocol::{discover_hubs, discover_hubs_on, ClientMessage, DiscoveredHub, RemoteNodeProvider, ServerConnection, ServerMessage};

@@ -388,7 +388,17 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 **Stack**: Tailscale, WebSocket/gRPC, Rust
 
 **Etapas**:
-- [ ] 9.1 — Setup Tailscale (todos os nós na mesma subnet)
+- [x] 9.1 — Descoberta de hub na rede local (redefinida pelo usuário, Sessão 69 continuação — não é
+  "setup Tailscale": é o Warden encontrar sozinho outros dispositivos na LAN, sem digitar host/porta
+  à mão; Tailscale segue como infra opcional do próprio usuário, fora do código do Warden, ver
+  `ARCHITECTURE.md`) — **fatia 1 (esta sessão)**: protocolo (`ClientMessage::Discover`/
+  `ServerMessage::DiscoverAck`), servidor (`handle_connection` responde sem exigir `auth_key`, nunca
+  registra a sonda como dispositivo), sweep reaproveitando `warden_truthid::lan::candidate_hosts()`
+  (`warden-server-protocol::discovery`), e botão "Procurar hubs na rede" no `WorkspaceView.tsx` do
+  desktop. Verificado de ponta a ponta com um `warden-server` real bindado em `0.0.0.0:7420` —
+  achado pela IP real da LAN da máquina, não só loopback. **Fora desta fatia** (ver `PENDING.md`
+  P69/P70): mobile (via `warden-mobile-bridge`), extensão de navegador (reimplementação em TS,
+  não chama Rust), sweep de porta configurável (hoje só tenta 7420)
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
 - [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro

@@ -795,7 +795,8 @@ pub fn run() {
             workspace_cmds::revoke_paired_device,
             workspace_cmds::get_hub_pairing_config,
             workspace_cmds::save_hub_pairing_config,
-            workspace_cmds::hub_pairing_qr_svg
+            workspace_cmds::hub_pairing_qr_svg,
+            workspace_cmds::discover_hubs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

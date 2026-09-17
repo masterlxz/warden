@@ -52,6 +52,11 @@ pub enum ClientMessage {
         tool: String,
         arguments: Value,
     },
+    /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
+    /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
+    /// point is finding a hub *before* knowing its credential. Answered by `DiscoverAck` and the
+    /// connection closes right after — never reaches `Hello`'s device-registry bookkeeping.
+    Discover,
     Goodbye {
         reason: Option<String>,
     },
@@ -107,6 +112,11 @@ pub enum ServerMessage {
     DeviceToolError {
         call_id: u64,
         message: String,
+    },
+    /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
+    /// "which machine is this" and let them pick it, never a secret.
+    DiscoverAck {
+        server_name: String,
     },
     Goodbye {
         reason: Option<String>,
@@ -242,6 +252,22 @@ mod tests {
         let json = r#"{"type":"chatResponse","content":"hi","usage":null}"#;
         let msg = serde_json::from_str::<ServerMessage>(json).unwrap();
         assert!(matches!(msg, ServerMessage::ChatResponse { attachments, .. } if attachments.is_empty()));
+    }
+
+    #[test]
+    fn client_discover_round_trips_through_json() {
+        let msg = ClientMessage::Discover;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"discover"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_discover_ack_round_trips_through_json() {
+        let msg = ServerMessage::DiscoverAck { server_name: "Fabio's Desktop".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"discoverAck","serverName":"Fabio's Desktop"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
     }
 
     #[test]

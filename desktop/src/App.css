@@ -1521,6 +1521,20 @@ body {
   flex-shrink: 0;
 }
 
+/* Discovered-hub rows (Fase 9.1, redefined) are `<button>`s picking a Server URL, not device
+   entries — reset the button defaults so they still read as a plain list item. */
+.workspace-device-row--clickable {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.workspace-device-row--clickable:hover {
+  border-color: var(--color-accent);
+}
+
 .workspace-status-badge--pending {
   color: var(--color-text-muted);
 }

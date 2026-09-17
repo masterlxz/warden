@@ -38,6 +38,7 @@ type DeviceRegistry = Arc<Mutex<HashMap<String, RemoteToolChannel>>>;
 pub struct Server {
     listener: TcpListener,
     auth_key: Arc<str>,
+    server_name: Arc<str>,
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
@@ -48,6 +49,7 @@ impl Server {
     pub async fn bind(
         addr: SocketAddr,
         auth_key: impl Into<Arc<str>>,
+        server_name: impl Into<Arc<str>>,
         orchestrator: Arc<Orchestrator>,
         conversations_dir: PathBuf,
         devices_path: PathBuf,
@@ -56,6 +58,7 @@ impl Server {
         Ok(Self {
             listener,
             auth_key: auth_key.into(),
+            server_name: server_name.into(),
             orchestrator,
             conversations_dir: Arc::new(conversations_dir),
             devices: Arc::new(Mutex::new(HashMap::new())),
@@ -71,15 +74,19 @@ impl Server {
     /// Accepts connections forever, one task per connection. Only returns on a listener-level
     /// error (a single connection's failure never brings the server down).
     pub async fn serve(self) -> anyhow::Result<()> {
+        let ctx = ConnectionContext {
+            auth_key: self.auth_key,
+            server_name: self.server_name,
+            orchestrator: self.orchestrator,
+            conversations_dir: self.conversations_dir,
+            devices: self.devices,
+            devices_path: self.devices_path,
+        };
         loop {
             let (stream, peer) = self.listener.accept().await?;
-            let auth_key = self.auth_key.clone();
-            let orchestrator = self.orchestrator.clone();
-            let conversations_dir = self.conversations_dir.clone();
-            let devices = self.devices.clone();
-            let devices_path = self.devices_path.clone();
+            let ctx = ctx.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, peer, auth_key, orchestrator, conversations_dir, devices, devices_path).await {
+                if let Err(err) = handle_connection(stream, peer, ctx).await {
                     eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
                 }
             });
@@ -87,15 +94,20 @@ impl Server {
     }
 }
 
-async fn handle_connection(
-    stream: TcpStream,
-    peer: SocketAddr,
+/// Everything a connection handler needs that isn't specific to one connection — grouped so
+/// `handle_connection` takes one argument instead of cloning/threading each field by hand.
+#[derive(Clone)]
+struct ConnectionContext {
     auth_key: Arc<str>,
+    server_name: Arc<str>,
     orchestrator: Arc<Orchestrator>,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
-) -> anyhow::Result<()> {
+}
+
+async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
+    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path } = ctx;
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
 
@@ -114,6 +126,14 @@ async fn handle_connection(
             auth_key: provided,
             tools,
         }) => (device_id, device_name, provided, tools),
+        // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
+        // answered and closed right here, before any of the Hello/auth-key/device-registry
+        // machinery below runs. Never becomes a "connected device".
+        Ok(ClientMessage::Discover) => {
+            send(&mut sink, &ServerMessage::DiscoverAck { server_name: server_name.to_string() }).await?;
+            sink.send(Message::Close(None)).await?;
+            return Ok(());
+        }
         Ok(_) => {
             eprintln!("warden-server: {peer} didn't send Hello first, closing");
             return Ok(());
@@ -148,7 +168,7 @@ async fn handle_connection(
     }
 
     send(&mut sink, &ServerMessage::HelloAck {
-        server_name: "warden-server".into(),
+        server_name: server_name.to_string(),
     })
     .await?;
 
@@ -258,6 +278,9 @@ async fn handle_connection(
                 }
                 Ok(ClientMessage::Hello { .. }) => {
                     eprintln!("warden-server: {device_id} sent a second Hello, ignoring");
+                }
+                Ok(ClientMessage::Discover) => {
+                    eprintln!("warden-server: {device_id} sent Discover after Hello, ignoring");
                 }
                 Err(err) => {
                     eprintln!("warden-server: {device_id} sent an unparseable message: {err}");

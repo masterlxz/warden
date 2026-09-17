@@ -8,9 +8,11 @@
 //! `warden-server` — only the hub's `server.rs` uses them, `warden-bootstrap` never does.
 
 pub mod client;
+pub mod discovery;
 pub mod protocol;
 pub mod remote_node;
 
 pub use client::ServerConnection;
+pub use discovery::{discover_hubs, discover_hubs_on, DiscoveredHub};
 pub use protocol::{ClientMessage, ServerMessage};
 pub use remote_node::RemoteNodeProvider;

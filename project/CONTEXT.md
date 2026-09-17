@@ -132,7 +132,8 @@ Interface de comunicação com o usuário:
 
 ## Security Requirements
 
-- Comunicação servidor↔cliente criptografada (Tailscale)
+- Comunicação servidor↔cliente criptografada apenas se o operador optar por rodar o hub dentro de
+  um túnel próprio (Tailscale ou outro) — fora do escopo do Warden, ver P36 em `PENDING.md`
 - Chaves de API armazenadas localmente
 - Canais com autenticação (Token do Telegram, QR pareamento WhatsApp)
 - Memória em IPFS pode ser cifrada
