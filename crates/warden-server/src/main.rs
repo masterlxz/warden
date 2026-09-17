@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
-use warden_server::{PairingStore, Server};
+use warden_server::{resolve_server_name, PairingStore, Server};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -100,16 +100,6 @@ fn default_vault_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join("Warden").join("vault")
 }
 
-/// Resolution order: `--server-name` > `WARDEN_SERVER_NAME` > OS hostname > a fixed literal —
-/// same fallback shape `crates/warden-sync/src/pairing/join.rs::device_name()` uses, so a hub with
-/// nothing configured still answers a discovery sweep with something recognizable instead of an
-/// empty string.
-fn resolve_server_name(flag: Option<String>) -> String {
-    flag.or_else(|| std::env::var("WARDEN_SERVER_NAME").ok())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .unwrap_or_else(|| "warden-server".to_string())
-}
 
 fn devices_path() -> anyhow::Result<PathBuf> {
     warden_bootstrap::default_server_devices_path().context("could not determine the OS config directory for the device registry")

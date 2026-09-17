@@ -465,6 +465,23 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   --debug` **compilou de verdade**: `warden_mobile_bridge` (a ponte Rust) built pras 4 arquiteturas
   Android, APK de 200MB gerado. Fecha P65. Ainda sem teste em emulador/hardware real (instalar o
   APK e escanear a câmera de fato) — lacuna menor, não bloqueia a fase
+- [x] 9.8 — App desktop embute o próprio `warden-server` (Sessão 69, continuação — "virar o hub
+  desta rede", pedido explícito do usuário) — até aqui o hub sempre foi um processo separado do
+  desktop; agora a tela Workspace ganhou uma seção "Ser o hub desta rede" com toggle liga/desliga,
+  porta escolhível (host fica fixo em `0.0.0.0`, já que o ponto é ser alcançável), auth key gerada
+  automaticamente (nunca digitada — `warden_bootstrap::generate_auth_key`, 32 bytes aleatórios).
+  Reaproveita o mesmo `Orchestrator` que já serve o chat local do desktop e os mesmos paths que o
+  binário `warden-server` standalone já usaria (`default_server_conversations_dir`/
+  `default_server_devices_path`), então `WorkspaceView.tsx`'s lista de dispositivos já pareados
+  funciona sem nenhuma mudança. `Server` ganhou `serve_until` (shutdown gracioso — `serve()` sozinho
+  nunca parava) pro toggle desligar de verdade e liberar a porta. Confirmado com o usuário: uma vez
+  ligado, sobe sozinho em todo lançamento do app (`config.toml`'s `embedded_server.enabled`), não é
+  um toggle só-desta-sessão. Verificado com um teste de ponta a ponta real (não mockado) — `Orchestrator`
+  real via `bootstrap()`, `AppState` real, `Server::bind`/`serve_until` real, cliente real conectando
+  e fazendo `Hello`+`Ping`+`Discover` de verdade sobre um socket TCP de verdade. Ver `ARCHITECTURE.md`
+  pro detalhamento completo. Escolha explícita do usuário: escolher a porta pra acessar de fora da
+  LAN (tipo Jellyfin) já funciona hoje sem nenhum código — é só redirecionar a porta no roteador —
+  registrado como orientação, não feature, já que não depende do Warden
 
 ---
 

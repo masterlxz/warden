@@ -1,5 +1,6 @@
 mod qr;
 mod recording;
+mod server_cmds;
 mod sync_cmds;
 mod vault_cmds;
 mod workspace_cmds;
@@ -34,6 +35,9 @@ struct AppState {
     /// `open_generated_file` (P64) confines every path it's willing to open to, so a path a
     /// malicious/prompt-injected tool result claimed can never be opened outside of it.
     generated_files_root: PathBuf,
+    /// Set while the desktop is embedding its own `warden-server` hub (Fase 9.1 follow-up, "virar
+    /// o hub desta rede") — `None` when stopped. See `server_cmds.rs`.
+    embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -616,6 +620,9 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         // No Settings-screen UI yet (P63, config.toml-only) — same carry-forward reasoning as
         // `delegate_max_depth` above.
         git_sync: existing.git_sync,
+        // Owned by `server_cmds::save_embedded_server_config`/`start_embedded_server`, not this
+        // general Settings save — carry forward unchanged, same reasoning as `git_sync` above.
+        embedded_server: existing.embedded_server,
     };
 
     // Real migration (P61): when the user actually changes which backend the vault's memory
@@ -755,16 +762,35 @@ pub fn run() {
         .unwrap_or_else(|_| sync_vault_path.parent().unwrap_or(std::path::Path::new(".")).join("generated"));
     let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
+    let app_state = AppState {
+        orchestrator: Mutex::new(orchestrator),
+        recording: Mutex::new(None),
+        sync,
+        pending_push: Mutex::new(None),
+        generated_files_root,
+        embedded_server: Mutex::new(None),
+    };
+
+    // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
+    // back up on every launch, same always-on-service expectation as Jellyfin/similar self-hosted
+    // apps; the operator flips it off explicitly (`stop_embedded_server`) rather than it silently
+    // needing to be turned back on by hand every time.
+    if let Ok(config) = load_config(None) {
+        if let Some(server_config) = config.embedded_server.filter(|c| c.enabled) {
+            match tauri::async_runtime::block_on(server_cmds::start_embedded_server_inner(&app_state, &server_config)) {
+                Ok(handle) => {
+                    eprintln!("desktop: embedded server auto-started on {}", handle.bound_addr);
+                    *app_state.embedded_server.lock().unwrap() = Some(handle);
+                }
+                Err(err) => eprintln!("desktop: failed to auto-start the embedded server: {err:#}"),
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            orchestrator: Mutex::new(orchestrator),
-            recording: Mutex::new(None),
-            sync,
-            pending_push: Mutex::new(None),
-            generated_files_root,
-        })
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             send_message,
             open_generated_file,
@@ -796,7 +822,13 @@ pub fn run() {
             workspace_cmds::get_hub_pairing_config,
             workspace_cmds::save_hub_pairing_config,
             workspace_cmds::hub_pairing_qr_svg,
-            workspace_cmds::discover_hubs
+            workspace_cmds::discover_hubs,
+            server_cmds::get_embedded_server_config,
+            server_cmds::generate_embedded_server_auth_key,
+            server_cmds::save_embedded_server_config,
+            server_cmds::start_embedded_server,
+            server_cmds::stop_embedded_server,
+            server_cmds::embedded_server_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

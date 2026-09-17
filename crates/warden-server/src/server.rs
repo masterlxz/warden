@@ -72,8 +72,18 @@ impl Server {
     }
 
     /// Accepts connections forever, one task per connection. Only returns on a listener-level
-    /// error (a single connection's failure never brings the server down).
+    /// error (a single connection's failure never brings the server down) — the standalone
+    /// `warden-server` binary's normal mode, never asked to stop gracefully.
     pub async fn serve(self) -> anyhow::Result<()> {
+        self.serve_until(std::future::pending()).await
+    }
+
+    /// Same accept loop as `serve`, but also races a `shutdown` future — resolving it stops the
+    /// loop and drops the listener (freeing the port) instead of running forever. Used by the
+    /// desktop's embedded server (Fase 9.1 follow-up, "virar o hub") so switching the toggle off
+    /// actually releases the port instead of leaking a task that accepts forever.
+    pub async fn serve_until(self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
+        let listener = self.listener;
         let ctx = ConnectionContext {
             auth_key: self.auth_key,
             server_name: self.server_name,
@@ -82,14 +92,20 @@ impl Server {
             devices: self.devices,
             devices_path: self.devices_path,
         };
+        tokio::pin!(shutdown);
         loop {
-            let (stream, peer) = self.listener.accept().await?;
-            let ctx = ctx.clone();
-            tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, peer, ctx).await {
-                    eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (stream, peer) = accepted?;
+                    let ctx = ctx.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_connection(stream, peer, ctx).await {
+                            eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
+                        }
+                    });
                 }
-            });
+                _ = &mut shutdown => return Ok(()),
+            }
         }
     }
 }
@@ -328,4 +344,28 @@ async fn send(sink: &mut WsSink, msg: &ServerMessage) -> anyhow::Result<()> {
     let json = serde_json::to_string(msg)?;
     sink.send(Message::Text(json.into())).await?;
     Ok(())
+}
+
+/// Resolution order: an explicit name (e.g. `--server-name`, or a value typed into the desktop's
+/// embedded-server settings) > `WARDEN_SERVER_NAME` > OS hostname > a fixed literal — same
+/// fallback shape `crates/warden-sync/src/pairing/join.rs::device_name()` uses, so a hub with
+/// nothing configured still answers a discovery sweep with something recognizable instead of an
+/// empty string. Shared by the standalone `warden-server` binary (`main.rs`) and the desktop's
+/// embedded server (Fase 9.1 follow-up) so both resolve a name the same way.
+pub fn resolve_server_name(explicit: Option<String>) -> String {
+    explicit
+        .or_else(|| std::env::var("WARDEN_SERVER_NAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .unwrap_or_else(|| "warden-server".to_string())
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::resolve_server_name;
+
+    #[test]
+    fn explicit_name_wins_over_everything() {
+        assert_eq!(resolve_server_name(Some("My Hub".to_string())), "My Hub");
+    }
 }

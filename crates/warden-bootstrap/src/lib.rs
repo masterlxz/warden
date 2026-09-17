@@ -139,6 +139,38 @@ pub struct GitSyncConfig {
     pub token: String,
 }
 
+/// Config for the desktop app embedding its own `warden-server` hub (Fase 9.1 follow-up, "virar o
+/// hub desta rede") instead of that always being a separate process. `enabled: true` makes
+/// `desktop/src-tauri`'s `run()` start it automatically on every launch — this is meant to behave
+/// like an always-on home service, not a per-session toggle. Host is deliberately not
+/// configurable: always `0.0.0.0` (every local interface), since the whole point is being
+/// reachable — only `port` is a real choice. `auth_key` is generated, never hand-typed (see
+/// `generate_auth_key`), so a real network listener never opens with a weak/empty credential.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedServerConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub auth_key: String,
+    /// Shown in `HelloAck`/`DiscoverAck` so other devices can recognize which machine this is.
+    /// `None` falls back to the same hostname/literal chain `warden-server`'s own `--server-name`
+    /// resolution already uses (`resolve_server_name` in `crates/warden-server/src/main.rs`) —
+    /// this struct doesn't duplicate that logic, the desktop command that starts the server does.
+    pub server_name: Option<String>,
+}
+
+/// 32 random bytes from the OS CSPRNG, hex-encoded (64 hex chars) — used for `EmbeddedServerConfig
+/// ::auth_key` so the desktop's embedded hub never starts with a weak or empty credential. Plain
+/// `rand`/`OsRng` rather than reusing any of `warden-truthid`'s crypto primitives: those are all
+/// keyed to a specific protocol (ECIES, pairing codes), not a generic "give me a random secret"
+/// helper, and pulling one in for that would be a stranger dependency than just adding `rand`.
+pub fn generate_auth_key() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -202,6 +234,10 @@ pub struct FileConfig {
     /// isn't configured; unrelated to `storage_provider`/`remote_node` above, which are about
     /// where the vault's *primary copy* lives, not how it's synced between devices.
     pub git_sync: Option<GitSyncConfig>,
+    /// The desktop app embedding its own `warden-server` hub (Fase 9.1 follow-up) — `None` means
+    /// never configured (equivalent to `enabled: false`, but distinct so the Settings UI can tell
+    /// "never set up" from "set up, currently off"). See `EmbeddedServerConfig`'s own doc comment.
+    pub embedded_server: Option<EmbeddedServerConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -1355,6 +1391,12 @@ oauth = true
                 target_device_id: "dev-target".to_string(),
             }),
             git_sync: Some(GitSyncConfig { remote_url: "https://gitea.example.com/user/vault.git".to_string(), token: "pat-secret".to_string() }),
+            embedded_server: Some(EmbeddedServerConfig {
+                enabled: true,
+                port: 7420,
+                auth_key: "embedded-secret".to_string(),
+                server_name: Some("Fabio's Desktop".to_string()),
+            }),
         };
 
         save_config(&path, &config).unwrap();
@@ -1363,6 +1405,15 @@ oauth = true
         assert_eq!(loaded, config);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn generate_auth_key_produces_64_hex_chars_and_never_repeats() {
+        let a = generate_auth_key();
+        let b = generate_auth_key();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 
     #[test]

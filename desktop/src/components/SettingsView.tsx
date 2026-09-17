@@ -188,7 +188,9 @@ const MCP_PRESETS: { label: string; server: McpServer }[] = [
   },
 ];
 
-function ApiKeyField({
+/** Reused outside this file too (e.g. `WorkspaceView.tsx`'s embedded-server auth key) — same
+ * reveal/hide affordance for any secret the desktop shows in an editable field. */
+export function ApiKeyField({
   label,
   value,
   onChange,

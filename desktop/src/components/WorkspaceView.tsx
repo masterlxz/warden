@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DiscoveredHub, HubPairingConfig, PairedDevice } from "../types";
+import { ApiKeyField } from "./SettingsView";
+import type { DiscoveredHub, EmbeddedServerConfig, EmbeddedServerStatus, HubPairingConfig, PairedDevice } from "../types";
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
@@ -11,6 +12,127 @@ function formatSeen(ms: number): string {
 function StatusBadge({ status }: { status: PairedDevice["status"] }) {
   const label = status === "pending" ? "Pending" : status === "approved" ? "Approved" : "Revoked";
   return <span className={`storage-provider-badge workspace-status-badge workspace-status-badge--${status}`}>{label}</span>;
+}
+
+/** Fase 9.1 follow-up ("virar o hub desta rede") — lets this same desktop app embed its own
+ * `warden-server` instead of that always being a separate process. Host is deliberately not a
+ * field here (always `0.0.0.0`, see `server_cmds.rs`'s module docs) — only port/auth key/name are
+ * real choices. The port/name inputs lock while running, same reasoning `HubPairingQrSection`
+ * doesn't need since it never has a "live" state to protect. */
+function EmbeddedServerSection() {
+  const [config, setConfig] = useState<EmbeddedServerConfig>({ port: 7420, authKey: "", serverName: null });
+  const [serverNameInput, setServerNameInput] = useState("");
+  const [status, setStatus] = useState<EmbeddedServerStatus>({ running: false, boundAddr: null, serverName: null });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    invoke<EmbeddedServerConfig | null>("get_embedded_server_config")
+      .then(async (saved) => {
+        if (saved) {
+          setConfig(saved);
+          setServerNameInput(saved.serverName ?? "");
+        } else {
+          const authKey = await invoke<string>("generate_embedded_server_auth_key");
+          setConfig({ port: 7420, authKey, serverName: null });
+        }
+      })
+      .catch((err) => setError(String(err)));
+    invoke<EmbeddedServerStatus>("embedded_server_status")
+      .then(setStatus)
+      .catch(() => {});
+  }, []);
+
+  async function handleGenerateKey() {
+    const authKey = await invoke<string>("generate_embedded_server_auth_key");
+    setConfig((c) => ({ ...c, authKey }));
+  }
+
+  async function handleStart() {
+    setError(null);
+    setBusy(true);
+    try {
+      // Always save first — `start_embedded_server` reads the config straight from disk, so a
+      // field edited here but never saved would otherwise start the server with stale settings.
+      await invoke("save_embedded_server_config", { port: config.port, authKey: config.authKey, serverName: serverNameInput.trim() || null });
+      const next = await invoke<EmbeddedServerStatus>("start_embedded_server");
+      setStatus(next);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleStop() {
+    setError(null);
+    setBusy(true);
+    try {
+      await invoke("stop_embedded_server");
+      setStatus({ running: false, boundAddr: null, serverName: null });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="settings-section">
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">Ser o hub desta rede</h3>
+      </div>
+      <p className="settings-hint">
+        Liga um <code>warden-server</code> dentro deste mesmo app — outros dispositivos (mobile, extensão, outro <code>warden-node</code>)
+        conseguem se conectar por aqui, na porta escolhida abaixo. Uma vez ligado, volta a subir sozinho toda vez que este app abrir; pra
+        acessar de fora da rede local (tipo Jellyfin), redirecione essa porta no seu roteador.
+      </p>
+
+      <p className="settings-hint">
+        {status.running ? (
+          <>
+            Rodando como <strong>{status.serverName}</strong> em <code>{status.boundAddr}</code>
+          </>
+        ) : (
+          "Parado."
+        )}
+      </p>
+
+      <label className="settings-field">
+        <span className="settings-label">Porta</span>
+        <input
+          className="settings-input"
+          type="number"
+          value={config.port}
+          disabled={status.running}
+          onChange={(e) => setConfig((c) => ({ ...c, port: Number(e.currentTarget.value) }))}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">Nome (opcional)</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="ex.: Desktop da sala"
+          value={serverNameInput}
+          disabled={status.running}
+          onChange={(e) => setServerNameInput(e.currentTarget.value)}
+        />
+      </label>
+      <ApiKeyField label="Auth key" value={config.authKey} onChange={(authKey) => setConfig((c) => ({ ...c, authKey }))} />
+      {!status.running && (
+        <button type="button" className="settings-browse-btn" onClick={handleGenerateKey}>
+          Gerar nova chave
+        </button>
+      )}
+
+      {error && <p className="settings-error-banner">{error}</p>}
+
+      <button type="button" className="settings-save-btn" onClick={status.running ? handleStop : handleStart} disabled={busy}>
+        {busy ? "Aguarde…" : status.running ? "Desligar" : "Ligar"}
+      </button>
+    </section>
+  );
 }
 
 /** Fase 9.7 — lets the operator save the hub's connection details once and generate a QR a new
@@ -189,6 +311,8 @@ function WorkspaceView() {
         device paired to a hub running elsewhere won't show up here. Approving a device lets it call, or be called by,{" "}
         <code>CallDeviceTool</code> routing (Fase 9.3); it doesn't affect plain chat, which never required approval.
       </p>
+
+      <EmbeddedServerSection />
 
       <HubPairingQrSection />
 

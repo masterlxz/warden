@@ -177,6 +177,25 @@ export interface DiscoveredHub {
   serverName: string;
 }
 
+/** Mirrors `warden_bootstrap::EmbeddedServerConfig` (via
+ * `server_cmds::EmbeddedServerConfigPayload`, Fase 9.1 follow-up "virar o hub desta rede") — the
+ * persisted port/auth key/name for the desktop's own embedded `warden-server`. `enabled` isn't
+ * part of this payload on purpose (see `server_cmds.rs`'s module docs) — that lives only in
+ * `EmbeddedServerStatus.running`, driven by the start/stop commands, not this form. */
+export interface EmbeddedServerConfig {
+  port: number;
+  authKey: string;
+  serverName: string | null;
+}
+
+/** Mirrors `server_cmds::EmbeddedServerStatusPayload` — whether the embedded server is currently
+ * running, and if so, where. */
+export interface EmbeddedServerStatus {
+  running: boolean;
+  boundAddr: string | null;
+  serverName: string | null;
+}
+
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's
  * status card. `null` fields mean "not applicable yet" (e.g. `deviceId` before `sync_init`/
  * pairing, `ownerAddress`/`lastTxId`/`lastSyncedAtMs` before the first push or pull). */
