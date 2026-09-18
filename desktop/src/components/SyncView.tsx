@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { SyncPullResult, SyncPushBegin, SyncPushResult, SyncStatus } from "../types";
+import type { GitPullResult, GitPushResult, SyncPullResult, SyncPushBegin, SyncPushResult, SyncStatus } from "../types";
 
 function formatTimestamp(ms: number | null): string {
   if (ms === null) return "nunca";
@@ -54,6 +54,12 @@ function SyncView() {
 
   const [autoSyncMessage, setAutoSyncMessage] = useState<string | null>(null);
 
+  const [gitSyncConfigured, setGitSyncConfigured] = useState<boolean | null>(null);
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [gitPushResult, setGitPushResult] = useState<GitPushResult | null>(null);
+  const [gitPullResult, setGitPullResult] = useState<GitPullResult | null>(null);
+
   const unlistenRef = useRef<(() => void) | null>(null);
 
   function refreshStatus() {
@@ -66,6 +72,9 @@ function SyncView() {
   // view on each visit, so a stale status right after a change made elsewhere never lingers.
   useEffect(() => {
     refreshStatus();
+    invoke<boolean>("git_sync_configured")
+      .then(setGitSyncConfigured)
+      .catch((err) => setGitError(String(err)));
     return () => {
       unlistenRef.current?.();
     };
@@ -84,6 +93,21 @@ function SyncView() {
       if (filesDeleted > 0) parts.push(`${filesDeleted} arquivo(s) removido(s)`);
       if (configUpdated) parts.push("config.toml atualizado");
       setAutoSyncMessage(`Sincronização automática — ${parts.join(", ")}.`);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  // P71 — same as the `auto-sync-pulled` listener above, but for the git backend's automatic push
+  // (only ever emitted when git sync is the active backend — Arweave push always stays manual).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{ commitSha: string; filesChanged: number; configChanged: boolean }>("auto-sync-pushed", (event) => {
+      const { filesChanged, configChanged } = event.payload;
+      const parts: string[] = [`${filesChanged} arquivo(s) enviado(s)`];
+      if (configChanged) parts.push("config.toml atualizado");
+      setAutoSyncMessage(`Sincronização automática (git) — ${parts.join(", ")}.`);
     }).then((fn) => {
       unlisten = fn;
     });
@@ -134,6 +158,38 @@ function SyncView() {
       setError(String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleGitPush() {
+    setGitBusy(true);
+    setGitError(null);
+    setGitPushResult(null);
+    try {
+      const result = await invoke<GitPushResult | null>("git_sync_push");
+      if (result === null) {
+        setGitError("Nada para enviar — vault e config já batem com o último push.");
+      } else {
+        setGitPushResult(result);
+      }
+    } catch (err) {
+      setGitError(String(err));
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  async function handleGitPull() {
+    setGitBusy(true);
+    setGitError(null);
+    setGitPullResult(null);
+    try {
+      const result = await invoke<GitPullResult>("git_sync_pull");
+      setGitPullResult(result);
+    } catch (err) {
+      setGitError(String(err));
+    } finally {
+      setGitBusy(false);
     }
   }
 
@@ -268,6 +324,58 @@ function SyncView() {
           )}
         </section>
       )}
+
+      <section className="settings-section">
+        <div className="settings-section-header">
+          <h3 className="settings-section-title">Git</h3>
+        </div>
+        <p className="settings-hint">
+          Alternativa ao Arweave — um repositório git próprio. Sem aprovação por celular, por isso é a única que o
+          app consegue empurrar sozinho a cada poucos minutos, além de puxar (ver "Sincronização automática" acima).
+        </p>
+
+        {gitSyncConfigured === false && (
+          <p className="settings-hint">Configure a URL e o token em Settings, seção "Sync via Git", pra usar.</p>
+        )}
+
+        {gitSyncConfigured && (
+          <>
+            <div className="sync-actions-row">
+              <button type="button" className="settings-save-btn" onClick={handleGitPush} disabled={gitBusy}>
+                Push
+              </button>
+              <button type="button" className="settings-save-btn" onClick={handleGitPull} disabled={gitBusy}>
+                Pull
+              </button>
+            </div>
+
+            {gitError && <p className="settings-error-banner">{gitError}</p>}
+
+            {gitPushResult && (
+              <p className="settings-success-banner">
+                Enviado — commit {gitPushResult.commitSha.slice(0, 8)} ({gitPushResult.filesChanged} arquivo(s))
+              </p>
+            )}
+
+            {gitPullResult && (
+              <div className="settings-success-banner">
+                <p>
+                  Pull concluído — {gitPullResult.commitsApplied} commit(s), {gitPullResult.filesWritten} escrito(s),{" "}
+                  {gitPullResult.filesDeleted} removido(s)
+                  {gitPullResult.configUpdated ? ", config.toml atualizado" : ""}.
+                </p>
+                {gitPullResult.warnings.length > 0 && (
+                  <ul className="sync-warning-list">
+                    {gitPullResult.warnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </section>
 
       <section className="settings-section">
         <div className="settings-section-header">

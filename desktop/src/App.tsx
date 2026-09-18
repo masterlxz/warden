@@ -23,6 +23,7 @@ const emptySettings: Settings = {
   agents: [],
   storageProvider: "local",
   remoteNode: null,
+  gitSync: null,
 };
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),

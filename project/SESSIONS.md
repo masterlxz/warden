@@ -2,7 +2,75 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-18 (Sessão 71)
+> Última atualização: 2026-09-18 (Sessão 72)
+
+---
+
+### 2026-09-18 — Sessão 72
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"), sem item travado. Apresentadas as
+  frentes abertas (P70 lacunas menores, P71 push via git, Fase 10 TruthID) — escolhido push via
+  git; usuário levantou uma dúvida antes de confirmar ("cara eu não sei se quero push automático,
+  pq se não vai torrar token do arweave né?"), esclarecido que o escopo é só o backend git (sem
+  custo, sem tocar no gate manual do Arweave) antes de seguir.
+
+**O que foi feito**:
+
+- Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar, depois de mapear o
+  `GitSyncEngine` (`crates/warden-sync/src/git.rs`, P63) já funcionando de ponta a ponta no CLI
+  (`make_git_sync_engine`/`/sync git push`/`pull` em `interactive.rs`) mas nunca ligado ao desktop,
+  e o auto-pull existente (`sync_cmds::spawn_auto_pull`, P71 fatia 1). Achado que definiu o design
+  do auto-loop: Arweave (`SyncEngine`) e git (`GitSyncEngine`) compartilham o mesmo
+  `secrets_path`/`manifest_path` em disco — são backends alternativos, não aditivos, então só um
+  pode rodar por tick, decidido pela presença de `config.git_sync`.
+- **Settings**: `GitSyncConfigPayload` novo (`desktop/src-tauri/src/lib.rs`, mesmo padrão de
+  `RemoteNodeConfigPayload`), `SettingsSnapshot`/`SettingsFormPayload` ganharam `git_sync`,
+  `save_settings` trocou o antigo carry-forward (`git_sync: existing.git_sync`) por validação
+  tudo-ou-nada de verdade. `SettingsView.tsx` ganhou `GitSyncForm` (2 campos: Remote URL + Token
+  via `ApiKeyField`) numa seção nova "Sync via Git", com a mesma validação espelhada no frontend.
+- **Comandos novos**: `desktop/src-tauri/src/git_sync_cmds.rs` — `git_sync_configured`,
+  `git_sync_push`, `git_sync_pull`, todos stateless (constroem um `GitSyncEngine` fresco por
+  chamada, mesma composição de paths que o CLI já usava). `build_git_sync_engine` (helper
+  compartilhado) recebe `secrets_path`/`manifest_path`/`git_repo_path` como parâmetros explícitos
+  em vez de resolvê-los internamente via `warden_sync::paths`.
+- **Bug real pego pelo próprio teste de integração desta sessão** (não só um risco teórico): a
+  primeira versão só externalizava `secrets_path`/`manifest_path`, deixando `git_repo_path`
+  resolvido internamente — o teste de pull-então-push passou na primeira rodada de `cargo test` mas
+  falhou na segunda (`git checkout --orphan main falhou: a branch named 'main' already exists`).
+  Causa: o clone local de trabalho do `GitSyncEngine` é compartilhado entre todo push/pull do
+  device por design (mesmo doc comment de `git.rs`), então cada rodada de teste reaproveitava o
+  `~/.config/warden/git-sync-repo` **real** desta máquina, com `main` já commitado pela rodada
+  anterior — exatamente o mesmo problema que teria poluído o `sync_secrets.json`/
+  `sync_manifest.json` reais se aqueles dois não tivessem sido externalizados desde o início.
+  Corrigido externalizando também `git_repo_path`; suíte rodada 3x seguidas depois pra confirmar
+  que a flakiness sumiu, e `~/.config/warden/` conferido sem `git-sync-repo`/`sync_secrets.json`
+  novos depois da rodada limpa.
+- **Auto-sync**: `spawn_auto_pull` renomeado pra `spawn_auto_sync` (`sync_cmds.rs`) — cada tick
+  relê `config.toml` fresco pra decidir o branch; configurado com `git_sync`, faz `pull()` então
+  `push()` via `GitSyncEngine` (pull primeiro pra nunca bater num push rejeitado por
+  non-fast-forward à toa), emitindo `auto-sync-pulled`/um evento novo `auto-sync-pushed` só quando
+  algo mudou de verdade; sem `git_sync`, comportamento idêntico ao de antes (só Arweave). Push do
+  Arweave continua inteiramente manual — `finish_push` segue bloqueando numa aprovação física no
+  celular, trava de segurança que esta fatia não toca.
+- **`SyncView.tsx`**: seção "Git" nova com botões Push/Pull (sem fluxo de QR — diferente do
+  Arweave, aqui não há aprovação humana no meio), mostrando resultado (commit sha, arquivos
+  alterados/aplicados, warnings) e um hint apontando pra Settings quando `git_sync` não está
+  configurado; listener novo pro evento `auto-sync-pushed`.
+- Verificação: `cargo check/clippy -p desktop` limpos; `cargo test -p desktop` — 15 testes (4
+  novos: serialização camelCase dos payloads `GitPushResultPayload`/`GitPullResultPayload`, e dois
+  testes não mockados do branch git do auto-sync contra um bare repo git local de verdade
+  (`git init --bare`) — um confirma que o gate "nunca inicializado" nunca toca a rede, outro
+  confirma um pull-então-push real produzindo um commit no repo). `npx tsc --noEmit`/
+  `npm run build` limpos em `desktop/`. `cargo check` limpo em `warden-bootstrap`/`warden-sync`/
+  `warden-cli` (crates relacionados, sem regressão). Sem host git remoto real (Gitea/GitHub) nem
+  uma janela Tauri real disponíveis neste ambiente pra clicar os botões novos de ponta a ponta —
+  mesma lacuna já aceita nas fatias anteriores de P71/P63.
+- `PHASE.md` (Fase 4.7, fatia 3, fecha o P71) e `PENDING.md` (P71 movido pra "Resolvidas")
+  atualizados.
+
+**Próximo passo**: P71 fechado por completo. Seguem abertas as frentes já registradas em
+`ROADMAP.md`/`PENDING.md`: lacunas menores da Fase 9.1 (P70 — build Android real, verificação
+manual da extensão), Fase 10 (TruthID), ideias do brainstorm da Sessão 53.
 
 ---
 

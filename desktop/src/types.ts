@@ -128,6 +128,30 @@ export interface RemoteNodeConfig {
   targetDeviceId: string;
 }
 
+/** Mirrors `warden_bootstrap::GitSyncConfig` (P63/P71 v2) — a self-hosted/remote git repo as an
+ * alternative sync transport to Arweave, chosen independently of `storageProvider` (this is what
+ * the Sync screen's Git section, and the auto-sync loop, use — not where the vault lives day to
+ * day). All-or-nothing on save — see `save_settings`'s validation. */
+export interface GitSyncConfig {
+  remoteUrl: string;
+  token: string;
+}
+
+/** What `git_sync_push` returns — `null` when nothing local needed sending. */
+export interface GitPushResult {
+  commitSha: string;
+  filesChanged: number;
+  configChanged: boolean;
+}
+
+export interface GitPullResult {
+  commitsApplied: number;
+  filesWritten: number;
+  filesDeleted: number;
+  configUpdated: boolean;
+  warnings: string[];
+}
+
 /** One breakdown bucket of a `UsageSummary` — `key` is the `agent_id`/`provider_id` (an
  * `AgentEntry.id`/`ProviderEntry.id`, which already doubles as its display name) `null` means "no
  * override" for that conversation, mirrors `warden_bootstrap::usage::UsageByKey`. */
@@ -258,4 +282,7 @@ export interface Settings {
   storageProvider: StorageProviderKind;
   /** Connection details for `storageProvider: "remote_node"` — `null` until filled in. */
   remoteNode: RemoteNodeConfig | null;
+  /** Connection details for the git sync backend (P63/P71) — `null` until filled in on the "Sync
+   * via Git" section. */
+  gitSync: GitSyncConfig | null;
 }

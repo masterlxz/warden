@@ -10,8 +10,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use warden_sync::{PullOutcome, SyncEngine, SyncStatus};
+use warden_bootstrap::load_config_from_path;
+use warden_sync::{GitPullOutcome, GitPushOutcome, PullOutcome, SyncEngine, SyncStatus};
 
+use crate::git_sync_cmds::build_git_sync_engine;
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -176,31 +178,94 @@ impl From<&PullOutcome> for AutoSyncPulledPayload {
     }
 }
 
-/// P71 follow-up to Fase 9 — pulls automatically every few minutes if sync is already paired on
-/// this device, instead of the operator having to remember to click "Pull". `tokio::time::
-/// interval`'s first tick resolves immediately, so this also covers "just opened the app after
-/// being away" without a separate startup call. Runs for the lifetime of the app — there's no
-/// stop handle, matching the "always on while the app is open" scope of this slice.
+impl From<&GitPullOutcome> for AutoSyncPulledPayload {
+    fn from(o: &GitPullOutcome) -> Self {
+        Self { tx_id: None, files_written: o.files_written, files_deleted: o.files_deleted, config_updated: o.config_updated }
+    }
+}
+
+/// Emitted only for the git backend (P71 follow-up) — Arweave never auto-pushes, see this module's
+/// doc comment for why.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSyncPushedPayload {
+    commit_sha: String,
+    files_changed: usize,
+    config_changed: bool,
+}
+
+impl From<&GitPushOutcome> for AutoSyncPushedPayload {
+    fn from(o: &GitPushOutcome) -> Self {
+        Self { commit_sha: o.commit_sha.clone(), files_changed: o.files_changed, config_changed: o.config_changed }
+    }
+}
+
+/// P71 — pulls (and, for the git backend, pushes) automatically every few minutes instead of the
+/// operator having to remember to click Pull/Push. `tokio::time::interval`'s first tick resolves
+/// immediately, so this also covers "just opened the app after being away" without a separate
+/// startup call. Runs for the lifetime of the app — there's no stop handle, matching the
+/// "always on while the app is open" scope of this slice.
 ///
-/// Push stays entirely manual regardless of backend: Arweave's `finish_push` blocks on a real
-/// TruthID phone approval (an intentional safety gate, not something to bypass), and the only
-/// backend where push *could* be automated (git, P63) isn't wired into the desktop at all yet —
-/// see `PENDING.md` P71 for that follow-up.
-pub fn spawn_auto_pull(app: AppHandle, vault_path: PathBuf, config_path: PathBuf, secrets_path: PathBuf, manifest_path: PathBuf) {
+/// Rereads `config.toml` fresh every tick (cheap — same posture as every other command in this
+/// file) to decide which backend is active: Arweave (`SyncEngine`) and git (`GitSyncEngine`)
+/// share the same `secrets_path`/`manifest_path` on disk (see `git_sync_cmds.rs`'s module docs) —
+/// they're alternatives, not additive, so only one branch ever runs per tick. **git configured**:
+/// pulls then pushes via `GitSyncEngine` — pull first so a stale local `main` never turns into an
+/// avoidable non-fast-forward rejection. **git not configured**: exactly today's Arweave-only
+/// auto-pull. Push stays entirely manual for Arweave regardless: `finish_push` blocks on a real
+/// TruthID phone approval, an intentional safety gate this loop never bypasses.
+pub fn spawn_auto_sync(app: AppHandle, vault_path: PathBuf, config_path: PathBuf, secrets_path: PathBuf, manifest_path: PathBuf) {
     tauri::async_runtime::spawn(async move {
-        let engine = SyncEngine::new(vault_path, config_path, secrets_path, manifest_path);
         let mut ticker = tokio::time::interval(AUTO_SYNC_INTERVAL);
         loop {
             ticker.tick().await;
-            if !engine.is_initialized() {
-                continue; // sync never set up on this device — nothing to do, not an error
-            }
-            match engine.pull().await {
-                Ok(outcome) if outcome.files_written > 0 || outcome.files_deleted > 0 || outcome.config_updated => {
-                    let _ = app.emit("auto-sync-pulled", AutoSyncPulledPayload::from(&outcome));
+
+            let git_sync = load_config_from_path(&config_path, false).ok().and_then(|c| c.git_sync);
+            match git_sync {
+                Some(git_sync) => {
+                    if !secrets_path.exists() {
+                        continue; // sync never set up on this device — nothing to do, not an error
+                    }
+                    let git_repo_path = warden_sync::paths::default_git_sync_repo_path().unwrap_or_else(|| PathBuf::from("git-sync-repo"));
+                    let engine = build_git_sync_engine(
+                        vault_path.clone(),
+                        config_path.clone(),
+                        secrets_path.clone(),
+                        manifest_path.clone(),
+                        git_repo_path,
+                        &git_sync,
+                    );
+                    match engine.pull().await {
+                        Ok(outcome) if outcome.files_written > 0 || outcome.files_deleted > 0 || outcome.config_updated => {
+                            let _ = app.emit("auto-sync-pulled", AutoSyncPulledPayload::from(&outcome));
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!("desktop: auto-sync (git) pull failed: {err:#}");
+                            continue; // don't attempt the push against a possibly-stale local state
+                        }
+                    }
+                    match engine.push().await {
+                        Ok(Some(outcome)) => {
+                            let _ = app.emit("auto-sync-pushed", AutoSyncPushedPayload::from(&outcome));
+                        }
+                        Ok(None) => {} // nothing local to send — nothing worth telling the UI about
+                        Err(err) => eprintln!("desktop: auto-sync (git) push failed: {err:#}"),
+                    }
                 }
-                Ok(_) => {} // already up to date — nothing worth telling the UI about
-                Err(err) => eprintln!("desktop: auto-pull failed: {err:#}"),
+                None => {
+                    let engine = SyncEngine::new(vault_path.clone(), config_path.clone(), secrets_path.clone(), manifest_path.clone());
+                    if !engine.is_initialized() {
+                        continue; // sync never set up on this device — nothing to do, not an error
+                    }
+                    match engine.pull().await {
+                        Ok(outcome) if outcome.files_written > 0 || outcome.files_deleted > 0 || outcome.config_updated => {
+                            let _ = app.emit("auto-sync-pulled", AutoSyncPulledPayload::from(&outcome));
+                        }
+                        Ok(_) => {} // already up to date — nothing worth telling the UI about
+                        Err(err) => eprintln!("desktop: auto-pull failed: {err:#}"),
+                    }
+                }
             }
         }
     });
@@ -209,6 +274,20 @@ pub fn spawn_auto_pull(app: AppHandle, vault_path: PathBuf, config_path: PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use warden_bootstrap::GitSyncConfig;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "desktop-auto-sync-{name}-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))
+    }
+
+    fn bare_remote(suffix: &str) -> PathBuf {
+        let path = temp_dir(&format!("remote-{suffix}"));
+        std::process::Command::new("git").args(["init", "--bare", &path.to_string_lossy()]).status().unwrap();
+        path
+    }
 
     // Locks in the exact camelCase JSON shape `desktop/src/types.ts` expects.
     #[test]
@@ -283,5 +362,59 @@ mod tests {
         assert!(engine.is_initialized());
         let outcome = engine.pull().await.unwrap();
         assert_eq!(outcome.files_written, 0);
+    }
+
+    /// Not mocked: mirrors `spawn_auto_sync`'s git branch for one tick — same "gate before any
+    /// network call" proof as `auto_pull_skips_silently_when_sync_was_never_set_up`, but for the
+    /// git backend. `remote_url` points at an address that would fail loudly if `git` ever shelled
+    /// out to it, so this only passes if the `secrets_path.exists()` gate really does return first.
+    #[tokio::test]
+    async fn git_branch_skips_silently_when_sync_was_never_set_up() {
+        let dir = temp_dir("git-uninitialized");
+        let secrets_path = dir.join("secrets.json");
+        assert!(!secrets_path.exists());
+
+        let git_sync = GitSyncConfig { remote_url: "https://127.0.0.1:1/nope.git".to_string(), token: String::new() };
+        if secrets_path.exists() {
+            let engine = build_git_sync_engine(
+                dir.join("vault"),
+                dir.join("config.toml"),
+                secrets_path.clone(),
+                dir.join("manifest.json"),
+                dir.join("git-sync-repo"),
+                &git_sync,
+            );
+            engine.pull().await.unwrap();
+        }
+    }
+
+    /// Not mocked: mirrors `spawn_auto_sync`'s git branch for one tick against a real local bare
+    /// git repo (same hermetic-but-real idiom `crates/warden-sync/src/git.rs`'s own tests use) —
+    /// proves the exact helper the production loop calls (`build_git_sync_engine`) really can
+    /// pull-then-push a real change, not just that the wiring compiles.
+    #[tokio::test]
+    async fn git_branch_pull_then_push_reaches_a_real_bare_repo() {
+        let remote = bare_remote("tick");
+        let dir = temp_dir("git-tick");
+        let secrets_path = dir.join("secrets.json");
+        warden_sync::manifest::save_secrets(&secrets_path, &warden_sync::manifest::generate_secrets()).unwrap();
+
+        let git_sync = GitSyncConfig { remote_url: remote.to_string_lossy().to_string(), token: String::new() };
+        let vault_path = dir.join("vault");
+        let config_path = dir.join("config.toml");
+        let manifest_path = dir.join("manifest.json");
+        let git_repo_path = dir.join("git-sync-repo");
+
+        assert!(secrets_path.exists());
+        let engine = build_git_sync_engine(vault_path.clone(), config_path.clone(), secrets_path.clone(), manifest_path, git_repo_path, &git_sync);
+
+        // Pull first, same order `spawn_auto_sync` uses — the remote is empty, so this is a no-op.
+        let pull_outcome = engine.pull().await.unwrap();
+        assert_eq!(pull_outcome.commits_applied, 0);
+
+        std::fs::create_dir_all(&vault_path).unwrap();
+        std::fs::write(vault_path.join("a.md"), "hello").unwrap();
+        let push_outcome = engine.push().await.unwrap();
+        assert_eq!(push_outcome.unwrap().files_changed, 1);
     }
 }

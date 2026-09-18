@@ -1,3 +1,4 @@
+mod git_sync_cmds;
 mod qr;
 mod recording;
 mod server_cmds;
@@ -14,8 +15,8 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, McpServerConfig, Overrides, Provider,
-    ProviderConfig, RemoteNodeConfig, StorageProviderKind, UsageSummary,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, McpServerConfig, Overrides,
+    Provider, ProviderConfig, RemoteNodeConfig, StorageProviderKind, UsageSummary,
 };
 use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
@@ -331,6 +332,23 @@ impl From<RemoteNodeConfig> for RemoteNodeConfigPayload {
     }
 }
 
+/// IPC shape for `GitSyncConfig` (P63/P71 Settings UI) — same "dedicated payload struct for
+/// `camelCase` field names" reasoning as `RemoteNodeConfigPayload`. All-or-nothing: either both
+/// fields are filled in (parses to `Some(GitSyncConfig)`) or the whole section is left blank
+/// (`None`) — `save_settings` rejects anything in between before it ever reaches disk.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GitSyncConfigPayload {
+    remote_url: String,
+    token: String,
+}
+
+impl From<GitSyncConfig> for GitSyncConfigPayload {
+    fn from(c: GitSyncConfig) -> Self {
+        GitSyncConfigPayload { remote_url: c.remote_url, token: c.token }
+    }
+}
+
 /// What the settings screen reads.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,6 +388,11 @@ struct SettingsSnapshot {
     /// Connection details for `storage_provider: "remote_node"` (P61 v2) — `None` until the user
     /// fills in the form on the Storage section. See `RemoteNodeConfigPayload`.
     remote_node: Option<RemoteNodeConfigPayload>,
+    /// Connection details for the git sync backend (P63/P71) — `None` until the user fills in the
+    /// form on the "Sync via Git" section. Independent of `storage_provider`: this is the transport
+    /// the Sync screen's manual push/pull (and the auto-sync loop) use, not where the vault itself
+    /// lives day-to-day.
+    git_sync: Option<GitSyncConfigPayload>,
 }
 
 #[derive(Deserialize)]
@@ -385,6 +408,7 @@ struct SettingsFormPayload {
     agents: Vec<AgentPayload>,
     storage_provider: String,
     remote_node: Option<RemoteNodeConfigPayload>,
+    git_sync: Option<GitSyncConfigPayload>,
 }
 
 /// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
@@ -455,6 +479,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
             .collect(),
         storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
         remote_node: config.remote_node.map(RemoteNodeConfigPayload::from),
+        git_sync: config.git_sync.map(GitSyncConfigPayload::from),
     })
 }
 
@@ -587,6 +612,20 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         return Err("storage provider 'remote_node' needs its connection fields filled in below".to_string());
     }
 
+    // All-or-nothing (P63/P71), same reasoning as `remote_node` above.
+    let git_sync = match payload.git_sync {
+        Some(g) => {
+            let remote_url = g.remote_url.trim().to_string();
+            let token = g.token.trim().to_string();
+            match (remote_url.is_empty(), token.is_empty()) {
+                (true, true) => None,
+                (false, false) => Some(GitSyncConfig { remote_url, token }),
+                _ => return Err("git sync fields (remote URL and token) must be filled in together, or left entirely blank".to_string()),
+            }
+        }
+        None => None,
+    };
+
     // Captured before `non_empty` consumes `payload.vault_path` below — the migration step needs
     // the resolved path independently of building `config`.
     let vault_path_override = non_empty(payload.vault_path);
@@ -617,9 +656,7 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         agents,
         storage_provider: Some(storage_provider),
         remote_node,
-        // No Settings-screen UI yet (P63, config.toml-only) — same carry-forward reasoning as
-        // `delegate_max_depth` above.
-        git_sync: existing.git_sync,
+        git_sync,
         // Owned by `server_cmds::save_embedded_server_config`/`start_embedded_server`, not this
         // general Settings save — carry forward unchanged, same reasoning as `git_sync` above.
         embedded_server: existing.embedded_server,
@@ -795,11 +832,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            // P71 — pulls the vault automatically every few minutes instead of requiring a manual
-            // click, for as long as the app stays open. See `sync_cmds::spawn_auto_pull`'s own doc
-            // comment for what this does and doesn't cover (auto-pull only, never auto-push).
+            // P71 — pulls (and, for the git backend, pushes) the vault automatically every few
+            // minutes instead of requiring a manual click, for as long as the app stays open. See
+            // `sync_cmds::spawn_auto_sync`'s own doc comment for what this does and doesn't cover.
             let (vault_path, config_path, secrets_path, manifest_path) = auto_pull_paths;
-            sync_cmds::spawn_auto_pull(app.handle().clone(), vault_path, config_path, secrets_path, manifest_path);
+            sync_cmds::spawn_auto_sync(app.handle().clone(), vault_path, config_path, secrets_path, manifest_path);
             Ok(())
         })
         .manage(app_state)
@@ -826,6 +863,9 @@ pub fn run() {
             sync_cmds::sync_pull,
             sync_cmds::pairing_start,
             sync_cmds::pairing_join,
+            git_sync_cmds::git_sync_configured,
+            git_sync_cmds::git_sync_push,
+            git_sync_cmds::git_sync_pull,
             vault_cmds::list_vault_files,
             vault_cmds::read_vault_file,
             workspace_cmds::list_paired_devices,

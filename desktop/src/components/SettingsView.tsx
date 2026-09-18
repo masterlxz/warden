@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, StorageProviderKind } from "../types";
+import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, StorageProviderKind } from "../types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -18,6 +18,7 @@ const emptySettings: Settings = {
   agents: [],
   storageProvider: "local",
   remoteNode: null,
+  gitSync: null,
 };
 
 /** The four `StorageProviderKind` options (P61), in display order — the copy here is the
@@ -157,6 +158,37 @@ function RemoteNodeForm({ value, onChange }: { value: RemoteNodeConfig | null; o
           onChange={(e) => set("targetDeviceId", e.currentTarget.value)}
         />
       </label>
+    </div>
+  );
+}
+
+const emptyGitSync: GitSyncConfig = { remoteUrl: "", token: "" };
+
+/** Connection form for the git sync backend (P63/P71 v2) — a self-hosted/remote git repo as an
+ * alternative to Arweave for the Sync screen's push/pull (and the auto-sync loop). Independent of
+ * `StorageProviderPicker`/`RemoteNodeForm` above: this doesn't change where the vault lives, only
+ * which transport Sync uses. Same "value is null until the user starts typing" pattern as
+ * `RemoteNodeForm`. */
+function GitSyncForm({ value, onChange }: { value: GitSyncConfig | null; onChange: (next: GitSyncConfig) => void }) {
+  const current = value ?? emptyGitSync;
+
+  function set<K extends keyof GitSyncConfig>(key: K, v: GitSyncConfig[K]) {
+    onChange({ ...current, [key]: v });
+  }
+
+  return (
+    <div className="storage-provider-remote-form">
+      <label className="settings-field">
+        <span className="settings-label">Remote URL</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="https://gitea.example.com/user/vault.git"
+          value={current.remoteUrl}
+          onChange={(e) => set("remoteUrl", e.currentTarget.value)}
+        />
+      </label>
+      <ApiKeyField label="Token" value={current.token} onChange={(v) => set("token", v)} />
     </div>
   );
 }
@@ -845,6 +877,14 @@ function SettingsView() {
       return;
     }
 
+    // Mirrors save_settings's own all-or-nothing check for git_sync — catches it before the IPC
+    // round-trip, same reasoning as the remoteNodeFilled check above.
+    const gitSyncFilled = form.gitSync ? [form.gitSync.remoteUrl, form.gitSync.token].filter((s) => s.trim() !== "").length : 0;
+    if (gitSyncFilled === 1) {
+      setError("Git sync fields (remote URL and token) must be filled in together, or left entirely blank.");
+      return;
+    }
+
     setIsSaving(true);
     const unlistenQr = await listen<{ qrSvg: string }>("migration-qr", (event) => {
       setMigrationQrSvg(event.payload.qrSvg);
@@ -863,6 +903,7 @@ function SettingsView() {
           agents: form.agents,
           storage_provider: form.storageProvider,
           remote_node: remoteNodeFilled === 5 ? form.remoteNode : null,
+          git_sync: gitSyncFilled === 2 ? form.gitSync : null,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -973,6 +1014,18 @@ function SettingsView() {
           {form.storageProvider === "remote_node" && (
             <RemoteNodeForm value={form.remoteNode} onChange={(remoteNode) => setForm((f) => ({ ...f, remoteNode }))} />
           )}
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Sync via Git</h3>
+          </div>
+          <p className="settings-hint">
+            A self-hosted/remote git repo (Gitea, GitHub, ...) as an alternative to Arweave for syncing the vault +
+            config.toml — free, and fully automatable (no phone approval). Fill this in to unlock manual push/pull
+            and automatic sync on the Sync screen; leaving it blank keeps Arweave (or nothing) as the sync backend.
+          </p>
+          <GitSyncForm value={form.gitSync} onChange={(gitSync) => setForm((f) => ({ ...f, gitSync }))} />
         </section>
 
         <label className="settings-field">

@@ -197,7 +197,46 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   `sync_auto_pull_test.dart` inclusos) limpos — sem emulador Android real disponível neste
   ambiente pra confirmar o SnackBar aparecendo de fato num device, mesma lacuna já aceita em
   outras fatias mobile (ver `PENDING.md` P70). Fecha a parte "mobile" do P71 — fica só o push
-  automático via git (desktop) em aberto
+  automático via git (desktop) em aberto. **Fatia 3 (Sessão 72, 2026-09-18) — push automático via
+  git no desktop, fecha o P71 por completo**: o `GitSyncEngine` (P63) já existia e funcionava de
+  ponta a ponta no CLI (`/sync git push`/`pull`), mas nunca tinha ganhado nenhuma camada desktop.
+  Settings: `SettingsSnapshot`/`SettingsFormPayload` ganharam `git_sync` (mesmo padrão exato de
+  `remote_node` — payload dedicado camelCase, validação tudo-ou-nada em `save_settings`), seção
+  nova "Sync via Git" no `SettingsView.tsx` (`GitSyncForm`, 2 campos: Remote URL + Token via
+  `ApiKeyField`). Comandos Tauri novos (`desktop/src-tauri/src/git_sync_cmds.rs`,
+  `git_sync_configured`/`git_sync_push`/`git_sync_pull`) constroem um `GitSyncEngine` fresco por
+  chamada — mesma composição de paths que `make_git_sync_engine` do CLI já usava. `SyncView.tsx`
+  ganhou uma seção "Git" com botões Push/Pull (sem fluxo de QR — diferente do Arweave, aqui não há
+  aprovação humana no meio) e um hint apontando pra Settings quando `git_sync` não está
+  configurado. **Auto-sync**: `sync_cmds::spawn_auto_pull` renomeado pra `spawn_auto_sync` e
+  estendido — a cada tick relê `config.toml` fresco (achado que definiu o design: Arweave e git
+  compartilham o mesmo `secrets_path`/`manifest_path` em disco, então são backends alternativos,
+  não aditivos — só um roda por tick, decidido pela presença de `config.git_sync`); configurado,
+  faz `pull()` então `push()` via git (pull primeiro pra nunca bater num push rejeitado por
+  non-fast-forward à toa), emitindo `auto-sync-pulled`/um evento novo `auto-sync-pushed` só quando
+  algo mudou de verdade; sem `git_sync`, comportamento idêntico ao de antes (só Arweave). Push do
+  Arweave continua inteiramente manual — `finish_push` segue bloqueando numa aprovação física no
+  celular, trava de segurança que esta fatia não toca. `build_git_sync_engine` (helper
+  compartilhado entre os comandos e o loop) recebe `secrets_path`/`manifest_path`/`git_repo_path`
+  como parâmetros explícitos em vez de resolvê-los internamente via `warden_sync::paths`. **Bug
+  real pego pelo teste de integração, não só um risco teórico**: a primeira versão só
+  externalizava `secrets_path`/`manifest_path`, deixando `git_repo_path` resolvido internamente —
+  o teste de pull-então-push passou na primeira rodada mas falhou na segunda
+  (`git checkout --orphan main falhou: a branch named 'main' already exists`), porque o clone local
+  de trabalho do `GitSyncEngine` é compartilhado entre todo push/pull do device por design
+  (`git.rs`'s doc comment), então cada rodada de teste reaproveitava o `~/.config/warden/
+  git-sync-repo` real desta máquina, com `main` já commitado pela rodada anterior — o mesmo
+  problema que teria poluído o `sync_secrets.json`/`sync_manifest.json` reais se aqueles dois não
+  tivessem sido externalizados desde o início. Corrigido externalizando também `git_repo_path`;
+  suíte rodada 3x seguidas depois pra confirmar que a flakiness sumiu, e `~/.config/warden/`
+  conferido sem `git-sync-repo`/`sync_secrets.json` novos depois da rodada limpa. Verificado com
+  `cargo check/clippy/test -p desktop` (15 testes, 4 novos: serialização camelCase dos payloads
+  novos, e dois testes não mockados do branch git do auto-sync contra um bare repo git local de
+  verdade — um confirma o gate "nunca inicializado" nunca toca a rede, outro confirma um
+  pull-então-push real produzindo um commit) e `tsc`/`npm run build` do desktop limpos. Sem host
+  git remoto real (Gitea/GitHub) nem uma janela Tauri real disponíveis neste ambiente pra clicar os
+  botões novos de ponta a ponta — mesma lacuna já aceita nas fatias anteriores de P71/P63. **Fecha
+  o P71 por completo**
 
 ---
 
