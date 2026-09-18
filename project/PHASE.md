@@ -448,6 +448,21 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   `npx tsc --noEmit`/`npm run build` limpos; sem verificação manual num Chrome/Brave real (mesma
   lacuna já aceita em P67/P68). **Fecha as três fatias da 9.1** — ficam só as limitações menores
   em `PENDING.md` P70: porta fixa (7420 em todas as três), build Android real (fatia 2)
+  **Atualizado (Sessão 71, 2026-09-18)**: porta fixa resolvida — o motor de sondagem em si já era
+  parametrizado por porta nas três linguagens (`discover_hubs(port: u16)` em Rust,
+  `bridgeDiscoverHubs({required int port})` no mobile bridge, `discoverHubs(port: number)` no
+  TypeScript da extensão); o problema estava só na camada de UI/wrapper de cada cliente, que
+  ignorava esse parâmetro e sempre sondava `7420`. Desktop: comando Tauri `discover_hubs` passou a
+  receber `port` do frontend (`WorkspaceView.tsx` ganhou um campo "Porta a procurar", default
+  `"7420"`, antes só existia `serverUrl` como texto livre). Mobile: `_discoverHubs()`
+  (`connection_screen.dart`) passou a ler o mesmo `_portController` já usado pro connect manual, em
+  vez de sempre `ConnectionSettingsStore.defaultPort` — nenhuma UI nova. Extensão: `PopupRequest`'s
+  `discoverHubs` ganhou `port`, `ConnectionForm.tsx` manda o valor já digitado no campo "Porta"
+  existente, `background/index.ts` usa `request.port` (constante `DISCOVERY_PORT` removida, ficou
+  morta). `cargo check/clippy/test -p desktop`, `tsc`/`npm run build` (desktop e extensão),
+  `flutter analyze` todos limpos. Sem Chrome/Brave real, hub numa porta não-default nem emulador
+  disponíveis neste ambiente pra confirmar visualmente em runtime — mesma lacuna já aceita em
+  P67/P68/P70. Seguem em aberto só (2) build Android real e (3) verificação manual da extensão
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`
 - [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro

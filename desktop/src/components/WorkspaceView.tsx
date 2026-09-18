@@ -148,6 +148,7 @@ function HubPairingQrSection() {
   const [hubs, setHubs] = useState<DiscoveredHub[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [discoveryPort, setDiscoveryPort] = useState("7420");
 
   useEffect(() => {
     invoke<HubPairingConfig | null>("get_hub_pairing_config")
@@ -178,7 +179,8 @@ function HubPairingQrSection() {
     setSearching(true);
     setHubs(null);
     try {
-      const found = await invoke<DiscoveredHub[]>("discover_hubs");
+      const port = Number(discoveryPort);
+      const found = await invoke<DiscoveredHub[]>("discover_hubs", { port });
       setHubs(found);
     } catch (err) {
       setSearchError(String(err));
@@ -197,6 +199,17 @@ function HubPairingQrSection() {
         digitar o endereço e a chave na mão.
       </p>
 
+      <label className="settings-field">
+        <span className="settings-label">Porta a procurar</span>
+        <input
+          className="settings-input"
+          type="text"
+          inputMode="numeric"
+          placeholder="7420"
+          value={discoveryPort}
+          onChange={(e) => setDiscoveryPort(e.currentTarget.value)}
+        />
+      </label>
       <button type="button" className="settings-save-btn" onClick={handleDiscover} disabled={searching}>
         {searching ? "Procurando…" : "Procurar hubs na rede"}
       </button>

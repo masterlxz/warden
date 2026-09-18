@@ -17,8 +17,6 @@ import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, PopupRequest } from "./popup_protocol";
 import { toolSpecs, toolHandlers } from "./tools";
 
-const DISCOVERY_PORT = 7420;
-
 // Makes clicking the toolbar icon open the docked side panel (manifest's `side_panel`) instead of
 // requiring a `default_popup`. Without this call the icon click has no effect.
 chrome.sidePanel
@@ -115,7 +113,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
 
     case "discoverHubs":
       try {
-        return { ok: true, hubs: await discoverHubs(DISCOVERY_PORT) };
+        return { ok: true, hubs: await discoverHubs(request.port) };
       } catch (err) {
         return { ok: false, hubs: [], error: err instanceof Error ? err.message : String(err) };
       }

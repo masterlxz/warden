@@ -15,11 +15,6 @@ use serde::{Deserialize, Serialize};
 use warden_bootstrap::HubPairingConfig;
 use warden_server::{DiscoveredHub, PairedDevice, PairingStore};
 
-/// Default port a discovery sweep probes (Fase 9.1, redefined) — same default `warden-server`
-/// binds to unless `--listen` overrides it. A hub on a non-default port won't be found by this
-/// v1 sweep; known limitation, registered in `PENDING.md`.
-const DISCOVERY_PORT: u16 = 7420;
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairedDeviceInfo {
@@ -137,10 +132,12 @@ impl From<DiscoveredHub> for DiscoveredHubPayload {
 /// Sweeps the local network for `warden-server` hubs (Fase 9.1, redefined — see
 /// `warden_server_protocol::discovery`) and lets the "Pareamento por QR" section's "Server URL"
 /// field be filled by picking one instead of typing an IP by hand. Never reveals or needs the
-/// auth key — that stays manual, same security boundary the discovery probe itself keeps.
+/// auth key — that stays manual, same security boundary the discovery probe itself keeps. `port`
+/// comes from the frontend's own input (defaulted to 7420 there) so a hub started with
+/// `--listen` on a non-default port is still discoverable.
 #[tauri::command]
-pub async fn discover_hubs() -> Result<Vec<DiscoveredHubPayload>, String> {
-    warden_server::discover_hubs(DISCOVERY_PORT)
+pub async fn discover_hubs(port: u16) -> Result<Vec<DiscoveredHubPayload>, String> {
+    warden_server::discover_hubs(port)
         .await
         .map(|hubs| hubs.into_iter().map(Into::into).collect())
         .map_err(|e| format!("{e:#}"))

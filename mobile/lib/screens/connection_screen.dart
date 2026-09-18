@@ -129,14 +129,18 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   // Fase 9.1 (redefined) — sweeps the LAN instead of asking the user to already know the IP.
   // Reuses the same `discover_hubs` Rust already exposes to the desktop's WorkspaceView, over the
   // mobile bridge. Only ever fills host/port — the auth key is never part of a hub's reply, so it
-  // stays manual on purpose, same security boundary as the desktop and the QR pairing flow.
+  // stays manual on purpose, same security boundary as the desktop and the QR pairing flow. Sweeps
+  // whatever port is already typed in the form (same parsing `_connect()` uses) so a hub started
+  // with `--listen` on a non-default port is still discoverable — falls back to the default only
+  // when the field is empty/invalid.
   Future<void> _discoverHubs() async {
     if (!mounted) return;
+    final port = int.tryParse(_portController.text.trim()) ?? ConnectionSettingsStore.defaultPort;
     final result = await showModalBottomSheet<DiscoveredHubDto>(
       context: context,
       isScrollControlled: true,
       builder: (context) => _DiscoveredHubsSheet(
-        future: bridgeDiscoverHubs(port: ConnectionSettingsStore.defaultPort),
+        future: bridgeDiscoverHubs(port: port),
       ),
     );
     if (result == null || !mounted) return;

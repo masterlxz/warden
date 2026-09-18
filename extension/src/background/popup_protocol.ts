@@ -20,7 +20,7 @@ export type PopupRequest =
   | ({ type: "connect" } & ConnectionSettings)
   | { type: "disconnect" }
   | { type: "sendChat"; message: string }
-  | { type: "discoverHubs" };
+  | { type: "discoverHubs"; port: number };
 
 export interface GetStatusResponse {
   status: ConnectionStatus;

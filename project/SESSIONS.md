@@ -2,7 +2,54 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-17 (Sessão 70)
+> Última atualização: 2026-09-18 (Sessão 71)
+
+---
+
+### 2026-09-18 — Sessão 71
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"), sem item travado. Apresentadas as
+  frentes abertas (P71 push via git, lacunas da Fase 9.1, Fase 10 TruthID) — escolhida a Fase 9.1;
+  dentro dela, das três lacunas do P70 (porta fixa, build Android real, verificação manual da
+  extensão), escolhida a porta fixa por ser trabalho de código puro, sem depender de
+  hardware/emulador.
+
+**O que foi feito**:
+
+- Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`) antes de codar, depois de mapear as três
+  superfícies que fazem a sondagem de hub na LAN (`desktop/src-tauri/src/workspace_cmds.rs`,
+  `mobile/lib/screens/connection_screen.dart`, `extension/src/background/index.ts` +
+  `ConnectionForm.tsx`). Achado central: o motor de sondagem em si já era parametrizado por porta
+  nas três linguagens (`warden_server_protocol::discover_hubs(port: u16)`,
+  `bridgeDiscoverHubs({required int port})`, `discoverHubs(port: number)`) — o problema estava só
+  na camada de UI/wrapper de cada cliente, que ignorava esse parâmetro e sempre sondava `7420`.
+- **Desktop**: comando Tauri `discover_hubs` passou a receber `port: u16` (removida a constante
+  `DISCOVERY_PORT` fixa e seu comentário de limitação conhecida). `WorkspaceView.tsx`'s
+  `HubPairingQrSection` ganhou um campo "Porta a procurar" novo (default `"7420"`, mesmo padrão
+  visual `settings-field`/`settings-input` já usado no resto do componente) — antes só existia
+  `serverUrl` como texto livre, sem nenhum campo de porta específico pra sondagem.
+- **Mobile**: `_discoverHubs()` (`connection_screen.dart`) passou a ler o valor já digitado em
+  `_portController` (mesmo `int.tryParse` que `_connect()` já fazia), caindo no
+  `ConnectionSettingsStore.defaultPort` só se o campo estiver vazio/inválido — nenhuma UI nova, o
+  campo de porta do formulário de conexão manual já existia.
+- **Extensão**: `PopupRequest`'s variante `{ type: "discoverHubs" }` ganhou `port: number`
+  (`popup_protocol.ts`); `ConnectionForm.tsx::handleDiscover` parseia o campo "Porta" já existente
+  do formulário e manda junto na mensagem; `background/index.ts` usa `request.port` em vez da
+  constante `DISCOVERY_PORT` do módulo, removida por ficar morta.
+- Verificação: `cargo check -p desktop` e `cargo clippy -p desktop --all-targets` limpos;
+  `cargo test -p desktop` (9 testes, nenhum novo — mudança é só a assinatura do command, os testes
+  de serialização existentes não chamam `discover_hubs()` diretamente); `npx tsc --noEmit`/
+  `npm run build` limpos em `desktop/` e `extension/`; `flutter analyze` limpo em `mobile/`. Sem
+  Chrome/Brave real, hub físico numa porta não-default, nem emulador disponíveis neste ambiente pra
+  confirmar visualmente o campo novo/comportamento em runtime — mesma lacuna já aceita em
+  P67/P68/P70.
+- `PHASE.md` (Fase 9.1, item porta fixa marcado resolvido) e `PENDING.md` (P70, item (1) fechado —
+  seguem abertos só (2) build Android real e (3) verificação manual da extensão) atualizados.
+
+**Próximo passo**: dentro de P70, ficam (2) build Android real (reinstalar `cargo-ndk`) e (3)
+verificação manual da extensão num Chrome/Brave real. Fora disso, seguem abertas as opções já
+registradas em `ROADMAP.md`/`PENDING.md`: push automático via git no desktop (P71), Fase 10
+TruthID, ideias do brainstorm da Sessão 53.
 
 ---
 
