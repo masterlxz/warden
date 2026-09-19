@@ -81,6 +81,15 @@ export function VaultIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function SkillsIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" />
+      <path d="M19 15v4M17 17h4M5 17v3M3.5 18.5h3" />
+    </svg>
+  );
+}
+
 export function DevicesIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">

@@ -2,7 +2,56 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-18 (Sessão 72)
+> Última atualização: 2026-09-19 (Sessão 73)
+
+---
+
+### 2026-09-19 — Sessão 73
+
+- **Objetivo**: usuário pediu pra continuar ("bora continuar?"), sem item travado. Apresentadas as
+  frentes abertas (Fase 10 TruthID, P4 teto de custo, P70 lacunas da 9.1, outras) — escolheu "outra
+  coisa" e trouxe o P16 (Skills), pedindo três caminhos de criação "que nem como fazemos com o
+  agente": pela conversa, à mão na tela de skills, e por prompt na tela de skills.
+
+**O que foi feito**:
+
+- **Premissa do pedido corrigida antes de planejar**: a exploração do código (dois agentes Explore em
+  paralelo, backend e UI/IPC) mostrou que agentes **não** têm criação por IA nem por prompt — só
+  formulário no Settings (desktop) e `/agents` (CLI). Só o caminho "à mão" tinha precedente
+  (`AgentCard`); os outros dois foram construídos do zero. Dito ao usuário logo que apareceu.
+- Plano escrito e aprovado (`EnterPlanMode`/`ExitPlanMode`). Duas decisões de arquitetura
+  confirmadas via `AskUserQuestion`: storage no vault (`skills/<nome>.md`) em vez de `config.toml`, e
+  ativação sob demanda pela IA (catálogo + `use_skill`) em vez de vinculada a agentes.
+- **Core** (`warden-core`): módulo novo `skill` (`Skill`, `SkillStore`, `validate_name`, catálogo);
+  `SKILLS_DIR` em `memory/mod.rs` tira `skills/` de `list_files`/`search`/`search_semantic` mas mantém
+  em `list_all_files` (sync carrega sem mudança); tools `use_skill` e `manage_skill`
+  (`tool/skill_tools.rs`, sem `delete` de propósito); catálogo injetado em
+  `handle_turn_streaming` só quando `use_skill` está registrada; `Orchestrator::model()` novo.
+- **Bootstrap**: as duas tools entram em `base_tools` (valem pra todos os canais e sub-agentes);
+  `skill_gen::generate_skill_draft` — uma chamada ao modelo, parse tolerante (cerca de código,
+  preâmbulo, nome slugificado), devolve rascunho sem salvar.
+- **Desktop**: `skills_cmds.rs` (`list_skills`, `save_skill` com flag `overwrite`, `delete_skill`,
+  `generate_skill_draft`); `SkillsView.tsx` novo (descrever → rascunho, formulário novo/editar com
+  nome travado na edição, lista com apagar em confirmação inline sem `window.confirm`), registrado
+  em `App.tsx`/`Sidebar.tsx`/`Icons.tsx`/`App.css`/`types.ts`.
+- **Verificação**: `cargo clippy --workspace --all-targets` sem avisos; `cargo test --workspace`
+  verde (120 testes no `warden-core`, 53 no `warden-bootstrap`, 16 no `desktop`); `tsc` e
+  `npm run build` limpos; tela exercitada por Playwright headless (`playwright-core` instalado só no
+  scratchpad, Chromium já em cache) contra `vite preview` com `invoke` mockado, em tema claro e
+  escuro — erro do gerador, rascunho de IA, salvar, nome duplicado recusado, edição com nome
+  travado, flags de `overwrite`, apagar com confirmação, sem erro de console; screenshots
+  conferidos. Um deslize meu: um `pkill -f` casou com a própria linha de comando e derrubou o shell
+  da ferramenta — sem efeito colateral, refeito sem ele.
+- **Lacunas registradas**: P72 (fora do escopo: CLI `/skills`, UI no mobile/extensão, vínculo a
+  agente, anexos, seletor de modelo no gerador) e P73 (nenhum modelo real exercitado — mesmo padrão de
+  P29/P30/P31; o app Tauri real também não foi aberto nesta sessão).
+- `PENDING.md` (P16 → Resolvidas; P72/P73 novas), `PHASE.md` (5.9), `ARCHITECTURE.md` (decisão),
+  `ROADMAP.md`, `README.md` atualizados.
+
+**Próximo passo**: P16 fechado. Seguem abertas as frentes de antes — Fase 10 (TruthID), P4 (teto de
+custo/rate limit de verdade), lacunas da 9.1 (P70) — mais P72/P73 saídos desta sessão. Vale o usuário
+abrir a tela Skills no app real e pedir uma skill pelo chat (com uma chave de API configurada) pra
+fechar P73.
 
 ---
 

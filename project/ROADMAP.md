@@ -313,7 +313,8 @@ espírito das Skills do próprio Claude. Ainda não definido:
 - Como se relaciona com sub-agentes (P8) — uma skill pode ser "invocar um
   sub-agente com esse contexto pronto"?
 
-Ver P16.
+**Resolvido na Sessão 73** (P16): skills no vault (`skills/<nome>.md`), sob demanda, criáveis
+pela conversa, à mão ou por prompt na tela Skills do desktop. O que ficou de fora: P72.
 
 ### Ecossistema descentralizado (Practice Valuation/Anchor + TruthID)
 

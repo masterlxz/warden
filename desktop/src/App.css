@@ -1550,3 +1550,35 @@ body {
   border-color: var(--color-danger);
   background-color: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
+
+/* Skills (P16) — reuses .settings-view/.provider-card/.settings-* for the rest. */
+.skill-editor,
+.skill-card {
+  gap: 0.75rem;
+}
+
+.skill-editor-actions,
+.skill-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.skill-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.skill-card-name {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--color-text);
+}
+
+.skill-card-description {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+}

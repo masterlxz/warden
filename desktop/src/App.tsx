@@ -5,6 +5,7 @@ import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
+import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
@@ -40,7 +41,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "workspace">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -183,6 +184,7 @@ function App() {
         onOpenUsage={() => setView("usage")}
         onOpenSync={() => setView("sync")}
         onOpenVault={() => setView("vault")}
+        onOpenSkills={() => setView("skills")}
         onOpenWorkspace={() => setView("workspace")}
         view={view}
         collapsed={sidebarCollapsed}
@@ -196,6 +198,8 @@ function App() {
         <SyncView />
       ) : view === "vault" ? (
         <VaultView />
+      ) : view === "skills" ? (
+        <SkillsView />
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : (

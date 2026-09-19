@@ -26,6 +26,8 @@ for the others.
 - **Decentralized, optional sync** — the vault can sync between your own devices two ways: through
   [Arweave](https://arweave.org) (paid for via the TruthID app, no central Warden server required at
   all) or through a plain git remote you already control.
+- **Skills** — reusable instructions the model loads on demand, stored as plain markdown in your vault;
+  create them by hand, by describing them, or just by asking for one in a chat.
 - **Sub-agents, named personas, voice, generated documents** — delegate sub-tasks to scoped sub-agents,
   configure named agents with their own personality, talk by voice, and have the model produce real
   PDF/CSV/XLSX/Markdown files as deliverables.

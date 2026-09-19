@@ -72,6 +72,12 @@ impl Orchestrator {
         &self.vault
     }
 
+    /// The model this orchestrator talks to — for callers that need a one-off completion outside
+    /// the tool loop (the desktop's skill-draft generator, P16).
+    pub fn model(&self) -> &Arc<dyn ModelProvider> {
+        &self.model
+    }
+
     /// Returns a copy of this orchestrator using a different model — cheap, since `model` is an
     /// `Arc` and the rest of `Self` is `Clone` over `Arc`s/a `Vec<Arc<_>>`. Lets a caller (the
     /// desktop's per-conversation model selector) swap the model for one call without re-running
@@ -184,6 +190,16 @@ impl Orchestrator {
             messages.push(Message::system(format!(
                 "Standing memory from the user's vault (always included, not relevance-dependent):\n\n{standing_memory}"
             )));
+        }
+
+        // Skill catalog (P16) — names + descriptions only; bodies load on demand via `use_skill`.
+        // Read fresh from the vault each turn so a skill created mid-conversation shows up on the
+        // next turn without rebuilding the orchestrator. Skipped when `use_skill` isn't registered
+        // (an `Orchestrator` built without it), since the catalog would advertise an unusable tool.
+        if self.tools.iter().any(|t| t.spec().name == "use_skill") {
+            if let Some(catalog) = crate::skill::SkillStore::new(self.vault.clone()).catalog() {
+                messages.push(Message::system(catalog));
+            }
         }
 
         // Semantic search runs ONNX inference (blocking, CPU-heavy) — `spawn_blocking` keeps it
@@ -619,6 +635,54 @@ mod tests {
 
         let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
 
+        assert_eq!(result.content, "User:hi");
+    }
+
+    fn vault_with_skill() -> Arc<Vault> {
+        let vault = temp_vault();
+        let store = crate::skill::SkillStore::new(vault.clone());
+        store
+            .save(&crate::skill::Skill {
+                name: "review-pr".into(),
+                description: "Reviews a PR".into(),
+                body: "Step 1.".into(),
+            })
+            .unwrap();
+        vault
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_is_injected_after_standing_memory_when_use_skill_is_registered() {
+        let vault = vault_with_skill();
+        vault.write("_profile.md", "Name: Ada.").unwrap();
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
+        orchestrator.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(
+            crate::skill::SkillStore::new(vault),
+        )));
+
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
+
+        let parts: Vec<&str> = result.content.split('|').collect();
+        assert!(parts[0].starts_with("System:Standing memory"));
+        assert!(parts[1].starts_with("System:Available skills"));
+        assert!(parts[1].contains("- review-pr: Reviews a PR"));
+        assert_eq!(parts[2], "User:hi");
+    }
+
+    #[tokio::test]
+    async fn no_skill_catalog_without_skills_or_without_the_use_skill_tool() {
+        // Skills exist but the tool isn't registered.
+        let orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault_with_skill());
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
+        assert_eq!(result.content, "User:hi");
+
+        // Tool registered but no skills.
+        let vault = temp_vault();
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
+        orchestrator.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(
+            crate::skill::SkillStore::new(vault),
+        )));
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
         assert_eq!(result.content, "User:hi");
     }
 

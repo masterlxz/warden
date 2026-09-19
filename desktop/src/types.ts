@@ -256,6 +256,14 @@ export interface SyncPullResult {
 
 /** What `get_settings` returns, and also what the settings form holds — the shapes are
  * identical so the fetched snapshot can be used directly as initial form state. */
+/** One skill (P16) — mirrors `SkillPayload` in `src-tauri/src/skills_cmds.rs`. */
+export interface SkillEntry {
+  /** Slug (lowercase letters, digits, hyphens); doubles as the filename under `skills/`. */
+  name: string;
+  description: string;
+  body: string;
+}
+
 export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */

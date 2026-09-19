@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SyncIcon, VaultIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -10,8 +10,9 @@ interface SidebarProps {
   onOpenUsage: () => void;
   onOpenSync: () => void;
   onOpenVault: () => void;
+  onOpenSkills: () => void;
   onOpenWorkspace: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "workspace";
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -25,6 +26,7 @@ function Sidebar({
   onOpenUsage,
   onOpenSync,
   onOpenVault,
+  onOpenSkills,
   onOpenWorkspace,
   view,
   collapsed,
@@ -106,6 +108,15 @@ function Sidebar({
         >
           <VaultIcon size={17} />
           {!collapsed && "Vault"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "skills" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenSkills}
+          title="Skills"
+        >
+          <SkillsIcon size={17} />
+          {!collapsed && "Skills"}
         </button>
         <button
           type="button"

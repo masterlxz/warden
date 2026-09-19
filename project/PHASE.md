@@ -258,6 +258,11 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
   só captura e persistência de tokens (`Usage`), sem rate limiting nem teto de gasto configurável
   — isso continua em aberto, ver `PENDING.md` P4)*
 
+- [x] 5.9 — Skills (P16, Sessão 73): pacotes de instrução em `skills/<nome>.md` no vault, catálogo
+  no prompt + `use_skill` sob demanda, criação pela conversa (`manage_skill`), à mão e por prompt na
+  tela Skills do desktop — ver `PENDING.md` P16 (resolvida), P72 (fora do escopo), P73 (sem teste com
+  modelo real) e `ARCHITECTURE.md`
+
 **P11 resolvida (Sessão 35, 2026-08-29)** — as duas direções da tela de gerenciamento de MCP:
 (a) UI de verdade no desktop pra adicionar/editar/apagar servers MCP, com 4 presets de
 "quick add" (Filesystem, Google Workspace, Notion, GitHub via Docker); (b) novo binário

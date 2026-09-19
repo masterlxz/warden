@@ -39,6 +39,12 @@ pub struct SearchHit {
 /// `warden-bootstrap::seed_default_vault_files` seeds these with a starter template on first use.
 pub const FIXED_VAULT_FILES: [&str; 3] = ["_profile.md", "_behavior.md", "_feedback.md"];
 
+/// Vault-root directory holding skills (P16), one `<name>.md` each — see `crate::skill`. Like the
+/// fixed files, kept out of `list_files`/`search`/`search_semantic` (a skill's body is instructions,
+/// loaded on demand through `use_skill`, not a memory to surface as a hit) but still returned by
+/// `list_all_files`, so sync carries skills across devices without any change to `warden-sync`.
+pub const SKILLS_DIR: &str = "skills";
+
 impl Vault {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -255,6 +261,9 @@ fn collect_markdown_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> an
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            if path == root.join(SKILLS_DIR) {
+                continue;
+            }
             collect_markdown_files(root, &path, out)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") && !is_fixed_vault_file(root, &path) {
             out.push(path.strip_prefix(root)?.to_path_buf());
@@ -377,6 +386,26 @@ mod tests {
         let hits = vault.search("dentist appointment", 10).unwrap();
         assert!(hits.iter().all(|h| h.path != "_profile.md"));
         assert!(hits.iter().any(|h| h.path == "a.md"));
+    }
+
+    #[test]
+    fn skills_dir_excluded_from_list_and_search_but_kept_in_list_all_files() {
+        let vault = temp_vault();
+        vault.write("skills/review.md", "dentist appointment instructions").unwrap();
+        vault.write("notes/skills/nested.md", "a real note in a folder that happens to be named skills").unwrap();
+        vault.write("a.md", "unrelated dentist appointment note").unwrap();
+
+        let mut files: Vec<String> =
+            vault.list_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+        files.sort();
+        assert_eq!(files, vec!["a.md".to_string(), "notes/skills/nested.md".to_string()]);
+
+        let hits = vault.search("dentist appointment", 10).unwrap();
+        assert!(hits.iter().all(|h| !h.path.starts_with("skills/")));
+
+        let all: Vec<String> =
+            vault.list_all_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert!(all.contains(&"skills/review.md".to_string()));
     }
 
     #[test]

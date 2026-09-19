@@ -2,6 +2,7 @@ mod git_sync_cmds;
 mod qr;
 mod recording;
 mod server_cmds;
+mod skills_cmds;
 mod sync_cmds;
 mod vault_cmds;
 mod workspace_cmds;
@@ -868,6 +869,10 @@ pub fn run() {
             git_sync_cmds::git_sync_pull,
             vault_cmds::list_vault_files,
             vault_cmds::read_vault_file,
+            skills_cmds::list_skills,
+            skills_cmds::save_skill,
+            skills_cmds::delete_skill,
+            skills_cmds::generate_skill_draft,
             workspace_cmds::list_paired_devices,
             workspace_cmds::approve_paired_device,
             workspace_cmds::revoke_paired_device,

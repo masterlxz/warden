@@ -945,3 +945,39 @@ Anotado como lacuna menor em `PENDING.md`.
 **Sem UI nova no popup nesta fatia** — o modelo chama as tools direto durante o chat, sem
 indicador visual de "ação no DOM em andamento". Fecha 8.7 como efeito colateral direto (era só o
 roteamento client-side que os itens acima já implementam).
+
+---
+
+## Skills no vault, ativadas sob demanda (P16, Sessão 73)
+
+**Decisão**: uma skill é um arquivo `skills/<nome>.md` no vault (frontmatter `name`/`description` +
+corpo em markdown). O modelo só vê o catálogo (nome + descrição) a cada turno e carrega o corpo
+chamando a tool `use_skill(nome)` quando a skill se aplica.
+
+**Por que no vault e não no `config.toml`**: o vault já sincroniza (`warden-sync`/git usam
+`Vault::list_all_files`), é editável no Obsidian, e o `config.toml` viaja inteiro no bundle de sync
+junto com as API keys — além de o `deny_unknown_fields` de `FileConfig` quebrar clientes antigos que
+recebessem um `[[skills]]` desconhecido.
+
+**Por que sob demanda e não vinculada a agentes**: skill não usada custa zero token; funciona em
+qualquer canal (só desktop e CLI têm o conceito de agente, ver P45); e é o mesmo modelo mental das
+Skills do Claude. O catálogo é lido do vault a cada turno, então uma skill criada no meio da
+conversa aparece no turno seguinte sem reconstruir o `Orchestrator`.
+
+**Detalhes que importam**:
+- O nome da skill é o nome do arquivo, então é validado como slug (`[a-z0-9-]{1,64}`) em
+  `warden_core::skill::validate_name` — `Vault::write` não protege contra `../`, esta validação é o
+  que segura o caminho.
+- `skills/` fica fora de `Vault::list_files`/`search`/`search_semantic` (o corpo é instrução, não
+  memória a ser citada como hit), mas dentro de `list_all_files` — por isso o sync as leva sem
+  nenhuma mudança em `warden-sync`.
+- O catálogo só é injetado se `use_skill` estiver registrada no `Orchestrator`, pra não anunciar uma
+  tool inutilizável.
+- `manage_skill` aceita só `create`/`update` (create recusa nome já existente, update recusa nome
+  inexistente). **Sem `delete` pra IA, de propósito**: um erro do modelo só pode sobrescrever, nunca
+  apagar em silêncio uma skill escrita pelo usuário; apagar é só na UI.
+- O gerador por prompt (`warden_bootstrap::skill_gen`) devolve um rascunho **sem salvar** — o
+  usuário revisa no formulário. O parse é tolerante (cerca ```json, preâmbulo, nome com espaços é
+  slugificado) e passa pela mesma validação de uma skill escrita à mão.
+- Correção de premissa registrada: agentes não têm criação por IA nem por prompt (só formulário no
+  Settings e `/agents` no CLI); esses dois caminhos foram construídos do zero pra skills.

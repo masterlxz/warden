@@ -11,6 +11,7 @@ pub mod file_tools;
 pub mod mcp;
 pub mod mcp_oauth;
 pub mod shell;
+pub mod skill_tools;
 
 /// `Serialize`/`Deserialize` let this be reused directly as the wire shape for a client-advertised
 /// tool (`warden-server`'s `ClientMessage::Hello.tools`, Fase 7.4) — no parallel wire struct needed.

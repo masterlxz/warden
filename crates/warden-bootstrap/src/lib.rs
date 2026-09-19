@@ -21,9 +21,12 @@ use warden_core::tool::delegate_to_agent::{DelegateToAgentTool, NamedSubAgent};
 use warden_core::tool::document::GenerateDocumentTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
+use warden_core::skill::SkillStore;
 use warden_core::tool::shell::ShellTool;
+use warden_core::tool::skill_tools::{ManageSkillTool, UseSkillTool};
 use warden_core::tool::{Tool, ToolProvider};
 
+pub mod skill_gen;
 pub mod usage;
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
@@ -1016,6 +1019,8 @@ pub async fn bootstrap(
         Arc::new(WriteFileTool::new(vault.clone())),
         Arc::new(GenerateDocumentTool::new(generated_path.clone())),
         Arc::new(UsageStatsTool::new(default_conversations_dir())),
+        Arc::new(UseSkillTool::new(SkillStore::new(vault.clone()))),
+        Arc::new(ManageSkillTool::new(SkillStore::new(vault.clone()))),
     ];
 
     match resolve_secret(std::env::var("TAVILY_API_KEY").ok(), config.api_keys.tavily) {
