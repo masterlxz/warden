@@ -6,7 +6,7 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import SkillsView from "./components/SkillsView";
-import SshApprovalModal from "./components/SshApprovalModal";
+import ApprovalModal from "./components/ApprovalModal";
 import SyncView from "./components/SyncView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
@@ -166,6 +166,12 @@ function App() {
       setSendError(String(err));
     } finally {
       setIsSending(false);
+      // A turn can add agents (an agent with "can create and edit other agents"), so the selector in
+      // the chat header would otherwise stay stale until the next visit to Settings. Kept as the same
+      // object when nothing changed: the effect above re-selects agent/model whenever `settings` changes.
+      void invoke<Settings>("get_settings")
+        .then((next) => setSettings((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
+        .catch((err) => console.error("failed to refresh settings:", err));
     }
   }
 
@@ -219,7 +225,7 @@ function App() {
           onOpenSettings={() => setView("settings")}
         />
       )}
-      <SshApprovalModal />
+      <ApprovalModal />
     </div>
   );
 }

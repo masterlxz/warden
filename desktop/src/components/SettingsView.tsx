@@ -610,6 +610,22 @@ function AgentCard({
           Lets this agent hand off part of a conversation to any other configured agent by name.
         </span>
       </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canManageAgents}
+            onChange={(e) => onChange({ ...agent, canManageAgents: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can create and edit other agents</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent write new agents (persona and model) when you ask. Every creation or edit is shown to you
+          first and only happens if you approve it. It can't give any agent this power or the one above — only these
+          checkboxes can — and it can't edit an agent that has either.
+        </span>
+      </label>
     </div>
   );
 }
@@ -950,7 +966,7 @@ function SettingsView() {
   function addAgent() {
     setForm((f) => ({
       ...f,
-      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false }],
+      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false }],
     }));
   }
 

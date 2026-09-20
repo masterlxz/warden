@@ -560,7 +560,7 @@ impl SshContext {
                 host.id
             );
         };
-        let request = ApprovalRequest { host_id: host.id.clone(), action: action.to_string(), detail: detail.to_string() };
+        let request = ApprovalRequest { target: host.id.clone(), action: action.to_string(), detail: detail.to_string() };
         let approved = tokio::time::timeout(self.approval_timeout, approver.approve(request)).await.unwrap_or(false);
         if !approved {
             self.record(host, action, target, "denied", json!({ "error": "refused: not approved" }));
@@ -1236,7 +1236,7 @@ mod tests {
         let result = tool.call(json!({ "host_id": "prod", "command": "uptime" })).await.unwrap();
 
         assert_eq!(result["exit_code"], json!(0));
-        assert_eq!(*approver.asked.lock().unwrap(), [ApprovalRequest { host_id: "prod".into(), action: "exec".into(), detail: "uptime".into() }]);
+        assert_eq!(*approver.asked.lock().unwrap(), [ApprovalRequest { target: "prod".into(), action: "exec".into(), detail: "uptime".into() }]);
         assert_eq!(audit_lines(&log)[0]["approval"], json!("approved"));
     }
 

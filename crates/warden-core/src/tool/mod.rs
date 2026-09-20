@@ -55,11 +55,12 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// What a tool wants a human to confirm: which server, what kind of action, and the exact
-/// command line or file paths involved.
+/// What a tool wants a human to confirm: what it acts on (an SSH server id, an agent id), what kind
+/// of action (`exec`, `upload`, `download`, `create_agent`, `update_agent`), and the exact command
+/// line, file paths or text that will be applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalRequest {
-    pub host_id: String,
+    pub target: String,
     pub action: String,
     pub detail: String,
 }

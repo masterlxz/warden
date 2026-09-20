@@ -1096,5 +1096,37 @@ mesmo escopo por agente, mesma aprovação, mesmo log. Decisões confirmadas com
 - **Por que só esses dois canais**: o orquestrador roda o loop de tools inteiro dentro de um `handle_turn`, então o
   approver precisa de um caminho de volta até quem é dono da tela. No CLI o turno roda numa task e o laço de
   `run_turn` (dono do terminal) recebe o pedido por um `mpsc` + `oneshot`; no desktop é um evento Tauri e um
-  comando (`resolve_ssh_approval`). Telegram/WhatsApp precisariam de botão inline ou resposta em mensagem, e não
+  comando (`resolve_approval`, ex-`resolve_ssh_approval`). Telegram/WhatsApp precisariam de botão inline ou resposta em mensagem, e não
   deu para testar contra os serviços reais.
+
+## Agentes criam agentes: `manage_agents` (P46, Sessão 80)
+
+Tool no `warden-bootstrap` (`manage_agents.rs`), não no core: precisa de `AgentConfig`, `load_config_from_path`
+e `save_config`, como o `UsageStatsTool`. Decisões confirmadas com o usuário antes de codar:
+
+- **Opt-in por agente e aprovação sempre**: só um agente com `can_manage_agents` recebe a tool, anexada por turno
+  pelo desktop (`send_message`) e pelo CLI (`resolve_turn_context`), exatamente como `delegate_to_agent` — os únicos
+  dois canais que resolvem `agent_id`. Toda criação/edição passa pelo `Approver` (o mesmo do P47); sem approver
+  recusa. Como Telegram/WhatsApp/mobile/MCP server nunca anexam a tool, não há caminho sem tela para ela.
+- **Poder não se auto-concede** (aplicado no código): `create` sempre grava `can_manage_agents=false` e
+  `can_delegate_to_agents=false` e ignora qualquer argumento extra; `update` só mexe em persona/provider e **recusa**
+  editar um agente que tenha alguma das duas flags, inclusive o próprio chamador. Só as checkboxes de Settings / o
+  wizard do CLI ligam essas flags. Sem `delete`, mesmo raciocínio do `manage_skill`.
+- **O revisor vê tudo**: a persona (limite de 4000 caracteres, justamente para caber) aparece inteira no pedido; no
+  `update` aparece a persona antiga e a nova. Entrada inválida (id vazio/com espaço/controle, duplicado, provider
+  inexistente, persona vazia ou grande) é recusada **antes** de perguntar.
+- **Sem corrida com o prompt aberto**: `plan()` é pura e roda duas vezes — antes de perguntar (valida e monta o
+  texto) e **depois** do "sim", sobre o config relido do disco. O que outro processo salvou enquanto o prompt estava
+  aberto não se perde (só `agents` é substituído, o resto do `FileConfig` é o que está no disco), e um nome tomado
+  nesse intervalo é pego. Continua uma leitura-e-regravação do arquivo inteiro: um `save_settings` do desktop no
+  mesmo instante ainda pode vencer.
+- **Vale a partir do próximo turno**: agentes são relidos no início de cada turno, e `delegate_to_agent` é montado
+  nesse momento, então o agente criado não é alvo de delegação no mesmo turno. O chat do desktop relê os settings
+  depois de cada resposta (mantendo o mesmo objeto quando nada mudou, porque o efeito que restaura o seletor
+  depende dele).
+- **Approver generalizado**: `ApprovalRequest { target, action, detail }` (antes `host_id`). No desktop,
+  `approval.rs` (`ApprovalBroker`, `TauriApprover`, `resolve_approval`, eventos `approval-request`/
+  `approval-cancelled`) e `ApprovalModal.tsx`, com verbos por `action` (`exec`, `upload`, `download`,
+  `create_agent`, `update_agent`). No CLI o card mostra uma linha por linha do `detail`.
+- **Achado**: o renderizador de markdown do card do CLI consome os `_` (`manage_agents` aparece como
+  `manageagents`); é anterior a esta mudança e só afeta a exibição.

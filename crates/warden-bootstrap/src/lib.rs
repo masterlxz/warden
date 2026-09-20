@@ -27,8 +27,10 @@ use warden_core::tool::skill_tools::{ManageSkillTool, ReadSkillFileTool, UseSkil
 use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
+pub mod manage_agents;
 pub mod skill_gen;
 pub mod usage;
+pub use manage_agents::ManageAgentsTool;
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +109,12 @@ pub struct AgentConfig {
     /// still parses — same reasoning as `McpServerConfig::Http::oauth`.
     #[serde(default)]
     pub can_delegate_to_agents: bool,
+    /// Opt-in (P46) for the `manage_agents` tool — only an agent with this set gets it, and it lets
+    /// that agent list, create and edit *other* agents (every change waits for the user's yes). It
+    /// can never grant itself, or any agent it creates, this flag or `can_delegate_to_agents`: those
+    /// are switched on by a human in the Settings screen / `/agents` only.
+    #[serde(default)]
+    pub can_manage_agents: bool,
 }
 
 /// One SSH server the AI may run commands on through the `ssh_exec` tool (P47). Edited from the
@@ -1473,6 +1481,7 @@ oauth = true
                 persona: "You are a pirate. Speak in pirate slang.".to_string(),
                 provider_id: Some("ollama-local".to_string()),
                 can_delegate_to_agents: true,
+                can_manage_agents: true,
             }],
             storage_provider: Some(StorageProviderKind::DecentralizedVault),
             remote_node: Some(RemoteNodeConfig {
@@ -1928,6 +1937,7 @@ oauth = true
             persona: String::new(),
             provider_id: provider_id.map(str::to_string),
             can_delegate_to_agents: false,
+            can_manage_agents: false,
         }
     }
 

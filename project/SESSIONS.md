@@ -2,7 +2,40 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 79)
+> Última atualização: 2026-09-20 (Sessão 80)
+
+---
+
+### 2026-09-20 — Sessão 80
+
+- **Objetivo**: P46 — agentes criarem agentes. Plano aprovado antes de codar (Plan mode); decisões confirmadas com o
+  usuário: fatia = "agentes criam agentes" (custo dos sub-agentes e isolamento de tools ficam para depois),
+  **opt-in por agente + aprovação humana sempre**, e o agente criado nunca nasce com poder de delegar/gerenciar.
+
+**O que foi feito**:
+
+- **Tool `manage_agents`** (`warden-bootstrap/src/manage_agents.rs`): `list`/`create`/`update` sobre o
+  `config.toml`, sem `delete`. `plan()` pura, rodada antes do prompt (valida e monta o texto) e de novo depois do
+  "sim" sobre o config relido do disco. `AgentConfig.can_manage_agents` (checkbox no desktop, pergunta no wizard do
+  CLI, `[cria]` em `/agents`); a tool é anexada por turno no desktop e no CLI, como `delegate_to_agent`
+  (`resolve_turn_context` passou a devolver uma lista de tools extras).
+- **Approver generalizado**: `ApprovalRequest.host_id` → `target`; no desktop o broker/approver saíram de
+  `ssh_cmds.rs` para `approval.rs`, eventos `approval-request`/`approval-cancelled`, comando `resolve_approval`;
+  `SshApprovalModal` → `ApprovalModal` com os verbos `create_agent`/`update_agent`. O card do CLI mostra uma linha por
+  linha do `detail`. O chat do desktop relê os settings depois de cada resposta.
+- **Achados**: (1) `FileConfig` não é `Clone`, então `plan()` devolve só a nova lista de agentes e quem chama a
+  aplica sobre o config lido — bom, porque só `agents` muda; (2) com `action` inválida o erro era "falta `id`" (a ordem
+  dos checks); corrigido para "ação desconhecida"; (3) o markdown do card do CLI consome `_` (`manage_agents` vira
+  `manageagents`), anterior a esta sessão; (4) um `wait_for("chief")` no pty casou com o **eco** da própria digitação e
+  adiantou o passo seguinte — esperar pelo texto do card de resposta, não por algo que o usuário digitou.
+- **Verificação**: `cargo test --workspace` 469 verdes (+12), clippy limpo, `npm run build` verde. Binário real do
+  CLI num pty contra um servidor de modelo **falso** compatível com OpenAI (17 checagens, incluindo escalada: editar o
+  chefe recusado sem prompt e flags extras ignoradas); modal/checkbox/seletor atualizado no Playwright headless com
+  eventos mockados (32 checagens, claro e escuro). **Não feito**: modelo real (sem chave nesta máquina), app Tauri
+  aberto, Telegram/WhatsApp/mobile (não têm agente nomeado).
+
+**Ainda aberto no P46**: ver `PENDING.md` (fila de jobs, custo dos sub-agentes P18/P60, isolamento de tools por
+agente, `delete_agent`, teste com modelo real).
 
 ---
 

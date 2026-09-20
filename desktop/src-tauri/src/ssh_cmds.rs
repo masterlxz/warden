@@ -2,16 +2,11 @@
 //! `save_settings` runs on it, and the "Test connection" command. Split out of `lib.rs` the same way
 //! `skills_cmds.rs` is — the hosts themselves are saved through `save_settings` like agents are.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
-use tokio::sync::oneshot;
 use warden_bootstrap::{AgentConfig, SshHostConfig};
 use warden_core::tool::ssh::test_connection;
-use warden_core::tool::{ApprovalRequest, Approver};
 
 /// `port` is a `u32` here (not `u16`) so an out-of-range value reaches `into_config` and gets a
 /// readable error instead of an opaque serde failure. `identity_file` empty = "none", the same
@@ -27,7 +22,7 @@ pub struct SshHostPayload {
     pub enabled: bool,
     #[serde(default)]
     pub agents: Vec<String>,
-    /// Ask before every command or file transfer on this host (the modal in `App.tsx`).
+    /// Ask before every command or file transfer on this host (the approval modal, `approval.rs`).
     #[serde(default)]
     pub require_approval: bool,
 }
@@ -106,77 +101,6 @@ pub async fn test_ssh_host(host: SshHostPayload) -> Result<SshTestResult, String
     Ok(SshTestResult { ok: outcome.ok, message: outcome.message })
 }
 
-/// Requests waiting on the user's answer, keyed by the id the frontend sends back through
-/// `resolve_ssh_approval`. One broker for the whole app (`AppState`), shared by every turn.
-#[derive(Default)]
-pub struct ApprovalBroker {
-    next_id: AtomicU64,
-    pending: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
-}
-
-impl ApprovalBroker {
-    /// Answers request `id`. `false` when nothing is waiting on it any more (already answered, or
-    /// the tool gave up first) — the frontend just closes its modal either way.
-    pub fn resolve(&self, id: u64, approved: bool) -> bool {
-        match self.pending.lock().unwrap().remove(&id) {
-            Some(reply) => reply.send(approved).is_ok(),
-            None => false,
-        }
-    }
-}
-
-/// What the modal shows. `camelCase` like every other payload the frontend reads.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalPayload {
-    pub id: u64,
-    pub host_id: String,
-    pub action: String,
-    pub detail: String,
-}
-
-/// Asks through the desktop window: emits `ssh-approval-request`, then waits for
-/// `resolve_ssh_approval`. If the tool stops waiting first (its own deadline) the guard below
-/// forgets the request and emits `ssh-approval-cancelled` so the modal doesn't outlive it.
-pub struct TauriApprover {
-    pub app: AppHandle,
-    pub broker: Arc<ApprovalBroker>,
-}
-
-struct PendingGuard {
-    app: AppHandle,
-    broker: Arc<ApprovalBroker>,
-    id: u64,
-}
-
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        if self.broker.pending.lock().unwrap().remove(&self.id).is_some() {
-            let _ = self.app.emit("ssh-approval-cancelled", self.id);
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Approver for TauriApprover {
-    async fn approve(&self, request: ApprovalRequest) -> bool {
-        let id = self.broker.next_id.fetch_add(1, Ordering::Relaxed);
-        let (reply, answer) = oneshot::channel();
-        self.broker.pending.lock().unwrap().insert(id, reply);
-        let _guard = PendingGuard { app: self.app.clone(), broker: self.broker.clone(), id };
-        let payload = ApprovalPayload { id, host_id: request.host_id, action: request.action, detail: request.detail };
-        if self.app.emit("ssh-approval-request", payload).is_err() {
-            return false;
-        }
-        answer.await.unwrap_or(false)
-    }
-}
-
-#[tauri::command]
-pub fn resolve_ssh_approval(state: State<'_, crate::AppState>, id: u64, approved: bool) -> bool {
-    state.approvals.resolve(id, approved)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,7 +119,7 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false }
+        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false }
     }
 
     #[test]
@@ -236,18 +160,5 @@ mod tests {
         assert!(hosts_into_config(vec![scoped.clone()], &agents).is_ok());
         scoped.agents = vec!["ghost".into()];
         assert!(hosts_into_config(vec![scoped], &agents).unwrap_err().contains("unknown agent"));
-    }
-
-    #[test]
-    fn the_broker_answers_a_waiting_request_once() {
-        let broker = ApprovalBroker::default();
-        let (reply, mut answer) = oneshot::channel();
-        broker.pending.lock().unwrap().insert(7, reply);
-
-        assert!(broker.resolve(7, true));
-        assert_eq!(answer.try_recv(), Ok(true));
-        // A second answer, or one for a request that never existed, finds nobody waiting.
-        assert!(!broker.resolve(7, false));
-        assert!(!broker.resolve(99, true));
     }
 }

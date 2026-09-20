@@ -108,6 +108,10 @@ export interface AgentEntry {
    * tool, letting it address any other configured agent by id. Off by default: this is the only
    * UI surface that can turn it on (previously hand-edit of `config.toml` only). */
   canDelegateToAgents: boolean;
+  /** Opt-in (P46) — when true, this agent gets the `manage_agents` tool: it can list, create and edit
+   * *other* agents, each change shown to you for approval first. It can never switch this flag, or
+   * `canDelegateToAgents`, on for any agent — only this checkbox does. */
+  canManageAgents: boolean;
 }
 
 /** Mirrors `ssh_cmds::SshHostPayload` (P47) — an SSH server the AI can run commands on through the
@@ -129,11 +133,14 @@ export interface SshHostEntry {
   requireApproval: boolean;
 }
 
-/** Payload of the `ssh-approval-request` event (`ssh_cmds::ApprovalPayload`) — one SSH action the
- * AI wants to run on a server that requires approval. Answered through `resolve_ssh_approval`. */
-export interface SshApprovalRequest {
+/** Payload of the `approval-request` event (`approval::ApprovalPayload`) — something the AI wants to
+ * do that needs your "yes": an SSH action on a server that requires approval, or creating/changing an
+ * agent. Answered through `resolve_approval`. */
+export interface ApprovalRequest {
   id: number;
-  hostId: string;
+  /** The SSH server id or the agent id the action is about. */
+  target: string;
+  /** `exec` | `upload` | `download` | `create_agent` | `update_agent`. */
   action: string;
   detail: string;
 }

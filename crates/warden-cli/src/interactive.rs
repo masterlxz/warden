@@ -61,7 +61,7 @@ use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
     build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
     rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
-    Provider, ProviderConfig, SshHostConfig,
+    ManageAgentsTool, Provider, ProviderConfig, SshHostConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
@@ -796,16 +796,11 @@ impl Approver for ChannelApprover {
 /// Ctrl+C refuses; any other key is ignored so a stray keystroke can't approve anything. Gives up
 /// (as a "no") if the tool stopped waiting first — its own deadline elapsed and it dropped the reply.
 fn ask_approval(terminal: &mut CliTerminal, request: &ApprovalRequest, reply: &oneshot::Sender<bool>) -> anyhow::Result<bool> {
-    render_message_card(
-        terminal,
-        "aprovação",
-        Style::default().fg(Color::Rgb(241, 196, 15)),
-        vec![
-            (format!("servidor: {}", request.host_id), Style::default()),
-            (format!("{}: {}", request.action, request.detail), Style::default()),
-            ("aprovar? (s = sim, n = não)".to_string(), dim_style()),
-        ],
-    )?;
+    // One card row per line of the detail, so a multi-line command or a whole persona stays readable.
+    let mut lines = vec![(format!("alvo: {}", request.target), Style::default()), (format!("ação: {}", request.action), Style::default())];
+    lines.extend(request.detail.lines().map(|line| (line.to_string(), Style::default())));
+    lines.push(("aprovar? (s = sim, n = não)".to_string(), dim_style()));
+    render_message_card(terminal, "aprovação", Style::default().fg(Color::Rgb(241, 196, 15)), lines)?;
     loop {
         if reply.is_closed() {
             return Ok(false);
@@ -843,17 +838,14 @@ async fn run_turn(
     terminal: &mut CliTerminal,
     model_override: Option<Arc<dyn ModelProvider>>,
     system_prompt: Option<&str>,
-    extra_tool: Option<Arc<dyn Tool>>,
+    extra_tools: Vec<Arc<dyn Tool>>,
 ) -> anyhow::Result<Option<MessageOutcome>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
     let orchestrator = match model_override {
         Some(model) => orchestrator.with_model(model),
         None => orchestrator.clone(),
     };
-    let orchestrator = match extra_tool {
-        Some(tool) => orchestrator.with_tool(tool),
-        None => orchestrator,
-    };
+    let orchestrator = extra_tools.into_iter().fold(orchestrator, |orchestrator, tool| orchestrator.with_tool(tool));
     // Tools that need a human "yes" (`ssh_*` on a host with `require_approval`) ask through here.
     let (approval_tx, mut approval_rx) = mpsc::unbounded_channel::<(ApprovalRequest, oneshot::Sender<bool>)>();
     let orchestrator = orchestrator.with_approver(Arc::new(ChannelApprover { requests: approval_tx }));
@@ -1073,29 +1065,39 @@ async fn prompt_field(terminal: &mut CliTerminal, title: &str, initial: &str) ->
     }
 }
 
-type TurnContext = (Option<Arc<dyn ModelProvider>>, Option<String>, Option<Arc<dyn Tool>>);
+type TurnContext = (Option<Arc<dyn ModelProvider>>, Option<String>, Vec<Arc<dyn Tool>>);
 
 /// Resolves what this turn should actually use, given the session's `provider_id`/`agent_id`
 /// selections — a model override (only when it differs from whatever `run()`'s own `orchestrator`
-/// parameter already is), a persona to pass as `system_prompt`, and (P46) a `delegate_to_agent`
-/// tool to attach when the active agent has opted into being a "chief"
-/// (`AgentConfig.can_delegate_to_agents`). Reloads config fresh only when at least one selection
-/// is active; when neither is, returns `(None, None, None)` immediately with no disk access at
+/// parameter already is), a persona to pass as `system_prompt`, and (P46) the tools to attach when
+/// the active agent has opted in: `delegate_to_agent` (`AgentConfig.can_delegate_to_agents`) and
+/// `manage_agents` (`can_manage_agents`). Reloads config fresh only when at least one selection
+/// is active; when neither is, returns `(None, None, vec![])` immediately with no disk access at
 /// all, so a session that never touches `/models`/`/agents` behaves exactly as before this
 /// feature existed. An explicit `/models use` always wins over an active agent's own
 /// `provider_id` (which only pre-fills when nothing more specific was chosen) — same precedence
 /// the desktop's chat header uses between its agent and provider selectors.
 fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> anyhow::Result<TurnContext> {
     if session.provider_id.is_none() && session.agent_id.is_none() {
-        return Ok((None, None, None));
+        return Ok((None, None, Vec::new()));
     }
 
     let config = load_fresh_config(session.config_path.as_deref())?;
 
     let active_agent = session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id));
     let system_prompt = active_agent.map(|a| a.persona.clone());
-    let extra_tool =
-        active_agent.filter(|a| a.can_delegate_to_agents).and_then(|_| build_delegate_to_agent_tool(&config, orchestrator));
+    let mut extra_tools: Vec<Arc<dyn Tool>> = Vec::new();
+    if let Some(agent) = active_agent {
+        if agent.can_delegate_to_agents {
+            extra_tools.extend(build_delegate_to_agent_tool(&config, orchestrator));
+        }
+        if agent.can_manage_agents {
+            // The tool reads and writes the same file `/agents` does; without a path there is nothing to edit.
+            if let Some(path) = &session.config_path {
+                extra_tools.push(Arc::new(ManageAgentsTool::new(path)));
+            }
+        }
+    }
 
     let effective_provider_id = session.provider_id.clone().or_else(|| active_agent.and_then(|a| a.provider_id.clone()));
 
@@ -1111,7 +1113,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
         None => None,
     };
 
-    Ok((model_override, system_prompt, extra_tool))
+    Ok((model_override, system_prompt, extra_tools))
 }
 
 async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
@@ -1351,7 +1353,8 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let provider = a.provider_id.clone().unwrap_or_else(|| "-".to_string());
             let marker = if session.agent_id.as_deref() == Some(a.id.as_str()) { " [ativo]" } else { "" };
             let delegate_marker = if a.can_delegate_to_agents { " [delega]" } else { "" };
-            (format!("{} ({}) — {}{}{}", a.id, provider, preview, marker, delegate_marker), Style::default())
+            let manage_marker = if a.can_manage_agents { " [cria]" } else { "" };
+            (format!("{} ({}) — {}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker), Style::default())
         })
         .collect();
     render_message_card(terminal, "agentes", accent_style(), lines)
@@ -1410,8 +1413,21 @@ async fn prompt_agent_provider_id(terminal: &mut CliTerminal, providers: &[Provi
 /// Loops a single wizard field until it parses as yes/no. Returns `Ok(None)` if the user cancels
 /// (distinct from `Ok(Some(false))`, "answered no").
 async fn prompt_agent_can_delegate(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode delegar pra outros agentes? (s/n) ", initial).await
+}
+
+async fn prompt_agent_can_manage(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(
+        terminal,
+        " pode criar e editar outros agentes? cada mudança pede a sua aprovação (s/n) ",
+        initial,
+    )
+    .await
+}
+
+async fn prompt_agent_flag(terminal: &mut CliTerminal, title: &str, initial: bool) -> anyhow::Result<Option<bool>> {
     loop {
-        let Some(input) = prompt_field(terminal, " pode delegar pra outros agentes? (s/n) ", if initial { "s" } else { "n" }).await? else {
+        let Some(input) = prompt_field(terminal, title, if initial { "s" } else { "n" }).await? else {
             return Ok(None);
         };
         match input.trim().to_lowercase().as_str() {
@@ -1439,8 +1455,11 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_delegate_to_agents) = prompt_agent_can_delegate(terminal, false).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_manage_agents) = prompt_agent_can_manage(terminal, false).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
-    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents });
+    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents, can_manage_agents });
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
@@ -1465,9 +1484,12 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_delegate_to_agents) = prompt_agent_can_delegate(terminal, current.can_delegate_to_agents).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_manage_agents) = prompt_agent_can_manage(terminal, current.can_manage_agents).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let old_id = current.id.clone();
-    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents };
+    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents, can_manage_agents };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
     }
@@ -2144,7 +2166,7 @@ pub async fn run(
         insert_card(&mut terminal, vec![("você".to_string(), dim_style)], dim_style, plain_body_rows(trimmed), None)?;
         terminal.insert_before(1, |_buf| {})?;
 
-        let (model_override, system_prompt, extra_tool) = match resolve_turn_context(&session, orchestrator) {
+        let (model_override, system_prompt, extra_tools) = match resolve_turn_context(&session, orchestrator) {
             Ok(resolved) => resolved,
             Err(err) => {
                 render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
@@ -2154,7 +2176,7 @@ pub async fn run(
 
         // Scopes the skill catalog and `use_skill` to the active agent (P72 c).
         let scoped = orchestrator.with_agent(session.agent_id.clone());
-        match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tool).await {
+        match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tools).await {
             Ok(Some(outcome)) => {
                 session.turn_count += 1;
                 if let Some(usage) = &outcome.usage {

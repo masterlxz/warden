@@ -127,6 +127,11 @@ concreto também feito (mesma sessão)**: tool `delegate_to_agent` deixa um agen
 (persona/provider próprios), não só um sub-agente anônimo. Falta ainda: UI/CLI pra ligar essa flag
 (só hand-edit do `config.toml` por enquanto) e o resto do pacote (fila de jobs, custo, isolamento).
 
+**Agentes criam agentes (Sessão 80)**: tool `manage_agents` (`list`/`create`/`update`, sem `delete`) para um
+agente com `can_manage_agents` — cada mudança pede a aprovação do usuário, o agente criado nasce sem poderes
+(só uma pessoa liga delegar/gerenciar) e um agente privilegiado só o humano edita. Falta o resto do pacote:
+fila de jobs, custo por sub-agente (P18/P60) e isolamento de tools por agente.
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA

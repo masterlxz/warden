@@ -1,3 +1,4 @@
+mod approval;
 mod git_sync_cmds;
 mod qr;
 mod recording;
@@ -17,7 +18,8 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, McpServerConfig, Overrides,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, ManageAgentsTool, McpServerConfig,
+    Overrides,
     Provider, ProviderConfig, RemoteNodeConfig, StorageProviderKind, UsageSummary,
 };
 use warden_core::memory::Vault;
@@ -41,8 +43,8 @@ struct AppState {
     /// Set while the desktop is embedding its own `warden-server` hub (Fase 9.1 follow-up, "virar
     /// o hub desta rede") — `None` when stopped. See `server_cmds.rs`.
     embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
-    /// SSH actions waiting for the user's yes/no (P47) — see `ssh_cmds::TauriApprover`.
-    approvals: Arc<ssh_cmds::ApprovalBroker>,
+    /// Actions waiting for the user's yes/no (P47 SSH, P46 `manage_agents`) — see `approval::TauriApprover`.
+    approvals: Arc<approval::ApprovalBroker>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -182,6 +184,10 @@ async fn send_message(
                         orchestrator = orchestrator.with_tool(tool);
                     }
                 }
+                // Lets a "chief" create/edit other agents (P46); every change waits for the user's yes.
+                if agent.can_manage_agents {
+                    orchestrator = orchestrator.with_tool(Arc::new(ManageAgentsTool::new(path.clone())));
+                }
             }
         }
         if let Some(id) = &provider_id {
@@ -191,9 +197,9 @@ async fn send_message(
         }
     }
 
-    // SSH hosts that `require_approval` ask through the window; every other channel has no approver
-    // and those hosts refuse there.
-    let orchestrator = orchestrator.with_approver(Arc::new(ssh_cmds::TauriApprover { app, broker: state.approvals.clone() }));
+    // Tools that need a human "yes" (SSH hosts with `require_approval`, `manage_agents`) ask through
+    // the window; every other channel has no approver and those actions are refused there.
+    let orchestrator = orchestrator.with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult {
@@ -320,6 +326,9 @@ struct AgentPayload {
     provider_id: String,
     /// Opt-in (P46/P60) for the `delegate_to_agent` tool — see `AgentConfig::can_delegate_to_agents`.
     can_delegate_to_agents: bool,
+    /// Opt-in (P46) for the `manage_agents` tool — see `AgentConfig::can_manage_agents`.
+    #[serde(default)]
+    can_manage_agents: bool,
 }
 
 /// IPC shape for `RemoteNodeConfig` (P61 v2 Settings UI) — same "dedicated payload struct for
@@ -488,6 +497,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 persona: a.persona,
                 provider_id: a.provider_id.unwrap_or_default(),
                 can_delegate_to_agents: a.can_delegate_to_agents,
+                can_manage_agents: a.can_manage_agents,
             })
             .collect(),
         storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
@@ -576,7 +586,13 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
                 return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
             }
         }
-        agents.push(AgentConfig { id, persona: a.persona, provider_id, can_delegate_to_agents: a.can_delegate_to_agents });
+        agents.push(AgentConfig {
+            id,
+            persona: a.persona,
+            provider_id,
+            can_delegate_to_agents: a.can_delegate_to_agents,
+            can_manage_agents: a.can_manage_agents,
+        });
     }
 
     let ssh_hosts = ssh_cmds::hosts_into_config(payload.ssh_hosts, &agents)?;
@@ -827,7 +843,7 @@ pub fn run() {
         pending_push: Mutex::new(None),
         generated_files_root,
         embedded_server: Mutex::new(None),
-        approvals: Arc::new(ssh_cmds::ApprovalBroker::default()),
+        approvals: Arc::new(approval::ApprovalBroker::default()),
     };
 
     // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
@@ -860,7 +876,7 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             send_message,
-            ssh_cmds::resolve_ssh_approval,
+            approval::resolve_approval,
             open_generated_file,
             read_attachment,
             transcribe_audio,

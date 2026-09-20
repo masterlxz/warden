@@ -1280,19 +1280,19 @@ body {
   box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
 }
 
-/* SSH approval prompt (P47) — the command is shown verbatim, in a box that scrolls rather than
+/* Approval prompt (P47 SSH, P46 agents) — the command is shown verbatim, in a box that scrolls rather than
    growing past the window, since the model can send a long one. */
-.ssh-approval-card {
+.approval-card {
   max-width: min(560px, 92vw);
   align-items: stretch;
 }
 
-.ssh-approval-title {
+.approval-title {
   margin: 0;
   font-size: 1.05em;
 }
 
-.ssh-approval-detail {
+.approval-detail {
   margin: 0;
   max-height: 40vh;
   overflow: auto;
@@ -1305,7 +1305,7 @@ body {
   word-break: break-all;
 }
 
-.ssh-approval-actions {
+.approval-actions {
   display: flex;
   gap: 0.5rem;
   justify-content: flex-end;
