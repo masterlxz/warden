@@ -64,7 +64,9 @@ use warden_bootstrap::{
     Provider, ProviderConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
+use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
+use warden_core::skill::{self, Skill, SkillStore};
 use warden_core::tool::Tool;
 
 use crate::commands::{self, Command, ParseOutcome};
@@ -1056,6 +1058,12 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/agents create — criar um agente novo",
         "/agents edit <id> — editar um agente",
         "/agents remove <id> — remover um agente",
+        "/skills — listar as skills do vault",
+        "/skills show <nome> — ver a descrição e o corpo de uma skill",
+        "/skills create — criar uma skill nova",
+        "/skills edit <nome> — editar a descrição e o corpo de uma skill",
+        "/skills remove <nome> — apagar uma skill (pede confirmação)",
+        "/skills path [nome] — caminho do arquivo da skill (ou da pasta), pra editar texto longo no editor",
         "/sync — status da sincronização (pendências, último push/pull)",
         "/sync push — enviar mudanças locais (mostra QR pro TruthID escanear)",
         "/sync pull — buscar a versão mais recente",
@@ -1401,6 +1409,162 @@ async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession,
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' removido"), Style::default())])
 }
 
+/// Builds a `SkillStore` over the same vault this CLI session already uses — fresh per command,
+/// same "never cached" posture as `load_fresh_config`. Skills live in the vault (not in
+/// `config.toml`), so there's no config to write back: every command here acts on the files.
+fn make_skill_store(session: &CliSession) -> anyhow::Result<SkillStore> {
+    let vault_path = resolve_vault_path(session.config_path.as_deref(), session.vault_path_override.as_deref())?;
+    Ok(SkillStore::new(Arc::new(Vault::new(vault_path))))
+}
+
+fn skill_error_card(terminal: &mut CliTerminal, message: String) -> anyhow::Result<()> {
+    render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())])
+}
+
+async fn cmd_skills_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let skills = make_skill_store(session)?.list();
+    if skills.is_empty() {
+        return render_message_card(terminal, "skills", accent_style(), vec![("nenhuma skill ainda — use /skills create (ou peça pra IA criar uma)".to_string(), Style::default())]);
+    }
+    let lines = skills
+        .iter()
+        .map(|s| {
+            let description = if s.description.is_empty() { "(sem descrição)" } else { s.description.as_str() };
+            (format!("{} — {}", s.name, description), Style::default())
+        })
+        .collect();
+    render_message_card(terminal, "skills", accent_style(), lines)
+}
+
+async fn cmd_skills_show(terminal: &mut CliTerminal, session: &CliSession, name: String) -> anyhow::Result<()> {
+    let skill = match make_skill_store(session)?.get(&name) {
+        Ok(skill) => skill,
+        Err(e) => return skill_error_card(terminal, e.to_string()),
+    };
+    let mut lines = vec![(format!("descrição: {}", if skill.description.is_empty() { "(sem descrição)" } else { skill.description.as_str() }), dim_style())];
+    lines.extend(skill.body.lines().map(|line| (line.to_string(), Style::default())));
+    render_message_card(terminal, &format!("skill {}", skill.name), accent_style(), lines)
+}
+
+async fn cmd_skills_path(terminal: &mut CliTerminal, session: &CliSession, name: Option<String>) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    let path = match name {
+        Some(name) => match store.path_of(&name) {
+            Ok(path) => path,
+            Err(e) => return skill_error_card(terminal, e.to_string()),
+        },
+        None => resolve_vault_path(session.config_path.as_deref(), session.vault_path_override.as_deref())?.join(warden_core::memory::SKILLS_DIR),
+    };
+    render_message_card(terminal, "skills", accent_style(), vec![(path.display().to_string(), Style::default())])
+}
+
+/// Loops one wizard field until it's a valid skill name that doesn't collide with an existing one.
+/// Returns `Ok(None)` if the user cancels.
+async fn prompt_skill_name(terminal: &mut CliTerminal, store: &SkillStore) -> anyhow::Result<Option<String>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " nome (minúsculas, números e hífens — vira o nome do arquivo) ", "").await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if let Err(e) = skill::validate_name(&candidate) {
+            skill_error_card(terminal, e.to_string())?;
+        } else if store.exists(&candidate) {
+            skill_error_card(terminal, format!("já existe uma skill '{candidate}' — use /skills edit {candidate}"))?;
+        } else {
+            return Ok(Some(candidate));
+        }
+    }
+}
+
+/// Prompts `description` then, only if `edit_body`, `body`, re-asking until the whole skill passes
+/// `Skill::validate` — the same rules the model's `manage_skill` and the desktop form enforce.
+/// The body is one line here (the field editor is single-line); a multi-line body is edited in the
+/// file itself, see `/skills path`. Returns `Ok(None)` if the user cancels.
+async fn prompt_skill_text(terminal: &mut CliTerminal, name: &str, description: &str, body: &str, edit_body: bool) -> anyhow::Result<Option<Skill>> {
+    let mut description = description.to_string();
+    let mut body = body.to_string();
+    loop {
+        let Some(new_description) = prompt_field(terminal, " descrição (quando usar a skill — a IA lê isso a cada turno) ", &description).await? else {
+            return Ok(None);
+        };
+        description = new_description.trim().to_string();
+        if edit_body {
+            let Some(new_body) = prompt_field(terminal, " corpo (as instruções, numa linha — texto longo: /skills path) ", &body).await? else {
+                return Ok(None);
+            };
+            body = new_body.trim().to_string();
+        }
+        let skill = Skill { name: name.to_string(), description: description.clone(), body: body.clone() };
+        match skill.validate() {
+            Ok(()) => return Ok(Some(skill)),
+            Err(e) => skill_error_card(terminal, e.to_string())?,
+        }
+    }
+}
+
+async fn wizard_skills_create(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    let cancelled = |terminal: &mut CliTerminal| render_message_card(terminal, "skills", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+
+    let Some(name) = prompt_skill_name(terminal, &store).await? else {
+        return cancelled(terminal);
+    };
+    let Some(skill) = prompt_skill_text(terminal, &name, "", "", true).await? else {
+        return cancelled(terminal);
+    };
+    match store.save(&skill) {
+        Ok(()) => render_message_card(terminal, "skills", accent_style(), vec![(format!("skill '{name}' criada"), Style::default())]),
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
+}
+
+async fn wizard_skills_edit(terminal: &mut CliTerminal, session: &CliSession, name: String) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    let current = match store.get(&name) {
+        Ok(skill) => skill,
+        Err(e) => return skill_error_card(terminal, e.to_string()),
+    };
+
+    // A multi-line body can't be shown in (or survive a round trip through) the single-line field
+    // editor, so it's left untouched here — only the description is editable in that case.
+    let body_editable = !current.body.contains('\n');
+    if !body_editable {
+        render_message_card(
+            terminal,
+            "skills",
+            dim_style(),
+            vec![(format!("o corpo tem várias linhas — só a descrição é editável aqui; pro corpo use /skills path {name}"), dim_style())],
+        )?;
+    }
+    let Some(skill) = prompt_skill_text(terminal, &name, &current.description, &current.body, body_editable).await? else {
+        return render_message_card(terminal, "skills", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    match store.save(&skill) {
+        Ok(()) => render_message_card(terminal, "skills", accent_style(), vec![(format!("skill '{name}' atualizada"), Style::default())]),
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
+}
+
+/// Unlike `/agents remove`, asks for confirmation first: a skill is user-written prose that lives
+/// only in its file (not a config row that's quick to re-enter), and the model itself has no
+/// delete tool exactly so that nothing removes one by accident (see ARCHITECTURE.md, P16).
+async fn cmd_skills_remove(terminal: &mut CliTerminal, session: &CliSession, name: String) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    if let Err(e) = skill::validate_name(&name).and_then(|()| store.get(&name).map(|_| ())) {
+        return skill_error_card(terminal, e.to_string());
+    }
+    let Some(answer) = prompt_field(terminal, &format!(" apagar a skill '{name}'? não dá pra desfazer (s/n) "), "").await? else {
+        return render_message_card(terminal, "skills", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return render_message_card(terminal, "skills", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    }
+    match store.delete(&name) {
+        Ok(()) => render_message_card(terminal, "skills", accent_style(), vec![(format!("skill '{name}' apagada"), Style::default())]),
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
+}
+
 fn non_empty(text: String) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -1575,6 +1739,12 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::AgentsCreate => wizard_agents_create(terminal, session).await,
         Command::AgentsEdit(id) => wizard_agents_edit(terminal, session, id).await,
         Command::AgentsRemove(id) => cmd_agents_remove(terminal, session, id).await,
+        Command::SkillsList => cmd_skills_list(terminal, session).await,
+        Command::SkillsShow(name) => cmd_skills_show(terminal, session, name).await,
+        Command::SkillsCreate => wizard_skills_create(terminal, session).await,
+        Command::SkillsEdit(name) => wizard_skills_edit(terminal, session, name).await,
+        Command::SkillsRemove(name) => cmd_skills_remove(terminal, session, name).await,
+        Command::SkillsPath(name) => cmd_skills_path(terminal, session, name).await,
         Command::SyncStatus => cmd_sync_status(terminal, session).await,
         Command::SyncPush => cmd_sync_push(terminal, session).await,
         Command::SyncPull => cmd_sync_pull(terminal, session).await,

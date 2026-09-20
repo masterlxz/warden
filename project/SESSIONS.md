@@ -2,7 +2,31 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-19 (Sessão 73)
+> Última atualização: 2026-09-19 (Sessão 74)
+
+---
+
+### 2026-09-19 — Sessão 74
+
+- **Objetivo**: limpar o HD antes de continuar (builds travando por falta de espaço) e atacar o P72
+  (o que ficou de fora das Skills). Escopo fechado com o usuário via `AskUserQuestion`: só o item (a),
+  `/skills` no CLI; corpo da skill numa linha só no wizard + `/skills path` pra texto longo.
+
+**O que foi feito**:
+
+- **Limpeza de disco** (registrada como **P74**): caches do paru/playwright/node-gyp/go-build/yay/pip,
+  volume Docker `practice-valuation_cargo-target` (23 GB) e imagens Docker pequenas paradas — `/home`
+  de 20 GB pra 60 GB livres. Ficaram de fora de propósito o cache do Brave, os volumes/imagens de build
+  do Warden e o `paccache` (precisa de sudo, ainda pendente). Lição: nunca `docker image prune -a` aqui.
+- **Core**: `SkillStore::path_of` (caminho absoluto do arquivo, validado pelo mesmo slug) + teste.
+- **CLI** (`commands.rs`/`interactive.rs`): `/skills`, `/skills show|create|edit|remove|path`, com
+  autocompletar e `/help`. `remove` pede confirmação (padrão em branco = cancela), porque skill é texto
+  do usuário que só existe no arquivo. `edit` de skill com corpo multilinha só deixa editar a descrição.
+- **Verificação**: `cargo clippy -p warden-cli -p warden-core --all-targets` limpo; `cargo test` verde
+  (36 no CLI, 121 no core); comandos exercitados num pty roteirizado (criar, listar, ver, caminho,
+  editar, nome inválido, nome duplicado, remover cancelando e confirmando, skill inexistente).
+
+**Próximo passo**: P72 (b) — UI de skills no mobile/extensão — ou outra frente (P4, Fase 10, P70).
 
 ---
 

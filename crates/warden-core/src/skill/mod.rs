@@ -14,7 +14,7 @@
 //! fetched through the `use_skill` tool when the model decides it applies, so unused skills cost
 //! no tokens. Living in the vault means sync (`warden-sync`, git) and Obsidian editing come free.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context};
@@ -136,6 +136,12 @@ impl SkillStore {
         Ok(Skill::parse(name, &raw))
     }
 
+    /// Absolute path of a skill's file (the skill needn't exist yet) — for pointing the user at the
+    /// file so they can edit a long body in their own editor or Obsidian.
+    pub fn path_of(&self, name: &str) -> anyhow::Result<PathBuf> {
+        Ok(self.vault.root().join(Self::relative_path(name)?))
+    }
+
     pub fn exists(&self, name: &str) -> bool {
         Self::relative_path(name).is_ok_and(|p| self.vault.root().join(p).is_file())
     }
@@ -205,6 +211,14 @@ mod tests {
         for bad in ["", "Review", "a b", "../x", "a/b", "a.md", "-a", "a-", "é", &"x".repeat(65)] {
             assert!(validate_name(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn path_of_points_into_the_skills_dir_and_rejects_bad_names() {
+        let store = temp_store();
+        let path = store.path_of("review-pr").unwrap();
+        assert!(path.ends_with("skills/review-pr.md"));
+        assert!(store.path_of("../x").is_err());
     }
 
     #[test]
