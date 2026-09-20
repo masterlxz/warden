@@ -1,7 +1,27 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use warden_core::model::{Attachment, Usage};
+use warden_core::skill::Skill;
 use warden_core::tool::ToolSpec;
+
+/// A skill (P16) on the wire — what the browser extension's Skills screen lists and edits over
+/// `ListSkills`/`SaveSkill`. `agents` is `#[serde(default)]` so a client that never touches the
+/// agent restriction (P72 c) can omit it; the server keeps the stored restriction on an edit then.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDto {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+impl From<Skill> for SkillDto {
+    fn from(skill: Skill) -> Self {
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents }
+    }
+}
 
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +71,24 @@ pub enum ClientMessage {
         target_device_id: String,
         tool: String,
         arguments: Value,
+    },
+    /// Skills management (P72) — list the skills in the vault this server hosts. `request_id` is
+    /// the caller's own correlation id (same idea as `CallDeviceTool.call_id`), echoed back on the
+    /// matching `SkillList`/`SkillError` so concurrent requests stay paired.
+    ListSkills {
+        request_id: u64,
+    },
+    /// Creates (`overwrite: false`, refuses a taken name) or edits (`overwrite: true`) a skill.
+    /// An edit whose `skill.agents` is empty keeps the agent restriction already on disk — a client
+    /// with no UI for it must not silently make a restricted skill global again.
+    SaveSkill {
+        request_id: u64,
+        skill: SkillDto,
+        overwrite: bool,
+    },
+    DeleteSkill {
+        request_id: u64,
+        name: String,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -111,6 +149,21 @@ pub enum ServerMessage {
     /// between those two cases anyway.
     DeviceToolError {
         call_id: u64,
+        message: String,
+    },
+    /// Reply to `ClientMessage::ListSkills`.
+    SkillList {
+        request_id: u64,
+        skills: Vec<SkillDto>,
+    },
+    /// Reply to a successful `SaveSkill`/`DeleteSkill`.
+    SkillOk {
+        request_id: u64,
+    },
+    /// A `ListSkills`/`SaveSkill`/`DeleteSkill` failed (invalid skill, name taken, no such skill) —
+    /// the raw error text, same posture as `ChatError`.
+    SkillError {
+        request_id: u64,
         message: String,
     },
     /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
@@ -252,6 +305,62 @@ mod tests {
         let json = r#"{"type":"chatResponse","content":"hi","usage":null}"#;
         let msg = serde_json::from_str::<ServerMessage>(json).unwrap();
         assert!(matches!(msg, ServerMessage::ChatResponse { attachments, .. } if attachments.is_empty()));
+    }
+
+    #[test]
+    fn client_skill_messages_round_trip_through_json() {
+        let list = ClientMessage::ListSkills { request_id: 1 };
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(json, r#"{"type":"listSkills","requestId":1}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), list);
+
+        let save = ClientMessage::SaveSkill {
+            request_id: 2,
+            skill: SkillDto { name: "review-pr".into(), description: "d".into(), body: "b".into(), agents: vec!["writer".into()] },
+            overwrite: true,
+        };
+        let json = serde_json::to_string(&save).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"saveSkill","requestId":2,"skill":{"name":"review-pr","description":"d","body":"b","agents":["writer"]},"overwrite":true}"#
+        );
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
+
+        let delete = ClientMessage::DeleteSkill { request_id: 3, name: "review-pr".into() };
+        let json = serde_json::to_string(&delete).unwrap();
+        assert_eq!(json, r#"{"type":"deleteSkill","requestId":3,"name":"review-pr"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), delete);
+    }
+
+    #[test]
+    fn save_skill_without_an_agents_field_defaults_to_empty() {
+        let json = r#"{"type":"saveSkill","requestId":2,"skill":{"name":"x","description":"d","body":"b"},"overwrite":false}"#;
+        let msg = serde_json::from_str::<ClientMessage>(json).unwrap();
+        assert!(matches!(msg, ClientMessage::SaveSkill { skill, .. } if skill.agents.is_empty()));
+    }
+
+    #[test]
+    fn server_skill_messages_round_trip_through_json() {
+        let list = ServerMessage::SkillList {
+            request_id: 1,
+            skills: vec![SkillDto { name: "x".into(), description: "d".into(), body: "b".into(), agents: Vec::new() }],
+        };
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"skillList","requestId":1,"skills":[{"name":"x","description":"d","body":"b","agents":[]}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), list);
+
+        let ok = ServerMessage::SkillOk { request_id: 2 };
+        let json = serde_json::to_string(&ok).unwrap();
+        assert_eq!(json, r#"{"type":"skillOk","requestId":2}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), ok);
+
+        let err = ServerMessage::SkillError { request_id: 3, message: "no skill named 'x'".into() };
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(json, r#"{"type":"skillError","requestId":3,"message":"no skill named 'x'"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), err);
     }
 
     #[test]

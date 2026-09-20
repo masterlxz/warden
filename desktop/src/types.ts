@@ -262,6 +262,8 @@ export interface SkillEntry {
   name: string;
   description: string;
   body: string;
+  /** Agent ids the skill is restricted to (P72 c); empty = every agent sees it. */
+  agents: string[];
 }
 
 export interface Settings {

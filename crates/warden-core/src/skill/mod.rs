@@ -6,9 +6,14 @@
 //! ---
 //! name: review-pr
 //! description: How to review a pull request (when to use it)
+//! agents: writer, reviewer
 //! ---
 //! <the instructions, free-form markdown>
 //! ```
+//!
+//! `agents` is optional (P72 c): a comma-separated list of agent ids the skill is restricted to.
+//! Absent/empty means global — every agent sees it. With no active agent (Telegram, WhatsApp, the
+//! server, mobile) only the global skills are visible.
 //!
 //! Each turn the orchestrator only shows the model the catalog (name + description); the body is
 //! fetched through the `use_skill` tool when the model decides it applies, so unused skills cost
@@ -29,6 +34,8 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub body: String,
+    /// Agent ids this skill is restricted to; empty = available to everyone.
+    pub agents: Vec<String>,
 }
 
 /// A skill name doubles as its filename, so it must be a plain slug — `Vault::write` does no
@@ -58,14 +65,27 @@ impl Skill {
         if self.body.trim().is_empty() {
             bail!("skill body must not be empty");
         }
+        // The list is stored on one comma-separated frontmatter line, so an id with a comma or a
+        // newline (or an empty one) wouldn't survive the round trip.
+        for agent in &self.agents {
+            if agent.trim().is_empty() || agent.contains(',') || agent.contains('\n') {
+                bail!("invalid agent id '{agent}' in skill agents (empty, or contains a comma/newline)");
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `agent` (the turn's active agent, `None` when there isn't one) may see this skill.
+    pub fn is_available_to(&self, agent: Option<&str>) -> bool {
+        self.agents.is_empty() || agent.is_some_and(|id| self.agents.iter().any(|a| a == id))
     }
 
     /// Serializes to the on-disk format. The description is collapsed to a single line, since the
     /// frontmatter is line-oriented.
     pub fn render(&self) -> String {
         let description = self.description.split_whitespace().collect::<Vec<_>>().join(" ");
-        format!("---\nname: {}\ndescription: {}\n---\n{}\n", self.name, description, self.body.trim())
+        let agents = if self.agents.is_empty() { String::new() } else { format!("agents: {}\n", self.agents.join(", ")) };
+        format!("---\nname: {}\ndescription: {}\n{}---\n{}\n", self.name, description, agents, self.body.trim())
     }
 
     /// Parses a skill file. `name` comes from the filename (the source of truth — a file renamed in
@@ -74,6 +94,7 @@ impl Skill {
     pub fn parse(name: &str, raw: &str) -> Skill {
         let raw = raw.replace("\r\n", "\n");
         let mut description = String::new();
+        let mut agents: Vec<String> = Vec::new();
         let mut body = raw.as_str();
 
         if let Some(rest) = raw.strip_prefix("---\n") {
@@ -81,8 +102,16 @@ impl Skill {
                 let (front, after) = rest.split_at(end);
                 for line in front.lines() {
                     if let Some((key, value)) = line.split_once(':') {
-                        if key.trim() == "description" {
-                            description = value.trim().to_string();
+                        match key.trim() {
+                            "description" => description = value.trim().to_string(),
+                            "agents" => {
+                                for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+                                    if !agents.iter().any(|a| a == id) {
+                                        agents.push(id.to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -90,7 +119,7 @@ impl Skill {
             }
         }
 
-        Skill { name: name.to_string(), description, body: body.trim().to_string() }
+        Skill { name: name.to_string(), description, body: body.trim().to_string(), agents }
     }
 }
 
@@ -136,6 +165,17 @@ impl SkillStore {
         Ok(Skill::parse(name, &raw))
     }
 
+    /// Like `get`, but a skill restricted to other agents reads as nonexistent — same error, so the
+    /// model can't tell "exists but not yours" from "no such skill".
+    pub fn get_for(&self, name: &str, agent: Option<&str>) -> anyhow::Result<Skill> {
+        let skill = self.get(name)?;
+        if skill.is_available_to(agent) {
+            Ok(skill)
+        } else {
+            Err(anyhow!("no skill named '{name}'"))
+        }
+    }
+
     /// Absolute path of a skill's file (the skill needn't exist yet) — for pointing the user at the
     /// file so they can edit a long body in their own editor or Obsidian.
     pub fn path_of(&self, name: &str) -> anyhow::Result<PathBuf> {
@@ -157,9 +197,10 @@ impl SkillStore {
         self.vault.delete(&path).map_err(|_| anyhow!("no skill named '{name}'"))
     }
 
-    /// The per-turn catalog injected as a system message, or `None` when there are no skills.
-    pub fn catalog(&self) -> Option<String> {
-        let skills = self.list();
+    /// The per-turn catalog injected as a system message, or `None` when there are no skills
+    /// visible to `agent` (the turn's active agent, `None` for turns without one).
+    pub fn catalog(&self, agent: Option<&str>) -> Option<String> {
+        let skills: Vec<Skill> = self.list().into_iter().filter(|s| s.is_available_to(agent)).collect();
         if skills.is_empty() {
             return None;
         }
@@ -200,7 +241,7 @@ mod tests {
     }
 
     fn sample(name: &str) -> Skill {
-        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into() }
+        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), agents: Vec::new() }
     }
 
     #[test]
@@ -291,11 +332,72 @@ mod tests {
     #[test]
     fn catalog_is_none_without_skills_and_lists_them_otherwise() {
         let store = temp_store();
-        assert!(store.catalog().is_none());
+        assert!(store.catalog(None).is_none());
 
         store.save(&sample("review-pr")).unwrap();
-        let catalog = store.catalog().unwrap();
+        let catalog = store.catalog(None).unwrap();
         assert!(catalog.contains("- review-pr: Reviews a PR"));
         assert!(catalog.contains("use_skill"));
+    }
+
+    fn restricted(name: &str, agents: &[&str]) -> Skill {
+        Skill { agents: agents.iter().map(|a| a.to_string()).collect(), ..sample(name) }
+    }
+
+    #[test]
+    fn agents_roundtrip_and_stay_out_of_the_file_when_empty() {
+        let skill = restricted("review-pr", &["writer", "reviewer"]);
+        assert!(skill.render().contains("agents: writer, reviewer\n"));
+        assert_eq!(Skill::parse("review-pr", &skill.render()), skill);
+        assert!(!sample("x").render().contains("agents"));
+    }
+
+    #[test]
+    fn parse_agents_trims_dedups_and_drops_empties() {
+        let skill = Skill::parse("x", "---\ndescription: d\nagents:  a , b,, a \n---\nbody");
+        assert_eq!(skill.agents, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn validate_rejects_unstorable_agent_ids() {
+        for bad in ["", "  ", "a,b", "a\nb"] {
+            assert!(restricted("x", &[bad]).validate().is_err(), "{bad:?}");
+        }
+        assert!(restricted("x", &["writer"]).validate().is_ok());
+    }
+
+    #[test]
+    fn availability_follows_the_agent_list() {
+        let global = sample("g");
+        let only_writer = restricted("w", &["writer"]);
+        assert!(global.is_available_to(None) && global.is_available_to(Some("writer")));
+        assert!(only_writer.is_available_to(Some("writer")));
+        assert!(!only_writer.is_available_to(Some("reviewer")));
+        assert!(!only_writer.is_available_to(None));
+    }
+
+    #[test]
+    fn catalog_and_get_for_hide_skills_restricted_to_other_agents() {
+        let store = temp_store();
+        store.save(&sample("global")).unwrap();
+        store.save(&restricted("only-writer", &["writer"])).unwrap();
+
+        let none = store.catalog(None).unwrap();
+        assert!(none.contains("global") && !none.contains("only-writer"));
+        let writer = store.catalog(Some("writer")).unwrap();
+        assert!(writer.contains("global") && writer.contains("only-writer"));
+        let other = store.catalog(Some("reviewer")).unwrap();
+        assert!(!other.contains("only-writer"));
+
+        assert!(store.get_for("only-writer", Some("writer")).is_ok());
+        let err = store.get_for("only-writer", Some("reviewer")).unwrap_err();
+        assert!(err.to_string().contains("no skill named"));
+    }
+
+    #[test]
+    fn catalog_is_none_when_every_skill_is_restricted_away() {
+        let store = temp_store();
+        store.save(&restricted("only-writer", &["writer"])).unwrap();
+        assert!(store.catalog(None).is_none());
     }
 }

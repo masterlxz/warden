@@ -36,9 +36,12 @@ pub fn bridge_list_skills(vault_root: String) -> Vec<SkillDto> {
 /// replace another skill); `true` is "edit" (the Dart side locks the name field then). Same
 /// contract as the desktop's `save_skill`.
 pub fn bridge_save_skill(vault_root: String, skill: SkillDto, overwrite: bool) -> Result<(), String> {
-    let skill = Skill { name: skill.name.trim().to_string(), description: skill.description, body: skill.body };
-    skill.validate().map_err(|e| format!("{e:#}"))?;
     let store = store(&vault_root);
+    // The mobile UI doesn't edit the agent restriction (P72 c), so an edit keeps whatever the
+    // desktop/CLI set — otherwise saving here would silently make the skill global again.
+    let agents = if overwrite { store.get(skill.name.trim()).map(|s| s.agents).unwrap_or_default() } else { Vec::new() };
+    let skill = Skill { name: skill.name.trim().to_string(), description: skill.description, body: skill.body, agents };
+    skill.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&skill.name) {
         return Err(format!("a skill named '{}' already exists", skill.name));
     }
@@ -63,6 +66,23 @@ mod tests {
 
     fn dto(name: &str) -> SkillDto {
         SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into() }
+    }
+
+    #[test]
+    fn editing_keeps_the_agent_restriction_set_elsewhere() {
+        let vault = temp_vault();
+        bridge_save_skill(vault.clone(), dto("review-pr"), false).unwrap();
+        let store = store(&vault);
+        let mut restricted = store.get("review-pr").unwrap();
+        restricted.agents = vec!["writer".into()];
+        store.save(&restricted).unwrap();
+
+        let edited = SkillDto { body: "New body.".into(), ..dto("review-pr") };
+        bridge_save_skill(vault.clone(), edited, true).unwrap();
+
+        let after = store.get("review-pr").unwrap();
+        assert_eq!(after.body, "New body.");
+        assert_eq!(after.agents, vec!["writer"]);
     }
 
     #[test]

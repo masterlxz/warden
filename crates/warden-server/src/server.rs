@@ -11,8 +11,10 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::skill::SkillStore;
 
 use crate::device_registry::{PairingStatus, PairingStore};
+use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
@@ -287,6 +289,13 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
                         };
                         let _ = reply_tx.send(reply);
                     });
+                }
+                Ok(message @ (ClientMessage::ListSkills { .. } | ClientMessage::SaveSkill { .. } | ClientMessage::DeleteSkill { .. })) => {
+                    // Short local file I/O, answered inline (no spawn) — P72.
+                    let store = SkillStore::new(orchestrator.vault().clone());
+                    if let Some(reply) = handle_skill_request(&store, message) {
+                        let _ = tx.send(reply);
+                    }
                 }
                 Ok(ClientMessage::Goodbye { reason }) => {
                     eprintln!("warden-server: {device_id} said goodbye ({reason:?})");

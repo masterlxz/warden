@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { SkillEntry } from "../types";
+import type { AgentEntry, SkillEntry } from "../types";
 
 /** What the editor form is doing: `new` (name editable, refuses a taken name) or `edit` (name
  * locked, overwrites). `fromAi` only drives the "review before saving" hint. */
@@ -10,9 +10,9 @@ interface EditorState {
   fromAi: boolean;
 }
 
-const emptySkill: SkillEntry = { name: "", description: "", body: "" };
+const emptySkill: SkillEntry = { name: "", description: "", body: "", agents: [] };
 
-function SkillsView() {
+function SkillsView({ agents }: { agents: AgentEntry[] }) {
   const [skills, setSkills] = useState<SkillEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -81,6 +81,14 @@ function SkillsView() {
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  /** An id already on the skill but no longer in the registry (agent deleted/renamed) stays
+   * listed, so saving doesn't silently drop it — the user can untick it deliberately. */
+  function toggleAgent(id: string, checked: boolean) {
+    if (!editor) return;
+    const current = editor.skill.agents;
+    updateEditor({ agents: checked ? [...current.filter((a) => a !== id), id] : current.filter((a) => a !== id) });
   }
 
   function updateEditor(patch: Partial<SkillEntry>) {
@@ -167,6 +175,35 @@ function SkillsView() {
             />
           </label>
 
+          <div className="settings-field">
+            <span className="settings-label">Available to</span>
+            {(() => {
+              const known = new Set(agents.map((a) => a.id));
+              const ids = [...agents.map((a) => a.id), ...editor.skill.agents.filter((id) => !known.has(id))];
+              return ids.length === 0 ? (
+                <span className="settings-hint">No agents configured — every skill is visible to every conversation.</span>
+              ) : (
+                <div className="skill-agent-list">
+                  {ids.map((id) => (
+                    <label className="skill-agent-option" key={id}>
+                      <input
+                        type="checkbox"
+                        checked={editor.skill.agents.includes(id)}
+                        onChange={(e) => toggleAgent(id, e.currentTarget.checked)}
+                      />
+                      {id}
+                      {!known.has(id) && <span className="settings-hint"> (agent no longer exists)</span>}
+                    </label>
+                  ))}
+                </div>
+              );
+            })()}
+            <span className="settings-hint">
+              None ticked means every agent sees it. Ticked means only those agents — chats without an agent won't
+              see it.
+            </span>
+          </div>
+
           <div className="skill-editor-actions">
             <button type="button" className="settings-save-btn" onClick={handleSave} disabled={saving}>
               {saving ? "Saving…" : "Save skill"}
@@ -226,6 +263,7 @@ function SkillsView() {
                   </div>
                 </div>
                 <p className="skill-card-description">{skill.description || "(no description)"}</p>
+                {skill.agents.length > 0 && <p className="settings-hint">Only for: {skill.agents.join(", ")}</p>}
               </div>
             ))}
           </div>

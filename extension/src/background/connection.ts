@@ -10,7 +10,7 @@
  * automatic reconnect on a dropped/failed connection.
  */
 
-import { encode, decode, type ServerMessage, type ToolSpec } from "../protocol/messages";
+import { encode, decode, type ClientMessage, type ServerMessage, type SkillDto, type ToolSpec } from "../protocol/messages";
 
 /** A local tool this client can run when the server asks (Fase 8.3-8.6) — `args` is whatever
  * JSON value the model passed as the tool call's arguments. Return the JSON-encodable result, or
@@ -53,6 +53,13 @@ export interface ConnectOptions {
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const SKILL_REQUEST_TIMEOUT_MS = 10_000;
+
+interface PendingSkillRequest {
+  resolve: (value: SkillDto[] | undefined) => void;
+  reject: (error: Error) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
 
 export class ServerConnection {
   private readonly socket: WebSocket;
@@ -62,6 +69,8 @@ export class ServerConnection {
   private nextNonce = 0;
   private pendingPingNonce: number | null = null;
   private goodbyeSent = false;
+  private nextRequestId = 0;
+  private readonly pendingSkillRequests = new Map<number, PendingSkillRequest>();
   private currentStatus: ConnectionStatus;
   private readonly toolHandlers: Record<string, ToolHandler>;
 
@@ -81,6 +90,7 @@ export class ServerConnection {
     });
     socket.addEventListener("close", () => {
       this.stopHeartbeat();
+      this.failPendingSkillRequests(new Error("connection closed"));
       this.setStatus(this.goodbyeSent ? { kind: "disconnected" } : { kind: "failure", message: "Connection closed unexpectedly" });
     });
   }
@@ -198,6 +208,15 @@ export class ServerConnection {
         // reasoning as the Dart client's `unawaited(_handleToolCallRequest(...))`.
         void this.handleToolCallRequest(message.callId, message.tool, message.arguments);
         break;
+      case "skillList":
+        this.settleSkillRequest(message.requestId, (pending) => pending.resolve(message.skills));
+        break;
+      case "skillOk":
+        this.settleSkillRequest(message.requestId, (pending) => pending.resolve(undefined));
+        break;
+      case "skillError":
+        this.settleSkillRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
+        break;
       case "helloAck":
       case "authError":
         // Only ever valid as the first frame, already consumed by `handshake`.
@@ -222,6 +241,50 @@ export class ServerConnection {
   /** Sends one chat turn. The reply arrives asynchronously via `onChatMessage`. */
   sendChat(message: string): void {
     this.socket.send(encode({ type: "chat", message }));
+  }
+
+  /** Skills management (P72) — each call is one request/reply pair correlated by `requestId`
+   * (the same idea as a ping's nonce, but several can be in flight, so it's a map). */
+  listSkills(): Promise<SkillDto[]> {
+    return this.skillRequest((requestId) => ({ type: "listSkills", requestId })).then((skills) => skills ?? []);
+  }
+
+  async saveSkill(skill: SkillDto, overwrite: boolean): Promise<void> {
+    await this.skillRequest((requestId) => ({ type: "saveSkill", requestId, skill, overwrite }));
+  }
+
+  async deleteSkill(name: string): Promise<void> {
+    await this.skillRequest((requestId) => ({ type: "deleteSkill", requestId, name }));
+  }
+
+  private skillRequest(build: (requestId: number) => ClientMessage): Promise<SkillDto[] | undefined> {
+    return new Promise((resolve, reject) => {
+      const requestId = this.nextRequestId++;
+      const timeoutId = setTimeout(() => {
+        this.pendingSkillRequests.delete(requestId);
+        reject(new Error("no response from the server"));
+      }, SKILL_REQUEST_TIMEOUT_MS);
+      this.pendingSkillRequests.set(requestId, { resolve, reject, timeoutId });
+      try {
+        this.socket.send(encode(build(requestId)));
+      } catch (err) {
+        this.settleSkillRequest(requestId, (pending) => pending.reject(err instanceof Error ? err : new Error(String(err))));
+      }
+    });
+  }
+
+  private settleSkillRequest(requestId: number, settle: (pending: PendingSkillRequest) => void): void {
+    const pending = this.pendingSkillRequests.get(requestId);
+    if (!pending) return; // timed out already, or an unsolicited reply
+    this.pendingSkillRequests.delete(requestId);
+    clearTimeout(pending.timeoutId);
+    settle(pending);
+  }
+
+  private failPendingSkillRequests(error: Error): void {
+    for (const requestId of [...this.pendingSkillRequests.keys()]) {
+      this.settleSkillRequest(requestId, (pending) => pending.reject(error));
+    }
   }
 
   private startHeartbeat(): void {

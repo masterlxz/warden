@@ -171,6 +171,8 @@ async fn send_message(
         if let Some(id) = &agent_id {
             if let Some(agent) = config.agents.iter().find(|a| &a.id == id) {
                 persona = Some(agent.persona.clone());
+                // Scopes the skill catalog and `use_skill` to this agent (P72 c).
+                orchestrator = orchestrator.with_agent(Some(id.clone()));
                 if agent.can_delegate_to_agents {
                     if let Some(tool) = build_delegate_to_agent_tool(&config, &orchestrator) {
                         orchestrator = orchestrator.with_tool(tool);

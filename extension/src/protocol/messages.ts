@@ -25,12 +25,26 @@ export interface ToolSpec {
   parameters: unknown;
 }
 
+/** Mirrors `warden_server_protocol::protocol::SkillDto` (P72). `agents` is the agent restriction
+ * (empty = every agent) — this client only displays it; an edit that sends `[]` keeps whatever the
+ * server has stored. */
+export interface SkillDto {
+  name: string;
+  description: string;
+  body: string;
+  agents: string[];
+}
+
 export type ClientMessage =
   | { type: "hello"; deviceId: string; deviceName: string; authKey: string; tools: ToolSpec[] }
   | { type: "ping"; nonce: number }
   | { type: "chat"; message: string }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
+  /** Skills management (P72) — `requestId` is echoed on the matching reply. */
+  | { type: "listSkills"; requestId: number }
+  | { type: "saveSkill"; requestId: number; skill: SkillDto; overwrite: boolean }
+  | { type: "deleteSkill"; requestId: number; name: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -47,6 +61,9 @@ export type ServerMessage =
   | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[] }
   | { type: "chatError"; message: string }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
+  | { type: "skillList"; requestId: number; skills: SkillDto[] }
+  | { type: "skillOk"; requestId: number }
+  | { type: "skillError"; requestId: number; message: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   | { type: "discoverAck"; serverName: string }
@@ -70,6 +87,13 @@ export function decode(text: string): ServerMessage {
       const raw = json as { content: string; usage: Usage | null; attachments?: Attachment[] };
       return { type: "chatResponse", content: raw.content, usage: raw.usage, attachments: raw.attachments ?? [] };
     }
+    case "skillList": {
+      const raw = json as { requestId: number; skills: Array<Omit<SkillDto, "agents"> & { agents?: string[] }> };
+      return { type: "skillList", requestId: raw.requestId, skills: raw.skills.map((skill) => ({ ...skill, agents: skill.agents ?? [] })) };
+    }
+    case "skillOk":
+    case "skillError":
+      return json as ServerMessage;
     case "toolCallRequest": {
       const raw = json as { callId: number; tool: string; arguments: unknown };
       return { type: "toolCallRequest", callId: raw.callId, tool: raw.tool, arguments: raw.arguments };

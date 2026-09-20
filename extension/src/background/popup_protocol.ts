@@ -7,6 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
+import type { SkillDto } from "../protocol/messages";
 
 export interface ConnectionSettings {
   host: string;
@@ -20,7 +21,10 @@ export type PopupRequest =
   | ({ type: "connect" } & ConnectionSettings)
   | { type: "disconnect" }
   | { type: "sendChat"; message: string }
-  | { type: "discoverHubs"; port: number };
+  | { type: "discoverHubs"; port: number }
+  | { type: "listSkills" }
+  | { type: "saveSkill"; skill: SkillDto; overwrite: boolean }
+  | { type: "deleteSkill"; name: string };
 
 export interface GetStatusResponse {
   status: ConnectionStatus;
@@ -38,6 +42,14 @@ export interface OkResponse {
 export interface DiscoverHubsResponse {
   ok: boolean;
   hubs: DiscoveredHub[];
+  error?: string;
+}
+
+/** Reply to `{ type: "listSkills" }` — always `skills` (empty on failure too), same posture as
+ * `DiscoverHubsResponse`. */
+export interface ListSkillsResponse {
+  ok: boolean;
+  skills: SkillDto[];
   error?: string;
 }
 

@@ -16,17 +16,21 @@ pub struct SkillPayload {
     name: String,
     description: String,
     body: String,
+    /// Agent ids the skill is restricted to (P72 c); empty = every agent. `default` so a caller
+    /// that predates the field (or the mobile-style payload without it) still deserializes.
+    #[serde(default)]
+    agents: Vec<String>,
 }
 
 impl From<Skill> for SkillPayload {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body }
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents }
     }
 }
 
 impl From<SkillPayload> for Skill {
     fn from(payload: SkillPayload) -> Self {
-        Self { name: payload.name.trim().to_string(), description: payload.description, body: payload.body }
+        Self { name: payload.name.trim().to_string(), description: payload.description, body: payload.body, agents: payload.agents }
     }
 }
 
@@ -99,7 +103,17 @@ mod tests {
     }
 
     fn skill(name: &str) -> Skill {
-        Skill { name: name.into(), description: "d".into(), body: "b".into() }
+        Skill { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new() }
+    }
+
+    #[test]
+    fn agents_survive_the_payload_roundtrip_and_default_to_empty() {
+        let restricted = Skill { agents: vec!["writer".into()], ..skill("x") };
+        let payload: SkillPayload = restricted.clone().into();
+        assert_eq!(Skill::from(payload), restricted);
+
+        let legacy: SkillPayload = serde_json::from_str(r#"{"name":"x","description":"d","body":"b"}"#).unwrap();
+        assert!(legacy.agents.is_empty());
     }
 
     #[test]
@@ -126,7 +140,7 @@ mod tests {
     #[test]
     fn payload_serializes_camel_case_and_trims_the_name() {
         let json = serde_json::to_value(SkillPayload::from(skill("x"))).unwrap();
-        assert_eq!(json, serde_json::json!({ "name": "x", "description": "d", "body": "b" }));
+        assert_eq!(json, serde_json::json!({ "name": "x", "description": "d", "body": "b", "agents": [] }));
 
         let parsed: SkillPayload = serde_json::from_value(json).unwrap();
         let padded = SkillPayload { name: "  x  ".into(), ..parsed };

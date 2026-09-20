@@ -33,6 +33,7 @@
 pub mod device_registry;
 pub mod remote_tool;
 pub mod server;
+pub mod skills;
 pub mod vault_node;
 
 pub use device_registry::{PairedDevice, PairingStatus, PairingStore};

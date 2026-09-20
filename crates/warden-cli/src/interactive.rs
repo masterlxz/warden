@@ -1430,7 +1430,8 @@ async fn cmd_skills_list(terminal: &mut CliTerminal, session: &CliSession) -> an
         .iter()
         .map(|s| {
             let description = if s.description.is_empty() { "(sem descrição)" } else { s.description.as_str() };
-            (format!("{} — {}", s.name, description), Style::default())
+            let scope = if s.agents.is_empty() { String::new() } else { format!(" [{}]", s.agents.join(", ")) };
+            (format!("{}{} — {}", s.name, scope, description), Style::default())
         })
         .collect();
     render_message_card(terminal, "skills", accent_style(), lines)
@@ -1442,6 +1443,7 @@ async fn cmd_skills_show(terminal: &mut CliTerminal, session: &CliSession, name:
         Err(e) => return skill_error_card(terminal, e.to_string()),
     };
     let mut lines = vec![(format!("descrição: {}", if skill.description.is_empty() { "(sem descrição)" } else { skill.description.as_str() }), dim_style())];
+    lines.push((format!("agentes: {}", if skill.agents.is_empty() { "todos".to_string() } else { skill.agents.join(", ") }), dim_style()));
     lines.extend(skill.body.lines().map(|line| (line.to_string(), Style::default())));
     render_message_card(terminal, &format!("skill {}", skill.name), accent_style(), lines)
 }
@@ -1476,13 +1478,22 @@ async fn prompt_skill_name(terminal: &mut CliTerminal, store: &SkillStore) -> an
     }
 }
 
-/// Prompts `description` then, only if `edit_body`, `body`, re-asking until the whole skill passes
+/// Prompts `description` then, only if `edit_body`, `body`, then the agent restriction (P72 c),
+/// re-asking until the whole skill passes
 /// `Skill::validate` — the same rules the model's `manage_skill` and the desktop form enforce.
 /// The body is one line here (the field editor is single-line); a multi-line body is edited in the
 /// file itself, see `/skills path`. Returns `Ok(None)` if the user cancels.
-async fn prompt_skill_text(terminal: &mut CliTerminal, name: &str, description: &str, body: &str, edit_body: bool) -> anyhow::Result<Option<Skill>> {
+async fn prompt_skill_text(
+    terminal: &mut CliTerminal,
+    name: &str,
+    description: &str,
+    body: &str,
+    agents: &[String],
+    edit_body: bool,
+) -> anyhow::Result<Option<Skill>> {
     let mut description = description.to_string();
     let mut body = body.to_string();
+    let mut agents = agents.join(", ");
     loop {
         let Some(new_description) = prompt_field(terminal, " descrição (quando usar a skill — a IA lê isso a cada turno) ", &description).await? else {
             return Ok(None);
@@ -1494,7 +1505,12 @@ async fn prompt_skill_text(terminal: &mut CliTerminal, name: &str, description: 
             };
             body = new_body.trim().to_string();
         }
-        let skill = Skill { name: name.to_string(), description: description.clone(), body: body.clone() };
+        let Some(new_agents) = prompt_field(terminal, " agentes (ids separados por vírgula — vazio: todos os agentes veem a skill) ", &agents).await? else {
+            return Ok(None);
+        };
+        agents = new_agents.trim().to_string();
+        let agent_ids: Vec<String> = agents.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect();
+        let skill = Skill { name: name.to_string(), description: description.clone(), body: body.clone(), agents: agent_ids };
         match skill.validate() {
             Ok(()) => return Ok(Some(skill)),
             Err(e) => skill_error_card(terminal, e.to_string())?,
@@ -1509,7 +1525,7 @@ async fn wizard_skills_create(terminal: &mut CliTerminal, session: &CliSession) 
     let Some(name) = prompt_skill_name(terminal, &store).await? else {
         return cancelled(terminal);
     };
-    let Some(skill) = prompt_skill_text(terminal, &name, "", "", true).await? else {
+    let Some(skill) = prompt_skill_text(terminal, &name, "", "", &[], true).await? else {
         return cancelled(terminal);
     };
     match store.save(&skill) {
@@ -1536,7 +1552,7 @@ async fn wizard_skills_edit(terminal: &mut CliTerminal, session: &CliSession, na
             vec![(format!("o corpo tem várias linhas — só a descrição é editável aqui; pro corpo use /skills path {name}"), dim_style())],
         )?;
     }
-    let Some(skill) = prompt_skill_text(terminal, &name, &current.description, &current.body, body_editable).await? else {
+    let Some(skill) = prompt_skill_text(terminal, &name, &current.description, &current.body, &current.agents, body_editable).await? else {
         return render_message_card(terminal, "skills", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
     match store.save(&skill) {
@@ -1828,7 +1844,9 @@ pub async fn run(
             }
         };
 
-        match run_turn(orchestrator, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tool).await {
+        // Scopes the skill catalog and `use_skill` to the active agent (P72 c).
+        let scoped = orchestrator.with_agent(session.agent_id.clone());
+        match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tool).await {
             Ok(Some(outcome)) => {
                 session.turn_count += 1;
                 if let Some(usage) = &outcome.usage {

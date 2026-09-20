@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ConnectionForm from "./ConnectionForm";
 import ChatView from "./ChatView";
+import SkillsView from "./SkillsView";
 import type { ChatEntry, ConnectionStatus } from "../background/connection";
 import type { BackgroundEvent, ConnectionSettings, GetStatusResponse, OkResponse } from "../background/popup_protocol";
 
@@ -11,6 +12,7 @@ export default function App() {
   const [connectError, setConnectError] = useState<string | undefined>(undefined);
   const [connecting, setConnecting] = useState(false);
   const [pendingChat, setPendingChat] = useState(false);
+  const [tab, setTab] = useState<"chat" | "skills">("chat");
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "getStatus" }).then((res: GetStatusResponse) => {
@@ -61,7 +63,25 @@ export default function App() {
     <div className="sidepanel-app">
       <h1>Warden</h1>
       {status.kind === "connected" ? (
-        <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />
+        <>
+          <nav className="tab-bar">
+            <button type="button" className={tab === "chat" ? "tab tab--active" : "tab"} onClick={() => setTab("chat")}>
+              Chat
+            </button>
+            <button type="button" className={tab === "skills" ? "tab tab--active" : "tab"} onClick={() => setTab("skills")}>
+              Skills
+            </button>
+          </nav>
+          {/* Both stay mounted (Skills just hidden) so switching tabs never scrolls away or loses a half-typed message. */}
+          <div className="tab-panel" hidden={tab !== "chat"}>
+            <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />
+          </div>
+          {tab === "skills" && (
+            <div className="tab-panel">
+              <SkillsView />
+            </div>
+          )}
+        </>
       ) : (
         <ConnectionForm
           savedSettings={savedSettings}

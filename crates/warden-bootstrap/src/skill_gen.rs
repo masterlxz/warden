@@ -43,7 +43,7 @@ fn parse_draft(content: &str) -> anyhow::Result<Skill> {
     let raw: RawDraft = serde_json::from_str(&content[start..=end])
         .map_err(|e| anyhow::anyhow!("the model returned an invalid skill draft ({e}) — try again"))?;
 
-    let skill = Skill { name: slugify(&raw.name), description: raw.description.trim().to_string(), body: raw.body.trim().to_string() };
+    let skill = Skill { name: slugify(&raw.name), description: raw.description.trim().to_string(), body: raw.body.trim().to_string(), agents: Vec::new() };
     skill.validate()?;
     Ok(skill)
 }

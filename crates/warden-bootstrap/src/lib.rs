@@ -941,6 +941,8 @@ pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestr
             }
             None => orchestrator.clone(),
         };
+        // The delegated agent sees its own skills (P72 c), not the chief's.
+        let target_orchestrator = target_orchestrator.with_agent(Some(agent.id.clone()));
         let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
         targets.push(NamedSubAgent {
             id: agent.id.clone(),

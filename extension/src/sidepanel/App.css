@@ -272,3 +272,119 @@ button:hover:not(:disabled) {
 .chat-composer input {
   flex: 1;
 }
+
+/* Chat ⇄ Skills tabs and the Skills screen (P72). */
+.tab-bar {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab {
+  background: none;
+  color: var(--color-text-muted);
+  border-radius: 6px 6px 0 0;
+  padding: 0.35rem 0.75rem;
+}
+
+.tab:hover:not(:disabled) {
+  background: none;
+  color: var(--color-text);
+}
+
+.tab--active,
+.tab--active:hover:not(:disabled) {
+  background: none;
+  color: var(--color-accent-dark);
+  border-bottom: 2px solid var(--color-accent);
+}
+
+.tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.skills-view,
+.skills-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.skills-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.skills-editor textarea {
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.skills-toolbar,
+.skills-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.skills-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.skills-hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.skills-item {
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.skills-item-name {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.skills-item-description {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.skills-danger:hover {
+  color: var(--color-danger);
+}

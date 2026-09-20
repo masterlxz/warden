@@ -47,11 +47,15 @@ pub struct Orchestrator {
     /// `warden-mcp-server`) rather than through `warden-bootstrap::bootstrap()`, which always
     /// sets this via `with_media_root`.
     media_root: Option<PathBuf>,
+    /// The agent this orchestrator speaks as (P72 c) — only used to scope the skill catalog and
+    /// `use_skill`. Set per turn through `with_agent`; `None` (every channel without agents) sees
+    /// just the skills that aren't restricted to an agent.
+    agent_id: Option<String>,
 }
 
 impl Orchestrator {
     pub fn new(model: Arc<dyn ModelProvider>, vault: Arc<Vault>) -> Self {
-        Self { model, vault, tools: Vec::new(), media_root: None }
+        Self { model, vault, tools: Vec::new(), media_root: None, agent_id: None }
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -92,6 +96,24 @@ impl Orchestrator {
     pub fn with_tool(&self, tool: Arc<dyn Tool>) -> Self {
         let mut clone = self.clone();
         clone.register_tool(tool);
+        clone
+    }
+
+    /// Returns a copy of this orchestrator acting as agent `agent_id` (P72 c): the skill catalog
+    /// and `use_skill` only expose skills that are global or list this agent. Same cheap-clone
+    /// reasoning as `with_model`/`with_tool`; the `use_skill` tool, if registered, is swapped for
+    /// one scoped to the agent (a no-op when it isn't registered).
+    pub fn with_agent(&self, agent_id: Option<String>) -> Self {
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if tool.spec().name == "use_skill" {
+                *tool = Arc::new(
+                    crate::tool::skill_tools::UseSkillTool::new(crate::skill::SkillStore::new(self.vault.clone()))
+                        .for_agent(agent_id.clone()),
+                );
+            }
+        }
+        clone.agent_id = agent_id;
         clone
     }
 
@@ -197,7 +219,7 @@ impl Orchestrator {
         // next turn without rebuilding the orchestrator. Skipped when `use_skill` isn't registered
         // (an `Orchestrator` built without it), since the catalog would advertise an unusable tool.
         if self.tools.iter().any(|t| t.spec().name == "use_skill") {
-            if let Some(catalog) = crate::skill::SkillStore::new(self.vault.clone()).catalog() {
+            if let Some(catalog) = crate::skill::SkillStore::new(self.vault.clone()).catalog(self.agent_id.as_deref()) {
                 messages.push(Message::system(catalog));
             }
         }
@@ -646,6 +668,7 @@ mod tests {
                 name: "review-pr".into(),
                 description: "Reviews a PR".into(),
                 body: "Step 1.".into(),
+                agents: Vec::new(),
             })
             .unwrap();
         vault
@@ -684,6 +707,40 @@ mod tests {
         )));
         let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
         assert_eq!(result.content, "User:hi");
+    }
+
+    #[tokio::test]
+    async fn with_agent_scopes_the_skill_catalog_to_that_agent() {
+        let vault = vault_with_skill();
+        crate::skill::SkillStore::new(vault.clone())
+            .save(&crate::skill::Skill {
+                name: "only-writer".into(),
+                description: "Writer only".into(),
+                body: "Write.".into(),
+                agents: vec!["writer".into()],
+            })
+            .unwrap();
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
+        orchestrator.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(
+            crate::skill::SkillStore::new(vault),
+        )));
+
+        let plain = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;
+        assert!(plain.contains("review-pr") && !plain.contains("only-writer"));
+
+        let as_writer = orchestrator.with_agent(Some("writer".into()));
+        let scoped = as_writer.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;
+        assert!(scoped.contains("review-pr") && scoped.contains("only-writer"));
+
+        let as_other = orchestrator.with_agent(Some("reviewer".into()));
+        let other = as_other.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;
+        assert!(!other.contains("only-writer"));
+
+        // The swapped-in `use_skill` is scoped too, not just the catalog.
+        let tool = as_other.tools().iter().find(|t| t.spec().name == "use_skill").unwrap();
+        assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_err());
+        let tool = as_writer.tools().iter().find(|t| t.spec().name == "use_skill").unwrap();
+        assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_ok());
     }
 
     struct NamedModel {

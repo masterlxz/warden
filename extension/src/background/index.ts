@@ -111,6 +111,25 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       connection.sendChat(request.message);
       return { ok: true };
 
+    case "listSkills":
+      if (!connection || connection.status.kind !== "connected") return { ok: false, skills: [], error: "not connected" };
+      try {
+        return { ok: true, skills: await connection.listSkills() };
+      } catch (err) {
+        return { ok: false, skills: [], error: err instanceof Error ? err.message : String(err) };
+      }
+
+    case "saveSkill":
+    case "deleteSkill":
+      if (!connection || connection.status.kind !== "connected") return { ok: false, error: "not connected" };
+      try {
+        if (request.type === "saveSkill") await connection.saveSkill(request.skill, request.overwrite);
+        else await connection.deleteSkill(request.name);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+
     case "discoverHubs":
       try {
         return { ok: true, hubs: await discoverHubs(request.port) };

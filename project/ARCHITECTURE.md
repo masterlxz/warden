@@ -959,9 +959,9 @@ chamando a tool `use_skill(nome)` quando a skill se aplica.
 junto com as API keys — além de o `deny_unknown_fields` de `FileConfig` quebrar clientes antigos que
 recebessem um `[[skills]]` desconhecido.
 
-**Por que sob demanda e não vinculada a agentes**: skill não usada custa zero token; funciona em
+**Por que sob demanda, e global por padrão**: skill não usada custa zero token; funciona em
 qualquer canal (só desktop e CLI têm o conceito de agente, ver P45); e é o mesmo modelo mental das
-Skills do Claude. O catálogo é lido do vault a cada turno, então uma skill criada no meio da
+Skills do Claude. (A restrição opcional a agentes veio depois, na Sessão 75 — ver abaixo.) O catálogo é lido do vault a cada turno, então uma skill criada no meio da
 conversa aparece no turno seguinte sem reconstruir o `Orchestrator`.
 
 **Detalhes que importam**:
@@ -985,3 +985,23 @@ conversa aparece no turno seguinte sem reconstruir o `Orchestrator`.
   Sem o gerador por prompt: o celular não tem modelo próprio.
 - Correção de premissa registrada: agentes não têm criação por IA nem por prompt (só formulário no
   Settings e `/agents` no CLI); esses dois caminhos foram construídos do zero pra skills.
+
+**Skill vinculada a agente (P72 c, Sessão 75)**: o frontmatter ganha `agents: a, b` (uma linha, ids
+separados por vírgula; ausente/vazio = global, como antes — arquivos existentes não mudam). O
+catálogo e o `use_skill` filtram pelo agente ativo do turno: `Orchestrator::with_agent(id)` (mesmo
+estilo de `with_model`/`with_tool`) guarda o id e troca a tool `use_skill` por uma escopada
+(`UseSkillTool::for_agent`). **Sem agente ativo (Telegram, WhatsApp, servidor/extensão, mobile) só as
+skills globais aparecem.** Uma skill de outro agente responde "no skill named" — indistinguível de
+inexistente. Quem ativa: `send_message` do desktop, o loop do CLI e o `delegate_to_agent`
+(`build_delegate_to_agent_tool` chama `with_agent` em cada alvo, que vê as skills dele e não as do
+chefe). Limitação: id de agente com vírgula não cabe no formato de uma linha (`Skill::validate` recusa).
+Quem não edita `agents` (ponte do mobile, extensão, `manage_skill` sem o parâmetro) **preserva** o valor
+gravado ao sobrescrever — senão salvar pelo celular tornaria a skill global de novo, em silêncio.
+
+**Skills pela extensão (P72)**: o vault mora no servidor, então o protocolo ganhou
+`ClientMessage::{ListSkills, SaveSkill, DeleteSkill}` (com `request_id` de correlação, como o
+`call_id` do `CallDeviceTool`) e `ServerMessage::{SkillList, SkillOk, SkillError}`, mais o `SkillDto`.
+`warden-server/src/skills.rs` aplica as mesmas regras do desktop (criar recusa nome usado, editar
+sobrescreve) sobre o `SkillStore` do vault hospedado, respondendo inline (E/S curta, sem `spawn`).
+Não passam pelo gate de pareamento do `CallDeviceTool`: quem tem a `auth_key` já pode mandar o modelo
+escrever no vault via `write_file`, então gatear só as skills não protegeria nada.

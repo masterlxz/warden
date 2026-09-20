@@ -2,9 +2,37 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-19 (Sessão 74)
+> Última atualização: 2026-09-20 (Sessão 75)
 
 ---
+
+### 2026-09-20 — Sessão 75
+
+- **Objetivo**: continuar o P72. Plano aprovado antes de codar (Plan mode). Escopo fechado com o usuário:
+  **(c) skill vinculada a agente** + **tela de skills na extensão**. Ficaram de fora (d) anexos/scripts e
+  (e) seletor de modelo no gerador.
+
+**O que foi feito**:
+
+- **Núcleo**: `Skill.agents` (frontmatter `agents: a, b`, só gravado quando não vazio), `is_available_to`,
+  `SkillStore::catalog(agent)`/`get_for`, `UseSkillTool::for_agent`, `manage_skill` com `agents` opcional
+  (update sem o campo preserva o vínculo), `Orchestrator::with_agent`. Sem agente ativo só as globais.
+- **Quem ativa o agente**: `send_message` (desktop), loop do CLI (`orchestrator.with_agent(...)` no ponto da
+  chamada — passar como parâmetro estourava o limite de argumentos do clippy) e `delegate_to_agent`.
+- **UI de vínculo**: desktop (checkboxes "Available to" + etiqueta na lista; um id que sumiu do registry fica
+  visível pra não ser apagado sem querer) e CLI (`/skills` e `show` exibem; wizard `create`/`edit` pergunta
+  "agentes"). Ponte do mobile preserva o valor ao editar, sem mudar o DTO (não precisou regenerar o FRB).
+- **Protocolo + servidor**: `ListSkills`/`SaveSkill`/`DeleteSkill` ↔ `SkillList`/`SkillOk`/`SkillError` com
+  `request_id`; `warden-server/src/skills.rs` (função pura, testada) ligada ao loop de mensagens.
+- **Extensão**: `ServerConnection.listSkills/saveSkill/deleteSkill` (mapa `requestId → promise`, timeout de
+  10 s, rejeita pendentes ao fechar o socket), repasse pelo background, aba **Skills** no painel lateral
+  (lista, formulário novo/editar com nome travado, apagar com confirmação). Chat e Skills ficam em abas; o
+  chat permanece montado (só escondido) pra não perder o que se digitou.
+- **Verificação**: `cargo test --workspace` 404 verdes, `cargo clippy --workspace --all-targets` limpo;
+  `npm run build` verde no desktop e na extensão. **E2E**: `ServerConnection` real da extensão (bundle
+  esbuild rodando no Node) contra um `warden-server` real num vault temporário — criar, criar duplicado
+  (recusado), editar, listar, apagar inexistente (erro) e apagar. **Não feito**: a aba aberta num Brave de
+  verdade (passo manual do usuário), o wizard do CLI num terminal real, e nenhum teste com modelo real (P73).
 
 ### 2026-09-19 — Sessão 74
 
