@@ -10,6 +10,7 @@ import '../services/server_connection.dart';
 import '../src/rust/api/discovery.dart';
 import 'chat_screen.dart';
 import 'qr_scan_screen.dart';
+import 'skills_screen.dart';
 import 'sync_screen.dart';
 
 /// Fase 7.2 scope: prove connectivity to a warden-server over WebSocket.
@@ -209,6 +210,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             icon: const Icon(Icons.sync),
             tooltip: 'Sync',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SyncScreen())),
+          ),
+          // P72 (b) — skills live in this device's local vault, independent of the server connection.
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Skills',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SkillsScreen())),
           ),
         ],
       ),

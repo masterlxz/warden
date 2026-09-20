@@ -10,6 +10,7 @@ crate-type = ["cdylib", "staticlib"]
 flutter_rust_bridge = "=2.13.0"
 anyhow.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+warden-core = { path = "../warden-core", default-features = false }
 warden-server-protocol = { path = "../warden-server-protocol" }
 warden-sync = { path = "../warden-sync" }
 

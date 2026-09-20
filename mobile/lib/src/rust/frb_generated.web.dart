@@ -8,6 +8,7 @@
 
 import 'api/discovery.dart';
 import 'api/simple.dart';
+import 'api/skills.dart';
 import 'api/sync.dart';
 
 import 'dart:async';
@@ -38,6 +39,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PushBeginDto dco_decode_box_autoadd_push_begin_dto(dynamic raw);
 
   @protected
+  SkillDto dco_decode_box_autoadd_skill_dto(dynamic raw);
+
+  @protected
   DiscoveredHubDto dco_decode_discovered_hub_dto(dynamic raw);
 
   @protected
@@ -51,6 +55,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<SkillDto> dco_decode_list_skill_dto(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -69,6 +76,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PushResultDto dco_decode_push_result_dto(dynamic raw);
+
+  @protected
+  SkillDto dco_decode_skill_dto(dynamic raw);
 
   @protected
   SyncStatusDto dco_decode_sync_status_dto(dynamic raw);
@@ -100,6 +110,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SkillDto sse_decode_box_autoadd_skill_dto(SseDeserializer deserializer);
+
+  @protected
   DiscoveredHubDto sse_decode_discovered_hub_dto(SseDeserializer deserializer);
 
   @protected
@@ -115,6 +128,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<SkillDto> sse_decode_list_skill_dto(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -135,6 +151,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PushResultDto sse_decode_push_result_dto(SseDeserializer deserializer);
+
+  @protected
+  SkillDto sse_decode_skill_dto(SseDeserializer deserializer);
 
   @protected
   SyncStatusDto sse_decode_sync_status_dto(SseDeserializer deserializer);
@@ -173,6 +192,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_skill_dto(
+    SkillDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_discovered_hub_dto(
     DiscoveredHubDto self,
     SseSerializer serializer,
@@ -197,6 +222,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_skill_dto(List<SkillDto> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
@@ -219,6 +247,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_push_result_dto(PushResultDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_skill_dto(SkillDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_status_dto(SyncStatusDto self, SseSerializer serializer);

@@ -26,7 +26,19 @@
   (36 no CLI, 121 no core); comandos exercitados num pty roteirizado (criar, listar, ver, caminho,
   editar, nome inválido, nome duplicado, remover cancelando e confirmando, skill inexistente).
 
-**Próximo passo**: P72 (b) — UI de skills no mobile/extensão — ou outra frente (P4, Fase 10, P70).
+**Continuação — P72 (b), UI de skills no mobile** (usuário: "pode seguir"):
+
+- **Ponte** (`warden-mobile-bridge`): `api/skills.rs` (`bridge_list_skills`/`bridge_save_skill`/
+  `bridge_delete_skill`, `SkillDto`) sobre `warden_core::skill::SkillStore`; `warden-core` entra como
+  dependência com `default-features = false` (sem fastembed/ort, o mesmo que o `warden-sync` já usa),
+  então o cross-compile Android não ganha peso. Bindings regenerados com `flutter_rust_bridge_codegen`.
+- **Flutter**: `SkillsRepository` (costura testável) + `BridgeSkillsRepository`, `SkillsScreen` e
+  `SkillFormScreen`, ícone no AppBar da `ConnectionScreen`. Nome travado na edição, apagar com diálogo.
+- **Verificação**: `cargo test`/`clippy -p warden_mobile_bridge` verdes (3 testes novos);
+  `flutter analyze` limpo e `flutter test` 58 verdes (5 novos). **Não** rodei `flutter build apk` nem
+  abri no emulador — anotado no P72.
+
+**Próximo passo**: extensão de navegador (P72 b, o que sobrou) ou outra frente (P4, Fase 10, P70).
 
 ---
 

@@ -5,6 +5,7 @@
 
 import 'api/discovery.dart';
 import 'api/simple.dart';
+import 'api/skills.dart';
 import 'api/sync.dart';
 
 import 'dart:async';
@@ -71,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1511208763;
+  int get rustContentHash => -1670491689;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -83,6 +84,11 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<void> crateApiSkillsBridgeDeleteSkill({
+    required String vaultRoot,
+    required String name,
+  });
+
   Future<List<DiscoveredHubDto>> crateApiDiscoveryBridgeDiscoverHubs({
     required int port,
   });
@@ -92,6 +98,10 @@ abstract class RustLibApi extends BaseApi {
     required String configPath,
     required String secretsPath,
     required String manifestPath,
+  });
+
+  Future<List<SkillDto>> crateApiSkillsBridgeListSkills({
+    required String vaultRoot,
   });
 
   Future<String> crateApiSyncBridgePairingHostStart({
@@ -131,6 +141,12 @@ abstract class RustLibApi extends BaseApi {
     required String manifestPath,
   });
 
+  Future<void> crateApiSkillsBridgeSaveSkill({
+    required String vaultRoot,
+    required SkillDto skill,
+    required bool overwrite,
+  });
+
   SyncStatusDto crateApiSyncBridgeStatus({
     required String vaultRoot,
     required String configPath,
@@ -152,6 +168,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
+  Future<void> crateApiSkillsBridgeDeleteSkill({
+    required String vaultRoot,
+    required String name,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(vaultRoot, serializer);
+          sse_encode_String(name, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSkillsBridgeDeleteSkillConstMeta,
+        argValues: [vaultRoot, name],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSkillsBridgeDeleteSkillConstMeta =>
+      const TaskConstMeta(
+        debugName: "bridge_delete_skill",
+        argNames: ["vaultRoot", "name"],
+      );
+
+  @override
   Future<List<DiscoveredHubDto>> crateApiDiscoveryBridgeDiscoverHubs({
     required int port,
   }) {
@@ -163,7 +214,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 2,
             port: port_,
           );
         },
@@ -202,7 +253,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 3,
             port: port_,
           );
         },
@@ -224,6 +275,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<List<SkillDto>> crateApiSkillsBridgeListSkills({
+    required String vaultRoot,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(vaultRoot, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_skill_dto,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSkillsBridgeListSkillsConstMeta,
+        argValues: [vaultRoot],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSkillsBridgeListSkillsConstMeta =>
+      const TaskConstMeta(
+        debugName: "bridge_list_skills",
+        argNames: ["vaultRoot"],
+      );
+
+  @override
   Future<String> crateApiSyncBridgePairingHostStart({
     required String vaultRoot,
     required String configPath,
@@ -241,7 +325,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 5,
             port: port_,
           );
         },
@@ -271,7 +355,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 6,
             port: port_,
           );
         },
@@ -311,7 +395,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 7,
             port: port_,
           );
         },
@@ -364,7 +448,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 8,
             port: port_,
           );
         },
@@ -398,7 +482,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -437,7 +521,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -459,6 +543,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiSkillsBridgeSaveSkill({
+    required String vaultRoot,
+    required SkillDto skill,
+    required bool overwrite,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(vaultRoot, serializer);
+          sse_encode_box_autoadd_skill_dto(skill, serializer);
+          sse_encode_bool(overwrite, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSkillsBridgeSaveSkillConstMeta,
+        argValues: [vaultRoot, skill, overwrite],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSkillsBridgeSaveSkillConstMeta =>
+      const TaskConstMeta(
+        debugName: "bridge_save_skill",
+        argNames: ["vaultRoot", "skill", "overwrite"],
+      );
+
+  @override
   SyncStatusDto crateApiSyncBridgeStatus({
     required String vaultRoot,
     required String configPath,
@@ -473,7 +594,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(configPath, serializer);
           sse_encode_String(secretsPath, serializer);
           sse_encode_String(manifestPath, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_sync_status_dto,
@@ -500,7 +621,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 13,
             port: port_,
           );
         },
@@ -524,7 +645,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -565,6 +686,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SkillDto dco_decode_box_autoadd_skill_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_skill_dto(raw);
+  }
+
+  @protected
   DiscoveredHubDto dco_decode_discovered_hub_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -599,6 +726,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  List<SkillDto> dco_decode_list_skill_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_skill_dto).toList();
   }
 
   @protected
@@ -657,6 +790,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       txId: dco_decode_String(arr[0]),
       filesChanged: dco_decode_u_32(arr[1]),
       configChanged: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
+  SkillDto dco_decode_skill_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SkillDto(
+      name: dco_decode_String(arr[0]),
+      description: dco_decode_String(arr[1]),
+      body: dco_decode_String(arr[2]),
     );
   }
 
@@ -729,6 +875,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SkillDto sse_decode_box_autoadd_skill_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_skill_dto(deserializer));
+  }
+
+  @protected
   DiscoveredHubDto sse_decode_discovered_hub_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_host = sse_decode_String(deserializer);
@@ -778,6 +930,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  List<SkillDto> sse_decode_list_skill_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SkillDto>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_skill_dto(deserializer));
+    }
+    return ans_;
   }
 
   @protected
@@ -855,6 +1019,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       txId: var_txId,
       filesChanged: var_filesChanged,
       configChanged: var_configChanged,
+    );
+  }
+
+  @protected
+  SkillDto sse_decode_skill_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_name = sse_decode_String(deserializer);
+    var var_description = sse_decode_String(deserializer);
+    var var_body = sse_decode_String(deserializer);
+    return SkillDto(
+      name: var_name,
+      description: var_description,
+      body: var_body,
     );
   }
 
@@ -939,6 +1116,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_skill_dto(
+    SkillDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_skill_dto(self, serializer);
+  }
+
+  @protected
   void sse_encode_discovered_hub_dto(
     DiscoveredHubDto self,
     SseSerializer serializer,
@@ -984,6 +1170,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
     serializer.buffer.putUint8List(self);
+  }
+
+  @protected
+  void sse_encode_list_skill_dto(
+    List<SkillDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_skill_dto(item, serializer);
+    }
   }
 
   @protected
@@ -1052,6 +1250,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.txId, serializer);
     sse_encode_u_32(self.filesChanged, serializer);
     sse_encode_bool(self.configChanged, serializer);
+  }
+
+  @protected
+  void sse_encode_skill_dto(SkillDto self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.name, serializer);
+    sse_encode_String(self.description, serializer);
+    sse_encode_String(self.body, serializer);
   }
 
   @protected

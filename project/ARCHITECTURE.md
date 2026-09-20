@@ -979,5 +979,9 @@ conversa aparece no turno seguinte sem reconstruir o `Orchestrator`.
 - O gerador por prompt (`warden_bootstrap::skill_gen`) devolve um rascunho **sem salvar** — o
   usuário revisa no formulário. O parse é tolerante (cerca ```json, preâmbulo, nome com espaços é
   slugificado) e passa pela mesma validação de uma skill escrita à mão.
+- **Mobile (P72 b)**: a tela de skills do celular chama `warden_core::skill::SkillStore` pela ponte
+  Rust (`api/skills.rs`) em vez de reimplementar o parse do frontmatter e as regras de validação em
+  Dart — uma fonte só de verdade, e um skill rejeitado volta como a mesma mensagem de erro do desktop/CLI.
+  Sem o gerador por prompt: o celular não tem modelo próprio.
 - Correção de premissa registrada: agentes não têm criação por IA nem por prompt (só formulário no
   Settings e `/agents` no CLI); esses dois caminhos foram construídos do zero pra skills.
