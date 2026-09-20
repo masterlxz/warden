@@ -59,7 +59,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
+    build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
     rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
     ManageAgentsTool, Provider, ProviderConfig, SshHostConfig,
 };
@@ -1560,17 +1560,29 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
 
 async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
     let mut config = load_fresh_config(session.config_path.as_deref())?;
-    let before = config.agents.len();
-    config.agents.retain(|a| a.id != id);
-    if config.agents.len() == before {
+    if !config.agents.iter().any(|a| a.id == id) {
         return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{id}' não encontrado"), Style::default())]);
     }
+    // Also takes the agent out of the SSH servers that named it: a server left with no agent is
+    // switched off rather than opened to every agent, and no dangling name is left behind.
+    let effects = remove_agent_references(&mut config, &id);
     if session.agent_id.as_deref() == Some(id.as_str()) {
         session.agent_id = None;
     }
 
     save_config_or_report(session, &config).await?;
-    render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' removido"), Style::default())])
+    let mut lines = vec![(format!("agente '{id}' removido"), Style::default())];
+    for effect in effects {
+        lines.push((
+            if effect.switched_off {
+                format!("servidor ssh '{}' era só desse agente e foi bloqueado — {SSH_RESTART_NOTE}", effect.host_id)
+            } else {
+                format!("servidor ssh '{}' deixou de listar esse agente — {SSH_RESTART_NOTE}", effect.host_id)
+            },
+            Style::default(),
+        ));
+    }
+    render_message_card(terminal, "agentes", accent_style(), lines)
 }
 
 /// The note every SSH card that changes what the AI can reach ends with: the tool is registered once

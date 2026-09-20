@@ -456,6 +456,38 @@ pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
     }
 }
 
+/// What removing an agent did to one SSH host that named it (P46, `manage_agents` delete).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SshHostEffect {
+    pub host_id: String,
+    /// The host was restricted to this agent alone, so it is now switched off — an empty `agents`
+    /// list means "every agent and channel", and pruning must never widen access.
+    pub switched_off: bool,
+}
+
+/// Removes `agent_id` from `agents` and from every SSH host that lists it, returning what happened
+/// to those hosts. A host left with no agent is switched off instead of falling through to "every
+/// agent" (the desktop's Settings screen does the same when an agent is deleted there), and a
+/// dangling reference is never left behind: the desktop's `save_settings` rejects one.
+pub fn remove_agent_from(agents: &mut Vec<AgentConfig>, ssh_hosts: &mut [SshHostConfig], agent_id: &str) -> Vec<SshHostEffect> {
+    agents.retain(|a| a.id != agent_id);
+    let mut effects = Vec::new();
+    for host in ssh_hosts.iter_mut().filter(|h| h.agents.iter().any(|a| a == agent_id)) {
+        host.agents.retain(|a| a != agent_id);
+        let switched_off = host.agents.is_empty();
+        if switched_off {
+            host.enabled = false;
+        }
+        effects.push(SshHostEffect { host_id: host.id.clone(), switched_off });
+    }
+    effects
+}
+
+/// `remove_agent_from` over a whole `FileConfig` — for callers that hold one (the CLI's `/agents remove`).
+pub fn remove_agent_references(config: &mut FileConfig, agent_id: &str) -> Vec<SshHostEffect> {
+    remove_agent_from(&mut config.agents, &mut config.ssh_hosts, agent_id)
+}
+
 /// Where an OAuth-authenticated MCP server's persisted token lives (PENDING.md P26) — one JSON
 /// file per server, keyed by name. Names outside `[a-zA-Z0-9_-]` are sanitized to `_`; two server
 /// names that only differ by punctuation collide here, same "the user's problem to fix" stance
@@ -2119,6 +2151,53 @@ oauth = true
 
         assert_eq!(config.active_provider.as_deref(), Some("other"));
         assert_eq!(config.agents[0].provider_id, None);
+    }
+
+    fn ssh_host(id: &str, agents: &[&str], enabled: bool) -> SshHostConfig {
+        SshHostConfig {
+            id: id.into(),
+            host: "example.com".into(),
+            user: "deploy".into(),
+            port: 22,
+            identity_file: None,
+            enabled,
+            agents: agents.iter().map(|a| a.to_string()).collect(),
+            require_approval: false,
+        }
+    }
+
+    #[test]
+    fn removing_an_agent_prunes_ssh_hosts_and_never_widens_access() {
+        let mut config = FileConfig {
+            agents: vec![agent_config("ops", None), agent_config("other", None)],
+            ssh_hosts: vec![
+                ssh_host("only-ops", &["ops"], true),
+                ssh_host("shared", &["ops", "other"], true),
+                ssh_host("for-other", &["other"], true),
+                ssh_host("everyone", &[], true),
+            ],
+            ..FileConfig::default()
+        };
+
+        let effects = remove_agent_references(&mut config, "ops");
+
+        assert_eq!(config.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["other"]);
+        // Restricted to the removed agent alone: switched off, not left open to everyone.
+        assert_eq!((config.ssh_hosts[0].agents.len(), config.ssh_hosts[0].enabled), (0, false));
+        // Shared: just loses the name and stays on.
+        assert_eq!((config.ssh_hosts[1].agents.clone(), config.ssh_hosts[1].enabled), (vec!["other".to_string()], true));
+        // Unrelated hosts, including the "everyone" one, are untouched.
+        assert_eq!(config.ssh_hosts[2], ssh_host("for-other", &["other"], true));
+        assert_eq!(config.ssh_hosts[3], ssh_host("everyone", &[], true));
+        assert_eq!(
+            effects,
+            vec![
+                SshHostEffect { host_id: "only-ops".into(), switched_off: true },
+                SshHostEffect { host_id: "shared".into(), switched_off: false },
+            ]
+        );
+        // An id nobody has changes nothing.
+        assert!(remove_agent_references(&mut config, "ghost").is_empty());
     }
 
     #[test]

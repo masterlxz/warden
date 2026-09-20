@@ -141,6 +141,10 @@ tool que não tem. Falta o resto do pacote: fila de jobs e custo por sub-agente 
 por toda a árvore de sub-agentes (`max_delegated_calls`, padrão 30, `0` desliga), e o uso deles passa a somar no total
 do turno (P18). Falta do P46: fila de jobs, `delete_agent`.
 
+**`delete_agent` (Sessão 83)**: `manage_agents` ganhou `delete` (com aprovação; recusa agente com poder), e apagar
+limpa os hosts SSH que citavam o agente sem alargar o acesso (host sem agente fica desligado). O `/agents remove` do CLI
+usa a mesma limpeza. Falta do P46: fila de jobs.
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA

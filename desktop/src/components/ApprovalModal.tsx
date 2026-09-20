@@ -52,6 +52,7 @@ function ApprovalModal() {
     download: "download a file from",
     create_agent: "create the agent",
     update_agent: "change the agent",
+    delete_agent: "delete the agent",
   };
 
   return (

@@ -5,17 +5,20 @@
 //! The safety story is four rules, all enforced here and not left to the model:
 //! 1. Only an agent that opted in (`AgentConfig.can_manage_agents`) is ever given the tool — the
 //!    channels (desktop, CLI) attach it per turn, the same way they do for `delegate_to_agent`.
-//! 2. Every `create`/`update` waits for a human "yes" through the `Approver`, and the request shows
-//!    the *whole* persona that would be saved. Without an approver it refuses.
+//! 2. Every `create`/`update`/`delete` waits for a human "yes" through the `Approver`, and the request
+//!    shows the *whole* persona that would be saved or lost. Without an approver it refuses.
 //! 3. No agent can grant a permission: created agents always start with `can_manage_agents` and
-//!    `can_delegate_to_agents` off, and `update` refuses to touch an agent that has either one
+//!    `can_delegate_to_agents` off, and `update`/`delete` refuse to touch an agent that has either one
 //!    (that includes the caller itself). Those flags are switched on by a person only.
 //! 4. Tool isolation: an agent created without a tool list gets `SAFE_AGENT_TOOLS` (read-only), a
 //!    requested list may only name tools that exist (never `delegate_to_agent`/`manage_agents`) and
 //!    can't exceed the tools the calling agent itself is limited to, and the approval card shows it.
 //!
-//! There is deliberately no `delete`, same reasoning as `manage_skill`: a model mistake can only
-//! overwrite, never silently lose, something the user set up.
+//! `delete` was left out at first (same reasoning as `manage_skill`: a mistake should only overwrite,
+//! never silently lose, something the user set up). It exists now because the approval card shows the
+//! whole persona being lost and every delete needs the person's "yes". Deleting also cleans up the SSH
+//! hosts that named the agent (`remove_agent_from`): a host left with no agent is switched off, never
+//! opened to everyone.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +28,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
-use crate::{load_config_from_path, save_config, AgentConfig, FileConfig, SAFE_AGENT_TOOLS};
+use crate::{load_config_from_path, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
 /// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`, never a tool list.
@@ -44,6 +47,15 @@ enum Change {
     Create { id: String, persona: String, provider_id: Option<String>, allowed_tools: Option<Vec<String>> },
     /// `None` = leave as is. `provider_id: Some(None)` = clear it (an empty string from the model).
     Update { id: String, persona: Option<String>, provider_id: Option<Option<String>>, allowed_tools: Option<Vec<String>> },
+    Delete { id: String },
+}
+
+/// What `change` would leave in the config: the new agent list and SSH hosts (only a delete touches
+/// the hosts), plus what a human needs to read before approving.
+struct Planned {
+    agents: Vec<AgentConfig>,
+    ssh_hosts: Vec<SshHostConfig>,
+    detail: String,
 }
 
 impl Change {
@@ -51,12 +63,13 @@ impl Change {
         match self {
             Change::Create { .. } => "create_agent",
             Change::Update { .. } => "update_agent",
+            Change::Delete { .. } => "delete_agent",
         }
     }
 
     fn id(&self) -> &str {
         match self {
-            Change::Create { id, .. } | Change::Update { id, .. } => id,
+            Change::Create { id, .. } | Change::Update { id, .. } | Change::Delete { id } => id,
         }
     }
 }
@@ -134,11 +147,11 @@ impl ManageAgentsTool {
 
     async fn change(&self, change: Change) -> anyhow::Result<Value> {
         // Check first, so a request that can't succeed never costs the user a prompt.
-        let (_, detail) = plan(&self.load()?, &change, &self.rules)?;
+        let Planned { detail, .. } = plan(&self.load()?, &change, &self.rules)?;
 
         let Some(approver) = &self.approver else {
             anyhow::bail!(
-                "creating or changing agents needs the user's approval, and this channel can't ask for it \
+                "creating, changing or deleting agents needs the user's approval, and this channel can't ask for it \
                  (use the desktop app or the interactive CLI)"
             );
         };
@@ -151,23 +164,27 @@ impl ManageAgentsTool {
         // The prompt can sit open for a while and the user may have edited agents meanwhile, so
         // re-check and apply against a fresh read rather than the one from before the wait.
         let mut config = self.load()?;
-        config.agents = plan(&config, &change, &self.rules)?.0;
+        let planned = plan(&config, &change, &self.rules)?;
+        config.agents = planned.agents;
+        config.ssh_hosts = planned.ssh_hosts;
         save_config(&self.config_path, &config)?;
-        let verb = if matches!(change, Change::Create { .. }) { "created" } else { "updated" };
-        Ok(json!({
-            "status": "ok",
-            "message": format!(
-                "Agent '{}' {verb}. It becomes available from the user's next message (agents are read at the start of each turn).",
-                change.id()
+        let message = match change {
+            Change::Delete { .. } => format!("Agent '{}' deleted.", change.id()),
+            Change::Create { .. } | Change::Update { .. } => format!(
+                "Agent '{}' {}. It becomes available from the user's next message (agents are read at the start of each turn).",
+                change.id(),
+                if matches!(change, Change::Create { .. }) { "created" } else { "updated" }
             ),
-        }))
+        };
+        Ok(json!({ "status": "ok", "message": message }))
     }
 }
 
-/// The agent list `config` would have after `change`, or why that can't be done — plus what a human
+/// What `config` would look like after `change`, or why that can't be done — plus what a human
 /// needs to see to approve it. Pure (no I/O) so the same checks run before and after the prompt.
-fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Result<(Vec<AgentConfig>, String)> {
+fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Result<Planned> {
     let mut updated = config.agents.clone();
+    let mut ssh_hosts = config.ssh_hosts.clone();
     let detail = match change {
         Change::Create { id, persona, provider_id, allowed_tools } => {
             check_id(id)?;
@@ -231,8 +248,38 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
             }
             lines.join("\n")
         }
+        Change::Delete { id } => {
+            let Some(current) = config.agents.iter().find(|a| &a.id == id) else {
+                anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
+            };
+            if current.can_delegate_to_agents || current.can_manage_agents {
+                anyhow::bail!(
+                    "agent '{id}' can delegate or manage agents, so only the user can delete it (Settings or /agents remove) — \
+                     an agent may not remove one with more power than a plain agent"
+                );
+            }
+            let effects = remove_agent_from(&mut updated, &mut ssh_hosts, id);
+            let mut lines = vec![
+                format!("Delete agent '{id}' — this cannot be undone"),
+                format!("Model provider: {}", provider_label(current.provider_id.as_deref())),
+                format!("Tools: {}", tools_label(current.allowed_tools.as_deref())),
+            ];
+            let touches_ssh = !effects.is_empty();
+            for effect in effects {
+                lines.push(if effect.switched_off {
+                    format!("SSH server '{}' was only for this agent, so it will be switched off.", effect.host_id)
+                } else {
+                    format!("SSH server '{}' will stop listing this agent (other agents keep their access).", effect.host_id)
+                });
+            }
+            if touches_ssh {
+                lines.push("(SSH servers are read when Warden starts, so those changes apply from the next launch.)".to_string());
+            }
+            lines.push(format!("\nPersona that will be lost:\n{}", current.persona));
+            lines.join("\n")
+        }
     };
-    Ok((updated, detail))
+    Ok(Planned { agents: updated, ssh_hosts, detail })
 }
 
 impl ToolRules {
@@ -354,17 +401,18 @@ impl Tool for ManageAgentsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "manage_agents".to_string(),
-            description: "List, create or edit the user's named agents (each is a persona, optionally with its own \
-                          model). Use it only when the user asks to create or change an agent. Every create/update \
-                          is shown to the user, who must approve it; you cannot delete agents or give any agent the \
-                          power to delegate or manage other agents. A new agent starts with read-only tools \
-                          unless you list others, and is usable from the user's next message. Start with \
-                          'list' to see what exists."
+            description: "List, create, edit or delete the user's named agents (each is a persona, optionally with its \
+                          own model). Use it only when the user asks to create, change or remove an agent. Every \
+                          create/update/delete is shown to the user, who must approve it (a delete shows the whole \
+                          persona that will be lost); you cannot give any agent the power to delegate or manage other \
+                          agents, and you cannot delete one that has it. A new agent starts with read-only tools \
+                          unless you list others, and is usable from the user's next message. Start with 'list' to \
+                          see what exists."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["list", "create", "update"] },
+                    "action": { "type": "string", "enum": ["list", "create", "update", "delete"] },
                     "id": {
                         "type": "string",
                         "description": "The agent's name (create: must be new; update: must exist)."
@@ -402,12 +450,13 @@ impl Tool for ManageAgentsTool {
         if action == "list" {
             return self.list();
         }
-        if !matches!(action, "create" | "update") {
-            anyhow::bail!("unknown action '{action}' — use 'list', 'create' or 'update'");
+        if !matches!(action, "create" | "update" | "delete") {
+            anyhow::bail!("unknown action '{action}' — use 'list', 'create', 'update' or 'delete'");
         }
         let id = args.get("id").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'id' argument"))?.to_string();
         let persona = args.get("persona").and_then(Value::as_str).map(str::to_string);
         let change = match action {
+            "delete" => Change::Delete { id },
             "create" => {
                 let persona = persona.ok_or_else(|| anyhow::anyhow!("missing required 'persona' argument"))?;
                 Change::Create { id, persona, provider_id: provider_arg(&args).flatten(), allowed_tools: allowed_tools_arg(&args)? }
@@ -711,6 +760,111 @@ mod tests {
         assert_eq!(result["default_tools_for_new_agents"], json!(["read_file"]));
     }
 
+    fn ssh_host(id: &str, agents: &[&str]) -> SshHostConfig {
+        SshHostConfig {
+            id: id.into(),
+            host: "example.com".into(),
+            user: "deploy".into(),
+            port: 22,
+            identity_file: None,
+            enabled: true,
+            agents: agents.iter().map(|a| a.to_string()).collect(),
+            require_approval: false,
+        }
+    }
+
+    fn hosts_on_disk(path: &Path) -> Vec<SshHostConfig> {
+        load_config_from_path(path, true).unwrap().ssh_hosts
+    }
+
+    fn with_hosts(path: &Path, hosts: Vec<SshHostConfig>) {
+        let mut config = load_config_from_path(path, true).unwrap();
+        config.ssh_hosts = hosts;
+        save_config(path, &config).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_only_the_target_after_approval_and_shows_what_is_lost() {
+        let path = write_config(vec![agent("chief", false, true), agent("temp", false, false), agent("keep", false, false)]);
+        with_hosts(&path, vec![ssh_host("only-temp", &["temp"]), ssh_host("shared", &["temp", "keep"]), ssh_host("everyone", &[])]);
+        let (tool, approver) = tool_with(&path, true);
+
+        let result = tool.call(json!({ "action": "delete", "id": "temp" })).await.unwrap();
+
+        assert!(result["message"].as_str().unwrap().contains("'temp' deleted"));
+        let ids: Vec<String> = agents_on_disk(&path).into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, ["chief", "keep"]);
+        // No dangling reference, and a host that was only for `temp` is switched off, not opened to all.
+        let hosts = hosts_on_disk(&path);
+        assert_eq!((hosts[0].agents.len(), hosts[0].enabled), (0, false));
+        assert_eq!((hosts[1].agents.clone(), hosts[1].enabled), (vec!["keep".to_string()], true));
+        assert_eq!((hosts[2].agents.len(), hosts[2].enabled), (0, true));
+
+        let asked = approver.asked.lock().unwrap();
+        assert_eq!((asked[0].action.as_str(), asked[0].target.as_str()), ("delete_agent", "temp"));
+        let detail = &asked[0].detail;
+        assert!(detail.contains("cannot be undone") && detail.contains("persona of temp"), "{detail}");
+        assert!(detail.contains("'only-temp' was only for this agent, so it will be switched off"), "{detail}");
+        assert!(detail.contains("'shared' will stop listing this agent"), "{detail}");
+        assert!(!detail.contains("everyone"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn a_delete_that_cannot_succeed_is_refused_before_asking_anyone() {
+        let path = write_config(vec![agent("chief", false, true), agent("boss", true, false), agent("plain", false, false)]);
+        let (tool, approver) = tool_with(&path, true);
+        let cases = [
+            (json!({ "action": "delete", "id": "ghost" }), "no agent named"),
+            (json!({ "action": "delete", "id": "chief" }), "only the user can delete"),
+            (json!({ "action": "delete", "id": "boss" }), "only the user can delete"),
+            (json!({ "action": "delete" }), "'id'"),
+        ];
+        for (args, expected) in cases {
+            let err = tool.call(args.clone()).await.unwrap_err();
+            assert!(err.to_string().contains(expected), "{args} → {err}");
+        }
+        assert!(approver.asked.lock().unwrap().is_empty());
+        assert_eq!(agents_on_disk(&path).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_denied_delete_writes_nothing_and_no_approver_refuses() {
+        let path = write_config(vec![agent("plain", false, false)]);
+        with_hosts(&path, vec![ssh_host("h", &["plain"])]);
+        let (tool, approver) = tool_with(&path, false);
+        let err = tool.call(json!({ "action": "delete", "id": "plain" })).await.unwrap_err();
+        assert!(err.to_string().contains("did not approve"));
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        let err = ManageAgentsTool::new(&path).call(json!({ "action": "delete", "id": "plain" })).await.unwrap_err();
+        assert!(err.to_string().contains("can't ask"));
+        assert_eq!(agents_on_disk(&path).len(), 1);
+        assert_eq!(hosts_on_disk(&path)[0], ssh_host("h", &["plain"]));
+    }
+
+    #[tokio::test]
+    async fn a_delete_is_applied_to_what_is_on_disk_after_the_prompt() {
+        let path = write_config(vec![agent("temp", false, false)]);
+        // While the prompt is open the user adds another agent and restricts a new SSH host to `temp`.
+        struct EditsWhileAsking(PathBuf);
+        #[async_trait]
+        impl Approver for EditsWhileAsking {
+            async fn approve(&self, _request: ApprovalRequest) -> bool {
+                let mut config = load_config_from_path(&self.0, true).unwrap();
+                config.agents.push(agent("added-meanwhile", false, false));
+                config.ssh_hosts.push(ssh_host("added-host", &["temp"]));
+                save_config(&self.0, &config).unwrap();
+                true
+            }
+        }
+        let tool = ManageAgentsTool::new(&path).with_approver(Arc::new(EditsWhileAsking(path.clone()))).unwrap();
+
+        tool.call(json!({ "action": "delete", "id": "temp" })).await.unwrap();
+
+        let ids: Vec<String> = agents_on_disk(&path).into_iter().map(|a| a.id).collect();
+        assert_eq!(ids, ["added-meanwhile"]);
+        assert_eq!((hosts_on_disk(&path)[0].agents.len(), hosts_on_disk(&path)[0].enabled), (0, false));
+    }
+
     #[tokio::test]
     async fn the_change_is_applied_to_what_is_on_disk_after_the_prompt_not_before() {
         let path = write_config(vec![]);
@@ -770,9 +924,9 @@ mod tests {
     }
 
     #[test]
-    fn the_spec_offers_no_way_to_delete_or_grant_powers() {
+    fn the_spec_offers_no_way_to_grant_powers() {
         let spec = ManageAgentsTool::new("unused").spec();
-        assert_eq!(spec.parameters["properties"]["action"]["enum"], json!(["list", "create", "update"]));
+        assert_eq!(spec.parameters["properties"]["action"]["enum"], json!(["list", "create", "update", "delete"]));
         let props = spec.parameters["properties"].as_object().unwrap();
         assert!(!props.contains_key("can_manage_agents") && !props.contains_key("can_delegate_to_agents"));
         assert!(props.contains_key("allowed_tools"));

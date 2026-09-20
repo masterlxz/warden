@@ -1111,7 +1111,8 @@ e `save_config`, como o `UsageStatsTool`. Decisões confirmadas com o usuário a
 - **Poder não se auto-concede** (aplicado no código): `create` sempre grava `can_manage_agents=false` e
   `can_delegate_to_agents=false` e ignora qualquer argumento extra; `update` só mexe em persona/provider e **recusa**
   editar um agente que tenha alguma das duas flags, inclusive o próprio chamador. Só as checkboxes de Settings / o
-  wizard do CLI ligam essas flags. Sem `delete`, mesmo raciocínio do `manage_skill`.
+  wizard do CLI ligam essas flags. Sem `delete` na v1 (mesmo raciocínio do `manage_skill`); a Sessão 83 acrescentou
+  o `delete`, ver a seção "`delete` no `manage_agents`" abaixo.
 - **O revisor vê tudo**: a persona (limite de 4000 caracteres, justamente para caber) aparece inteira no pedido; no
   `update` aparece a persona antiga e a nova. Entrada inválida (id vazio/com espaço/controle, duplicado, provider
   inexistente, persona vazia ou grande) é recusada **antes** de perguntar.
@@ -1192,4 +1193,25 @@ chamadas de modelo (P60), e o uso de tokens dos sub-agentes era descartado (P18)
 - **Limitações aceitas**: o trabalho parcial de um sub-agente cortado no meio se perde (só o erro volta); o teto é por
   turno, não por período/usuário (isso continua sendo o P4); `Orchestrator::new` sem `with_delegation_limit` (testes,
   `warden-mcp-server` montado à mão) segue sem teto e sem somar o uso dos sub-agentes.
+
+## `delete` no `manage_agents` (P46, Sessão 83)
+
+A v1 do `manage_agents` não tinha `delete` ("um erro do modelo só pode sobrescrever, nunca perder algo em silêncio").
+Agora tem, porque todo delete passa pela aprovação humana e o card mostra a persona **inteira** que será perdida.
+
+- **Mesmas regras de poder**: recusa id inexistente e agente com `can_delegate_to_agents`/`can_manage_agents` (o próprio
+  chamador tem a flag, então não se apaga) — só uma pessoa apaga um agente com poder. As recusas vêm **antes** de
+  perguntar, e o delete é reaplicado sobre o config relido do disco depois do "sim", como create/update.
+- **Apagar não é só tirar da lista — hosts SSH**: `ssh_hosts[].agents` guarda ids de agente. Referência pendurada faz o
+  `save_settings` do desktop falhar ("names an unknown agent"), e podar deixando a lista vazia **alargaria** o acesso
+  (vazio = todos os agentes e canais). `remove_agent_from`/`remove_agent_references` (`warden-bootstrap`) tiram o id
+  dos hosts e, se sobra lista vazia, **desligam** o host — a mesma regra que o `deleteAgent` da tela de Settings já
+  tinha. A tool e o `/agents remove` do CLI usam a mesma função (o CLI antes só fazia `retain` e deixava a referência
+  pendurada, o que quebrava o próximo save do desktop: bug corrigido junto).
+- **`plan()` devolve `Planned { agents, ssh_hosts, detail }`**: o delete é o primeiro `Change` que mexe fora de `agents`.
+  O card descreve o efeito em cada host e avisa que o SSH só é relido na próxima inicialização.
+- **Skills restritas ao agente ficam como estão** (`agents` no frontmatter): pendurado significa "visível a ninguém", o lado
+  seguro; recriar um agente com o mesmo nome passa pela aprovação de novo.
+- **Desktop**: só o verbo `delete_agent` no `ApprovalModal`. **Não desfaz**: o único registro da persona apagada é o
+  card mostrado antes do "sim".
 

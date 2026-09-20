@@ -2,7 +2,35 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 82)
+> Última atualização: 2026-09-20 (Sessão 83)
+
+---
+
+### 2026-09-20 — Sessão 83
+
+- **Objetivo**: P46 — `delete` no `manage_agents`. Plano aprovado antes de codar (Plan mode).
+
+**O que foi feito**:
+
+- **`delete`** na tool: recusa id inexistente e agente com poder (incluindo o chamador) antes de perguntar; o card mostra
+  a persona inteira que será perdida, provider, tools e o efeito em cada host SSH; reaplica sobre o config relido do disco.
+- **Cascata nos hosts SSH** (`remove_agent_from`/`remove_agent_references`, `warden-bootstrap`): tira o id de
+  `ssh_hosts[].agents` e desliga o host que ficaria sem agente (lista vazia = todos, então podar sozinho alargaria o
+  acesso). `plan()` passou a devolver `Planned { agents, ssh_hosts, detail }`.
+- **`/agents remove` do CLI** usa a mesma limpeza e mostra o efeito nos servidores.
+- **Achados**: (1) o `/agents remove` do CLI deixava o id pendurado em `ssh_hosts[].agents`, e o `save_settings` do
+  desktop recusa referência a agente inexistente — ou seja, remover um agente no CLI podia quebrar o próximo save do
+  desktop (bug antigo, corrigido); (2) só o delete mexe fora de `agents`, o que forçou o `Planned`; (3) no meu driver do
+  pty o `S` não estava exportado para o Python do heredoc (KeyError) e o driver não foi gravado.
+- **Verificação**: `cargo test --workspace` 495 verdes (5 testes novos), clippy limpo, `npm run build` verde. Binário real
+  do CLI num pty contra o servidor de modelo **falso** (17 checagens: card com alvo/ação/persona inteira/efeito no SSH;
+  `n` não apaga nada; `s` apaga e desliga o host só daquele agente sem deixar referência pendurada; host sem lista
+  intocado; apagar o chefe, um agente com flag e um inexistente recusado sem card; `/agents remove` também poda/bloqueia
+  os hosts); modal no Playwright headless (10 checagens, claro e escuro). **Não feito**: modelo real (sem chave), app
+  Tauri aberto de verdade.
+
+**Ainda aberto no P46**: fila de jobs, o agente criado só vira alvo de delegação no turno seguinte, lista de tools por
+nome (colisão entre MCP servers), teste com modelo real. Teto por período/usuário segue no P4.
 
 ---
 
