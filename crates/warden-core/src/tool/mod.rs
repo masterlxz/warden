@@ -45,6 +45,31 @@ pub trait Tool: Send + Sync {
     fn is_available(&self) -> bool {
         true
     }
+
+    /// A copy of this tool that asks `approver` before doing anything the user configured as
+    /// needing a human "yes" (`ssh_*` on a host with `require_approval`), or `None` when the tool
+    /// never asks. Called by `Orchestrator::with_approver`; a channel that can't ask never calls
+    /// it, so those tools refuse instead of running unattended.
+    fn with_approver(&self, _approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+}
+
+/// What a tool wants a human to confirm: which server, what kind of action, and the exact
+/// command line or file paths involved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalRequest {
+    pub host_id: String,
+    pub action: String,
+    pub detail: String,
+}
+
+/// Something that can put an `ApprovalRequest` in front of the user and wait for the answer — a
+/// modal in the desktop, a `[y/N]` card in the CLI. Anything that can't answer (no reply within
+/// the tool's deadline included) counts as "no".
+#[async_trait]
+pub trait Approver: Send + Sync {
+    async fn approve(&self, request: ApprovalRequest) -> bool;
 }
 
 /// A source of tools that isn't known until runtime — unlike `Tool`, which is a single

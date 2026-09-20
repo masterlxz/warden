@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import SkillsView from "./components/SkillsView";
+import SshApprovalModal from "./components/SshApprovalModal";
 import SyncView from "./components/SyncView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
@@ -218,6 +219,7 @@ function App() {
           onOpenSettings={() => setView("settings")}
         />
       )}
+      <SshApprovalModal />
     </div>
   );
 }

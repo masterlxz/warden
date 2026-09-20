@@ -1280,6 +1280,37 @@ body {
   box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
 }
 
+/* SSH approval prompt (P47) — the command is shown verbatim, in a box that scrolls rather than
+   growing past the window, since the model can send a long one. */
+.ssh-approval-card {
+  max-width: min(560px, 92vw);
+  align-items: stretch;
+}
+
+.ssh-approval-title {
+  margin: 0;
+  font-size: 1.05em;
+}
+
+.ssh-approval-detail {
+  margin: 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0.6em 0.8em;
+  border-radius: 8px;
+  background: var(--color-accent-soft);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ssh-approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 .sync-warning-list {
   margin: 0.5rem 0 0;
   padding-left: 1.2em;

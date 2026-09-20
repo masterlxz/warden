@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 dirs.workspace = true

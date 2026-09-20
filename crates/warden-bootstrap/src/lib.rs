@@ -24,7 +24,7 @@ use warden_core::tool::mcp::McpToolProvider;
 use warden_core::skill::SkillStore;
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::skill_tools::{ManageSkillTool, ReadSkillFileTool, UseSkillTool};
-use warden_core::tool::ssh::{SshExecTool, SshHost};
+use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod skill_gen;
@@ -133,6 +133,11 @@ pub struct SshHostConfig {
     /// (Telegram, WhatsApp, mobile, the MCP server) — the same trust as the `shell` tool.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// Ask a human before every command or file transfer on this host. Only the desktop and the
+    /// interactive CLI can ask; any other channel (Telegram, WhatsApp, mobile, the MCP server,
+    /// sub-agents) refuses instead of running it unattended.
+    #[serde(default)]
+    pub require_approval: bool,
 }
 
 fn default_ssh_port() -> u16 {
@@ -149,6 +154,7 @@ impl SshHostConfig {
             port: self.port,
             identity_file: self.identity_file.clone(),
             agents: self.agents.clone(),
+            require_approval: self.require_approval,
         }
     }
 }
@@ -598,6 +604,13 @@ pub struct HubPairingConfig {
     /// Shared secret for that hub's `Hello` handshake — same value the operator passed it via
     /// `WARDEN_SERVER_AUTH_KEY`/`--auth-key` when starting it.
     pub auth_key: String,
+}
+
+/// Where every `ssh_exec`/`ssh_upload`/`ssh_download` call is recorded (P47) — JSONL, one line per
+/// call, same `dirs::config_dir()` base as the other Warden files. `None` when there's no config
+/// directory (the tools then simply run without an audit log).
+pub fn default_ssh_audit_log_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("ssh_audit.jsonl"))
 }
 
 /// Where `HubPairingConfig` lives (Fase 9.7) — same `dirs::config_dir()` base as
@@ -1105,9 +1118,7 @@ pub async fn bootstrap(
         );
     }
 
-    if let Some(tool) = build_ssh_tool(&config.ssh_hosts) {
-        base_tools.push(tool);
-    }
+    base_tools.extend(build_ssh_tools(&config.ssh_hosts, vault.root().clone(), default_ssh_audit_log_path()));
 
     for server in &config.mcp_servers {
         let name = server.name();
@@ -1134,11 +1145,12 @@ pub async fn bootstrap(
     Ok(orchestrator)
 }
 
-/// The `ssh_exec` tool for the enabled hosts in `config`, or `None` when there are none — same
-/// "the tool doesn't exist until you turn it on" posture as `shell`, without a global flag since
-/// each host already has its own switch. A host that fails validation (e.g. a hand-edited
-/// `host = "-oProxyCommand=..."`) is skipped with a note rather than aborting startup.
-fn build_ssh_tool(entries: &[SshHostConfig]) -> Option<Arc<dyn Tool>> {
+/// The `ssh_exec`/`ssh_upload`/`ssh_download` tools for the enabled hosts in `entries`, or none
+/// when there are no such hosts — same "the tool doesn't exist until you turn it on" posture as
+/// `shell`, without a global flag since each host already has its own switch. A host that fails
+/// validation (e.g. a hand-edited `host = "-oProxyCommand=..."`) is skipped with a note rather than
+/// aborting startup. Relative local paths in the transfer tools resolve against `base_dir`.
+fn build_ssh_tools(entries: &[SshHostConfig], base_dir: PathBuf, audit_log: Option<PathBuf>) -> Vec<Arc<dyn Tool>> {
     let mut hosts = Vec::new();
     for entry in entries.iter().filter(|h| h.enabled) {
         let host = entry.to_host();
@@ -1147,7 +1159,10 @@ fn build_ssh_tool(entries: &[SshHostConfig]) -> Option<Arc<dyn Tool>> {
             Err(err) => eprintln!("note: ssh host skipped — {err:#}\n"),
         }
     }
-    (!hosts.is_empty()).then(|| Arc::new(SshExecTool::new(hosts)) as Arc<dyn Tool>)
+    if hosts.is_empty() {
+        return Vec::new();
+    }
+    ssh_tools(hosts, base_dir, audit_log.map(|path| Arc::new(AuditLog::new(path))))
 }
 
 /// Default for how many levels deep a sub-agent spawned via `DelegateTool` can itself delegate
@@ -1482,6 +1497,7 @@ oauth = true
                 identity_file: Some("/home/me/.ssh/id_ed25519".to_string()),
                 enabled: true,
                 agents: vec!["ops".to_string()],
+                require_approval: true,
             }],
         };
 
@@ -1620,6 +1636,7 @@ oauth = true
             identity_file: None,
             enabled,
             agents: Vec::new(),
+            require_approval: false,
         }
     }
 
@@ -1631,23 +1648,28 @@ oauth = true
         assert_eq!(host.port, 22);
         assert!(!host.enabled, "a hand-written entry must not be live until switched on");
         assert!(host.agents.is_empty() && host.identity_file.is_none());
+        assert!(!host.require_approval, "approval is opt-in per host");
         // And a config with no ssh section at all still parses.
         assert!(toml::from_str::<FileConfig>("enable_shell = true").unwrap().ssh_hosts.is_empty());
     }
 
     #[test]
-    fn build_ssh_tool_only_registers_enabled_and_valid_hosts() {
-        assert!(build_ssh_tool(&[ssh_entry("off", "example.com", false)]).is_none());
-        assert!(build_ssh_tool(&[]).is_none());
-        assert!(build_ssh_tool(&[ssh_entry("bad", "-oProxyCommand=evil", true)]).is_none());
+    fn build_ssh_tools_only_registers_enabled_and_valid_hosts() {
+        let build = |entries: &[SshHostConfig]| build_ssh_tools(entries, std::env::temp_dir(), None);
+        assert!(build(&[ssh_entry("off", "example.com", false)]).is_empty());
+        assert!(build(&[]).is_empty());
+        assert!(build(&[ssh_entry("bad", "-oProxyCommand=evil", true)]).is_empty());
 
-        let tool = build_ssh_tool(&[
+        let tools = build(&[
             ssh_entry("off", "a.example.com", false),
             ssh_entry("bad", "-oProxyCommand=evil", true),
             ssh_entry("web", "b.example.com", true),
-        ])
-        .unwrap();
-        assert_eq!(tool.spec().parameters["properties"]["host_id"]["enum"], serde_json::json!(["web"]));
+        ]);
+        let names: Vec<String> = tools.iter().map(|t| t.spec().name).collect();
+        assert_eq!(names, ["ssh_exec", "ssh_upload", "ssh_download"]);
+        for tool in &tools {
+            assert_eq!(tool.spec().parameters["properties"]["host_id"]["enum"], serde_json::json!(["web"]));
+        }
     }
 
     #[test]

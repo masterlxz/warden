@@ -2,7 +2,49 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 78)
+> Última atualização: 2026-09-20 (Sessão 79)
+
+---
+
+### 2026-09-20 — Sessão 79
+
+- **Objetivo**: fechar o que a v1 do P47 deixou aberto — `ssh_upload`/`ssh_download`, log de auditoria e
+  aprovação humana por comando. Plano aprovado antes de codar (Plan mode); decisões confirmadas com o usuário:
+  aprovação **por host**, só **CLI + desktop** (canal sem tela de confirmação recusa), e caminhos locais **sem
+  sandbox**, como o `shell`.
+
+**O que foi feito**:
+
+- **Núcleo** (`tool/ssh.rs`): `SshExecTool` virou `SshTool` (`exec`/`upload`/`download` sobre um `SshContext`
+  compartilhado: hosts, agente, aprovação, auditoria), então escopo por agente e re-escopo não perdem nada.
+  `AuditLog` (JSONL append-only, `0600`). `SshHost.require_approval`. Tetos: 100 MB e 120 s (máx. 600 s) por
+  transferência. `tool/mod.rs`: `trait Approver`, `ApprovalRequest`, `Tool::with_approver` (default `None`, no
+  mesmo molde de `scoped_to_agent`); `Orchestrator::with_approver`.
+- **Bootstrap**: `SshHostConfig.require_approval`, `build_ssh_tools` (as três tools juntas, com o mesmo log),
+  `default_ssh_audit_log_path`. `tokio` ganhou a feature `fs` (sem dependência nova).
+- **CLI**: `ChannelApprover` leva o pedido da task do turno ao laço de `run_turn` (dono do terminal), que desenha o
+  card e espera a tecla; wizard `/ssh add|edit` pergunta a aprovação e `/ssh` lista quem pede.
+- **Desktop**: `TauriApprover` + `ApprovalBroker` (evento `ssh-approval-request`, comando `resolve_ssh_approval`,
+  `ssh-approval-cancelled` quando a tool desiste); `SshApprovalModal` (fila, "Deny" com foco); checkbox na seção
+  "SSH servers".
+- **Achados**: (1) o `set -C` (noclobber) do remoto dá a recusa de sobrescrever numa ida só, mas só vale em shell
+  POSIX, por isso o comando vai dentro de `sh -c` e não depende do shell de login (fish/csh não leem `set -C`);
+  (2) o comando inválido (`-o…`, vazio) e o arquivo local inexistente/grande demais são recusados **antes** de
+  perguntar, para nunca pedir um "sim" para algo que ia falhar; (3) o teste `fake_ssh` (script escrito e
+  executado logo em seguida) dava `ETXTBSY` em ~1 de 3 rodadas — um fork de outro teste herda o descritor de
+  escrita até o `exec`; o helper agora espera 60 ms (0 falhas em 12 rodadas); (4) `pkill -f`/`pgrep -f` com o
+  padrão no próprio comando mata o shell da ferramenta (exit 144) — usar PID.
+- **Verificação**: `cargo test --workspace` 457 verdes (+20), clippy limpo, `npm run build` verde. E2E com `ssh`
+  e `sshd` reais descartáveis em `127.0.0.1` (sha256 idêntico em 5 MB, caminho com espaço e aspas, overwrite,
+  teto, aprovação: sem approver / negado sem executar / aprovado); o binário real do CLI num pty contra um servidor
+  de modelo **falso** compatível com OpenAI (card, tecla solta, `s`, `n`, stdin em pipe recusando, log `0600`); modal e
+  checkbox no Playwright headless com eventos mockados, claro e escuro. **Não feito**: nenhum modelo real
+  (não havia chave nesta máquina), app Tauri aberto, Windows/macOS, Telegram/WhatsApp/mobile.
+- Nada foi tocado em `~/.ssh` (`known_hosts` de teste por um wrapper `ssh` no PATH); `sshd`, servidor falso e o
+  exemplo temporário foram removidos ao fim.
+
+**Ainda aberto no P47**: ver `PENDING.md` (provisionar VPS, allowlist, aprovação em canais sem tela, teste com
+modelo real, rotação/leitura do log).
 
 ---
 

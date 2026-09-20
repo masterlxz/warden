@@ -125,6 +125,19 @@ impl Orchestrator {
         clone
     }
 
+    /// Returns a copy of this orchestrator whose tools that need a human "yes" (`ssh_*` on a host
+    /// with `require_approval`) ask `approver`. Channels that can't ask simply never call this, and
+    /// those tools refuse. Same cheap-clone reasoning as `with_agent`.
+    pub fn with_approver(&self, approver: Arc<dyn crate::tool::Approver>) -> Self {
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if let Some(asking) = tool.with_approver(approver.clone()) {
+                *tool = asking;
+            }
+        }
+        clone
+    }
+
     /// Returns a copy of this orchestrator that writes oversized MCP media (P64/P66) to `root`
     /// instead of dropping it — same cheap-clone reasoning as `with_model`/`with_tool`. Called
     /// once by `warden-bootstrap::bootstrap()` with the same "generated" directory
@@ -764,7 +777,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_agent_hides_ssh_exec_from_an_agent_that_cannot_reach_any_host() {
-        use crate::tool::ssh::{SshExecTool, SshHost};
+        use crate::tool::ssh::{SshHost, SshTool};
         let host = |id: &str, agents: &[&str]| SshHost {
             id: id.into(),
             host: "example.com".into(),
@@ -772,9 +785,10 @@ mod tests {
             port: 22,
             identity_file: None,
             agents: agents.iter().map(|a| a.to_string()).collect(),
+            require_approval: false,
         };
         let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
-        orchestrator.register_tool(Arc::new(SshExecTool::new(vec![host("prod", &["ops"])])));
+        orchestrator.register_tool(Arc::new(SshTool::exec(vec![host("prod", &["ops"])])));
 
         // No agent, and a different agent: the tool isn't even advertised.
         let none = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;

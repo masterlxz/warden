@@ -56,7 +56,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::{Terminal, TerminalOptions, Viewport};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
     build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
@@ -68,7 +68,7 @@ use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
 use warden_core::tool::ssh::test_connection;
-use warden_core::tool::Tool;
+use warden_core::tool::{ApprovalRequest, Approver, Tool};
 
 use crate::commands::{self, Command, ParseOutcome};
 
@@ -274,6 +274,7 @@ fn render_input_box(frame: &mut ratatui::Frame, editor: &LineEditor, title: &str
 /// far once it has (see `run_turn` and `MAX_PREVIEW_ROWS`).
 enum PreviewState<'a> {
     Thinking { elapsed: Duration, spinner_frame: usize },
+    AwaitingApproval,
     Streaming { lines: &'a [String] },
 }
 
@@ -294,6 +295,13 @@ fn render_card_preview(frame: &mut ratatui::Frame, state: PreviewState) {
             let line = Line::from(vec![
                 Span::styled(format!("{glyph} "), Style::default().fg(Color::Rgb(241, 196, 15))),
                 Span::styled(format!("pensando... ({}s — Ctrl+C para interromper)", elapsed.as_secs()), Style::default().add_modifier(Modifier::DIM)),
+            ]);
+            frame.render_widget(Paragraph::new(line), inner);
+        }
+        PreviewState::AwaitingApproval => {
+            let line = Line::from(vec![
+                Span::styled("? ", Style::default().fg(Color::Rgb(241, 196, 15))),
+                Span::styled("aguardando você — s aprova, n (ou Esc) recusa", Style::default().add_modifier(Modifier::DIM)),
             ]);
             frame.render_widget(Paragraph::new(line), inner);
         }
@@ -766,6 +774,61 @@ async fn read_field(terminal: &mut CliTerminal, title: &str, initial: &str) -> a
     drive_line_editor(terminal, &mut editor, title, false).await
 }
 
+/// Hands an SSH approval request from the turn's task (where the tool runs) to the loop in
+/// `run_turn` (which owns the terminal), and waits for the answer. Anything that goes wrong on the
+/// way — the loop is gone, the reply channel is dropped — is a "no".
+struct ChannelApprover {
+    requests: mpsc::UnboundedSender<(ApprovalRequest, oneshot::Sender<bool>)>,
+}
+
+#[async_trait::async_trait]
+impl Approver for ChannelApprover {
+    async fn approve(&self, request: ApprovalRequest) -> bool {
+        let (reply, answer) = oneshot::channel();
+        if self.requests.send((request, reply)).is_err() {
+            return false;
+        }
+        answer.await.unwrap_or(false)
+    }
+}
+
+/// Shows what the model wants to run and waits for a key: `s`/`y` approves; `n`, Esc, Enter or
+/// Ctrl+C refuses; any other key is ignored so a stray keystroke can't approve anything. Gives up
+/// (as a "no") if the tool stopped waiting first — its own deadline elapsed and it dropped the reply.
+fn ask_approval(terminal: &mut CliTerminal, request: &ApprovalRequest, reply: &oneshot::Sender<bool>) -> anyhow::Result<bool> {
+    render_message_card(
+        terminal,
+        "aprovação",
+        Style::default().fg(Color::Rgb(241, 196, 15)),
+        vec![
+            (format!("servidor: {}", request.host_id), Style::default()),
+            (format!("{}: {}", request.action, request.detail), Style::default()),
+            ("aprovar? (s = sim, n = não)".to_string(), dim_style()),
+        ],
+    )?;
+    loop {
+        if reply.is_closed() {
+            return Ok(false);
+        }
+        terminal.draw(|frame| render_card_preview(frame, PreviewState::AwaitingApproval))?;
+        if event::poll(POLL_INTERVAL)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if key_is_ctrl_c(&key) {
+                    return Ok(false);
+                }
+                match key.code {
+                    KeyCode::Char('s' | 'S' | 'y' | 'Y') => return Ok(true),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => return Ok(false),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Runs one full turn: spawns the streaming call, grows a live bordered preview (`render_card_
 /// preview`) as content arrives, then — once the reply is complete — turns it into a permanent
 /// message card (`insert_card`) with full markdown styling and a token-count footer. Returns
@@ -791,6 +854,9 @@ async fn run_turn(
         Some(tool) => orchestrator.with_tool(tool),
         None => orchestrator,
     };
+    // Tools that need a human "yes" (`ssh_*` on a host with `require_approval`) ask through here.
+    let (approval_tx, mut approval_rx) = mpsc::unbounded_channel::<(ApprovalRequest, oneshot::Sender<bool>)>();
+    let orchestrator = orchestrator.with_approver(Arc::new(ChannelApprover { requests: approval_tx }));
     let history_owned = history.to_vec();
     let input_owned = input.to_string();
     let system_prompt_owned = system_prompt.map(str::to_string);
@@ -824,6 +890,12 @@ async fn run_turn(
             if let StreamEvent::ContentDelta(delta) = event {
                 pending.push_str(&delta);
             }
+        }
+
+        if let Ok((request, reply)) = approval_rx.try_recv() {
+            let approved = ask_approval(terminal, &request, &reply)?;
+            let _ = reply.send(approved);
+            continue;
         }
 
         if handle.is_finished() {
@@ -1434,7 +1506,8 @@ async fn cmd_ssh_list(terminal: &mut CliTerminal, session: &CliSession) -> anyho
         .map(|h| {
             let state = if h.enabled { "liberado" } else { "bloqueado" };
             let who = if h.agents.is_empty() { "todos os agentes e canais".to_string() } else { format!("só: {}", h.agents.join(", ")) };
-            (format!("{} — {}@{}:{} [{}] ({})", h.id, h.user, h.host, h.port, state, who), Style::default())
+            let ask = if h.require_approval { ", pede aprovação a cada ação" } else { "" };
+            (format!("{} — {}@{}:{} [{}] ({}{})", h.id, h.user, h.host, h.port, state, who, ask), Style::default())
         })
         .collect();
     render_message_card(terminal, "ssh", accent_style(), lines)
@@ -1481,12 +1554,31 @@ async fn prompt_ssh_host(terminal: &mut CliTerminal, config: &FileConfig, curren
         render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{unknown}' não existe — veja /agents"), Style::default())])?;
         return Ok(None);
     }
-    let Some(enabled) = prompt_field(terminal, " liberar pra IA? ela roda qualquer comando como esse usuário, sem sandbox nem aprovação (s/n) ", if current.is_some_and(|h| h.enabled) { "s" } else { "n" }).await? else {
+    let Some(enabled) = prompt_field(terminal, " liberar pra IA? ela roda qualquer comando como esse usuário, sem sandbox (s/n) ", if current.is_some_and(|h| h.enabled) { "s" } else { "n" }).await? else {
         return Ok(None);
     };
     let enabled = matches!(enabled.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes");
+    let Some(approval) = prompt_field(
+        terminal,
+        " pedir a sua aprovação a cada comando ou transferência? só vale aqui no CLI interativo e no desktop; nos outros canais a IA é recusada (s/n) ",
+        if current.is_some_and(|h| h.require_approval) { "s" } else { "n" },
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let require_approval = matches!(approval.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes");
 
-    let host = SshHostConfig { id, host: host.trim().to_string(), user: user.trim().to_string(), port, identity_file: non_empty(identity), enabled, agents };
+    let host = SshHostConfig {
+        id,
+        host: host.trim().to_string(),
+        user: user.trim().to_string(),
+        port,
+        identity_file: non_empty(identity),
+        enabled,
+        agents,
+        require_approval,
+    };
     if let Err(err) = host.to_host().validate() {
         render_message_card(terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
         return Ok(None);

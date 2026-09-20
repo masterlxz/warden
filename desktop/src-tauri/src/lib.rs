@@ -41,6 +41,8 @@ struct AppState {
     /// Set while the desktop is embedding its own `warden-server` hub (Fase 9.1 follow-up, "virar
     /// o hub desta rede") — `None` when stopped. See `server_cmds.rs`.
     embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
+    /// SSH actions waiting for the user's yes/no (P47) — see `ssh_cmds::TauriApprover`.
+    approvals: Arc<ssh_cmds::ApprovalBroker>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -153,6 +155,7 @@ struct SendMessageResult {
 /// switch apply "from here on" without needing to touch anything already said.
 #[tauri::command]
 async fn send_message(
+    app: AppHandle,
     state: State<'_, AppState>,
     history: Vec<ChatTurn>,
     content: String,
@@ -188,6 +191,9 @@ async fn send_message(
         }
     }
 
+    // SSH hosts that `require_approval` ask through the window; every other channel has no approver
+    // and those hosts refuse there.
+    let orchestrator = orchestrator.with_approver(Arc::new(ssh_cmds::TauriApprover { app, broker: state.approvals.clone() }));
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult {
@@ -821,6 +827,7 @@ pub fn run() {
         pending_push: Mutex::new(None),
         generated_files_root,
         embedded_server: Mutex::new(None),
+        approvals: Arc::new(ssh_cmds::ApprovalBroker::default()),
     };
 
     // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
@@ -853,6 +860,7 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             send_message,
+            ssh_cmds::resolve_ssh_approval,
             open_generated_file,
             read_attachment,
             transcribe_audio,

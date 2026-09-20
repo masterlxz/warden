@@ -502,8 +502,24 @@ function SshHostCard({
           <span className="settings-label">Let the AI use this server</span>
         </span>
         <span className="settings-hint">
-          The AI can run any command as this user, with no sandbox and no per-command approval — same trust as the
-          local shell. Off keeps the server saved but invisible to it.
+          The AI can run any command as this user, and send or fetch files, with no sandbox — same trust as the
+          local shell. Off keeps the server saved but invisible to it. Every call is logged to
+          ~/.config/warden/ssh_audit.jsonl.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={host.requireApproval}
+            onChange={(e) => onChange({ ...host, requireApproval: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Ask me before every command or file transfer</span>
+        </span>
+        <span className="settings-hint">
+          A prompt shows the exact command or paths and waits for your yes. Only this app and the interactive CLI can
+          ask — on Telegram, WhatsApp, mobile and sub-agents the AI is refused on this server instead.
         </span>
       </label>
 
@@ -966,7 +982,7 @@ function SettingsView() {
   function addSshHost() {
     setForm((f) => ({
       ...f,
-      sshHosts: [...f.sshHosts, { id: nextSshHostId(f.sshHosts), host: "", user: "", port: 22, identityFile: "", enabled: false, agents: [] }],
+      sshHosts: [...f.sshHosts, { id: nextSshHostId(f.sshHosts), host: "", user: "", port: 22, identityFile: "", enabled: false, agents: [], requireApproval: false }],
     }));
   }
 

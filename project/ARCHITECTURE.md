@@ -1066,6 +1066,35 @@ dos hosts; um host restrito só àquele agente ficava com lista vazia = "todos o
 que esvazia a lista **desliga** o host (`enabled = false`). No CLI, `/agents remove` não mexe nos hosts:
 o host continua citando um agente que não existe, e ninguém o alcança (falha fechada).
 
-O CLI registra a tool uma vez na inicialização (diferente de agentes/modelos, relidos a cada turno), então
+O CLI registra as tools uma vez na inicialização (diferente de agentes/modelos, relidos a cada turno), então
 mudanças por `/ssh` só valem na próxima vez que o Warden inicia; o desktop reconstrói o orquestrador ao
 salvar as Settings.
+
+### Transferência de arquivos, auditoria e aprovação (P47, Sessão 79)
+
+`ssh_exec`, `ssh_upload` e `ssh_download` são um só tipo (`SshTool`) sobre um `SshContext`: mesma lista de hosts,
+mesmo escopo por agente, mesma aprovação, mesmo log. Decisões confirmadas com o usuário antes de codar:
+
+- **Transferência sobre o `ssh`, sem `scp`/`sftp`**: o arquivo é o stdin (upload) ou o stdout (download) do
+  próprio `ssh`, e o remoto roda `sh -c 'set -C; cat > <path>'` / `sh -c 'cat -- <path>'`. Reusa `ssh_args`
+  (mesmo endurecimento) e não traz outro parser de opções. O caminho remoto passa por `shell_quote` (aspas simples
+  com escape) e o comando vai dentro de `sh -c` para não depender do shell de login (fish/csh não leem `set -C`).
+  Exige `sh` e `cat` no remoto.
+- **Sem sobrescrever por engano**: upload usa `set -C` (noclobber) e o download recusa destino existente, ambos
+  liberados só com `overwrite=true`. O download grava em `<destino>.part` e renomeia no sucesso, então conexão
+  caída, timeout ou arquivo acima do teto (100 MB) não deixam um arquivo pela metade.
+- **Caminho local sem sandbox** (decisão explícita): relativo à raiz do vault ou absoluto, a mesma confiança do
+  `shell` e dos file tools. O freio é a aprovação por host, e cada transferência entra no log.
+- **Auditoria**: `~/.config/warden/ssh_audit.jsonl`, uma linha por chamada — inclusive as recusadas
+  (`approval` = `not_required|approved|denied|unavailable`). Grava comando/caminhos e o resultado, **nunca
+  stdout/stderr**. Arquivo `0600`. Falha ao gravar vira aviso, nunca derruba a chamada. Sem rotação.
+- **Aprovação por comando**: `require_approval` por host. `Approver` (trait no core) + `Tool::with_approver` +
+  `Orchestrator::with_approver`, o mesmo molde do escopo por agente. Só o **CLI interativo** e o **desktop**
+  passam um approver; **todo outro caminho recusa** (falha fechada): CLI não interativo, Telegram, WhatsApp,
+  mobile, MCP server e sub-agentes (`delegate_task` tem o próprio orquestrador, sem approver). Sem resposta em
+  120 s = recusa. Entrada inválida é recusada antes de perguntar.
+- **Por que só esses dois canais**: o orquestrador roda o loop de tools inteiro dentro de um `handle_turn`, então o
+  approver precisa de um caminho de volta até quem é dono da tela. No CLI o turno roda numa task e o laço de
+  `run_turn` (dono do terminal) recebe o pedido por um `mpsc` + `oneshot`; no desktop é um evento Tauri e um
+  comando (`resolve_ssh_approval`). Telegram/WhatsApp precisariam de botão inline ou resposta em mensagem, e não
+  deu para testar contra os serviços reais.

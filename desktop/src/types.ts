@@ -124,6 +124,18 @@ export interface SshHostEntry {
   enabled: boolean;
   /** Agent ids allowed to use it. Empty = every agent and every channel without an agent. */
   agents: string[];
+  /** Ask before every command or file transfer on this server (only the desktop and the interactive
+   * CLI can ask — any other channel is refused instead). */
+  requireApproval: boolean;
+}
+
+/** Payload of the `ssh-approval-request` event (`ssh_cmds::ApprovalPayload`) — one SSH action the
+ * AI wants to run on a server that requires approval. Answered through `resolve_ssh_approval`. */
+export interface SshApprovalRequest {
+  id: number;
+  hostId: string;
+  action: string;
+  detail: string;
 }
 
 /** Mirrors `warden_bootstrap::StorageProviderKind` (P61) — where the vault's memory lives.
