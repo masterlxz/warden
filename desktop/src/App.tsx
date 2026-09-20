@@ -22,6 +22,7 @@ const emptySettings: Settings = {
   defaultModels: {},
   mcpServers: [],
   agents: [],
+  sshHosts: [],
   storageProvider: "local",
   remoteNode: null,
   gitSync: null,

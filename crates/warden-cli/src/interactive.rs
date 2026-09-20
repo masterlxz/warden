@@ -61,12 +61,13 @@ use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
     build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_provider_references,
     rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
-    Provider, ProviderConfig,
+    Provider, ProviderConfig, SshHostConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
+use warden_core::tool::ssh::test_connection;
 use warden_core::tool::Tool;
 
 use crate::commands::{self, Command, ParseOutcome};
@@ -1067,6 +1068,12 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/skills file <nome> <arquivo> — ver um arquivo anexado à skill",
         "/skills attach <nome> <arquivo> <caminho> — anexar à skill uma cópia de um arquivo de texto local (script, modelo…)",
         "/skills detach <nome> <arquivo> — remover um arquivo anexado (pede confirmação)",
+        "/ssh — listar os servidores SSH cadastrados",
+        "/ssh add — cadastrar um servidor SSH (a chave privada é só um caminho)",
+        "/ssh edit <id> — editar um servidor",
+        "/ssh remove <id> — remover um servidor (pede confirmação)",
+        "/ssh on <id> | off <id> — liberar ou bloquear o servidor pra IA",
+        "/ssh test <id> — testar a conexão (a chave do servidor precisa já estar no known_hosts)",
         "/sync — status da sincronização (pendências, último push/pull)",
         "/sync push — enviar mudanças locais (mostra QR pro TruthID escanear)",
         "/sync pull — buscar a versão mais recente",
@@ -1410,6 +1417,144 @@ async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession,
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' removido"), Style::default())])
+}
+
+/// The note every SSH card that changes what the AI can reach ends with: the tool is registered once
+/// at startup (unlike agents/models, which are re-read each turn), so a change applies next launch.
+const SSH_RESTART_NOTE: &str = "vale a partir da próxima vez que o Warden for iniciado";
+
+async fn cmd_ssh_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if config.ssh_hosts.is_empty() {
+        return render_message_card(terminal, "ssh", accent_style(), vec![("nenhum servidor cadastrado — use /ssh add".to_string(), Style::default())]);
+    }
+    let lines = config
+        .ssh_hosts
+        .iter()
+        .map(|h| {
+            let state = if h.enabled { "liberado" } else { "bloqueado" };
+            let who = if h.agents.is_empty() { "todos os agentes e canais".to_string() } else { format!("só: {}", h.agents.join(", ")) };
+            (format!("{} — {}@{}:{} [{}] ({})", h.id, h.user, h.host, h.port, state, who), Style::default())
+        })
+        .collect();
+    render_message_card(terminal, "ssh", accent_style(), lines)
+}
+
+fn ssh_cancelled(terminal: &mut CliTerminal, what: &str) -> anyhow::Result<()> {
+    render_message_card(terminal, "ssh", dim_style(), vec![(format!("{what} cancelada"), dim_style())])
+}
+
+/// Asks every field of an SSH host, pre-filled from `current` when editing. `Ok(None)` means the
+/// user cancelled (Esc/Ctrl+C); a rejected value renders its error and also yields `None`, so
+/// nothing half-valid is ever saved — the final `validate()` is the same one `ssh_exec` runs.
+async fn prompt_ssh_host(terminal: &mut CliTerminal, config: &FileConfig, current: Option<&SshHostConfig>) -> anyhow::Result<Option<SshHostConfig>> {
+    let keep_id = current.map(|h| h.id.as_str());
+    let Some(id) = prompt_field(terminal, " id (nome único do servidor) ", keep_id.unwrap_or("")).await? else {
+        return Ok(None);
+    };
+    let id = id.trim().to_string();
+    if id.is_empty() || (Some(id.as_str()) != keep_id && config.ssh_hosts.iter().any(|h| h.id == id)) {
+        render_message_card(terminal, "erro", error_style(), vec![("o id não pode ser vazio nem repetir o de outro servidor".to_string(), Style::default())])?;
+        return Ok(None);
+    }
+    let Some(host) = prompt_field(terminal, " host (IP ou domínio) ", current.map_or("", |h| h.host.as_str())).await? else {
+        return Ok(None);
+    };
+    let Some(user) = prompt_field(terminal, " usuário ", current.map_or("", |h| h.user.as_str())).await? else {
+        return Ok(None);
+    };
+    let Some(port) = prompt_field(terminal, " porta ", &current.map_or(22, |h| h.port).to_string()).await? else {
+        return Ok(None);
+    };
+    let Ok(port) = port.trim().parse::<u16>() else {
+        render_message_card(terminal, "erro", error_style(), vec![("porta inválida — use um número de 1 a 65535".to_string(), Style::default())])?;
+        return Ok(None);
+    };
+    let Some(identity) = prompt_field(terminal, " arquivo da chave privada (só o caminho; vazio = ssh-agent) ", current.and_then(|h| h.identity_file.as_deref()).unwrap_or("")).await? else {
+        return Ok(None);
+    };
+    let Some(agents) = prompt_field(terminal, " agentes autorizados (ids separados por vírgula; vazio = todos os agentes e canais) ", &current.map_or(String::new(), |h| h.agents.join(", "))).await? else {
+        return Ok(None);
+    };
+    let agents: Vec<String> = agents.split(',').map(str::trim).filter(|a| !a.is_empty()).map(str::to_string).collect();
+    if let Some(unknown) = agents.iter().find(|a| !config.agents.iter().any(|known| &known.id == *a)) {
+        render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{unknown}' não existe — veja /agents"), Style::default())])?;
+        return Ok(None);
+    }
+    let Some(enabled) = prompt_field(terminal, " liberar pra IA? ela roda qualquer comando como esse usuário, sem sandbox nem aprovação (s/n) ", if current.is_some_and(|h| h.enabled) { "s" } else { "n" }).await? else {
+        return Ok(None);
+    };
+    let enabled = matches!(enabled.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes");
+
+    let host = SshHostConfig { id, host: host.trim().to_string(), user: user.trim().to_string(), port, identity_file: non_empty(identity), enabled, agents };
+    if let Err(err) = host.to_host().validate() {
+        render_message_card(terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
+        return Ok(None);
+    }
+    Ok(Some(host))
+}
+
+async fn wizard_ssh_add(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(host) = prompt_ssh_host(terminal, &config, None).await? else {
+        return ssh_cancelled(terminal, "criação");
+    };
+    let id = host.id.clone();
+    config.ssh_hosts.push(host);
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' cadastrado — {SSH_RESTART_NOTE}"), Style::default())])
+}
+
+async fn wizard_ssh_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(index) = config.ssh_hosts.iter().position(|h| h.id == target_id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("servidor '{target_id}' não encontrado"), Style::default())]);
+    };
+    let current = config.ssh_hosts[index].clone();
+    let Some(host) = prompt_ssh_host(terminal, &config, Some(&current)).await? else {
+        return ssh_cancelled(terminal, "edição");
+    };
+    let id = host.id.clone();
+    config.ssh_hosts[index] = host;
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' atualizado — {SSH_RESTART_NOTE}"), Style::default())])
+}
+
+async fn cmd_ssh_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    if !config.ssh_hosts.iter().any(|h| h.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("servidor '{id}' não encontrado"), Style::default())]);
+    }
+    let Some(answer) = prompt_field(terminal, &format!(" remover o servidor '{id}'? (s/n) "), "").await? else {
+        return ssh_cancelled(terminal, "remoção");
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return ssh_cancelled(terminal, "remoção");
+    }
+    config.ssh_hosts.retain(|h| h.id != id);
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' removido — {SSH_RESTART_NOTE}"), Style::default())])
+}
+
+async fn cmd_ssh_enable(terminal: &mut CliTerminal, session: &mut CliSession, id: String, enabled: bool) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(host) = config.ssh_hosts.iter_mut().find(|h| h.id == id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("servidor '{id}' não encontrado"), Style::default())]);
+    };
+    host.enabled = enabled;
+    save_config_or_report(session, &config).await?;
+    let state = if enabled { "liberado pra IA" } else { "bloqueado pra IA" };
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' {state} — {SSH_RESTART_NOTE}"), Style::default())])
+}
+
+async fn cmd_ssh_test(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(entry) = config.ssh_hosts.iter().find(|h| h.id == id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("servidor '{id}' não encontrado"), Style::default())]);
+    };
+    let outcome = test_connection(&entry.to_host()).await?;
+    let (title, style) = if outcome.ok { ("ssh", accent_style()) } else { ("erro", error_style()) };
+    render_message_card(terminal, title, style, vec![(outcome.message, Style::default())])
 }
 
 /// Builds a `SkillStore` over the same vault this CLI session already uses — fresh per command,
@@ -1826,6 +1971,12 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::SkillsFile(name, file) => cmd_skills_file(terminal, session, name, file).await,
         Command::SkillsAttach { skill, file, source } => cmd_skills_attach(terminal, session, skill, file, source).await,
         Command::SkillsDetach(name, file) => cmd_skills_detach(terminal, session, name, file).await,
+        Command::SshList => cmd_ssh_list(terminal, session).await,
+        Command::SshAdd => wizard_ssh_add(terminal, session).await,
+        Command::SshEdit(id) => wizard_ssh_edit(terminal, session, id).await,
+        Command::SshRemove(id) => cmd_ssh_remove(terminal, session, id).await,
+        Command::SshEnable(id, enabled) => cmd_ssh_enable(terminal, session, id, enabled).await,
+        Command::SshTest(id) => cmd_ssh_test(terminal, session, id).await,
         Command::SyncStatus => cmd_sync_status(terminal, session).await,
         Command::SyncPush => cmd_sync_push(terminal, session).await,
         Command::SyncPull => cmd_sync_pull(terminal, session).await,

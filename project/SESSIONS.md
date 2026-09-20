@@ -2,7 +2,38 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 77)
+> Última atualização: 2026-09-20 (Sessão 78)
+
+---
+
+### 2026-09-20 — Sessão 78
+
+- **Objetivo**: P47 — a IA rodar comandos em VPS/máquinas cadastradas por SSH. Plano aprovado antes de
+  codar (Plan mode); decisões confirmadas com o usuário: binário `ssh` do sistema, liberação por host e por
+  agente com comando livre (sem aprovação por comando), escopo = só conectar em máquinas existentes.
+
+**O que foi feito**:
+
+- **Núcleo**: `tool/ssh.rs` (`SshHost` + `validate`, `ssh_args`, `run_on_host`, `test_connection`,
+  `SshExecTool`). Trait `Tool` ganhou `scoped_to_agent` e `is_available` (defaults no-op), usados por
+  `Orchestrator::with_agent` e pelo filtro de specs — a tool some do que o modelo vê quando o agente não
+  alcança nenhum host.
+- **Config/bootstrap**: `FileConfig.ssh_hosts` (`SshHostConfig`, `enabled` default `false`), `build_ssh_tool`
+  registra só com host habilitado e válido.
+- **Desktop**: `ssh_cmds.rs` (payload, validação no save, `test_ssh_host`) + seção "SSH servers" nas Settings.
+- **CLI**: `/ssh` com list/add/edit/remove/on/off/test.
+- **Achados**: (1) o `--` antes do host **já protege** de opção depois do host no OpenSSH 10.5 (verificado com
+  `ssh -G`; sem ele o `-oProxyCommand` seria aplicado) — eu tinha afirmado o contrário sem verificar; a recusa de
+  comando começando com `-` ficou como defesa em profundidade e o comentário/`ARCHITECTURE.md` foram corrigidos.
+  (2) apagar um agente na UI deixava um host restrito só a ele com lista vazia = "todos os agentes"
+  (fail-open) — agora a poda desliga o host.
+- **Verificação**: `cargo test --workspace` 437 verdes, clippy limpo, `npm run build` verde; E2E real com Gemini
+  contra `sshd` descartável em localhost (comandos, exit codes, host key recusada, host desligado invisível), pty
+  do CLI e Playwright do desktop. **Não feito**: app Tauri aberto, Windows/macOS, outros provedores de modelo.
+- Nada foi tocado em `~/.ssh` (o `known_hosts` de teste veio por um wrapper `ssh` no PATH); o `sshd` e a cópia
+  do config com a chave da API foram removidos ao fim.
+
+**Ainda aberto no P47**: ver `PENDING.md` (provisionar VPS, upload/download, aprovação por comando, auditoria).
 
 ---
 

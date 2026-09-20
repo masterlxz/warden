@@ -114,7 +114,11 @@ impl Orchestrator {
                 "read_skill_file" => {
                     *tool = Arc::new(crate::tool::skill_tools::ReadSkillFileTool::new(store).for_agent(agent_id.clone()))
                 }
-                _ => {}
+                _ => {
+                    if let Some(scoped) = tool.scoped_to_agent(agent_id.as_deref()) {
+                        *tool = scoped;
+                    }
+                }
             }
         }
         clone.agent_id = agent_id;
@@ -261,7 +265,7 @@ impl Orchestrator {
         messages.extend(history.iter().cloned());
         messages.push(Message::user_with_attachments(user_input, attachments));
 
-        let tool_specs = self.tools.iter().map(|t| t.spec()).collect::<Vec<_>>();
+        let tool_specs = self.tools.iter().filter(|t| t.is_available()).map(|t| t.spec()).collect::<Vec<_>>();
 
         let mut usage = Usage::default();
         let mut has_usage = false;
@@ -745,6 +749,44 @@ mod tests {
         assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_err());
         let tool = as_writer.tools().iter().find(|t| t.spec().name == "use_skill").unwrap();
         assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_ok());
+    }
+
+    /// Replies with the names of the tools it was offered, comma-separated.
+    struct EchoesToolNamesModel;
+
+    #[async_trait]
+    impl ModelProvider for EchoesToolNamesModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let names = tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>().join(",");
+            Ok(response_stream(Response { content: names, tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    #[tokio::test]
+    async fn with_agent_hides_ssh_exec_from_an_agent_that_cannot_reach_any_host() {
+        use crate::tool::ssh::{SshExecTool, SshHost};
+        let host = |id: &str, agents: &[&str]| SshHost {
+            id: id.into(),
+            host: "example.com".into(),
+            user: "deploy".into(),
+            port: 22,
+            identity_file: None,
+            agents: agents.iter().map(|a| a.to_string()).collect(),
+        };
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        orchestrator.register_tool(Arc::new(SshExecTool::new(vec![host("prod", &["ops"])])));
+
+        // No agent, and a different agent: the tool isn't even advertised.
+        let none = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;
+        assert!(!none.contains("ssh_exec"));
+        let other = orchestrator.with_agent(Some("writer".into())).handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content;
+        assert!(!other.contains("ssh_exec"));
+
+        // The allowed agent gets it, and re-scoping an already-scoped copy doesn't lose the host.
+        let ops = orchestrator.with_agent(Some("ops".into()));
+        assert!(ops.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
+        let back_and_forth = ops.with_agent(Some("writer".into())).with_agent(Some("ops".into()));
+        assert!(back_and_forth.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ mod qr;
 mod recording;
 mod server_cmds;
 mod skills_cmds;
+mod ssh_cmds;
 mod sync_cmds;
 mod vault_cmds;
 mod workspace_cmds;
@@ -396,6 +397,8 @@ struct SettingsSnapshot {
     /// the Sync screen's manual push/pull (and the auto-sync loop) use, not where the vault itself
     /// lives day-to-day.
     git_sync: Option<GitSyncConfigPayload>,
+    /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
+    ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
 }
 
 #[derive(Deserialize)]
@@ -412,6 +415,7 @@ struct SettingsFormPayload {
     storage_provider: String,
     remote_node: Option<RemoteNodeConfigPayload>,
     git_sync: Option<GitSyncConfigPayload>,
+    ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
 }
 
 /// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
@@ -483,6 +487,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
         remote_node: config.remote_node.map(RemoteNodeConfigPayload::from),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
+        ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
     })
 }
 
@@ -567,6 +572,8 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         }
         agents.push(AgentConfig { id, persona: a.persona, provider_id, can_delegate_to_agents: a.can_delegate_to_agents });
     }
+
+    let ssh_hosts = ssh_cmds::hosts_into_config(payload.ssh_hosts, &agents)?;
 
     let active_provider = non_empty(payload.active_provider);
     if let Some(active_id) = &active_provider {
@@ -663,6 +670,7 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         // Owned by `server_cmds::save_embedded_server_config`/`start_embedded_server`, not this
         // general Settings save — carry forward unchanged, same reasoning as `git_sync` above.
         embedded_server: existing.embedded_server,
+        ssh_hosts,
     };
 
     // Real migration (P61): when the user actually changes which backend the vault's memory
@@ -871,6 +879,7 @@ pub fn run() {
             git_sync_cmds::git_sync_pull,
             vault_cmds::list_vault_files,
             vault_cmds::read_vault_file,
+            ssh_cmds::test_ssh_host,
             skills_cmds::list_skills,
             skills_cmds::save_skill,
             skills_cmds::delete_skill,

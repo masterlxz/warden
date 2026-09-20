@@ -135,6 +135,10 @@ a máquina local (tool `shell`, Fase 5.5). Usuário também quer que a IA possa 
 de infraestrutura — escopo exato (provisionar um VPS do zero? só conectar num já existente?)
 ainda não detalhado. Ver P47.
 
+**Atualizado (Sessão 78)**: a v1 — conectar em máquinas já existentes, com `ssh_exec` e liberação por
+host/agente — está feita (ver P47 e `ARCHITECTURE.md`). Continuam no roadmap: provisionar VPS via API de
+provedor, upload/download por `scp`, aprovação humana por comando e log de auditoria.
+
 ### Avatares/personas para agentes (3D, animações)
 
 Ideia nova (2026-09-06), bem mais ambiciosa: dar um "personagem" visual a um agente — ex. um

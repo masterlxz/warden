@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod mcp_oauth;
 pub mod shell;
 pub mod skill_tools;
+pub mod ssh;
 
 /// `Serialize`/`Deserialize` let this be reused directly as the wire shape for a client-advertised
 /// tool (`warden-server`'s `ClientMessage::Hello.tools`, Fase 7.4) — no parallel wire struct needed.
@@ -29,6 +30,21 @@ pub struct ToolSpec {
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
     async fn call(&self, args: Value) -> anyhow::Result<Value>;
+
+    /// A copy of this tool scoped to `agent` (`None` = no agent, e.g. a plain Telegram chat), or
+    /// `None` when the tool doesn't care which agent is speaking. Called by
+    /// `Orchestrator::with_agent`; a tool that restricts what an agent may reach (`ssh_exec`)
+    /// overrides it, and must keep enough state to be re-scoped again later.
+    fn scoped_to_agent(&self, _agent: Option<&str>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
+    /// Whether the model should be offered this tool right now. The orchestrator leaves a tool
+    /// out of the specs it advertises when this is `false` (e.g. an agent with no reachable SSH
+    /// host), so it never sees a tool it can't use.
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 /// A source of tools that isn't known until runtime — unlike `Tool`, which is a single

@@ -24,6 +24,7 @@ use warden_core::tool::mcp::McpToolProvider;
 use warden_core::skill::SkillStore;
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::skill_tools::{ManageSkillTool, ReadSkillFileTool, UseSkillTool};
+use warden_core::tool::ssh::{SshExecTool, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod skill_gen;
@@ -106,6 +107,50 @@ pub struct AgentConfig {
     /// still parses — same reasoning as `McpServerConfig::Http::oauth`.
     #[serde(default)]
     pub can_delegate_to_agents: bool,
+}
+
+/// One SSH server the AI may run commands on through the `ssh_exec` tool (P47). Edited from the
+/// desktop Settings screen or the CLI's `/ssh`. Only the *path* to a private key lives here, never
+/// the key itself, and there is no passphrase field: a protected key has to be loaded in the
+/// user's ssh-agent.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SshHostConfig {
+    /// User-chosen, unique among `ssh_hosts` — the only handle the model uses to pick a server.
+    pub id: String,
+    pub host: String,
+    pub user: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// Path to a private key (passed as `ssh -i`). `None` leaves it to ssh-agent and `~/.ssh/config`.
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    /// Master switch. `false` (also the default for a hand-written entry that omits it) keeps the
+    /// host registered but invisible to the model.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Agents allowed to use this host. Empty means every agent and every channel without an agent
+    /// (Telegram, WhatsApp, mobile, the MCP server) — the same trust as the `shell` tool.
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+impl SshHostConfig {
+    /// The core-side shape, which has no `enabled` flag (disabled hosts never reach the tool).
+    pub fn to_host(&self) -> SshHost {
+        SshHost {
+            id: self.id.clone(),
+            host: self.host.clone(),
+            user: self.user.clone(),
+            port: self.port,
+            identity_file: self.identity_file.clone(),
+            agents: self.agents.clone(),
+        }
+    }
 }
 
 /// Config for `StorageProviderKind::RemoteNode` (P61, v2) — which `warden-server` hub both this
@@ -241,6 +286,10 @@ pub struct FileConfig {
     /// never configured (equivalent to `enabled: false`, but distinct so the Settings UI can tell
     /// "never set up" from "set up, currently off"). See `EmbeddedServerConfig`'s own doc comment.
     pub embedded_server: Option<EmbeddedServerConfig>,
+    /// SSH servers the AI can run commands on (P47) — empty by default, so no `ssh_exec` tool
+    /// exists until at least one *enabled* host is registered.
+    #[serde(default)]
+    pub ssh_hosts: Vec<SshHostConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -1056,6 +1105,10 @@ pub async fn bootstrap(
         );
     }
 
+    if let Some(tool) = build_ssh_tool(&config.ssh_hosts) {
+        base_tools.push(tool);
+    }
+
     for server in &config.mcp_servers {
         let name = server.name();
         let connect = match server {
@@ -1079,6 +1132,22 @@ pub async fn bootstrap(
     let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path);
 
     Ok(orchestrator)
+}
+
+/// The `ssh_exec` tool for the enabled hosts in `config`, or `None` when there are none — same
+/// "the tool doesn't exist until you turn it on" posture as `shell`, without a global flag since
+/// each host already has its own switch. A host that fails validation (e.g. a hand-edited
+/// `host = "-oProxyCommand=..."`) is skipped with a note rather than aborting startup.
+fn build_ssh_tool(entries: &[SshHostConfig]) -> Option<Arc<dyn Tool>> {
+    let mut hosts = Vec::new();
+    for entry in entries.iter().filter(|h| h.enabled) {
+        let host = entry.to_host();
+        match host.validate() {
+            Ok(()) => hosts.push(host),
+            Err(err) => eprintln!("note: ssh host skipped — {err:#}\n"),
+        }
+    }
+    (!hosts.is_empty()).then(|| Arc::new(SshExecTool::new(hosts)) as Arc<dyn Tool>)
 }
 
 /// Default for how many levels deep a sub-agent spawned via `DelegateTool` can itself delegate
@@ -1405,6 +1474,15 @@ oauth = true
                 auth_key: "embedded-secret".to_string(),
                 server_name: Some("Fabio's Desktop".to_string()),
             }),
+            ssh_hosts: vec![SshHostConfig {
+                id: "vps".to_string(),
+                host: "203.0.113.7".to_string(),
+                user: "deploy".to_string(),
+                port: 2222,
+                identity_file: Some("/home/me/.ssh/id_ed25519".to_string()),
+                enabled: true,
+                agents: vec!["ops".to_string()],
+            }],
         };
 
         save_config(&path, &config).unwrap();
@@ -1531,6 +1609,45 @@ oauth = true
         );
         assert_eq!(resolve_secret(None, Some("from-file".to_string())), Some("from-file".to_string()));
         assert_eq!(resolve_secret(None, None), None);
+    }
+
+    fn ssh_entry(id: &str, host: &str, enabled: bool) -> SshHostConfig {
+        SshHostConfig {
+            id: id.to_string(),
+            host: host.to_string(),
+            user: "deploy".to_string(),
+            port: 22,
+            identity_file: None,
+            enabled,
+            agents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ssh_host_entry_defaults_are_safe_when_fields_are_omitted() {
+        let config: FileConfig = toml::from_str("[[ssh_hosts]]\nid = \"vps\"\nhost = \"example.com\"\nuser = \"me\"\n").unwrap();
+
+        let host = &config.ssh_hosts[0];
+        assert_eq!(host.port, 22);
+        assert!(!host.enabled, "a hand-written entry must not be live until switched on");
+        assert!(host.agents.is_empty() && host.identity_file.is_none());
+        // And a config with no ssh section at all still parses.
+        assert!(toml::from_str::<FileConfig>("enable_shell = true").unwrap().ssh_hosts.is_empty());
+    }
+
+    #[test]
+    fn build_ssh_tool_only_registers_enabled_and_valid_hosts() {
+        assert!(build_ssh_tool(&[ssh_entry("off", "example.com", false)]).is_none());
+        assert!(build_ssh_tool(&[]).is_none());
+        assert!(build_ssh_tool(&[ssh_entry("bad", "-oProxyCommand=evil", true)]).is_none());
+
+        let tool = build_ssh_tool(&[
+            ssh_entry("off", "a.example.com", false),
+            ssh_entry("bad", "-oProxyCommand=evil", true),
+            ssh_entry("web", "b.example.com", true),
+        ])
+        .unwrap();
+        assert_eq!(tool.spec().parameters["properties"]["host_id"]["enum"], serde_json::json!(["web"]));
     }
 
     #[test]

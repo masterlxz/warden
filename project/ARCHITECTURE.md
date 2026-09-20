@@ -1022,3 +1022,50 @@ DTO: `save` só reescreve o `.md`, então editar por lá **preserva** os anexos.
 sobrescreve) sobre o `SkillStore` do vault hospedado, respondendo inline (E/S curta, sem `spawn`).
 Não passam pelo gate de pareamento do `CallDeviceTool`: quem tem a `auth_key` já pode mandar o modelo
 escrever no vault via `write_file`, então gatear só as skills não protegeria nada.
+
+
+## SSH em servidores externos (P47, Sessão 77)
+
+A tool `ssh_exec` roda um comando num servidor cadastrado em `config.toml` (`[[ssh_hosts]]`, editável
+no desktop em Settings → "SSH servers" e no CLI por `/ssh`). Decisões confirmadas com o usuário antes de
+codar (plano aprovado):
+
+- **Transporte = o binário `ssh` do sistema**, não uma lib SSH em Rust. Mesmo padrão do `warden-sync`,
+  que chama o `git`: herda `known_hosts`, ssh-agent e `~/.ssh/config` sem dependência nova. Custo: exige
+  OpenSSH instalado (Linux/Mac sempre, Windows 10+; só o Linux foi testado).
+- **Controle = liberar por host e por agente, comando livre.** Cada host tem `enabled` (default `false`)
+  e `agents` (vazio = todos os agentes **e** canais sem agente — Telegram, WhatsApp, mobile, MCP server —
+  a mesma confiança do `shell`). Sem prompt de aprovação por comando e sem allowlist de comandos: o
+  orquestrador não tem confirmação por chamada em nenhum canal, e filtrar prefixo de string é fácil de
+  burlar com `;`/`&&`.
+- **A chave privada nunca entra no `config.toml`**: só o caminho (`identity_file`). Sem passphrase
+  guardada; chave protegida usa o ssh-agent.
+- **O modelo só escolhe um `host_id`**, nunca hostname nem usuário. `spec()` é dinâmica e lista só os
+  hosts que o agente atual pode usar (o `host_id` vira um `enum` no schema).
+- **Escopo por agente** passa pelo mesmo ponto do `use_skill`, `Orchestrator::with_agent`, mas via dois
+  métodos novos com default no trait `Tool`: `scoped_to_agent` (devolve uma cópia da tool para o agente)
+  e `is_available` (o orquestrador não anuncia a tool ao modelo se ela devolver `false`, ex. agente sem
+  host visível). A cópia mantém a lista completa de hosts e só troca o agente, então re-escopar
+  (`with_agent` em cima de `with_agent`) nunca perde hosts.
+- **Registro**: `bootstrap()` só registra `ssh_exec` se houver ao menos um host `enabled` e válido
+  (`build_ssh_tool`); sem flag global, cada host já tem a sua chave.
+
+**Endurecimento (o que a chamada `ssh` não faz por padrão)**: `BatchMode=yes` (nunca fica esperando
+senha/passphrase), `StrictHostKeyChecking=yes` (host key desconhecida é erro com dica, nunca é aceita
+sozinha — o usuário confia na chave rodando `ssh` uma vez num terminal), `ConnectTimeout=10`, `--` antes
+do host. `host`/`user` só aceitam `[A-Za-z0-9._:%-]`/`[A-Za-z0-9._-]` e não começam com `-` (barra
+`-oProxyCommand=…` e URI `ssh://…`, que o `ssh` aceita na posição do host e que sobrescreve `-l`/`-p`),
+validados ao salvar **e** a cada chamada. **Verificado com o `ssh` real (`ssh -G`, OpenSSH 10.5)**: sem
+`--`, uma opção depois do hostname é aplicada (`-oProxyCommand=…` rodaria código **local**); com `--`,
+não é. Então o `--` já protege nesta versão, e `run_on_host` recusa também um `command` que comece com `-`
+como defesa em profundidade, porque só esta versão foi testada (outras versões do OpenSSH, o port do
+Windows ou um wrapper no PATH podem interpretar diferente).
+
+**Achado de fail-open no desktop (corrigido antes de fechar)**: apagar um agente podava o id das listas
+dos hosts; um host restrito só àquele agente ficava com lista vazia = "todos os agentes". Agora a poda
+que esvazia a lista **desliga** o host (`enabled = false`). No CLI, `/agents remove` não mexe nos hosts:
+o host continua citando um agente que não existe, e ninguém o alcança (falha fechada).
+
+O CLI registra a tool uma vez na inicialização (diferente de agentes/modelos, relidos a cada turno), então
+mudanças por `/ssh` só valem na próxima vez que o Warden inicia; o desktop reconstrói o orquestrador ao
+salvar as Settings.

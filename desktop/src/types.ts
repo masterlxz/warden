@@ -110,6 +110,22 @@ export interface AgentEntry {
   canDelegateToAgents: boolean;
 }
 
+/** Mirrors `ssh_cmds::SshHostPayload` (P47) — an SSH server the AI can run commands on through the
+ * `ssh_exec` tool. Only the *path* of a private key is stored, never the key. */
+export interface SshHostEntry {
+  /** Unique; the only handle the model uses to pick this server. */
+  id: string;
+  host: string;
+  user: string;
+  port: number;
+  /** Path to a private key — empty string leaves it to ssh-agent and `~/.ssh/config`. */
+  identityFile: string;
+  /** Master switch: off keeps the host registered but invisible to the model. */
+  enabled: boolean;
+  /** Agent ids allowed to use it. Empty = every agent and every channel without an agent. */
+  agents: string[];
+}
+
 /** Mirrors `warden_bootstrap::StorageProviderKind` (P61) — where the vault's memory lives.
  * `remoteNode` (v2) is selectable — see `RemoteNodeConfig` for its connection form. `managedCloud`
  * (v3) has no working implementation yet (`build_storage_provider` errors on it); the Settings
@@ -286,6 +302,8 @@ export interface Settings {
   defaultModels: Record<string, string>;
   mcpServers: McpServer[];
   agents: AgentEntry[];
+  /** SSH servers the AI can run commands on (P47). */
+  sshHosts: SshHostEntry[];
   /** Where the vault's memory lives (P61) — defaults to `"local"` for every install that
    * predates this field. Picking `"decentralized_vault"` doesn't turn on Arweave backup by
    * itself: that still goes exclusively through the separate Sync screen. */

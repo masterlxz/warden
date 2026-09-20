@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use crate::memory::Vault;
 use crate::tool::{Tool, ToolSpec};
 
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const MAX_TIMEOUT_MS: u64 = 300_000;
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const MAX_TIMEOUT_MS: u64 = 300_000;
 const MAX_OUTPUT_BYTES: usize = 20_000;
 
 /// Runs a shell command on the local machine. Deliberately no sandboxing or allowlist — same
@@ -119,7 +119,7 @@ fn platform_shell_command(command: &str) -> tokio::process::Command {
 
 /// Cuts `s` down to `MAX_OUTPUT_BYTES` so a runaway command can't blow up the model's context,
 /// backing off to the nearest char boundary so a multi-byte UTF-8 sequence never gets split.
-fn truncate(s: &str) -> String {
+pub(crate) fn truncate(s: &str) -> String {
     if s.len() <= MAX_OUTPUT_BYTES {
         return s.to_string();
     }

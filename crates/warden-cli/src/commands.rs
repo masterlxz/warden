@@ -32,6 +32,13 @@ pub enum Command {
     /// `/skills attach <skill> <file> <local path>` — copies a local text file into the skill.
     SkillsAttach { skill: String, file: String, source: String },
     SkillsDetach(String, String),
+    SshList,
+    SshAdd,
+    SshEdit(String),
+    SshRemove(String),
+    /// `/ssh on <id>` / `/ssh off <id>` — flips the master switch that lets the AI use a host.
+    SshEnable(String, bool),
+    SshTest(String),
     SyncStatus,
     SyncPush,
     SyncPull,
@@ -93,6 +100,13 @@ pub fn parse_command(input: &str) -> ParseOutcome {
             Command::SkillsAttach { skill: name.to_string(), file: file.to_string(), source: source.join(" ") }
         }
         ("skills", ["detach", name, file]) => Command::SkillsDetach(name.to_string(), file.to_string()),
+        ("ssh", []) => Command::SshList,
+        ("ssh", ["add"]) => Command::SshAdd,
+        ("ssh", ["edit", id]) => Command::SshEdit(id.to_string()),
+        ("ssh", ["remove", id]) => Command::SshRemove(id.to_string()),
+        ("ssh", ["on", id]) => Command::SshEnable(id.to_string(), true),
+        ("ssh", ["off", id]) => Command::SshEnable(id.to_string(), false),
+        ("ssh", ["test", id]) => Command::SshTest(id.to_string()),
         ("sync", []) => Command::SyncStatus,
         ("sync", ["push"]) => Command::SyncPush,
         ("sync", ["pull"]) => Command::SyncPull,
@@ -128,10 +142,11 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "skills", "sync"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "skills", "ssh", "sync"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
 const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
+const SSH_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "on", "off", "test"];
 const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair", "git"];
 
 /// Parses the word currently being typed (the last whitespace-separated token) out of a
@@ -153,6 +168,7 @@ fn current_word(input: &str) -> Option<(&str, Vec<&'static str>)> {
             "models" => MODELS_SUBCOMMANDS,
             "agents" => AGENTS_SUBCOMMANDS,
             "skills" => SKILLS_SUBCOMMANDS,
+            "ssh" => SSH_SUBCOMMANDS,
             "sync" => SYNC_SUBCOMMANDS,
             _ => return None,
         };
@@ -204,6 +220,19 @@ mod tests {
         assert!(matches!(parse_command("/models bogus"), ParseOutcome::Unrecognized(_)));
         assert!(matches!(parse_command("/models use"), ParseOutcome::Unrecognized(_)));
         assert!(matches!(parse_command("/"), ParseOutcome::Unrecognized(_)));
+    }
+
+    #[test]
+    fn ssh_commands_parse_with_their_arguments() {
+        assert!(matches!(assert_recognized("/ssh"), Command::SshList));
+        assert!(matches!(assert_recognized("/ssh add"), Command::SshAdd));
+        assert!(matches!(assert_recognized("/ssh edit vps"), Command::SshEdit(id) if id == "vps"));
+        assert!(matches!(assert_recognized("/ssh remove vps"), Command::SshRemove(id) if id == "vps"));
+        assert!(matches!(assert_recognized("/ssh on vps"), Command::SshEnable(id, true) if id == "vps"));
+        assert!(matches!(assert_recognized("/ssh off vps"), Command::SshEnable(id, false) if id == "vps"));
+        assert!(matches!(assert_recognized("/ssh test vps"), Command::SshTest(id) if id == "vps"));
+        assert!(matches!(parse_command("/ssh on"), ParseOutcome::Unrecognized(_)));
+        assert!(matches!(parse_command("/ssh bogus vps"), ParseOutcome::Unrecognized(_)));
     }
 
     #[test]

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, StorageProviderKind } from "../types";
+import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, SshHostEntry, StorageProviderKind } from "../types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -16,6 +16,7 @@ const emptySettings: Settings = {
   defaultModels: {},
   mcpServers: [],
   agents: [],
+  sshHosts: [],
   storageProvider: "local",
   remoteNode: null,
   gitSync: null,
@@ -365,6 +366,160 @@ function nextAgentId(existing: AgentEntry[]): string {
     n += 1;
   }
   return `agent-${n}`;
+}
+
+function nextSshHostId(existing: SshHostEntry[]): string {
+  let n = existing.length + 1;
+  while (existing.some((h) => h.id === `server-${n}`)) {
+    n += 1;
+  }
+  return `server-${n}`;
+}
+
+function SshHostCard({
+  host,
+  agents,
+  onChange,
+  onDelete,
+}: {
+  host: SshHostEntry;
+  agents: AgentEntry[];
+  onChange: (next: SshHostEntry) => void;
+  onDelete: () => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function testConnection() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await invoke<{ ok: boolean; message: string }>("test_ssh_host", { host }));
+    } catch (err) {
+      setTestResult({ ok: false, message: String(err) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  function toggleAgent(id: string, checked: boolean) {
+    onChange({ ...host, agents: checked ? [...host.agents.filter((a) => a !== id), id] : host.agents.filter((a) => a !== id) });
+  }
+
+  return (
+    <div className="provider-card">
+      <div className="provider-card-header">
+        <input
+          className="settings-input provider-name-input"
+          type="text"
+          placeholder="Name (e.g. my-vps)"
+          value={host.id}
+          onChange={(e) => onChange({ ...host, id: e.currentTarget.value })}
+        />
+        <button
+          type="button"
+          className="provider-delete-btn"
+          onClick={onDelete}
+          aria-label={`Delete ${host.id || "this server"}`}
+          title="Delete this server"
+        >
+          🗑
+        </button>
+      </div>
+
+      <label className="settings-field">
+        <span className="settings-label">Host</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="203.0.113.7 or server.example.com"
+          value={host.host}
+          onChange={(e) => onChange({ ...host, host: e.currentTarget.value })}
+        />
+      </label>
+
+      <label className="settings-field">
+        <span className="settings-label">User</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="deploy"
+          value={host.user}
+          onChange={(e) => onChange({ ...host, user: e.currentTarget.value })}
+        />
+      </label>
+
+      <label className="settings-field">
+        <span className="settings-label">Port</span>
+        <input
+          className="settings-input"
+          type="number"
+          min={1}
+          max={65535}
+          value={host.port}
+          onChange={(e) => onChange({ ...host, port: Number(e.currentTarget.value) })}
+        />
+      </label>
+
+      <label className="settings-field">
+        <span className="settings-label">Private key file (optional)</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="/home/you/.ssh/id_ed25519"
+          value={host.identityFile}
+          onChange={(e) => onChange({ ...host, identityFile: e.currentTarget.value })}
+        />
+        <span className="settings-hint">
+          Only the path is stored — Warden never reads or copies the key. Leave empty to use ssh-agent and your
+          ~/.ssh/config. A key with a passphrase must be loaded in ssh-agent; Warden can't type a passphrase.
+        </span>
+      </label>
+
+      <div className="settings-field">
+        <span className="settings-label">Available to</span>
+        {agents.length === 0 ? (
+          <span className="settings-hint">No agents configured, so every conversation can use this server.</span>
+        ) : (
+          <div className="skill-agent-list">
+            {agents.map((a) => (
+              <label className="skill-agent-option" key={a.id}>
+                <input type="checkbox" checked={host.agents.includes(a.id)} onChange={(e) => toggleAgent(a.id, e.currentTarget.checked)} />
+                {a.id}
+              </label>
+            ))}
+          </div>
+        )}
+        <span className="settings-hint">
+          None ticked means every agent <strong>and every chat without an agent</strong> (Telegram, WhatsApp, mobile)
+          can run commands here. Tick agents to restrict it to them.
+        </span>
+      </div>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input type="checkbox" checked={host.enabled} onChange={(e) => onChange({ ...host, enabled: e.currentTarget.checked })} />
+          <span className="settings-label">Let the AI use this server</span>
+        </span>
+        <span className="settings-hint">
+          The AI can run any command as this user, with no sandbox and no per-command approval — same trust as the
+          local shell. Off keeps the server saved but invisible to it.
+        </span>
+      </label>
+
+      <div className="settings-field">
+        <button type="button" className="settings-browse-btn" onClick={testConnection} disabled={testing}>
+          {testing ? "Testing…" : "Test connection"}
+        </button>
+        {testResult && (
+          <div className={testResult.ok ? "settings-success-banner" : "settings-error-banner"} role="status">
+            {testResult.ok ? "✓ " : "✗ "}
+            {testResult.message}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function AgentCard({
@@ -783,12 +938,44 @@ function SettingsView() {
     }));
   }
 
+  // An SSH host's "available to" list names agents by id, so renaming or deleting an agent must
+  // carry through to it — same dangling-reference care as the provider rename/delete above.
   function updateAgent(index: number, next: AgentEntry) {
-    setForm((f) => ({ ...f, agents: f.agents.map((a, i) => (i === index ? next : a)) }));
+    setForm((f) => {
+      const prevId = f.agents[index].id;
+      const sshHosts =
+        prevId === next.id ? f.sshHosts : f.sshHosts.map((h) => ({ ...h, agents: h.agents.map((a) => (a === prevId ? next.id : a)) }));
+      return { ...f, agents: f.agents.map((a, i) => (i === index ? next : a)), sshHosts };
+    });
   }
 
   function deleteAgent(index: number) {
-    setForm((f) => ({ ...f, agents: f.agents.filter((_, i) => i !== index) }));
+    setForm((f) => {
+      const removed = f.agents[index].id;
+      // A host restricted only to the deleted agent must not fall through to "empty list = every
+      // agent" — that would silently widen access. Pruning it to nothing switches it off instead.
+      const sshHosts = f.sshHosts.map((h) => {
+        if (!h.agents.includes(removed)) return h;
+        const agents = h.agents.filter((a) => a !== removed);
+        return { ...h, agents, enabled: agents.length === 0 ? false : h.enabled };
+      });
+      return { ...f, agents: f.agents.filter((_, i) => i !== index), sshHosts };
+    });
+  }
+
+  function addSshHost() {
+    setForm((f) => ({
+      ...f,
+      sshHosts: [...f.sshHosts, { id: nextSshHostId(f.sshHosts), host: "", user: "", port: 22, identityFile: "", enabled: false, agents: [] }],
+    }));
+  }
+
+  function updateSshHost(index: number, next: SshHostEntry) {
+    setForm((f) => ({ ...f, sshHosts: f.sshHosts.map((h, i) => (i === index ? next : h)) }));
+  }
+
+  function deleteSshHost(index: number) {
+    setForm((f) => ({ ...f, sshHosts: f.sshHosts.filter((_, i) => i !== index) }));
   }
 
   function addMcpServer(server: McpServer) {
@@ -901,6 +1088,7 @@ function SettingsView() {
           enable_shell: form.enableShell,
           mcp_servers: form.mcpServers,
           agents: form.agents,
+          ssh_hosts: form.sshHosts,
           storage_provider: form.storageProvider,
           remote_node: remoteNodeFilled === 5 ? form.remoteNode : null,
           git_sync: gitSyncFilled === 2 ? form.gitSync : null,
@@ -972,6 +1160,26 @@ function SettingsView() {
           <div className="provider-list">
             {form.agents.map((a, i) => (
               <AgentCard key={i} agent={a} providers={form.providers} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">SSH servers</h3>
+            <button type="button" className="settings-browse-btn" onClick={addSshHost}>
+              + Add server
+            </button>
+          </div>
+          <p className="settings-hint">
+            Servers the AI can run commands on (a VPS, a home machine). Nothing is shared until you switch a server
+            on. The server's host key must already be trusted in your ~/.ssh/known_hosts — connect once from a
+            terminal first; Warden never accepts an unknown key on its own.
+          </p>
+          {form.sshHosts.length === 0 && <p className="settings-hint">No servers registered yet.</p>}
+          <div className="provider-list">
+            {form.sshHosts.map((h, i) => (
+              <SshHostCard key={i} host={h} agents={form.agents} onChange={(next) => updateSshHost(i, next)} onDelete={() => deleteSshHost(i)} />
             ))}
           </div>
         </section>
