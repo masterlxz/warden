@@ -38,7 +38,20 @@
   `flutter analyze` limpo e `flutter test` 58 verdes (5 novos). **Não** rodei `flutter build apk` nem
   abri no emulador — anotado no P72.
 
-**Próximo passo**: extensão de navegador (P72 b, o que sobrou) ou outra frente (P4, Fase 10, P70).
+**Decisão sobre a extensão**: a extensão não tem vault (cliente puro do `warden-server`) e o protocolo
+não tem mensagens de skills — uma tela lá exigiria protocolo novo. Usuário escolheu pular; a IA já usa
+e cria skills pelo chat da extensão. Segue anotado no P72.
+
+**Continuação — P41, retomar o chat no mobile** (usuário escolheu P41 em vez de P4):
+
+- `ChatTranscript` (novo, `services/chat_transcript.dart`) tira o transcript do `State` da `ChatScreen`
+  e passa a viver com a conexão, dentro da `ConnectionScreen` — sem isso "retomar" voltaria vazio e
+  perderia a resposta que chegasse com a tela fechada. Botão "Resume chat" + "Disconnect" quando conectado.
+- `ConnectionScreen.connector` injetável; `requestNotificationPermission` best-effort.
+- **Verificação**: `flutter analyze` limpo, `flutter test` 64 verdes (6 novos, incluindo um widget test do
+  fluxo completo sobre o handshake real via canal em processo). Sem emulador/APK.
+
+**Próximo passo**: P40 (histórico do servidor ao reconectar) é a continuação natural; ou Fase 10, P70, P4.
 
 ---
 

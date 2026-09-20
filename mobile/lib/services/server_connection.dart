@@ -74,6 +74,19 @@ class HandshakeException implements Exception {
 /// throw (any exception) to send a `ToolCallErrorMessage` back instead.
 typedef ToolHandler = Future<Object?> Function(Map<String, dynamic> args);
 
+/// Signature of `ServerConnection.connect`, so callers can be handed a different way to open a
+/// connection (see `ConnectionScreen.connector`).
+typedef ServerConnector = Future<ServerConnection> Function({
+  required String host,
+  required int port,
+  required String deviceId,
+  required String deviceName,
+  required String authKey,
+  Duration handshakeTimeout,
+  List<Map<String, dynamic>> toolSpecs,
+  Map<String, ToolHandler> toolHandlers,
+});
+
 class ServerConnection {
   ServerConnection._(this._channel, this._subscription, this.serverName, this._toolHandlers) {
     _setStatus(Connected(serverName));

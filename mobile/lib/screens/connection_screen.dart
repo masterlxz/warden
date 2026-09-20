@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../services/chat_transcript.dart';
 import '../services/connection_settings.dart';
 import '../services/hub_pairing_qr.dart';
 import '../services/mobile_file_tool.dart';
@@ -17,7 +18,12 @@ import 'sync_screen.dart';
 /// A successful connect now pushes straight into the real chat UI (Fase 7.3, `ChatScreen`) —
 /// this screen stays underneath so the user can navigate back to it without hanging up.
 class ConnectionScreen extends StatefulWidget {
-  const ConnectionScreen({super.key});
+  const ConnectionScreen({super.key, this.connector = ServerConnection.connect});
+
+  /// How a connection gets opened — `ServerConnection.connect` (a real WebSocket) in the app, a
+  /// fake channel in tests, so the connect → chat → back → resume flow (P41) can be exercised
+  /// without a network.
+  final ServerConnector connector;
 
   @override
   State<ConnectionScreen> createState() => _ConnectionScreenState();
@@ -33,6 +39,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   final _fileTool = MobileFileTool();
 
   ServerConnection? _connection;
+  ChatTranscript? _transcript;
   ConnectionStatus _status = const Disconnected();
   StreamSubscription<ConnectionStatus>? _statusSubscription;
 
@@ -87,7 +94,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     try {
       final deviceId = await _settingsStore.getOrCreateDeviceId();
       final hasRootFolder = await _fileTool.rootFolderUri() != null;
-      final connection = await ServerConnection.connect(
+      final connection = await widget.connector(
         host: host,
         port: port,
         deviceId: deviceId,
@@ -110,16 +117,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         if (mounted) setState(() => _status = s);
       });
 
+      _transcript?.dispose();
       setState(() {
         _connection = connection;
+        _transcript = ChatTranscript(chatStream: connection.chatStream, sendChat: connection.sendChat);
         _status = connection.status;
       });
 
-      if (mounted) {
-        await Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => ChatScreen(connection: connection)),
-        );
-      }
+      await _openChat();
     } on HandshakeException catch (e) {
       setState(() => _status = ConnectionFailure(e.message));
     } catch (e) {
@@ -163,6 +168,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     });
   }
 
+  /// P41 — (re)opens the chat for the live connection. The transcript belongs to this screen, not to
+  /// `ChatScreen`, so backing out of the chat and coming back here keeps the conversation.
+  Future<void> _openChat() async {
+    final connection = _connection;
+    final transcript = _transcript;
+    if (connection == null || transcript == null || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ChatScreen(connection: connection, transcript: transcript)),
+    );
+  }
+
   Future<void> _disconnect() async {
     await _connection?.goodbye('user disconnected');
   }
@@ -170,6 +186,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   void dispose() {
     _statusSubscription?.cancel();
+    _transcript?.dispose();
     _connection?.goodbye('screen closed');
     _hostController.dispose();
     _portController.dispose();
@@ -251,14 +268,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             const SizedBox(height: 24),
             _StatusIndicator(status: _status),
             const SizedBox(height: 24),
-            FilledButton(
-              onPressed: _isBusy
-                  ? null
-                  : _isConnected
-                      ? _disconnect
-                      : _connect,
-              child: Text(_isConnected ? 'Disconnect' : 'Connect'),
-            ),
+            // P41 — a live connection can be resumed after backing out of the chat, instead of the
+            // only way back being disconnect + reconnect.
+            if (_isConnected) ...[
+              FilledButton(onPressed: _openChat, child: const Text('Resume chat')),
+              const SizedBox(height: 12),
+              OutlinedButton(onPressed: _disconnect, child: const Text('Disconnect')),
+            ] else
+              FilledButton(onPressed: _isBusy ? null : _connect, child: const Text('Connect')),
           ],
         ),
       ),

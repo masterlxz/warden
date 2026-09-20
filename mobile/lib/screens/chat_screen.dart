@@ -9,6 +9,7 @@ import 'package:video_player/video_player.dart';
 
 import '../protocol/messages.dart';
 import '../services/chat_notifications.dart';
+import '../services/chat_transcript.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 import '../services/sync_auto_pull.dart';
@@ -16,32 +17,23 @@ import '../services/vault_paths.dart';
 import '../src/rust/api/sync.dart' as sync_bridge;
 import 'attachment_kind.dart';
 
-enum _EntryRole { user, assistant, error }
-
-class _ChatEntry {
-  const _ChatEntry(this.role, this.text, {this.attachments = const []});
-
-  final _EntryRole role;
-  final String text;
-  final List<Attachment> attachments;
-}
-
-/// Fase 7.3: the real chat UI, built on top of the connection 7.2 proved works. Messages are
-/// kept in memory for this screen's lifetime only — the protocol has no "fetch history" message
-/// yet, so reopening the app (or reconnecting) starts with an empty transcript even though
-/// `warden-server` persisted the conversation on disk. Deliberate, narrow scope for this phase
-/// (see PENDING.md); not a silent gap.
+/// Fase 7.3: the real chat UI, built on top of the connection 7.2 proved works. The transcript is
+/// kept in memory by the [ChatTranscript] the caller passes in (P41: it outlives this screen, so
+/// leaving with the back button and resuming keeps the conversation) — the protocol has no "fetch
+/// history" message yet, so reopening the app (or reconnecting) starts with an empty transcript even
+/// though `warden-server` persisted the conversation on disk. Deliberate, narrow scope (P40); not a
+/// silent gap.
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key, required this.connection});
+  const ChatScreen({super.key, required this.connection, required this.transcript});
 
   final ServerConnection connection;
+  final ChatTranscript transcript;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
-  final _entries = <_ChatEntry>[];
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
 
@@ -49,7 +41,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   StreamSubscription<ConnectionStatus>? _statusSubscription;
 
   ConnectionStatus _status = const Disconnected();
-  bool _waitingForReply = false;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   bool _autoPulling = false;
 
@@ -122,19 +113,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// The transcript itself is updated by `ChatTranscript`; this screen only reacts to a new reply
+  /// while it's visible (scroll, local notification when the app is in the background).
   void _onChatMessage(ServerMessage msg) {
     if (!mounted) return;
-    setState(() {
-      _waitingForReply = false;
-      switch (msg) {
-        case ChatResponseMessage(:final content, :final attachments):
-          _entries.add(_ChatEntry(_EntryRole.assistant, content, attachments: attachments));
-        case ChatErrorMessage(:final message):
-          _entries.add(_ChatEntry(_EntryRole.error, message));
-        default:
-          break;
-      }
-    });
     _scrollToBottom();
     if (shouldNotifyFor(_lifecycleState)) {
       unawaited(showChatNotification(msg, serverName: widget.connection.serverName));
@@ -142,16 +124,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   void _send() {
-    final text = _inputController.text.trim();
-    if (text.isEmpty || _waitingForReply || _status is! Connected) return;
-
-    setState(() {
-      _entries.add(_ChatEntry(_EntryRole.user, text));
-      _waitingForReply = true;
-    });
-    widget.connection.sendChat(text);
-    _inputController.clear();
-    _scrollToBottom();
+    if (_status is! Connected) return;
+    if (widget.transcript.send(_inputController.text)) {
+      _inputController.clear();
+      _scrollToBottom();
+    }
   }
 
   void _scrollToBottom() {
@@ -251,22 +228,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         children: [
           if (_status is! Connected) _DisconnectedBanner(status: _status),
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(12),
-              itemCount: _entries.length + (_waitingForReply ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == _entries.length) {
-                  return const _ThinkingIndicator();
-                }
-                return _MessageBubble(entry: _entries[index]);
+            child: ListenableBuilder(
+              listenable: widget.transcript,
+              builder: (context, _) {
+                final entries = widget.transcript.entries;
+                final waiting = widget.transcript.waitingForReply;
+                return ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(12),
+                  itemCount: entries.length + (waiting ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == entries.length) {
+                      return const _ThinkingIndicator();
+                    }
+                    return _MessageBubble(entry: entries[index]);
+                  },
+                );
               },
             ),
           ),
-          _InputBar(
-            controller: _inputController,
-            enabled: !_waitingForReply && _status is Connected,
-            onSend: _send,
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) => _InputBar(
+              controller: _inputController,
+              enabled: !widget.transcript.waitingForReply && _status is Connected,
+              onSend: _send,
+            ),
           ),
         ],
       ),
@@ -317,15 +304,15 @@ class _ThinkingIndicator extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({required this.entry});
 
-  final _ChatEntry entry;
+  final ChatEntry entry;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final (alignment, background, foreground) = switch (entry.role) {
-      _EntryRole.user => (Alignment.centerRight, scheme.primaryContainer, scheme.onPrimaryContainer),
-      _EntryRole.assistant => (Alignment.centerLeft, scheme.surfaceContainerHighest, scheme.onSurface),
-      _EntryRole.error => (Alignment.centerLeft, scheme.errorContainer, scheme.onErrorContainer),
+      EntryRole.user => (Alignment.centerRight, scheme.primaryContainer, scheme.onPrimaryContainer),
+      EntryRole.assistant => (Alignment.centerLeft, scheme.surfaceContainerHighest, scheme.onSurface),
+      EntryRole.error => (Alignment.centerLeft, scheme.errorContainer, scheme.onErrorContainer),
     };
 
     return Align(

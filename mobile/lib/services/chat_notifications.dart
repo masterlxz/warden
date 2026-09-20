@@ -56,10 +56,17 @@ Future<void> initializeChatNotifications() async {
 /// Requests the Android 13+ runtime notification permission. Fire-and-forget by design — if
 /// denied, notifications just silently don't show, no error UI (v1 scope). A no-op on older
 /// Android versions where the permission doesn't exist.
+/// Best-effort: the caller fires this without awaiting (`ChatScreen.initState`), so a failure here
+/// would otherwise surface as an unhandled async error — e.g. the plugin having no platform
+/// implementation registered, as in widget tests. Missing permission just means no notifications.
 Future<void> requestNotificationPermission() async {
-  await _plugin
-      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-      ?.requestNotificationsPermission();
+  try {
+    await _plugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  } catch (e) {
+    debugPrint('mobile: could not request notification permission: $e');
+  }
 }
 
 Future<void> showChatNotification(ServerMessage message, {required String serverName}) async {
