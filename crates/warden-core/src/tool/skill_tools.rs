@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::skill::{Skill, SkillStore};
+use crate::skill::{validate_file_name, Skill, SkillStore, MAX_FILES_PER_SKILL, MAX_FILE_BYTES};
 use crate::tool::{Tool, ToolSpec};
 
 fn required_str<'a>(args: &'a Value, key: &str) -> anyhow::Result<&'a str> {
@@ -37,7 +37,9 @@ impl Tool for UseSkillTool {
             name: "use_skill".to_string(),
             description: "Load the full instructions of a skill listed in the available-skills catalog. Call \
                           this before answering when a skill matches the user's request, then follow the \
-                          returned instructions."
+                          returned instructions. If the result lists `files` (attachments such as scripts or \
+                          templates), read one with read_skill_file, or run a script from its `path` with the \
+                          shell tool when that is available."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -51,7 +53,62 @@ impl Tool for UseSkillTool {
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let skill = self.store.get_for(required_str(&args, "name")?, self.agent.as_deref())?;
-        Ok(json!({ "name": skill.name, "instructions": skill.body }))
+        let mut result = json!({ "name": skill.name, "instructions": skill.body });
+        // Only when there are any, so a skill without attachments answers exactly as before.
+        let files = self.store.list_files(&skill.name)?;
+        if !files.is_empty() {
+            let files = files
+                .iter()
+                .map(|f| Ok(json!({ "name": f, "path": SkillStore::file_relative_path(&skill.name, f)? })))
+                .collect::<anyhow::Result<Vec<Value>>>()?;
+            result["files"] = Value::Array(files);
+        }
+        Ok(result)
+    }
+}
+
+/// Reads one attachment of a skill (P72 d) — the text files listed by `use_skill`. Scoped to the
+/// agent like `use_skill`: an attachment of a skill restricted to other agents reads as "no such skill".
+pub struct ReadSkillFileTool {
+    store: SkillStore,
+    agent: Option<String>,
+}
+
+impl ReadSkillFileTool {
+    pub fn new(store: SkillStore) -> Self {
+        Self { store, agent: None }
+    }
+
+    pub fn for_agent(mut self, agent: Option<String>) -> Self {
+        self.agent = agent;
+        self
+    }
+}
+
+#[async_trait]
+impl Tool for ReadSkillFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read_skill_file".to_string(),
+            description: "Read a text file attached to a skill (a script, template or reference note listed in \
+                          the `files` of the use_skill result)."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "skill": { "type": "string", "description": "Skill name" },
+                    "file": { "type": "string", "description": "Attachment name exactly as listed by use_skill" }
+                },
+                "required": ["skill", "file"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Value) -> anyhow::Result<Value> {
+        let skill = required_str(&args, "skill")?;
+        let file = required_str(&args, "file")?;
+        let content = self.store.read_file_for(skill, file, self.agent.as_deref())?;
+        Ok(json!({ "skill": skill, "file": file, "content": content }))
     }
 }
 
@@ -99,6 +156,20 @@ impl Tool for ManageSkillTool {
                         "description": "Optional: ids of the agents this skill is restricted to. Omit to keep \
                                         the current restriction on update (none on create = every agent); \
                                         pass [] to make it available to everyone."
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "File name, e.g. 'run.sh'" },
+                                "content": { "type": "string", "description": "Text content of the file" }
+                            },
+                            "required": ["name", "content"]
+                        },
+                        "description": "Optional: text files to attach to the skill (scripts, templates), added \
+                                        or replaced by name. Omit to leave the current attachments untouched; \
+                                        attachments are never removed through this tool."
                     }
                 },
                 "required": ["action", "name", "description", "body"]
@@ -119,6 +190,7 @@ impl Tool for ManageSkillTool {
             ),
             Some(_) => anyhow::bail!("'agents' must be an array of strings"),
         };
+        let files = parse_files(&args)?;
         let exists = self.store.exists(&name);
         // Editing a skill without mentioning `agents` must not silently drop its restriction.
         let agents = match (agents, exists) {
@@ -140,9 +212,46 @@ impl Tool for ManageSkillTool {
             "create" | "update" => {}
             other => anyhow::bail!("unknown action '{other}', expected 'create' or 'update'"),
         }
+        if !files.is_empty() {
+            // Checked before anything is written, so a bad attachment doesn't leave a half-saved skill.
+            let mut names = self.store.list_files(&skill.name)?;
+            for (file, _) in &files {
+                if !names.contains(file) {
+                    names.push(file.clone());
+                }
+            }
+            if names.len() > MAX_FILES_PER_SKILL {
+                anyhow::bail!("a skill can have at most {MAX_FILES_PER_SKILL} attachments");
+            }
+        }
         self.store.save(&skill)?;
+        for (file, content) in &files {
+            self.store.save_file(&skill.name, file, content)?;
+        }
         Ok(json!({ "status": "ok", "name": skill.name }))
     }
+}
+
+/// The optional `files` argument of `manage_skill`, validated up front (name and size).
+fn parse_files(args: &Value) -> anyhow::Result<Vec<(String, String)>> {
+    let items = match args.get("files") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => anyhow::bail!("'files' must be an array of {{name, content}} objects"),
+    };
+    let mut files: Vec<(String, String)> = Vec::new();
+    for item in items {
+        let name = required_str(item, "name")?;
+        let content = required_str(item, "content")?;
+        validate_file_name(name)?;
+        if content.len() > MAX_FILE_BYTES {
+            anyhow::bail!("attachment '{name}' is {} bytes, the limit is {MAX_FILE_BYTES}", content.len());
+        }
+        // The same name twice: the last one wins, like an upsert applied in order.
+        files.retain(|(n, _)| n != name);
+        files.push((name.to_string(), content.to_string()));
+    }
+    Ok(files)
 }
 
 #[cfg(test)]
@@ -232,5 +341,88 @@ mod tests {
         assert!(manage.call(create_args("../escape")).await.is_err());
         assert!(manage.call(json!({ "action": "delete", "name": "x", "description": "d", "body": "b" })).await.is_err());
         assert!(store.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manage_skill_attaches_files_and_use_skill_lists_them() {
+        let store = temp_store();
+        let manage = ManageSkillTool::new(store.clone());
+        let use_skill = UseSkillTool::new(store.clone());
+
+        manage
+            .call(json!({
+                "action": "create", "name": "x", "description": "d", "body": "b",
+                "files": [{ "name": "run.sh", "content": "echo hi" }, { "name": "notes.md", "content": "# n" }]
+            }))
+            .await
+            .unwrap();
+
+        let result = use_skill.call(json!({ "name": "x" })).await.unwrap();
+        assert_eq!(
+            result["files"],
+            json!([
+                { "name": "notes.md", "path": "skills/x.files/notes.md" },
+                { "name": "run.sh", "path": "skills/x.files/run.sh" }
+            ])
+        );
+        assert_eq!(store.read_file("x", "run.sh").unwrap(), "echo hi");
+
+        // Updating without `files` keeps them; with `files` upserts by name and leaves the rest.
+        manage.call(json!({ "action": "update", "name": "x", "description": "d2", "body": "b2" })).await.unwrap();
+        assert_eq!(store.list_files("x").unwrap(), vec!["notes.md", "run.sh"]);
+        manage
+            .call(json!({ "action": "update", "name": "x", "description": "d", "body": "b", "files": [{ "name": "run.sh", "content": "echo v2" }] }))
+            .await
+            .unwrap();
+        assert_eq!(store.read_file("x", "run.sh").unwrap(), "echo v2");
+        assert_eq!(store.list_files("x").unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn manage_skill_rejects_bad_files_before_writing_anything() {
+        let store = temp_store();
+        let manage = ManageSkillTool::new(store.clone());
+        let with = |files: Value| json!({ "action": "create", "name": "x", "description": "d", "body": "b", "files": files });
+
+        assert!(manage.call(with(json!([{ "name": "../escape", "content": "z" }]))).await.is_err());
+        assert!(manage.call(with(json!([{ "name": "a.txt" }]))).await.is_err());
+        assert!(manage.call(with(json!("run.sh"))).await.is_err());
+        let big = "a".repeat(MAX_FILE_BYTES + 1);
+        assert!(manage.call(with(json!([{ "name": "big.txt", "content": big }]))).await.is_err());
+        let many: Vec<Value> = (0..=MAX_FILES_PER_SKILL).map(|i| json!({ "name": format!("f{i}"), "content": "c" })).collect();
+        assert!(manage.call(with(Value::Array(many))).await.is_err());
+        assert!(store.list().is_empty(), "no half-saved skill");
+    }
+
+    #[tokio::test]
+    async fn use_skill_result_has_no_files_key_without_attachments() {
+        let store = temp_store();
+        ManageSkillTool::new(store.clone()).call(create_args("x")).await.unwrap();
+        let result = UseSkillTool::new(store).call(json!({ "name": "x" })).await.unwrap();
+        assert!(result.get("files").is_none());
+    }
+
+    #[tokio::test]
+    async fn read_skill_file_reads_and_respects_agent_scope_and_traversal() {
+        let store = temp_store();
+        ManageSkillTool::new(store.clone())
+            .call(json!({
+                "action": "create", "name": "x", "description": "d", "body": "b", "agents": ["writer"],
+                "files": [{ "name": "a.txt", "content": "hello" }]
+            }))
+            .await
+            .unwrap();
+        let args = json!({ "skill": "x", "file": "a.txt" });
+
+        let ok = ReadSkillFileTool::new(store.clone()).for_agent(Some("writer".into())).call(args.clone()).await.unwrap();
+        assert_eq!(ok, json!({ "skill": "x", "file": "a.txt", "content": "hello" }));
+
+        let hidden = ReadSkillFileTool::new(store.clone()).call(args).await.unwrap_err();
+        assert!(hidden.to_string().contains("no skill named"));
+
+        let tool = ReadSkillFileTool::new(store).for_agent(Some("writer".into()));
+        assert!(tool.call(json!({ "skill": "x", "file": "../x.md" })).await.is_err());
+        assert!(tool.call(json!({ "skill": "x", "file": "missing.txt" })).await.unwrap_err().to_string().contains("no attachment"));
+        assert!(tool.call(json!({ "skill": "x" })).await.is_err());
     }
 }

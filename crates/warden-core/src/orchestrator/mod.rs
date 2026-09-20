@@ -101,16 +101,20 @@ impl Orchestrator {
 
     /// Returns a copy of this orchestrator acting as agent `agent_id` (P72 c): the skill catalog
     /// and `use_skill` only expose skills that are global or list this agent. Same cheap-clone
-    /// reasoning as `with_model`/`with_tool`; the `use_skill` tool, if registered, is swapped for
-    /// one scoped to the agent (a no-op when it isn't registered).
+    /// reasoning as `with_model`/`with_tool`; the `use_skill`/`read_skill_file` tools, if registered, are
+    /// swapped for ones scoped to the agent (a no-op when it isn't registered).
     pub fn with_agent(&self, agent_id: Option<String>) -> Self {
         let mut clone = self.clone();
         for tool in &mut clone.tools {
-            if tool.spec().name == "use_skill" {
-                *tool = Arc::new(
-                    crate::tool::skill_tools::UseSkillTool::new(crate::skill::SkillStore::new(self.vault.clone()))
-                        .for_agent(agent_id.clone()),
-                );
+            let store = crate::skill::SkillStore::new(self.vault.clone());
+            match tool.spec().name.as_str() {
+                "use_skill" => {
+                    *tool = Arc::new(crate::tool::skill_tools::UseSkillTool::new(store).for_agent(agent_id.clone()))
+                }
+                "read_skill_file" => {
+                    *tool = Arc::new(crate::tool::skill_tools::ReadSkillFileTool::new(store).for_agent(agent_id.clone()))
+                }
+                _ => {}
             }
         }
         clone.agent_id = agent_id;
@@ -741,6 +745,32 @@ mod tests {
         assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_err());
         let tool = as_writer.tools().iter().find(|t| t.spec().name == "use_skill").unwrap();
         assert!(tool.call(serde_json::json!({ "name": "only-writer" })).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn with_agent_scopes_read_skill_file_too() {
+        let vault = vault_with_skill();
+        let store = crate::skill::SkillStore::new(vault.clone());
+        store
+            .save(&crate::skill::Skill {
+                name: "only-writer".into(),
+                description: "Writer only".into(),
+                body: "Write.".into(),
+                agents: vec!["writer".into()],
+            })
+            .unwrap();
+        store.save_file("only-writer", "a.txt", "secret").unwrap();
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault);
+        orchestrator.register_tool(Arc::new(crate::tool::skill_tools::ReadSkillFileTool::new(store)));
+        let args = serde_json::json!({ "skill": "only-writer", "file": "a.txt" });
+
+        let other = orchestrator.with_agent(Some("reviewer".into()));
+        let tool = other.tools().iter().find(|t| t.spec().name == "read_skill_file").unwrap();
+        assert!(tool.call(args.clone()).await.is_err());
+
+        let writer = orchestrator.with_agent(Some("writer".into()));
+        let tool = writer.tools().iter().find(|t| t.spec().name == "read_skill_file").unwrap();
+        assert!(tool.call(args).await.is_ok());
     }
 
     struct NamedModel {

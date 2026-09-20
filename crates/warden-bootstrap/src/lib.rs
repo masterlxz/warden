@@ -23,7 +23,7 @@ use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
 use warden_core::skill::SkillStore;
 use warden_core::tool::shell::ShellTool;
-use warden_core::tool::skill_tools::{ManageSkillTool, UseSkillTool};
+use warden_core::tool::skill_tools::{ManageSkillTool, ReadSkillFileTool, UseSkillTool};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod skill_gen;
@@ -1022,6 +1022,7 @@ pub async fn bootstrap(
         Arc::new(GenerateDocumentTool::new(generated_path.clone())),
         Arc::new(UsageStatsTool::new(default_conversations_dir())),
         Arc::new(UseSkillTool::new(SkillStore::new(vault.clone()))),
+        Arc::new(ReadSkillFileTool::new(SkillStore::new(vault.clone()))),
         Arc::new(ManageSkillTool::new(SkillStore::new(vault.clone()))),
     ];
 

@@ -2,6 +2,10 @@
 //! under `skills/` in the vault (`warden_core::skill`), plus a "describe it and the AI drafts it"
 //! command. Split out of `lib.rs` the same way `vault_cmds.rs` is. Skills live in the vault, not
 //! `config.toml`, so nothing here touches `save_settings`.
+//!
+//! Attached files (P72 d) have their own commands rather than riding on `SkillPayload`: they only
+//! exist for a saved skill, and keeping them out of the payload leaves the list cheap (no file
+//! contents) and lets the edit form save the skill without touching its attachments.
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -62,6 +66,32 @@ pub fn save_skill(state: State<'_, AppState>, skill: SkillPayload, overwrite: bo
 #[tauri::command]
 pub fn delete_skill(state: State<'_, AppState>, name: String) -> Result<(), String> {
     store(&state)?.delete(&name).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn list_skill_files(state: State<'_, AppState>, name: String) -> Result<Vec<String>, String> {
+    store(&state)?.list_files(&name).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn read_skill_attachment(state: State<'_, AppState>, name: String, file: String) -> Result<String, String> {
+    store(&state)?.read_file(&name, &file).map_err(|e| format!("{e:#}"))
+}
+
+/// Creates or replaces an attachment; the store enforces the name, size and count limits.
+#[tauri::command]
+pub fn save_skill_attachment(
+    state: State<'_, AppState>,
+    name: String,
+    file: String,
+    content: String,
+) -> Result<(), String> {
+    store(&state)?.save_file(&name, file.trim(), &content).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn delete_skill_attachment(state: State<'_, AppState>, name: String, file: String) -> Result<(), String> {
+    store(&state)?.delete_file(&name, &file).map_err(|e| format!("{e:#}"))
 }
 
 /// Asks the model to draft a skill from `prompt` and returns it *unsaved* — the frontend loads it

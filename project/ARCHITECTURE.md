@@ -998,6 +998,23 @@ chefe). Limitação: id de agente com vírgula não cabe no formato de uma linha
 Quem não edita `agents` (ponte do mobile, extensão, `manage_skill` sem o parâmetro) **preserva** o valor
 gravado ao sobrescrever — senão salvar pelo celular tornaria a skill global de novo, em silêncio.
 
+**Arquivos anexos (P72 d, Sessão 76)**: uma skill pode carregar arquivos de texto (scripts, modelos,
+notas) na pasta companheira `skills/<nome>.files/<arquivo>`, sem mudar o frontmatter — skill sem anexo
+não muda. A pasta não vira skill (`list` só aceita `*.md` e nome de skill não tem ponto), o sync já a leva
+(`list_all_files` pega qualquer extensão sob `skills/`) e a busca a ignora (`skills/` fica fora do
+`list_files`). Nome do anexo: `[A-Za-z0-9._-]`, sem ponto inicial, ≤ 64 chars (tira `/`, `..` e dotfile por
+construção); só texto (`Vault::read/write` são `String`), ≤ 64 KB por arquivo, ≤ 20 por skill, sem
+subpastas. `SkillStore` ganhou `list_files/read_file/read_file_for/save_file/delete_file`; apagar a skill
+apaga a pasta. **O modelo**: `use_skill` devolve também `files: [{name, path}]` (só quando há anexos; `path`
+relativo ao vault, pra rodar no `shell`), a tool nova `read_skill_file(skill, file)` lê um deles com o
+mesmo filtro por agente (`with_agent` troca as duas), e `manage_skill` aceita `files: [{name, content}]`
+(upsert; sem o campo os anexos ficam intactos; sem delete pela IA, mesma razão do corpo). **Executar um
+script não tem caminho próprio**: só o `shell` existente, opt-in e sem sandbox — a skill não amplia o que
+o modelo já podia fazer. Desktop: comandos `list_skill_files/read_skill_attachment/save_skill_attachment/
+delete_skill_attachment`, separados do `SkillPayload` (anexo só existe pra skill salva; gravam na hora, sem
+esperar o "Save skill"). CLI: `/skills file|attach|detach`. Extensão/mobile/servidor não ganharam UI nem
+DTO: `save` só reescreve o `.md`, então editar por lá **preserva** os anexos.
+
 **Skills pela extensão (P72)**: o vault mora no servidor, então o protocolo ganhou
 `ClientMessage::{ListSkills, SaveSkill, DeleteSkill}` (com `request_id` de correlação, como o
 `call_id` do `CallDeviceTool`) e `ServerMessage::{SkillList, SkillOk, SkillError}`, mais o `SkillDto`.

@@ -18,6 +18,11 @@
 //! Each turn the orchestrator only shows the model the catalog (name + description); the body is
 //! fetched through the `use_skill` tool when the model decides it applies, so unused skills cost
 //! no tokens. Living in the vault means sync (`warden-sync`, git) and Obsidian editing come free.
+//!
+//! A skill may also carry attached text files — scripts, templates, reference notes (P72 d) — in a
+//! companion directory, `skills/<name>.files/<file>`. The directory doesn't show up as a skill
+//! (`list` only takes `*.md` files, and a skill name can't contain a dot), sync carries it like any
+//! other vault file, and the frontmatter is untouched, so skills without attachments are unchanged.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,6 +33,9 @@ use crate::memory::{Vault, SKILLS_DIR};
 
 pub const MAX_NAME_LEN: usize = 64;
 pub const MAX_DESCRIPTION_LEN: usize = 300;
+pub const MAX_FILE_NAME_LEN: usize = 64;
+pub const MAX_FILE_BYTES: usize = 64 * 1024;
+pub const MAX_FILES_PER_SKILL: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -49,6 +57,22 @@ pub fn validate_name(name: &str) -> anyhow::Result<()> {
     }
     if name.starts_with('-') || name.ends_with('-') {
         bail!("skill name '{name}' must not start or end with a hyphen");
+    }
+    Ok(())
+}
+
+/// An attachment name doubles as a filename inside the skill's companion directory. Restricting it
+/// to `[A-Za-z0-9._-]` with no leading dot rules out separators and `..` by construction (and keeps
+/// the file visible to sync, which skips dotfiles).
+pub fn validate_file_name(file: &str) -> anyhow::Result<()> {
+    if file.is_empty() || file.len() > MAX_FILE_NAME_LEN {
+        bail!("attachment name must be 1-{MAX_FILE_NAME_LEN} characters");
+    }
+    if !file.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        bail!("attachment name '{file}' must use only letters, digits, dots, underscores and hyphens");
+    }
+    if file.starts_with('.') {
+        bail!("attachment name '{file}' must not start with a dot");
     }
     Ok(())
 }
@@ -192,9 +216,75 @@ impl SkillStore {
         self.vault.write(&path, &skill.render()).with_context(|| format!("failed to write skill '{}'", skill.name))
     }
 
+    /// Deletes the skill together with its attachments.
     pub fn delete(&self, name: &str) -> anyhow::Result<()> {
         let path = Self::relative_path(name)?;
-        self.vault.delete(&path).map_err(|_| anyhow!("no skill named '{name}'"))
+        self.vault.delete(&path).map_err(|_| anyhow!("no skill named '{name}'"))?;
+        let _ = std::fs::remove_dir_all(self.vault.root().join(Self::files_dir(name)));
+        Ok(())
+    }
+
+    fn files_dir(name: &str) -> String {
+        format!("{SKILLS_DIR}/{name}.files")
+    }
+
+    /// Vault-relative path of an attachment (it needn't exist) — what the model hands to `shell` or
+    /// `read_file`, and what the user can open in an editor.
+    pub fn file_relative_path(name: &str, file: &str) -> anyhow::Result<String> {
+        validate_name(name)?;
+        validate_file_name(file)?;
+        Ok(format!("{}/{file}", Self::files_dir(name)))
+    }
+
+    /// Names of the skill's attachments, sorted. Empty when there are none (or the skill is unknown).
+    pub fn list_files(&self, name: &str) -> anyhow::Result<Vec<String>> {
+        validate_name(name)?;
+        let Ok(entries) = std::fs::read_dir(self.vault.root().join(Self::files_dir(name))) else {
+            return Ok(Vec::new());
+        };
+        let mut files: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|f| validate_file_name(f).is_ok())
+            .collect();
+        files.sort();
+        Ok(files)
+    }
+
+    pub fn read_file(&self, name: &str, file: &str) -> anyhow::Result<String> {
+        let path = Self::file_relative_path(name, file)?;
+        self.vault.read(&path).map_err(|_| anyhow!("skill '{name}' has no attachment '{file}'"))
+    }
+
+    /// Like `read_file`, but honors the agent restriction with the same "no such skill" error as `get_for`.
+    pub fn read_file_for(&self, name: &str, file: &str, agent: Option<&str>) -> anyhow::Result<String> {
+        self.get_for(name, agent)?;
+        self.read_file(name, file)
+    }
+
+    /// Creates or replaces an attachment. The skill must already exist.
+    pub fn save_file(&self, name: &str, file: &str, content: &str) -> anyhow::Result<()> {
+        let path = Self::file_relative_path(name, file)?;
+        if !self.exists(name) {
+            bail!("no skill named '{name}'");
+        }
+        if content.len() > MAX_FILE_BYTES {
+            bail!("attachment '{file}' is {} bytes, the limit is {MAX_FILE_BYTES}", content.len());
+        }
+        let existing = self.list_files(name)?;
+        if !existing.iter().any(|f| f == file) && existing.len() >= MAX_FILES_PER_SKILL {
+            bail!("skill '{name}' already has {MAX_FILES_PER_SKILL} attachments, the limit");
+        }
+        self.vault.write(&path, content).with_context(|| format!("failed to write attachment '{file}'"))
+    }
+
+    pub fn delete_file(&self, name: &str, file: &str) -> anyhow::Result<()> {
+        let path = Self::file_relative_path(name, file)?;
+        self.vault.delete(&path).map_err(|_| anyhow!("skill '{name}' has no attachment '{file}'"))?;
+        // Drop the directory with its last file so `<name>.files/` doesn't linger empty.
+        let _ = std::fs::remove_dir(self.vault.root().join(Self::files_dir(name)));
+        Ok(())
     }
 
     /// The per-turn catalog injected as a system message, or `None` when there are no skills
@@ -399,5 +489,108 @@ mod tests {
         let store = temp_store();
         store.save(&restricted("only-writer", &["writer"])).unwrap();
         assert!(store.catalog(None).is_none());
+    }
+
+    #[test]
+    fn validate_file_name_accepts_plain_names_and_rejects_traversal() {
+        for ok in ["run.sh", "notes_v2.md", "a-b", "x"] {
+            assert!(validate_file_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", "a\\b", ".env", "..", "a b", "é.txt", &"x".repeat(65)] {
+            assert!(validate_file_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn attachments_roundtrip_list_sorted_and_stay_out_of_the_skill_list() {
+        let store = temp_store();
+        store.save(&sample("review-pr")).unwrap();
+        store.save_file("review-pr", "b.sh", "echo b").unwrap();
+        store.save_file("review-pr", "a.md", "# a").unwrap();
+
+        assert_eq!(store.list_files("review-pr").unwrap(), vec!["a.md", "b.sh"]);
+        assert_eq!(store.read_file("review-pr", "b.sh").unwrap(), "echo b");
+        assert_eq!(SkillStore::file_relative_path("review-pr", "b.sh").unwrap(), "skills/review-pr.files/b.sh");
+        // The companion directory is not mistaken for a skill, and the skill itself is untouched.
+        assert_eq!(store.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["review-pr"]);
+        assert_eq!(store.get("review-pr").unwrap(), sample("review-pr"));
+
+        store.save_file("review-pr", "b.sh", "echo B").unwrap();
+        assert_eq!(store.read_file("review-pr", "b.sh").unwrap(), "echo B");
+    }
+
+    #[test]
+    fn attachment_writes_are_validated() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+
+        assert!(store.save_file("x", "../escape", "z").is_err());
+        assert!(store.save_file("x", ".hidden", "z").is_err());
+        assert!(store.save_file("nope", "a.txt", "z").unwrap_err().to_string().contains("no skill named"));
+        assert!(store.save_file("x", "big.txt", &"a".repeat(MAX_FILE_BYTES + 1)).is_err());
+        assert!(store.save_file("x", "ok.txt", &"a".repeat(MAX_FILE_BYTES)).is_ok());
+        assert!(store.read_file("x", "../x.md").is_err());
+    }
+
+    #[test]
+    fn attachment_count_is_capped_but_replacing_an_existing_one_is_allowed() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+        for i in 0..MAX_FILES_PER_SKILL {
+            store.save_file("x", &format!("f{i}.txt"), "c").unwrap();
+        }
+        assert!(store.save_file("x", "one-more.txt", "c").is_err());
+        assert!(store.save_file("x", "f0.txt", "changed").is_ok());
+    }
+
+    #[test]
+    fn deleting_an_attachment_removes_the_directory_with_the_last_one() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+        store.save_file("x", "a.txt", "a").unwrap();
+
+        assert!(store.delete_file("x", "missing.txt").is_err());
+        store.delete_file("x", "a.txt").unwrap();
+        assert!(store.list_files("x").unwrap().is_empty());
+        assert!(!store.vault.root().join("skills/x.files").exists());
+    }
+
+    #[test]
+    fn deleting_a_skill_removes_its_attachments() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+        store.save_file("x", "a.txt", "a").unwrap();
+
+        store.delete("x").unwrap();
+        assert!(!store.vault.root().join("skills/x.files").exists());
+        assert!(store.list_files("x").unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_file_for_hides_attachments_of_skills_restricted_to_other_agents() {
+        let store = temp_store();
+        store.save(&restricted("only-writer", &["writer"])).unwrap();
+        store.save_file("only-writer", "a.txt", "secret").unwrap();
+
+        assert_eq!(store.read_file_for("only-writer", "a.txt", Some("writer")).unwrap(), "secret");
+        let err = store.read_file_for("only-writer", "a.txt", Some("reviewer")).unwrap_err();
+        assert!(err.to_string().contains("no skill named"));
+        assert!(store.read_file_for("only-writer", "a.txt", None).is_err());
+    }
+
+    #[test]
+    fn saving_a_skill_keeps_its_attachments_and_they_reach_sync_but_not_search() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+        store.save_file("x", "notes.md", "# needle").unwrap();
+
+        store.save(&Skill { body: "edited".into(), ..sample("x") }).unwrap();
+        assert_eq!(store.read_file("x", "notes.md").unwrap(), "# needle");
+
+        let synced: Vec<String> =
+            store.vault.list_all_files().unwrap().iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        assert!(synced.contains(&"skills/x.files/notes.md".to_string()), "{synced:?}");
+        assert!(store.vault.list_files().unwrap().iter().all(|p| !p.starts_with("skills")));
+        assert!(store.vault.search("needle", 5).unwrap().is_empty());
     }
 }

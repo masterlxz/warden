@@ -1064,6 +1064,9 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/skills edit <nome> — editar a descrição e o corpo de uma skill",
         "/skills remove <nome> — apagar uma skill (pede confirmação)",
         "/skills path [nome] — caminho do arquivo da skill (ou da pasta), pra editar texto longo no editor",
+        "/skills file <nome> <arquivo> — ver um arquivo anexado à skill",
+        "/skills attach <nome> <arquivo> <caminho> — anexar à skill uma cópia de um arquivo de texto local (script, modelo…)",
+        "/skills detach <nome> <arquivo> — remover um arquivo anexado (pede confirmação)",
         "/sync — status da sincronização (pendências, último push/pull)",
         "/sync push — enviar mudanças locais (mostra QR pro TruthID escanear)",
         "/sync pull — buscar a versão mais recente",
@@ -1444,8 +1447,67 @@ async fn cmd_skills_show(terminal: &mut CliTerminal, session: &CliSession, name:
     };
     let mut lines = vec![(format!("descrição: {}", if skill.description.is_empty() { "(sem descrição)" } else { skill.description.as_str() }), dim_style())];
     lines.push((format!("agentes: {}", if skill.agents.is_empty() { "todos".to_string() } else { skill.agents.join(", ") }), dim_style()));
+    let files = match make_skill_store(session)?.list_files(&skill.name) {
+        Ok(files) => files,
+        Err(e) => return skill_error_card(terminal, e.to_string()),
+    };
+    if !files.is_empty() {
+        lines.push((format!("anexos: {}", files.join(", ")), dim_style()));
+    }
     lines.extend(skill.body.lines().map(|line| (line.to_string(), Style::default())));
     render_message_card(terminal, &format!("skill {}", skill.name), accent_style(), lines)
+}
+
+async fn cmd_skills_file(terminal: &mut CliTerminal, session: &CliSession, name: String, file: String) -> anyhow::Result<()> {
+    match make_skill_store(session)?.read_file(&name, &file) {
+        Ok(content) => {
+            let lines = content.lines().map(|line| (line.to_string(), Style::default())).collect();
+            render_message_card(terminal, &format!("skill {name} — {file}"), accent_style(), lines)
+        }
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
+}
+
+/// Copies a local text file into the skill's attachments (replacing one of the same name). The
+/// content is a copy: editing the original afterwards doesn't change the skill.
+async fn cmd_skills_attach(
+    terminal: &mut CliTerminal,
+    session: &CliSession,
+    name: String,
+    file: String,
+    source: String,
+) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    let content = match std::fs::read_to_string(&source) {
+        Ok(content) => content,
+        Err(e) => return skill_error_card(terminal, format!("não consegui ler '{source}' como texto: {e}")),
+    };
+    match store.save_file(&name, &file, &content) {
+        Ok(()) => render_message_card(
+            terminal,
+            "skills",
+            accent_style(),
+            vec![(format!("'{file}' anexado à skill '{name}' ({} bytes)", content.len()), Style::default())],
+        ),
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
+}
+
+async fn cmd_skills_detach(terminal: &mut CliTerminal, session: &CliSession, name: String, file: String) -> anyhow::Result<()> {
+    let store = make_skill_store(session)?;
+    if let Err(e) = store.read_file(&name, &file) {
+        return skill_error_card(terminal, e.to_string());
+    }
+    let Some(answer) = prompt_field(terminal, &format!(" remover '{file}' da skill '{name}'? não dá pra desfazer (s/n) "), "").await? else {
+        return render_message_card(terminal, "skills", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return render_message_card(terminal, "skills", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    }
+    match store.delete_file(&name, &file) {
+        Ok(()) => render_message_card(terminal, "skills", accent_style(), vec![(format!("'{file}' removido da skill '{name}'"), Style::default())]),
+        Err(e) => skill_error_card(terminal, e.to_string()),
+    }
 }
 
 async fn cmd_skills_path(terminal: &mut CliTerminal, session: &CliSession, name: Option<String>) -> anyhow::Result<()> {
@@ -1761,6 +1823,9 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::SkillsEdit(name) => wizard_skills_edit(terminal, session, name).await,
         Command::SkillsRemove(name) => cmd_skills_remove(terminal, session, name).await,
         Command::SkillsPath(name) => cmd_skills_path(terminal, session, name).await,
+        Command::SkillsFile(name, file) => cmd_skills_file(terminal, session, name, file).await,
+        Command::SkillsAttach { skill, file, source } => cmd_skills_attach(terminal, session, skill, file, source).await,
+        Command::SkillsDetach(name, file) => cmd_skills_detach(terminal, session, name, file).await,
         Command::SyncStatus => cmd_sync_status(terminal, session).await,
         Command::SyncPush => cmd_sync_push(terminal, session).await,
         Command::SyncPull => cmd_sync_pull(terminal, session).await,

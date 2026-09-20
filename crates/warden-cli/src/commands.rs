@@ -27,6 +27,11 @@ pub enum Command {
     SkillsRemove(String),
     /// `None` is a bare `/skills path` — the skills directory itself rather than one skill's file.
     SkillsPath(Option<String>),
+    /// `/skills file <skill> <file>` — prints one attachment (P72 d).
+    SkillsFile(String, String),
+    /// `/skills attach <skill> <file> <local path>` — copies a local text file into the skill.
+    SkillsAttach { skill: String, file: String, source: String },
+    SkillsDetach(String, String),
     SyncStatus,
     SyncPush,
     SyncPull,
@@ -81,6 +86,13 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("skills", ["remove", name]) => Command::SkillsRemove(name.to_string()),
         ("skills", ["path"]) => Command::SkillsPath(None),
         ("skills", ["path", name]) => Command::SkillsPath(Some(name.to_string())),
+        ("skills", ["file", name, file]) => Command::SkillsFile(name.to_string(), file.to_string()),
+        // Whitespace inside the path is collapsed by the tokenizer above; a path with a run of
+        // spaces isn't supported, a single space is.
+        ("skills", ["attach", name, file, source @ ..]) if !source.is_empty() => {
+            Command::SkillsAttach { skill: name.to_string(), file: file.to_string(), source: source.join(" ") }
+        }
+        ("skills", ["detach", name, file]) => Command::SkillsDetach(name.to_string(), file.to_string()),
         ("sync", []) => Command::SyncStatus,
         ("sync", ["push"]) => Command::SyncPush,
         ("sync", ["pull"]) => Command::SyncPull,
@@ -119,7 +131,7 @@ pub fn kind_label(kind: Provider) -> &'static str {
 const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "skills", "sync"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
-const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path"];
+const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
 const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair", "git"];
 
 /// Parses the word currently being typed (the last whitespace-separated token) out of a
@@ -221,6 +233,14 @@ mod tests {
         assert!(matches!(assert_recognized("/skills remove review-pr"), Command::SkillsRemove(n) if n == "review-pr"));
         assert!(matches!(assert_recognized("/skills path"), Command::SkillsPath(None)));
         assert!(matches!(assert_recognized("/skills path review-pr"), Command::SkillsPath(Some(n)) if n == "review-pr"));
+        assert!(matches!(assert_recognized("/skills file review-pr run.sh"), Command::SkillsFile(n, f) if n == "review-pr" && f == "run.sh"));
+        assert!(matches!(assert_recognized("/skills detach review-pr run.sh"), Command::SkillsDetach(n, f) if n == "review-pr" && f == "run.sh"));
+        assert!(matches!(
+            assert_recognized("/skills attach review-pr run.sh ./scripts/my run.sh"),
+            Command::SkillsAttach { skill, file, source } if skill == "review-pr" && file == "run.sh" && source == "./scripts/my run.sh"
+        ));
+        assert!(matches!(parse_command("/skills attach review-pr run.sh"), ParseOutcome::Unrecognized(_)));
+        assert!(matches!(parse_command("/skills file review-pr"), ParseOutcome::Unrecognized(_)));
         assert!(matches!(parse_command("/skills show"), ParseOutcome::Unrecognized(_)));
         assert!(matches!(parse_command("/skills bogus"), ParseOutcome::Unrecognized(_)));
     }
@@ -287,7 +307,7 @@ mod tests {
     fn current_word_completes_a_subcommand_name() {
         assert_eq!(candidates_for("/models u"), vec!["use"]);
         assert_eq!(candidates_for("/agents "), vec!["create", "edit", "remove", "use"]);
-        assert_eq!(candidates_for("/skills "), vec!["create", "edit", "path", "remove", "show"]);
+        assert_eq!(candidates_for("/skills "), vec!["attach", "create", "detach", "edit", "file", "path", "remove", "show"]);
         assert_eq!(candidates_for("/sync pu"), vec!["pull", "push"]);
         assert_eq!(candidates_for("/sync g"), vec!["git"]);
     }

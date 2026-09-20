@@ -260,8 +260,9 @@ implementado na Sessão 54, ver P37 em `PENDING.md` e "Sync descentralizado (Fas
 
 - [x] 5.9 — Skills (P16, Sessão 73): pacotes de instrução em `skills/<nome>.md` no vault, catálogo
   no prompt + `use_skill` sob demanda, criação pela conversa (`manage_skill`), à mão e por prompt na
-  tela Skills do desktop — ver `PENDING.md` P16 (resolvida), P72 (fora do escopo), P73 (sem teste com
-  modelo real) e `ARCHITECTURE.md`
+  tela Skills do desktop; P72 (Sessões 74–76) acrescentou `/skills` no CLI, telas no mobile e na
+  extensão, vínculo a agente e arquivos anexos (`skills/<nome>.files/`) — ver `PENDING.md` P16
+  (resolvida), P72 (fechado), P73 (sem teste com modelo real) e `ARCHITECTURE.md`
 
 **P11 resolvida (Sessão 35, 2026-08-29)** — as duas direções da tela de gerenciamento de MCP:
 (a) UI de verdade no desktop pra adicionar/editar/apagar servers MCP, com 4 presets de

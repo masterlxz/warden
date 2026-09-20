@@ -2,9 +2,37 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 75)
+> Última atualização: 2026-09-20 (Sessão 76)
 
 ---
+
+### 2026-09-20 — Sessão 76
+
+- **Objetivo**: fechar o P72 — (d) anexos de skill e (e) seletor de modelo no gerador. Plano aprovado antes
+  de codar (Plan mode); escopo fechado com o usuário: núcleo + desktop + CLI, acesso pela tool
+  `read_skill_file` + lista no `use_skill`. Extensão/mobile só preservam anexos, sem UI nova.
+
+**O que foi feito**:
+
+- **Núcleo**: anexos em `skills/<nome>.files/` (só texto, nome validado, ≤ 64 KB, ≤ 20 por skill);
+  `SkillStore::{list_files, read_file, read_file_for, save_file, delete_file}`; apagar a skill apaga a pasta.
+  Sync e busca não precisaram de mudança (confirmado por teste: o anexo entra no `list_all_files`, fica
+  fora da busca).
+- **Tools**: `use_skill` devolve `files` (só quando há), `read_skill_file` nova (escopada por agente, trocada
+  no `with_agent`), `manage_skill` com `files` (validado antes de gravar qualquer coisa).
+- **Desktop**: 4 comandos Tauri de anexo (separados do `SkillPayload`, decisão diferente do plano: anexo
+  só existe pra skill salva e assim a lista não carrega conteúdo) + seção "Attached files" no editor;
+  **(e)** seletor de provedor na seção "Describe a skill" (só aparece com mais de um provedor).
+- **CLI**: `/skills file`, `/skills attach <nome> <arquivo> <caminho-local>`, `/skills detach` (com
+  confirmação); `show` lista os anexos. Diferença do plano: `attach` só aceita caminho local, sem texto
+  inline (o tokenizador do REPL colapsa espaços, estragaria um script).
+- **Verificação**: `cargo test --workspace` 417 verdes, `cargo clippy --workspace --all-targets` limpo,
+  `npm run build` do desktop verde. **Não feito**: o app Tauri aberto (seção de anexos e seletor), o CLI num
+  terminal real, e nenhum modelo real usando `read_skill_file` (P73).
+- **Incidente**: rodei `cargo fmt --all` sem checar e o projeto (sem `rustfmt.toml`) não segue o rustfmt
+  padrão — reformatou 93 arquivos. Desfeito com `git stash` (o `git checkout -- .` foi bloqueado pelo
+  classificador de permissões) e as edições reaplicadas à mão. **Nunca rodar `cargo fmt` neste repo.** O
+  stash `accidental cargo fmt --all…` continua guardado e pode ser apagado (`git stash drop`).
 
 ### 2026-09-20 — Sessão 75
 

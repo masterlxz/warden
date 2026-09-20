@@ -199,7 +199,7 @@ function App() {
       ) : view === "vault" ? (
         <VaultView />
       ) : view === "skills" ? (
-        <SkillsView agents={settings.agents} />
+        <SkillsView agents={settings.agents} providers={settings.providers} activeProvider={settings.activeProvider} />
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : (

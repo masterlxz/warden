@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEntry, SkillEntry } from "../types";
+import type { AgentEntry, ProviderEntry, SkillEntry } from "../types";
 
 /** What the editor form is doing: `new` (name editable, refuses a taken name) or `edit` (name
  * locked, overwrites). `fromAi` only drives the "review before saving" hint. */
@@ -12,7 +12,169 @@ interface EditorState {
 
 const emptySkill: SkillEntry = { name: "", description: "", body: "", agents: [] };
 
-function SkillsView({ agents }: { agents: AgentEntry[] }) {
+/** An attachment being written: `existing` locks the name (it's an edit of a file already there). */
+interface FileDraft {
+  name: string;
+  content: string;
+  existing: boolean;
+}
+
+/** Text files attached to a saved skill (P72 d) — scripts, templates, notes the AI can read through
+ * `read_skill_file`. Changes hit the vault straight away, independent of the form's "Save skill". */
+function SkillFiles({ skillName }: { skillName: string }) {
+  const [files, setFiles] = useState<string[] | null>(null);
+  const [draft, setDraft] = useState<FileDraft | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function refresh() {
+    invoke<string[]>("list_skill_files", { name: skillName })
+      .then(setFiles)
+      .catch((err) => setError(String(err)));
+  }
+
+  useEffect(refresh, [skillName]);
+
+  async function openFile(file: string) {
+    setError(null);
+    try {
+      const content = await invoke<string>("read_skill_attachment", { name: skillName, file });
+      setDraft({ name: file, content, existing: true });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function saveDraft() {
+    if (!draft) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await invoke("save_skill_attachment", { name: skillName, file: draft.name, content: draft.content });
+      setDraft(null);
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeFile(file: string) {
+    setError(null);
+    try {
+      await invoke("delete_skill_attachment", { name: skillName, file });
+      setConfirmDelete(null);
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  return (
+    <div className="settings-field">
+      <span className="settings-label">Attached files</span>
+      <span className="settings-hint">
+        Text files the AI can read when it uses this skill, such as a script or a template (up to 20 files, 64 KB
+        each). A script only runs if the shell tool is enabled in Settings.
+      </span>
+      {error && <p className="settings-error-banner">{error}</p>}
+      {files === null ? null : files.length === 0 ? (
+        <span className="settings-hint">No files attached.</span>
+      ) : (
+        <div className="skill-file-list">
+          {files.map((file) => (
+            <div className="skill-file-row" key={file}>
+              <span className="skill-card-name">{file}</span>
+              <div className="skill-card-actions">
+                {confirmDelete === file ? (
+                  <>
+                    <span className="settings-hint">Remove?</span>
+                    <button type="button" className="provider-delete-btn" onClick={() => removeFile(file)}>
+                      Remove
+                    </button>
+                    <button type="button" className="settings-browse-btn" onClick={() => setConfirmDelete(null)}>
+                      Keep
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="settings-browse-btn" onClick={() => openFile(file)}>
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="provider-delete-btn"
+                      onClick={() => setConfirmDelete(file)}
+                      aria-label={`Remove ${file}`}
+                      title="Remove this file"
+                    >
+                      🗑
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {draft ? (
+        <div className="skill-file-draft">
+          <input
+            className="settings-input"
+            type="text"
+            placeholder="run.sh"
+            value={draft.name}
+            disabled={draft.existing}
+            onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })}
+          />
+          <textarea
+            className="settings-input settings-textarea"
+            rows={8}
+            placeholder="File content (text)."
+            value={draft.content}
+            onChange={(e) => setDraft({ ...draft, content: e.currentTarget.value })}
+          />
+          <div className="skill-editor-actions">
+            <button
+              type="button"
+              className="settings-save-btn"
+              onClick={saveDraft}
+              disabled={busy || draft.name.trim() === ""}
+            >
+              {busy ? "Saving…" : "Save file"}
+            </button>
+            <button type="button" className="settings-browse-btn" onClick={() => setDraft(null)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <button
+            type="button"
+            className="settings-browse-btn"
+            onClick={() => setDraft({ name: "", content: "", existing: false })}
+          >
+            + Attach a file
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillsView({
+  agents,
+  providers,
+  activeProvider,
+}: {
+  agents: AgentEntry[];
+  providers: ProviderEntry[];
+  activeProvider: string;
+}) {
   const [skills, setSkills] = useState<SkillEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -20,6 +182,8 @@ function SkillsView({ agents }: { agents: AgentEntry[] }) {
   const [saving, setSaving] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
+  // Which provider drafts the skill; "" = the active one (same convention as the chat's model picker).
+  const [draftProvider, setDraftProvider] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   function refresh() {
@@ -47,7 +211,8 @@ function SkillsView({ agents }: { agents: AgentEntry[] }) {
     setError(null);
     setGenerating(true);
     try {
-      const draft = await invoke<SkillEntry>("generate_skill_draft", { prompt, providerId: null });
+      const providerId = draftProvider === "" || draftProvider === activeProvider ? null : draftProvider;
+      const draft = await invoke<SkillEntry>("generate_skill_draft", { prompt, providerId });
       setEditor({ mode: "new", skill: draft, fromAi: true });
     } catch (err) {
       setError(String(err));
@@ -123,6 +288,25 @@ function SkillsView({ agents }: { agents: AgentEntry[] }) {
             onChange={(e) => setPrompt(e.currentTarget.value)}
           />
         </label>
+        {providers.length > 1 && (
+          <label className="settings-field">
+            <span className="settings-label">Model</span>
+            <select
+              className="settings-select"
+              value={draftProvider}
+              onChange={(e) => setDraftProvider(e.currentTarget.value)}
+            >
+              <option value="">Active provider{activeProvider ? ` (${activeProvider})` : ""}</option>
+              {providers
+                .filter((p) => p.id !== activeProvider)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
         <button
           type="button"
           className="settings-save-btn"
@@ -203,6 +387,12 @@ function SkillsView({ agents }: { agents: AgentEntry[] }) {
               see it.
             </span>
           </div>
+
+          {editor.mode === "edit" ? (
+            <SkillFiles skillName={editor.skill.name} />
+          ) : (
+            <span className="settings-hint">Save the skill first, then you can attach files to it.</span>
+          )}
 
           <div className="skill-editor-actions">
             <button type="button" className="settings-save-btn" onClick={handleSave} disabled={saving}>

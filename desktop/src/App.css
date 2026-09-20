@@ -1577,6 +1577,20 @@ body {
   color: var(--color-text);
 }
 
+.skill-file-list,
+.skill-file-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skill-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .skill-card-header {
   display: flex;
   align-items: center;
