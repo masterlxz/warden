@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -52,6 +54,10 @@ impl Tool for DelegateTool {
                 "required": ["task"]
             }),
         }
+    }
+
+    fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_allowed_tools(Some(allowed)) }))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {

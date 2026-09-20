@@ -1002,6 +1002,13 @@ body {
   height: 1.05em;
 }
 
+.agent-tool-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.35rem 1rem;
+  padding-left: 1.55rem;
+}
+
 .settings-hint {
   font-size: 0.82em;
   color: var(--color-text-muted);

@@ -39,6 +39,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool that only reaches the tools named in `allowed`, or `None` when it has no
+    /// tools of its own to restrict. Called by `Orchestrator::with_allowed_tools` on every tool that
+    /// survives the filter: a tool that runs a nested agent (`delegate_task`) overrides it so the
+    /// sub-agent can't reach what its caller may not.
+    fn restricted_to(&self, _allowed: &[String]) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// Whether the model should be offered this tool right now. The orchestrator leaves a tool
     /// out of the specs it advertises when this is `false` (e.g. an agent with no reachable SSH
     /// host), so it never sees a tool it can't use.

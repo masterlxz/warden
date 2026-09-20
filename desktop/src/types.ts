@@ -112,6 +112,9 @@ export interface AgentEntry {
    * *other* agents, each change shown to you for approval first. It can never switch this flag, or
    * `canDelegateToAgents`, on for any agent — only this checkbox does. */
   canManageAgents: boolean;
+  /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
+   * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
+  allowedTools: string[] | null;
 }
 
 /** Mirrors `ssh_cmds::SshHostPayload` (P47) — an SSH server the AI can run commands on through the

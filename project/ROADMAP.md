@@ -132,6 +132,11 @@ agente com `can_manage_agents` — cada mudança pede a aprovação do usuário,
 (só uma pessoa liga delegar/gerenciar) e um agente privilegiado só o humano edita. Falta o resto do pacote:
 fila de jobs, custo por sub-agente (P18/P60) e isolamento de tools por agente.
 
+**Isolamento de tools por agente (Sessão 81)**: `AgentConfig.allowed_tools` (lista permitida por nome, aplicada no
+código; `None` = todas). Vale também para o sub-agente de `delegate_task` e para cada alvo de `delegate_to_agent`
+(com a lista dele, não a do chefe). Um agente criado por outro agente nasce só com tools de leitura e ninguém dá uma
+tool que não tem. Falta o resto do pacote: fila de jobs e custo por sub-agente (P18/P60).
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA

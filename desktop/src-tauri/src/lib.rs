@@ -179,14 +179,20 @@ async fn send_message(
                 persona = Some(agent.persona.clone());
                 // Scopes the skill catalog and `use_skill` to this agent (P72 c).
                 orchestrator = orchestrator.with_agent(Some(id.clone()));
-                if agent.can_delegate_to_agents {
-                    if let Some(tool) = build_delegate_to_agent_tool(&config, &orchestrator) {
-                        orchestrator = orchestrator.with_tool(tool);
-                    }
+                // Delegation targets are built from the orchestrator *before* it is narrowed to this
+                // agent's tools, so each target gets its own list rather than this agent's (P46).
+                let delegate_tool = if agent.can_delegate_to_agents { build_delegate_to_agent_tool(&config, &orchestrator) } else { None };
+                let known_tools: Vec<String> = orchestrator.tools().iter().map(|t| t.spec().name).collect();
+                orchestrator = orchestrator.with_allowed_tools(agent.allowed_tools.as_deref());
+                if let Some(tool) = delegate_tool {
+                    orchestrator = orchestrator.with_tool(tool);
                 }
                 // Lets a "chief" create/edit other agents (P46); every change waits for the user's yes.
                 if agent.can_manage_agents {
-                    orchestrator = orchestrator.with_tool(Arc::new(ManageAgentsTool::new(path.clone())));
+                    let manage = ManageAgentsTool::new(path.clone())
+                        .with_known_tools(known_tools)
+                        .with_caller_limit(agent.allowed_tools.clone());
+                    orchestrator = orchestrator.with_tool(Arc::new(manage));
                 }
             }
         }
@@ -208,6 +214,14 @@ async fn send_message(
         attachments: outcome.attachments.into_iter().map(Into::into).collect(),
         generated_files: outcome.generated_files,
     })
+}
+
+/// Names of every tool the running orchestrator has, for the Settings screen's per-agent tool list
+/// (P46). Empty while the orchestrator failed to start.
+#[tauri::command]
+fn list_tool_names(state: State<'_, AppState>) -> Vec<String> {
+    let guard = state.orchestrator.lock().unwrap();
+    guard.as_ref().map(|o| o.tools().iter().map(|t| t.spec().name).collect()).unwrap_or_default()
 }
 
 /// Opens a file `generate_document`/oversized MCP media (P64) wrote to disk with the OS default
@@ -329,6 +343,9 @@ struct AgentPayload {
     /// Opt-in (P46) for the `manage_agents` tool — see `AgentConfig::can_manage_agents`.
     #[serde(default)]
     can_manage_agents: bool,
+    /// Tool isolation (P46) — see `AgentConfig::allowed_tools`. `None` (JSON `null`) = every tool.
+    #[serde(default)]
+    allowed_tools: Option<Vec<String>>,
 }
 
 /// IPC shape for `RemoteNodeConfig` (P61 v2 Settings UI) — same "dedicated payload struct for
@@ -498,6 +515,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 provider_id: a.provider_id.unwrap_or_default(),
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
+                allowed_tools: a.allowed_tools,
             })
             .collect(),
         storage_provider: storage_provider_kind_to_str(config.storage_provider.unwrap_or(StorageProviderKind::Local)).to_string(),
@@ -592,6 +610,7 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
             provider_id,
             can_delegate_to_agents: a.can_delegate_to_agents,
             can_manage_agents: a.can_manage_agents,
+            allowed_tools: a.allowed_tools,
         });
     }
 
@@ -876,6 +895,7 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             send_message,
+            list_tool_names,
             approval::resolve_approval,
             open_generated_file,
             read_attachment,

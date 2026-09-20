@@ -1130,3 +1130,35 @@ e `save_config`, como o `UsageStatsTool`. Decisões confirmadas com o usuário a
   `create_agent`, `update_agent`). No CLI o card mostra uma linha por linha do `detail`.
 - **Achado**: o renderizador de markdown do card do CLI consome os `_` (`manage_agents` aparece como
   `manageagents`); é anterior a esta mudança e só afeta a exibição.
+
+## Isolamento de tools por agente: `allowed_tools` (P46, Sessão 81)
+
+Lista permitida de tools por agente nomeado, aplicada no código (não pedida ao modelo). Decisão confirmada com o
+usuário: um agente **criado por outro agente** sem lista recebe só o conjunto de leitura.
+
+- **Modelo**: `AgentConfig.allowed_tools: Option<Vec<String>>` (`#[serde(default)]`). `None` = todas as tools
+  (configs antigas e o comportamento anterior); `Some(lista)` = só essas, e `Some([])` é um agente que só conversa.
+  `delegate_to_agent` e `manage_agents` **não** entram na lista: seguem só as flags `can_*` (a lista rejeita os dois
+  nomes), e são anexadas depois do filtro.
+- **Onde é aplicado**: `Orchestrator::with_allowed_tools(Option<&[String]>)` remove do orquestrador as tools fora da
+  lista — some do spec anunciado e uma chamada forçada vira "unknown tool". Desktop (`send_message`) e CLI
+  (`resolve_turn_context` devolve agora um `TurnContext` com `allowed_tools`) aplicam logo depois de `with_agent`.
+- **Bypass fechado — `delegate_task`**: o `DelegateTool` guarda um sub-orquestrador com todas as tools, então um
+  agente restrito que ainda pudesse delegar escaparia da lista. Novo método `Tool::restricted_to(&[String])` (padrão
+  `None`), implementado só pelo `DelegateTool`, estreita o orquestrador interno com a mesma lista (recursivo, porque
+  o interno tem o seu próprio `DelegateTool`).
+- **Ordem importa — alvos de `delegate_to_agent`**: `build_delegate_to_agent_tool` aplica **a lista de cada alvo**
+  (`with_agent(id).with_allowed_tools(alvo.allowed_tools)`), e por isso recebe o orquestrador **antes** de ele ser
+  estreitado para o agente ativo; senão todo alvo herdaria os limites do chefe (e nunca poderia ter mais que ele).
+- **`manage_agents` e a regra "ninguém dá o que não tem"**: `create` sem `allowed_tools` grava `SAFE_AGENT_TOOLS`
+  (`read_file`, `use_skill`, `read_skill_file`, `usage_stats`, `generate_document` — sem `write_file`, `shell`,
+  `ssh_*`, `manage_skill`, `delegate_task` nem MCP), cortado pela lista do próprio chamador. Uma lista pedida só pode
+  citar tools que existem (`with_known_tools`, nomes do orquestrador em execução) e só as que o chamador também tem
+  (`with_caller_limit`); tudo é validado antes de perguntar e o card mostra a lista (no `update`, antiga → nova).
+  `list` devolve `allowed_tools` de cada agente, `grantable_tool_names` e `default_tools_for_new_agents`.
+- **Superfícies**: Settings do desktop ganhou "Restrict tools" + checkboxes (comando novo `list_tool_names`; uma tool
+  da lista que sumiu, como a de um MCP fora do ar, aparece como "(not available now)" até ser desmarcada); o wizard do
+  CLI ganhou o campo "tools permitidas" (vírgula, em branco = todas) e `/agents` mostra `[tools: N]`.
+- **Limitações aceitas**: a lista é por **nome** — dois MCP servers com uma tool de mesmo nome se confundem;
+  Telegram/WhatsApp/mobile/MCP server não têm agente nomeado, então seguem com todas as tools; as tools `ssh_*` já
+  tinham o próprio escopo por host/agente e continuam com ele além da lista.

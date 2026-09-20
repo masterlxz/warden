@@ -115,7 +115,19 @@ pub struct AgentConfig {
     /// are switched on by a human in the Settings screen / `/agents` only.
     #[serde(default)]
     pub can_manage_agents: bool,
+    /// Tool isolation (P46): the only tools this agent may use, by name. `None` (the default, and
+    /// what every config.toml written before this field means) keeps every tool. `delegate_to_agent`
+    /// and `manage_agents` never belong here — they follow the two `can_*` flags above. Applied in
+    /// code (`Orchestrator::with_allowed_tools`), so it holds however the agent is reached: as the
+    /// conversation's agent or as a `delegate_to_agent` target.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
 }
+
+/// What an agent created by another agent may use unless the creator asks for more (and the user
+/// approves it): read-only access and document output — no `write_file`, `shell`, `ssh_*`,
+/// `manage_skill`, `delegate_task`, and no MCP tool.
+pub const SAFE_AGENT_TOOLS: [&str; 5] = ["read_file", "use_skill", "read_skill_file", "usage_stats", "generate_document"];
 
 /// One SSH server the AI may run commands on through the `ssh_exec` tool (P47). Edited from the
 /// desktop Settings screen or the CLI's `/ssh`. Only the *path* to a private key lives here, never
@@ -978,7 +990,9 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
 /// `Orchestrator::with_tool`). `orchestrator` should be the same orchestrator this turn is about
 /// to use: each target agent gets a clone of it (`with_model` swapped in only if that agent's
 /// `provider_id` differs), so every target inherits the exact same tool set/delegation depth as
-/// everyone else, just its own persona/model layered on top.
+/// everyone else, just its own persona/model/tool list (`allowed_tools`, P46) layered on top — so
+/// pass the orchestrator *before* narrowing it to the chief's own `allowed_tools`, or every target
+/// would inherit the chief's limits instead of its own.
 ///
 /// An agent invoked as a *target* here never gets `delegate_to_agent` itself, even if its own
 /// `can_delegate_to_agents` is `true` — that flag is only consulted by the caller for whichever
@@ -1011,8 +1025,10 @@ pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestr
             }
             None => orchestrator.clone(),
         };
-        // The delegated agent sees its own skills (P72 c), not the chief's.
-        let target_orchestrator = target_orchestrator.with_agent(Some(agent.id.clone()));
+        // The delegated agent sees its own skills (P72 c) and only its own tools (P46), not the
+        // chief's — which is why `orchestrator` must reach this function unrestricted.
+        let target_orchestrator =
+            target_orchestrator.with_agent(Some(agent.id.clone())).with_allowed_tools(agent.allowed_tools.as_deref());
         let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
         targets.push(NamedSubAgent {
             id: agent.id.clone(),
@@ -1482,6 +1498,7 @@ oauth = true
                 provider_id: Some("ollama-local".to_string()),
                 can_delegate_to_agents: true,
                 can_manage_agents: true,
+                allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
             storage_provider: Some(StorageProviderKind::DecentralizedVault),
             remote_node: Some(RemoteNodeConfig {
@@ -1938,7 +1955,69 @@ oauth = true
             provider_id: provider_id.map(str::to_string),
             can_delegate_to_agents: false,
             can_manage_agents: false,
+            allowed_tools: None,
         }
+    }
+
+    #[tokio::test]
+    async fn delegate_to_agent_targets_use_their_own_tool_list_not_the_chiefs() {
+        use warden_core::model::{response_stream, ChatStream, Response};
+        use warden_core::tool::ToolSpec;
+
+        /// Answers with the names of the tools it was offered.
+        struct EchoesToolNames;
+        #[async_trait::async_trait]
+        impl ModelProvider for EchoesToolNames {
+            async fn chat_stream(&self, _messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                let names = tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>().join(",");
+                Ok(response_stream(Response { content: names, tool_calls: Vec::new(), usage: None }))
+            }
+        }
+        struct Named(&'static str);
+        #[async_trait::async_trait]
+        impl Tool for Named {
+            fn spec(&self) -> ToolSpec {
+                ToolSpec { name: self.0.to_string(), description: String::new(), parameters: serde_json::json!({}) }
+            }
+            async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::json!("ran"))
+            }
+        }
+
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-delegate-tools-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNames), vault);
+        for name in ["read_file", "write_file", "shell"] {
+            orchestrator.register_tool(Arc::new(Named(name)));
+        }
+        let config = FileConfig {
+            agents: vec![
+                AgentConfig { allowed_tools: Some(vec!["read_file".into()]), ..agent_config("reader", None) },
+                AgentConfig { allowed_tools: Some(vec!["shell".into()]), ..agent_config("ops", None) },
+                agent_config("open", None),
+            ],
+            ..FileConfig::default()
+        };
+
+        // The chief is narrowed to `read_file` only *after* the targets are built from the full set.
+        let tool = build_delegate_to_agent_tool(&config, &orchestrator).unwrap();
+        let _chief = orchestrator.with_allowed_tools(Some(&["read_file".to_string()]));
+        let ask = |id: &str| serde_json::json!({ "agent_id": id, "task": "go" });
+        assert_eq!(tool.call(ask("reader")).await.unwrap()["result"], "read_file");
+        assert_eq!(tool.call(ask("ops")).await.unwrap()["result"], "shell");
+        assert_eq!(tool.call(ask("open")).await.unwrap()["result"], "read_file,write_file,shell");
+    }
+
+    #[test]
+    fn an_agent_from_a_config_written_before_allowed_tools_keeps_every_tool() {
+        let old = "[[agents]]\nid = \"legacy\"\npersona = \"p\"\n";
+        let config: FileConfig = toml::from_str(old).unwrap();
+        assert_eq!(config.agents[0].allowed_tools, None);
+        let new = "[[agents]]\nid = \"tight\"\npersona = \"p\"\nallowed_tools = []\n";
+        let config: FileConfig = toml::from_str(new).unwrap();
+        assert_eq!(config.agents[0].allowed_tools, Some(Vec::new()));
     }
 
     #[test]

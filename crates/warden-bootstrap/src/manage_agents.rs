@@ -2,7 +2,7 @@
 //! `config.toml`. Lives here rather than in `warden-core` because it works on `AgentConfig` and
 //! reads/writes the config file, exactly like `usage::UsageStatsTool` does for its data.
 //!
-//! The safety story is three rules, all enforced here and not left to the model:
+//! The safety story is four rules, all enforced here and not left to the model:
 //! 1. Only an agent that opted in (`AgentConfig.can_manage_agents`) is ever given the tool — the
 //!    channels (desktop, CLI) attach it per turn, the same way they do for `delegate_to_agent`.
 //! 2. Every `create`/`update` waits for a human "yes" through the `Approver`, and the request shows
@@ -10,6 +10,9 @@
 //! 3. No agent can grant a permission: created agents always start with `can_manage_agents` and
 //!    `can_delegate_to_agents` off, and `update` refuses to touch an agent that has either one
 //!    (that includes the caller itself). Those flags are switched on by a person only.
+//! 4. Tool isolation: an agent created without a tool list gets `SAFE_AGENT_TOOLS` (read-only), a
+//!    requested list may only name tools that exist (never `delegate_to_agent`/`manage_agents`) and
+//!    can't exceed the tools the calling agent itself is limited to, and the approval card shows it.
 //!
 //! There is deliberately no `delete`, same reasoning as `manage_skill`: a model mistake can only
 //! overwrite, never silently lose, something the user set up.
@@ -22,9 +25,11 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
-use crate::{load_config_from_path, save_config, AgentConfig, FileConfig};
+use crate::{load_config_from_path, save_config, AgentConfig, FileConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
+/// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`, never a tool list.
+const FLAG_GATED_TOOLS: [&str; 2] = ["delegate_to_agent", "manage_agents"];
 /// Small enough that the approval card can show the whole persona — a reviewer must see everything
 /// that will be saved, not a truncated preview.
 const MAX_PERSONA_CHARS: usize = 4000;
@@ -35,9 +40,10 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// re-applied to a freshly read config after they answer.
 #[derive(Debug, Clone, PartialEq)]
 enum Change {
-    Create { id: String, persona: String, provider_id: Option<String> },
+    /// `allowed_tools: None` = the safe default.
+    Create { id: String, persona: String, provider_id: Option<String>, allowed_tools: Option<Vec<String>> },
     /// `None` = leave as is. `provider_id: Some(None)` = clear it (an empty string from the model).
-    Update { id: String, persona: Option<String>, provider_id: Option<Option<String>> },
+    Update { id: String, persona: Option<String>, provider_id: Option<Option<String>>, allowed_tools: Option<Vec<String>> },
 }
 
 impl Change {
@@ -55,16 +61,39 @@ impl Change {
     }
 }
 
+/// Names a created/edited agent's tool list is checked against.
+#[derive(Clone, Default)]
+struct ToolRules {
+    /// Every tool that exists. `None` = not told, so unknown names aren't caught (tests only).
+    known: Option<Vec<String>>,
+    /// The calling agent's own `allowed_tools`: nobody may hand out more than they have.
+    caller_limit: Option<Vec<String>>,
+}
+
 #[derive(Clone)]
 pub struct ManageAgentsTool {
     config_path: PathBuf,
     approver: Option<Arc<dyn Approver>>,
     approval_timeout: Duration,
+    rules: ToolRules,
 }
 
 impl ManageAgentsTool {
     pub fn new(config_path: impl Into<PathBuf>) -> Self {
-        Self { config_path: config_path.into(), approver: None, approval_timeout: APPROVAL_TIMEOUT }
+        Self { config_path: config_path.into(), approver: None, approval_timeout: APPROVAL_TIMEOUT, rules: ToolRules::default() }
+    }
+
+    /// The names of every tool the running orchestrator has (`Orchestrator::tools`), so a made-up
+    /// name is refused before the user is asked anything.
+    pub fn with_known_tools(mut self, names: Vec<String>) -> Self {
+        self.rules.known = Some(names);
+        self
+    }
+
+    /// The calling agent's own `allowed_tools` (`None` = it has every tool, so no cap).
+    pub fn with_caller_limit(mut self, limit: Option<Vec<String>>) -> Self {
+        self.rules.caller_limit = limit;
+        self
     }
 
     /// Only tests wait less than the real deadline.
@@ -90,16 +119,22 @@ impl ManageAgentsTool {
                     "provider_id": a.provider_id,
                     "can_delegate_to_agents": a.can_delegate_to_agents,
                     "can_manage_agents": a.can_manage_agents,
+                    "allowed_tools": a.allowed_tools,
                 })
             })
             .collect();
         let providers: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
-        Ok(json!({ "agents": agents, "available_provider_ids": providers }))
+        Ok(json!({
+            "agents": agents,
+            "available_provider_ids": providers,
+            "grantable_tool_names": self.rules.grantable(),
+            "default_tools_for_new_agents": self.rules.default_tools(),
+        }))
     }
 
     async fn change(&self, change: Change) -> anyhow::Result<Value> {
         // Check first, so a request that can't succeed never costs the user a prompt.
-        let (_, detail) = plan(&self.load()?, &change)?;
+        let (_, detail) = plan(&self.load()?, &change, &self.rules)?;
 
         let Some(approver) = &self.approver else {
             anyhow::bail!(
@@ -116,7 +151,7 @@ impl ManageAgentsTool {
         // The prompt can sit open for a while and the user may have edited agents meanwhile, so
         // re-check and apply against a fresh read rather than the one from before the wait.
         let mut config = self.load()?;
-        config.agents = plan(&config, &change)?.0;
+        config.agents = plan(&config, &change, &self.rules)?.0;
         save_config(&self.config_path, &config)?;
         let verb = if matches!(change, Change::Create { .. }) { "created" } else { "updated" };
         Ok(json!({
@@ -131,13 +166,17 @@ impl ManageAgentsTool {
 
 /// The agent list `config` would have after `change`, or why that can't be done — plus what a human
 /// needs to see to approve it. Pure (no I/O) so the same checks run before and after the prompt.
-fn plan(config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<AgentConfig>, String)> {
+fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Result<(Vec<AgentConfig>, String)> {
     let mut updated = config.agents.clone();
     let detail = match change {
-        Change::Create { id, persona, provider_id } => {
+        Change::Create { id, persona, provider_id, allowed_tools } => {
             check_id(id)?;
             check_persona(persona)?;
             check_provider(config, provider_id.as_deref())?;
+            let tools = match allowed_tools {
+                Some(requested) => rules.check(requested)?,
+                None => rules.default_tools(),
+            };
             if config.agents.iter().any(|a| &a.id == id) {
                 anyhow::bail!("an agent named '{id}' already exists — pick another name, or use action 'update'");
             }
@@ -148,13 +187,15 @@ fn plan(config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<AgentConfig
                 // Never granted from here; only a person turns these on.
                 can_delegate_to_agents: false,
                 can_manage_agents: false,
+                allowed_tools: Some(tools.clone()),
             });
             format!(
-                "New agent '{id}'\nModel provider: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
-                provider_label(provider_id.as_deref())
+                "New agent '{id}'\nModel provider: {}\nTools: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
+                provider_label(provider_id.as_deref()),
+                tools_label(Some(&tools))
             )
         }
-        Change::Update { id, persona, provider_id } => {
+        Change::Update { id, persona, provider_id, allowed_tools } => {
             let Some(index) = config.agents.iter().position(|a| &a.id == id) else {
                 anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
             };
@@ -165,8 +206,8 @@ fn plan(config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<AgentConfig
                      an agent may not change one with more power than a plain agent"
                 );
             }
-            if persona.is_none() && provider_id.is_none() {
-                anyhow::bail!("nothing to change — pass 'persona' and/or 'provider_id'");
+            if persona.is_none() && provider_id.is_none() && allowed_tools.is_none() {
+                anyhow::bail!("nothing to change — pass 'persona', 'provider_id' and/or 'allowed_tools'");
             }
             let mut lines = vec![format!("Change agent '{id}'")];
             if let Some(new_provider) = provider_id {
@@ -178,6 +219,11 @@ fn plan(config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<AgentConfig
                 ));
                 updated[index].provider_id = new_provider.clone();
             }
+            if let Some(requested) = allowed_tools {
+                let tools = rules.check(requested)?;
+                lines.push(format!("Tools: {} → {}", tools_label(current.allowed_tools.as_deref()), tools_label(Some(&tools))));
+                updated[index].allowed_tools = Some(tools);
+            }
             if let Some(new_persona) = persona {
                 check_persona(new_persona)?;
                 lines.push(format!("\nOld persona:\n{}\n\nNew persona:\n{new_persona}", current.persona));
@@ -187,6 +233,61 @@ fn plan(config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<AgentConfig
         }
     };
     Ok((updated, detail))
+}
+
+impl ToolRules {
+    /// The tools an agent may be given from here: all that exist (or, when not told, the safe set),
+    /// within the caller's own limit, and never the two that follow the `can_*` flags.
+    fn grantable(&self) -> Vec<String> {
+        let base: Vec<String> = match &self.known {
+            Some(known) => known.clone(),
+            None => SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect(),
+        };
+        base.into_iter().filter(|t| !FLAG_GATED_TOOLS.contains(&t.as_str()) && self.within_caller_limit(t)).collect()
+    }
+
+    /// `SAFE_AGENT_TOOLS` that actually exist and that the caller could hand out itself.
+    fn default_tools(&self) -> Vec<String> {
+        SAFE_AGENT_TOOLS
+            .iter()
+            .map(|t| t.to_string())
+            .filter(|t| self.within_caller_limit(t) && self.known.as_ref().is_none_or(|k| k.contains(t)))
+            .collect()
+    }
+
+    fn within_caller_limit(&self, tool: &str) -> bool {
+        self.caller_limit.as_ref().is_none_or(|limit| limit.iter().any(|t| t == tool))
+    }
+
+    /// `requested` cleaned up (trimmed, de-duplicated), or why it can't be granted.
+    fn check(&self, requested: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut tools: Vec<String> = Vec::new();
+        for name in requested.iter().map(|t| t.trim()) {
+            if FLAG_GATED_TOOLS.contains(&name) {
+                anyhow::bail!("'{name}' can't be put in a tool list — only the user can give an agent that power (Settings or /agents)");
+            }
+            if let Some(known) = &self.known {
+                if !known.iter().any(|t| t == name) {
+                    anyhow::bail!("unknown tool '{name}' (available: {}) — see 'grantable_tool_names' in 'list'", self.grantable().join(", "));
+                }
+            }
+            if !self.within_caller_limit(name) {
+                anyhow::bail!("you can't give another agent the tool '{name}': it isn't one of yours");
+            }
+            if !tools.iter().any(|t| t == name) {
+                tools.push(name.to_string());
+            }
+        }
+        Ok(tools)
+    }
+}
+
+fn tools_label(tools: Option<&[String]>) -> String {
+    match tools {
+        None => "(all tools)".to_string(),
+        Some([]) => "(none)".to_string(),
+        Some(list) => list.join(", "),
+    }
 }
 
 fn check_id(id: &str) -> anyhow::Result<()> {
@@ -237,6 +338,17 @@ fn provider_arg(args: &Value) -> Option<Option<String>> {
     args.get("provider_id").and_then(Value::as_str).map(|s| Some(s.trim().to_string()).filter(|s| !s.is_empty()))
 }
 
+/// `allowed_tools` from the model: absent = the default/leave alone, an array (even empty) = that list.
+fn allowed_tools_arg(args: &Value) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(value) = args.get("allowed_tools").filter(|v| !v.is_null()) else { return Ok(None) };
+    let items = value.as_array().ok_or_else(|| anyhow::anyhow!("'allowed_tools' must be an array of tool names"))?;
+    items
+        .iter()
+        .map(|item| item.as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("'allowed_tools' must contain only strings")))
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(Some)
+}
+
 #[async_trait]
 impl Tool for ManageAgentsTool {
     fn spec(&self) -> ToolSpec {
@@ -245,8 +357,9 @@ impl Tool for ManageAgentsTool {
             description: "List, create or edit the user's named agents (each is a persona, optionally with its own \
                           model). Use it only when the user asks to create or change an agent. Every create/update \
                           is shown to the user, who must approve it; you cannot delete agents or give any agent the \
-                          power to delegate or manage other agents. A new agent is usable from the user's next \
-                          message. Start with 'list' to see what exists."
+                          power to delegate or manage other agents. A new agent starts with read-only tools \
+                          unless you list others, and is usable from the user's next message. Start with \
+                          'list' to see what exists."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -265,6 +378,14 @@ impl Tool for ManageAgentsTool {
                         "type": "string",
                         "description": "Which configured model provider it uses (see 'available_provider_ids' in \
                                         'list'). Leave out for the default; on update, an empty string clears it."
+                    },
+                    "allowed_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The only tools this agent may use, by name (see 'grantable_tool_names' in \
+                                        'list'). Leave out on create for a read-only default \
+                                        ('default_tools_for_new_agents'); on update, leave out to keep the current \
+                                        list. Ask for as few as the job needs: the user sees the list and must approve."
                     }
                 },
                 "required": ["action"]
@@ -289,9 +410,9 @@ impl Tool for ManageAgentsTool {
         let change = match action {
             "create" => {
                 let persona = persona.ok_or_else(|| anyhow::anyhow!("missing required 'persona' argument"))?;
-                Change::Create { id, persona, provider_id: provider_arg(&args).flatten() }
+                Change::Create { id, persona, provider_id: provider_arg(&args).flatten(), allowed_tools: allowed_tools_arg(&args)? }
             }
-            _ => Change::Update { id, persona, provider_id: provider_arg(&args) },
+            _ => Change::Update { id, persona, provider_id: provider_arg(&args), allowed_tools: allowed_tools_arg(&args)? },
         };
         self.change(change).await
     }
@@ -315,7 +436,7 @@ mod tests {
     }
 
     fn agent(id: &str, delegate: bool, manage: bool) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: format!("persona of {id}"), provider_id: None, can_delegate_to_agents: delegate, can_manage_agents: manage }
+        AgentConfig { id: id.into(), persona: format!("persona of {id}"), provider_id: None, can_delegate_to_agents: delegate, can_manage_agents: manage, allowed_tools: None }
     }
 
     /// Writes a config with a provider `local` and the given agents, and returns the path.
@@ -491,6 +612,105 @@ mod tests {
         tool.call(json!({ "action": "update", "id": "plain", "persona": "fine" })).await.unwrap();
     }
 
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|t| t.to_string()).collect()
+    }
+
+    /// A tool that knows the real tool names, optionally called by an agent limited to `limit`.
+    fn tool_knowing(path: &Path, limit: Option<&[&str]>) -> (Arc<dyn Tool>, Arc<Scripted>) {
+        let approver = Arc::new(Scripted { answer: true, asked: Mutex::new(Vec::new()) });
+        let known = names(&["read_file", "write_file", "shell", "use_skill", "read_skill_file", "usage_stats", "generate_document", "delegate_to_agent", "manage_agents"]);
+        let tool = ManageAgentsTool::new(path).with_known_tools(known).with_caller_limit(limit.map(names));
+        (tool.with_approver(approver.clone()).unwrap(), approver)
+    }
+
+    #[tokio::test]
+    async fn a_created_agent_defaults_to_the_read_only_tools_and_the_card_says_so() {
+        let path = write_config(vec![]);
+        let (tool, approver) = tool_knowing(&path, None);
+        tool.call(json!({ "action": "create", "id": "reader", "persona": "p" })).await.unwrap();
+
+        let created = &agents_on_disk(&path)[0];
+        assert_eq!(created.allowed_tools, Some(names(&SAFE_AGENT_TOOLS)));
+        let detail = approver.asked.lock().unwrap()[0].detail.clone();
+        assert!(detail.contains("Tools: read_file, use_skill, read_skill_file, usage_stats, generate_document"), "{detail}");
+        assert!(!SAFE_AGENT_TOOLS.iter().any(|t| ["shell", "write_file"].contains(t)));
+    }
+
+    #[tokio::test]
+    async fn a_requested_tool_list_is_saved_deduplicated_and_shown() {
+        let path = write_config(vec![]);
+        let (tool, approver) = tool_knowing(&path, None);
+        tool.call(json!({ "action": "create", "id": "ops", "persona": "p", "allowed_tools": [" shell ", "read_file", "shell"] })).await.unwrap();
+        assert_eq!(agents_on_disk(&path)[0].allowed_tools, Some(names(&["shell", "read_file"])));
+        assert!(approver.asked.lock().unwrap()[0].detail.contains("Tools: shell, read_file"));
+
+        // An explicit empty list is a text-only agent, not "all tools".
+        tool.call(json!({ "action": "create", "id": "talker", "persona": "p", "allowed_tools": [] })).await.unwrap();
+        assert_eq!(agents_on_disk(&path)[1].allowed_tools, Some(Vec::new()));
+        assert!(approver.asked.lock().unwrap()[1].detail.contains("Tools: (none)"));
+    }
+
+    #[tokio::test]
+    async fn bad_tool_lists_are_refused_before_asking_anyone() {
+        let path = write_config(vec![agent("plain", false, false)]);
+        let (tool, approver) = tool_knowing(&path, Some(&["read_file", "use_skill"]));
+        let cases = [
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": ["teleport"] }), "unknown tool 'teleport'"),
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": ["manage_agents"] }), "only the user can give"),
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": ["delegate_to_agent"] }), "only the user can give"),
+            // The caller only has read_file/use_skill, so it can't hand out `shell`.
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": ["shell"] }), "isn't one of yours"),
+            (json!({ "action": "update", "id": "plain", "allowed_tools": ["write_file"] }), "isn't one of yours"),
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": "shell" }), "must be an array"),
+            (json!({ "action": "create", "id": "n", "persona": "p", "allowed_tools": [1] }), "only strings"),
+        ];
+        for (args, expected) in cases {
+            let err = tool.call(args.clone()).await.unwrap_err();
+            assert!(err.to_string().contains(expected), "{args} → {err}");
+        }
+        assert!(approver.asked.lock().unwrap().is_empty());
+        assert_eq!(agents_on_disk(&path).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_default_tools_never_exceed_what_the_caller_has() {
+        let path = write_config(vec![]);
+        let (tool, _) = tool_knowing(&path, Some(&["read_file", "shell"]));
+        tool.call(json!({ "action": "create", "id": "child", "persona": "p" })).await.unwrap();
+        // The safe set is cut down to the caller's own limit: `shell` is not in it, so it isn't added.
+        assert_eq!(agents_on_disk(&path)[0].allowed_tools, Some(names(&["read_file"])));
+    }
+
+    #[tokio::test]
+    async fn update_replaces_the_tool_list_and_shows_old_and_new() {
+        let path = write_config(vec![AgentConfig { allowed_tools: Some(names(&["read_file"])), ..agent("writer", false, false) }, agent("open", false, false)]);
+        let (tool, approver) = tool_knowing(&path, None);
+
+        tool.call(json!({ "action": "update", "id": "writer", "allowed_tools": ["read_file", "write_file"] })).await.unwrap();
+        tool.call(json!({ "action": "update", "id": "open", "allowed_tools": ["read_file"] })).await.unwrap();
+        // Leaving it out keeps the list.
+        tool.call(json!({ "action": "update", "id": "writer", "persona": "new persona" })).await.unwrap();
+
+        let agents = agents_on_disk(&path);
+        assert_eq!(agents[0].allowed_tools, Some(names(&["read_file", "write_file"])));
+        assert_eq!(agents[1].allowed_tools, Some(names(&["read_file"])));
+        let asked = approver.asked.lock().unwrap();
+        assert!(asked[0].detail.contains("Tools: read_file → read_file, write_file"), "{}", asked[0].detail);
+        assert!(asked[1].detail.contains("Tools: (all tools) → read_file"), "{}", asked[1].detail);
+    }
+
+    #[tokio::test]
+    async fn list_shows_each_agents_tools_and_what_can_be_granted() {
+        let path = write_config(vec![agent("open", false, false)]);
+        let (tool, _) = tool_knowing(&path, Some(&["read_file", "shell", "manage_agents"]));
+        let result = tool.call(json!({ "action": "list" })).await.unwrap();
+        assert_eq!(result["agents"][0]["allowed_tools"], Value::Null);
+        // Only what the caller has, and never the two flag-gated tools.
+        assert_eq!(result["grantable_tool_names"], json!(["read_file", "shell"]));
+        assert_eq!(result["default_tools_for_new_agents"], json!(["read_file"]));
+    }
+
     #[tokio::test]
     async fn the_change_is_applied_to_what_is_on_disk_after_the_prompt_not_before() {
         let path = write_config(vec![]);
@@ -555,5 +775,6 @@ mod tests {
         assert_eq!(spec.parameters["properties"]["action"]["enum"], json!(["list", "create", "update"]));
         let props = spec.parameters["properties"].as_object().unwrap();
         assert!(!props.contains_key("can_manage_agents") && !props.contains_key("can_delegate_to_agents"));
+        assert!(props.contains_key("allowed_tools"));
     }
 }

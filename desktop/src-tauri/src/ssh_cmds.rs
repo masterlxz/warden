@@ -119,7 +119,7 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false }
+        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false, allowed_tools: None }
     }
 
     #[test]

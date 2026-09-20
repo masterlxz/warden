@@ -541,11 +541,14 @@ function SshHostCard({
 function AgentCard({
   agent,
   providers,
+  toolNames,
   onChange,
   onDelete,
 }: {
   agent: AgentEntry;
   providers: ProviderEntry[];
+  /** Every tool the running app has, for the "Restrict tools" list. */
+  toolNames: string[];
   onChange: (next: AgentEntry) => void;
   onDelete: () => void;
 }) {
@@ -626,6 +629,49 @@ function AgentCard({
           checkboxes can — and it can't edit an agent that has either.
         </span>
       </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.allowedTools !== null}
+            onChange={(e) => onChange({ ...agent, allowedTools: e.currentTarget.checked ? [] : null })}
+          />
+          <span className="settings-label">Restrict tools</span>
+        </span>
+        <span className="settings-hint">
+          Off: this agent can use every tool the app has. On: only the ones ticked below (also when another agent
+          delegates to it).
+        </span>
+      </label>
+      {agent.allowedTools !== null && (
+        <div className="settings-field agent-tool-list" role="group" aria-label={`Tools ${agent.id || "this agent"} may use`}>
+          {[...new Set([...toolNames, ...agent.allowedTools])].map((tool) => (
+            <span key={tool} className="settings-checkbox-row">
+              <input
+                type="checkbox"
+                id={`tool-${agent.id}-${tool}`}
+                checked={agent.allowedTools!.includes(tool)}
+                onChange={(e) =>
+                  onChange({
+                    ...agent,
+                    allowedTools: e.currentTarget.checked
+                      ? [...agent.allowedTools!, tool]
+                      : agent.allowedTools!.filter((t) => t !== tool),
+                  })
+                }
+              />
+              <label htmlFor={`tool-${agent.id}-${tool}`}>
+                {tool}
+                {!toolNames.includes(tool) && <span className="settings-hint"> (not available now)</span>}
+              </label>
+            </span>
+          ))}
+          {agent.allowedTools.length === 0 && (
+            <span className="settings-hint">No tool ticked — this agent can only chat.</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -903,8 +949,12 @@ function SettingsView() {
   // Set mid-save (P61 follow-up) only when the storage-provider migration this save triggers has
   // something real to publish to Arweave — see the `migration-qr` event emitted by `save_settings`.
   const [migrationQrSvg, setMigrationQrSvg] = useState<string | null>(null);
+  const [toolNames, setToolNames] = useState<string[]>([]);
 
   useEffect(() => {
+    invoke<string[]>("list_tool_names")
+      .then(setToolNames)
+      .catch(() => setToolNames([]));
     invoke<Settings>("get_settings")
       .then(setForm)
       .catch((err) => setError(String(err)))
@@ -966,7 +1016,7 @@ function SettingsView() {
   function addAgent() {
     setForm((f) => ({
       ...f,
-      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false }],
+      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null }],
     }));
   }
 
@@ -1191,7 +1241,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} providers={form.providers} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} providers={form.providers} toolNames={toolNames} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

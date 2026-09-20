@@ -2,7 +2,43 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 80)
+> Última atualização: 2026-09-20 (Sessão 81)
+
+---
+
+### 2026-09-20 — Sessão 81
+
+- **Objetivo**: P46 — isolamento de tools por agente. Plano aprovado antes de codar (Plan mode); decisão confirmada
+  com o usuário: agente criado por outro agente, sem lista, recebe **só o conjunto de leitura/seguro**.
+
+**O que foi feito**:
+
+- **`AgentConfig.allowed_tools: Option<Vec<String>>`** + `Orchestrator::with_allowed_tools` (core) que remove as tools
+  fora da lista. Aplicado no desktop (`send_message`) e no CLI (`resolve_turn_context` agora devolve um `TurnContext`
+  em vez de tupla) antes de anexar `delegate_to_agent`/`manage_agents`, que seguem só as flags `can_*`.
+- **Bypass do `delegate_task` fechado**: novo `Tool::restricted_to`, implementado pelo `DelegateTool`, estreita o
+  sub-orquestrador com a mesma lista. **Alvos de `delegate_to_agent`** usam a lista **própria** (o chamador passa o
+  orquestrador antes de estreitar para o chefe).
+- **`manage_agents`**: parâmetro `allowed_tools`; padrão `SAFE_AGENT_TOOLS` cortado pelo limite do chamador; nomes
+  precisam existir, `delegate_to_agent`/`manage_agents` são recusados e a lista não pode passar da do chamador;
+  o card mostra a lista (update: antiga → nova).
+- **UI**: Settings do desktop ("Restrict tools" + checkboxes, comando `list_tool_names`), wizard do CLI (campo de
+  tools) e `[tools: N]` em `/agents`.
+- **Achados**: (1) a ordem de montagem importa — construir os alvos de delegação depois de estreitar o chefe faria
+  todo alvo herdar os limites do chefe; (2) `delegate_task` era um bypass real da lista; (3) o `rust-lld` deu
+  segfault uma vez no primeiro `cargo test` (ambiente; passou na repetição); (4) no meu script de pty, `flat()`
+  apaga `_` e espaços, então as comparações precisam do texto já achatado.
+- **Verificação**: `cargo test --workspace` verde, clippy limpo, `npm run build` verde. Binário real do CLI num pty
+  contra o servidor de modelo **falso** OpenAI-compatível (20 checagens: cada agente só é oferecido as suas tools,
+  chamada forçada a `shell` por agente restrito recusada e sem efeito no disco, sub-agente do `delegate_task`
+  sem `shell`/`write_file`, criação com padrão seguro/lista/limite/nome inexistente/`manage_agents`, update
+  antiga→nova, o agente criado realmente restrito no turno seguinte, `[tools: N]`); Settings no Playwright headless
+  com `invoke` mockado (18 checagens, claro e escuro). **Não feito**: modelo real (sem chave nesta máquina), app Tauri
+  aberto de verdade, e teste automatizado do fluxo `delegate_to_agent` restrito via CLI/pty (coberto só por teste
+  unitário no bootstrap).
+
+**Ainda aberto no P46**: fila de jobs, custo dos sub-agentes (P18/P60) e teto por turno, `delete_agent`, o agente
+criado só vira alvo de delegação no turno seguinte, lista por nome (colisão entre MCP servers), teste com modelo real.
 
 ---
 

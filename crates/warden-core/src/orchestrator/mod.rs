@@ -125,6 +125,23 @@ impl Orchestrator {
         clone
     }
 
+    /// Returns a copy of this orchestrator that only has the tools named in `allowed` (P46, tool
+    /// isolation per agent); `None` keeps every tool. A tool outside the list is gone, not just
+    /// hidden: the model can't be offered it and a call to it fails as an unknown tool. Tools that
+    /// carry a nested orchestrator (`delegate_task`) are narrowed the same way, so a sub-agent can't
+    /// be used to reach what the caller may not. Same cheap-clone reasoning as `with_agent`.
+    pub fn with_allowed_tools(&self, allowed: Option<&[String]>) -> Self {
+        let Some(allowed) = allowed else { return self.clone() };
+        let mut clone = self.clone();
+        clone.tools.retain(|tool| allowed.contains(&tool.spec().name));
+        for tool in &mut clone.tools {
+            if let Some(restricted) = tool.restricted_to(allowed) {
+                *tool = restricted;
+            }
+        }
+        clone
+    }
+
     /// Returns a copy of this orchestrator whose tools that need a human "yes" (`ssh_*` on a host
     /// with `require_approval`) ask `approver`. Channels that can't ask simply never call this, and
     /// those tools refuse. Same cheap-clone reasoning as `with_agent`.
@@ -801,6 +818,63 @@ mod tests {
         assert!(ops.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
         let back_and_forth = ops.with_agent(Some("writer".into())).with_agent(Some("ops".into()));
         assert!(back_and_forth.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
+    }
+
+    struct NamedTool(&'static str);
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: self.0.to_string(), description: String::new(), parameters: serde_json::json!({}) }
+        }
+        async fn call(&self, _args: Value) -> anyhow::Result<Value> {
+            Ok(serde_json::json!("ran"))
+        }
+    }
+
+    #[tokio::test]
+    async fn with_allowed_tools_drops_every_tool_outside_the_list() {
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        for name in ["read_file", "shell", "write_file"] {
+            orchestrator.register_tool(Arc::new(NamedTool(name)));
+        }
+
+        let all = orchestrator.with_allowed_tools(None);
+        assert_eq!(all.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content, "read_file,shell,write_file");
+
+        let allowed = vec!["read_file".to_string(), "ghost".to_string()];
+        let narrowed = orchestrator.with_allowed_tools(Some(&allowed));
+        assert_eq!(narrowed.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content, "read_file");
+        // Gone, not just hidden: a call to it is an unknown tool.
+        let err = narrowed.run_tool(&ToolCall { id: "1".into(), name: "shell".into(), arguments: serde_json::json!({}), thought_signature: None }).await.unwrap_err();
+        assert!(err.to_string().contains("unknown tool"));
+        // The original is untouched.
+        assert_eq!(orchestrator.tools().len(), 3);
+
+        let none: Vec<String> = Vec::new();
+        assert!(orchestrator.with_allowed_tools(Some(&none)).tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_allowed_tools_also_narrows_the_sub_agent_behind_delegate_task() {
+        use crate::tool::delegate::DelegateTool;
+        let mut inner = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        for name in ["read_file", "shell"] {
+            inner.register_tool(Arc::new(NamedTool(name)));
+        }
+        let mut outer = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        outer.register_tool(Arc::new(DelegateTool::new(inner)));
+        let delegate_only = |o: &Orchestrator| o.tools().iter().find(|t| t.spec().name == "delegate_task").unwrap().clone();
+
+        // Unrestricted: the sub-agent is offered both tools.
+        let result = delegate_only(&outer).call(serde_json::json!({ "task": "x" })).await.unwrap();
+        assert_eq!(result["result"], "read_file,shell");
+
+        // Allowed to delegate, but not to reach `shell` through the sub-agent.
+        let allowed = vec!["delegate_task".to_string(), "read_file".to_string()];
+        let restricted = outer.with_allowed_tools(Some(&allowed));
+        let result = delegate_only(&restricted).call(serde_json::json!({ "task": "x" })).await.unwrap();
+        assert_eq!(result["result"], "read_file");
     }
 
     #[tokio::test]
