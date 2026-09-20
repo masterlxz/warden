@@ -2,7 +2,23 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 76)
+> Última atualização: 2026-09-20 (Sessão 77)
+
+---
+
+### 2026-09-20 — Sessão 77
+
+- **Objetivo**: fechar a parte de modelo real do P73 sem depender do usuário.
+
+**O que foi feito**:
+
+- Rodado o `warden` CLI (stdin em pipe → `handle_message`) contra o Gemini da config, com vault temporário na
+  scratchpad (o vault real não foi tocado): `use_skill` + `read_skill_file` chamados pelo modelo sozinho,
+  skill criada por conversa via `manage_skill` e usada no turno seguinte, e `generate_skill_draft` com JSON
+  válido em pt e en (exemplo descartável, removido). Detalhes e ressalvas em `PENDING.md` P73.
+- Nenhum código do projeto alterado.
+
+**Ainda aberto no P73**: app Tauri real com a tela de skills; sync de `skills/` entre dois devices.
 
 ---
 
