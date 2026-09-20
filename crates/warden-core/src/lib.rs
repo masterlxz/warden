@@ -1,3 +1,4 @@
+pub mod budget;
 pub mod memory;
 pub mod model;
 pub mod orchestrator;

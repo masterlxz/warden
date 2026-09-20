@@ -2,7 +2,38 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 81)
+> Última atualização: 2026-09-20 (Sessão 82)
+
+---
+
+### 2026-09-20 — Sessão 82
+
+- **Objetivo**: P46/P60/P18 — controle de custo dos sub-agentes. Plano aprovado antes de codar (Plan mode). Decisão
+  de escopo: o teto é em **chamadas de modelo por turno** (tokens só são somados), e só sub-agentes são cobrados.
+
+**O que foi feito**:
+
+- **`TurnBudget`** (`warden-core/src/budget.rs`) compartilhado por toda a árvore de sub-agentes do turno;
+  `Orchestrator::with_delegation_limit`/`charged_to`, `Tool::with_budget` (implementado por `DelegateTool` e
+  `DelegateToAgentTool`). `handle_turn_streaming` cria um orçamento novo por turno (o loop virou `run_turn`), então
+  vale em todos os canais. Esgotado o teto, o sub-agente falha e o pai recebe o erro como resultado de tool.
+- **P18 fechado**: o uso dos sub-agentes é somado ao `MessageOutcome.usage` do raiz (sem mudar `Tool::call`).
+- **Config**: `max_delegated_calls` / `WARDEN_MAX_DELEGATED_CALLS`, padrão 30, `0` = sem teto; carregado em
+  `save_settings` do desktop (senão cada save o apagava).
+- **Achados**: (1) sem cobrar o orquestrador raiz o turno ainda responde depois do teto — cobrar todos derrubaria o turno;
+  (2) o limite mora no orquestrador e o orçamento nasce em `handle_turn_streaming`, o que evitou tocar na montagem de
+  Telegram/WhatsApp/mobile/MCP; (3) `pgrep -f` no meu próprio loop de espera casou com a linha de comando dele e o
+  deixou preso — usar o arquivo de saída da tarefa; (4) uma execução de `cargo test -p warden-core --lib` ficou presa
+  uma vez e **não reproduziu** em 4 repetições (paralelo e `--test-threads=1`); causa não identificada.
+- **Verificação**: `cargo test --workspace` 490 verdes (10 testes novos), clippy limpo. Binário real do CLI num pty
+  contra o servidor de modelo **falso** (agora reportando `usage`): com o teto em 3 o sub-agente parou em exatamente 3
+  chamadas (contadas no log do servidor), o turno respondeu com o erro visível, `/usage` somou 75 tokens (2 chamadas do
+  raiz + 3 do sub-agente, 15 cada) e 150 depois do segundo turno, que começou com orçamento novo; com `0` o sub-agente só
+  parou nas 8 iterações. **Não feito**: modelo real (sem chave), app Tauri aberto, e o caminho `delegate_to_agent` pelo
+  pty (coberto só por teste unitário no bootstrap).
+
+**Ainda aberto no P46**: fila de jobs, `delete_agent`, o agente criado só vira alvo de delegação no turno seguinte,
+lista de tools por nome (colisão entre MCP servers), teste com modelo real. Teto por período/usuário segue no P4.
 
 ---
 

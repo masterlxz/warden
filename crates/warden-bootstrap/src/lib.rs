@@ -275,6 +275,11 @@ pub struct FileConfig {
     /// raising this raises the worst-case model-call blowup documented on `DEFAULT_DELEGATE_MAX_DEPTH`
     /// (see `PENDING.md` P60), deliberately left to the user to weigh.
     pub delegate_max_depth: Option<u32>,
+    /// How many model calls the sub-agents (`delegate_task`, `delegate_to_agent`, and what those
+    /// delegate to) may make between them in one turn (P46/P60/P18). `None` keeps
+    /// `DEFAULT_MAX_DELEGATED_CALLS`; `WARDEN_MAX_DELEGATED_CALLS` wins over this if set; `0` turns
+    /// the limit off. No UI — config.toml/env only, same posture as `delegate_max_depth`.
+    pub max_delegated_calls: Option<u32>,
     #[serde(default)]
     pub api_keys: ApiKeys,
     /// The provider registry (Sessão 35). Empty means "not migrated to the registry yet" —
@@ -780,6 +785,12 @@ pub fn resolve_flag(from_env: Option<String>, from_file: Option<bool>) -> bool {
     }
 }
 
+/// Same precedence and same leniency as `resolve_delegate_max_depth`, for `max_delegated_calls`.
+/// `0` is a real answer ("no limit"), not "unset".
+pub fn resolve_max_delegated_calls(from_env: Option<String>, from_file: Option<u32>) -> u32 {
+    from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_MAX_DELEGATED_CALLS)
+}
+
 /// Same env-wins-over-file precedence as `resolve_flag`, for `delegate_max_depth` (P46). An env
 /// value that doesn't parse as a `u32` is treated the same as it not being set at all — falls
 /// back to `from_file`, then `DEFAULT_DELEGATE_MAX_DEPTH` — rather than failing `bootstrap()`
@@ -1164,7 +1175,10 @@ pub async fn bootstrap(
 
     let delegate_max_depth =
         resolve_delegate_max_depth(std::env::var("WARDEN_DELEGATE_MAX_DEPTH").ok(), config.delegate_max_depth);
-    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path);
+    let max_delegated_calls =
+        resolve_max_delegated_calls(std::env::var("WARDEN_MAX_DELEGATED_CALLS").ok(), config.max_delegated_calls);
+    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path)
+        .with_delegation_limit(max_delegated_calls);
 
     Ok(orchestrator)
 }
@@ -1191,12 +1205,18 @@ fn build_ssh_tools(entries: &[SshHostConfig], base_dir: PathBuf, audit_log: Opti
 
 /// Default for how many levels deep a sub-agent spawned via `DelegateTool` can itself delegate
 /// further (P46 — "sub-agentes autônomos", core recursion piece), used when `delegate_max_depth`
-/// isn't set in config.toml/env (see `resolve_delegate_max_depth`). No job queue or cost control
-/// exists to bound a deep chain's total model calls (worst case is roughly
-/// `MAX_TOOL_ITERATIONS ^ depth` if every single iteration at every level delegates), so a small
-/// default is what keeps that worst case sane out of the box. Revisit alongside P4 (cost control)
-/// if a use case needs deeper chains by default — see `PENDING.md` P60.
+/// isn't set in config.toml/env (see `resolve_delegate_max_depth`). Depth alone doesn't bound the
+/// cost: a chain's worst case is roughly `MAX_TOOL_ITERATIONS ^ depth` model calls if every
+/// iteration at every level delegates, so a small default keeps that sane out of the box, and the
+/// per-turn `max_delegated_calls` (`DEFAULT_MAX_DELEGATED_CALLS`) caps what the whole tree may
+/// actually spend — see `PENDING.md` P60.
 const DEFAULT_DELEGATE_MAX_DEPTH: u32 = 2;
+
+/// Default for `max_delegated_calls`: the model calls all the sub-agents of one turn may make in
+/// total. Room for a few real sub-tasks (about three of eight calls each) while staying well under
+/// the `MAX_TOOL_ITERATIONS ^ depth` worst case a runaway chain could otherwise reach (P60). The
+/// turn's own agent isn't counted, so it can always answer once the limit is hit.
+const DEFAULT_MAX_DELEGATED_CALLS: u32 = 30;
 
 /// Builds an `Orchestrator` with `base_tools` registered, plus — while `depth > 0` — a
 /// `DelegateTool` wrapping another orchestrator built the same way one level shallower. The
@@ -1463,6 +1483,7 @@ oauth = true
             generated_path: Some("/tmp/some-generated".to_string()),
             enable_shell: Some(true),
             delegate_max_depth: Some(3),
+            max_delegated_calls: Some(12),
             api_keys: ApiKeys {
                 gemini: Some("gk".to_string()),
                 openai: Some("ok".to_string()),
@@ -1707,6 +1728,15 @@ oauth = true
         assert!(resolve_flag(None, Some(true)));
         assert!(!resolve_flag(None, Some(false)));
         assert!(!resolve_flag(None, None));
+    }
+
+    #[test]
+    fn resolve_max_delegated_calls_prefers_env_over_file_and_zero_is_a_real_value() {
+        assert_eq!(resolve_max_delegated_calls(Some("5".to_string()), Some(1)), 5);
+        assert_eq!(resolve_max_delegated_calls(Some("nonsense".to_string()), Some(7)), 7);
+        assert_eq!(resolve_max_delegated_calls(None, Some(9)), 9);
+        assert_eq!(resolve_max_delegated_calls(None, None), DEFAULT_MAX_DELEGATED_CALLS);
+        assert_eq!(resolve_max_delegated_calls(Some("0".to_string()), Some(9)), 0);
     }
 
     #[test]
@@ -2008,6 +2038,51 @@ oauth = true
         assert_eq!(tool.call(ask("reader")).await.unwrap()["result"], "read_file");
         assert_eq!(tool.call(ask("ops")).await.unwrap()["result"], "shell");
         assert_eq!(tool.call(ask("open")).await.unwrap()["result"], "read_file,write_file,shell");
+    }
+
+    #[tokio::test]
+    async fn delegate_to_agent_targets_spend_from_the_turns_delegation_budget() {
+        use warden_core::model::{response_stream, ChatStream, Response, Role, ToolCall};
+        use warden_core::tool::ToolSpec;
+
+        /// The chief asks its two agents in one round and then repeats what came back; the agents answer.
+        struct AsksTwice;
+        #[async_trait::async_trait]
+        impl ModelProvider for AsksTwice {
+            async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                let response = if tools.iter().any(|t| t.name == "delegate_to_agent") {
+                    if messages.last().is_some_and(|m| m.role == Role::Tool) {
+                        let results: Vec<String> = messages.iter().rev().take_while(|m| m.role == Role::Tool).map(|m| m.content.clone()).collect();
+                        Response { content: results.join(" | "), tool_calls: Vec::new(), usage: None }
+                    } else {
+                        let ask = |id: &str| ToolCall {
+                            id: id.into(),
+                            name: "delegate_to_agent".into(),
+                            arguments: serde_json::json!({ "agent_id": "helper", "task": "go" }),
+                            thought_signature: None,
+                        };
+                        Response { content: String::new(), tool_calls: vec![ask("1"), ask("2")], usage: None }
+                    }
+                } else {
+                    Response { content: "leaf ok".to_string(), tool_calls: Vec::new(), usage: None }
+                };
+                Ok(response_stream(response))
+            }
+        }
+
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-delegate-budget-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let orchestrator = Orchestrator::new(Arc::new(AsksTwice), vault).with_delegation_limit(1);
+        let config = FileConfig { agents: vec![agent_config("helper", None)], ..FileConfig::default() };
+        let chief = orchestrator.with_tool(build_delegate_to_agent_tool(&config, &orchestrator).unwrap());
+
+        let answer = chief.handle_message(&[], "go").await.unwrap().content;
+
+        // One helper call fits in the turn's budget of 1; the second is refused, and the chief still answers.
+        assert!(answer.contains("leaf ok"), "{answer}");
+        assert!(answer.contains("limit of 1 model calls"), "{answer}");
     }
 
     #[test]

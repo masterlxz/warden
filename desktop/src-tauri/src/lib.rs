@@ -691,9 +691,10 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         vault_path: vault_path_override.clone(),
         generated_path: non_empty(payload.generated_path),
         enable_shell: Some(payload.enable_shell),
-        // No Settings-screen UI yet (P46, config.toml/env-only advanced knob) — carry forward
+        // No Settings-screen UI yet (P46, config.toml/env-only advanced knobs: `delegate_max_depth`, `max_delegated_calls`) — carry forward
         // whatever was on disk instead of wiping it, same reasoning as `telegram_bot_token` above.
         delegate_max_depth: existing.delegate_max_depth,
+        max_delegated_calls: existing.max_delegated_calls,
         api_keys: ApiKeys {
             gemini: None,
             openai: None,

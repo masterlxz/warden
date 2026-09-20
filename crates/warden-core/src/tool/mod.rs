@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::budget::TurnBudget;
+
 pub mod delegate;
 pub mod delegate_to_agent;
 pub mod document;
@@ -44,6 +46,13 @@ pub trait Tool: Send + Sync {
     /// survives the filter: a tool that runs a nested agent (`delegate_task`) overrides it so the
     /// sub-agent can't reach what its caller may not.
     fn restricted_to(&self, _allowed: &[String]) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
+    /// A copy of this tool whose nested orchestrators (sub-agents) are charged to `budget`, or
+    /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
+    /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`.
+    fn with_budget(&self, _budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
         None
     }
 

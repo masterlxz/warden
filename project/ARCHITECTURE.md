@@ -1162,3 +1162,34 @@ usuário: um agente **criado por outro agente** sem lista recebe só o conjunto 
 - **Limitações aceitas**: a lista é por **nome** — dois MCP servers com uma tool de mesmo nome se confundem;
   Telegram/WhatsApp/mobile/MCP server não têm agente nomeado, então seguem com todas as tools; as tools `ssh_*` já
   tinham o próprio escopo por host/agente e continuam com ele além da lista.
+
+## Teto de custo dos sub-agentes: `TurnBudget` (P46/P60/P18, Sessão 82)
+
+Sem fila de jobs nem controle de custo, o pior caso de uma delegação recursiva era `MAX_TOOL_ITERATIONS ^ profundidade`
+chamadas de modelo (P60), e o uso de tokens dos sub-agentes era descartado (P18). Agora cada turno tem um orçamento.
+
+- **Unidade: chamadas de modelo, não tokens.** O número de chamadas é determinístico e se checa **antes** de gastar;
+  token só se sabe depois e nem todo provider reporta. Os tokens são só **contabilizados**, não limitados.
+- **`TurnBudget`** (`warden-core/src/budget.rs`): contador atômico + uso somado, compartilhado (`Arc`) pela **árvore
+  inteira** do turno — `delegate_task`, `delegate_to_agent` e o que eles delegam. Uma cadeia raiz → nível 1 → folha gasta
+  do mesmo orçamento (teste `a_chain_of_sub_agents_shares_one_budget`).
+- **Só sub-agentes são cobrados.** O orquestrador em que o turno começou nunca é cobrado (já é limitado por
+  `MAX_TOOL_ITERATIONS`). Assim, ao esgotar, o sub-agente falha e o erro chega ao pai como resultado de tool
+  (`error: … limit of N model calls …`); o pai continua e responde com o que tem, em vez de o turno inteiro falhar.
+- **Um orçamento novo por turno, em todos os canais**: `handle_turn_streaming` cria o `TurnBudget` quando o
+  orquestrador tem `delegation_limit` e ainda não carrega um orçamento (o sub-agente já carrega o do pai). Por isso
+  vale no desktop, CLI, Telegram, WhatsApp, mobile e MCP server sem mexer na montagem de cada um. O orçamento é
+  distribuído com `Tool::with_budget` (mesmo molde de `with_approver`/`restricted_to`), implementado por `DelegateTool`
+  e `DelegateToAgentTool` via `Orchestrator::charged_to`. Como os tools são mapeados no início do turno, o que foi
+  anexado por turno (`delegate_to_agent`, `manage_agents`) também entra.
+- **P18 fechado sem mudar `Tool::call`**: cada chamada de sub-agente registra o `usage` no orçamento e o raiz soma o
+  total ao `MessageOutcome.usage` no fim. Isso alimenta sozinho o `/usage` do CLI e o que o desktop grava por mensagem
+  (a tela Usage passa a contar o gasto dos sub-agentes, atribuído ao agente da conversa).
+- **Configuração**: `max_delegated_calls` em `config.toml` / `WARDEN_MAX_DELEGATED_CALLS` (env vence arquivo, valor
+  malformado cai no arquivo, mesmo molde de `delegate_max_depth`); padrão `DEFAULT_MAX_DELEGATED_CALLS = 30`; **`0`
+  desliga o teto** (escolha explícita, como o `delegate_max_depth` sem clamp). Sem UI; `save_settings` do desktop carrega o
+  valor de `existing` para não apagá-lo a cada save.
+- **Limitações aceitas**: o trabalho parcial de um sub-agente cortado no meio se perde (só o erro volta); o teto é por
+  turno, não por período/usuário (isso continua sendo o P4); `Orchestrator::new` sem `with_delegation_limit` (testes,
+  `warden-mcp-server` montado à mão) segue sem teto e sem somar o uso dos sub-agentes.
+

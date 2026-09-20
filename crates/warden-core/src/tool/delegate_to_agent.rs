@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::budget::TurnBudget;
 use crate::orchestrator::Orchestrator;
 use crate::tool::{Tool, ToolSpec};
 
@@ -9,6 +12,7 @@ use crate::tool::{Tool, ToolSpec};
 /// `delegate_task`. `warden-core` stays agnostic of `AgentConfig`/`config.toml`: the caller
 /// (`warden_bootstrap::build_delegate_to_agent_tool`) resolves persona/provider ahead of time and
 /// hands over a ready-to-use list.
+#[derive(Clone)]
 pub struct NamedSubAgent {
     /// Matches the configured agent's id — what the model must pass as `agent_id`.
     pub id: String,
@@ -69,6 +73,11 @@ impl Tool for DelegateToAgentTool {
                 "required": ["agent_id", "task"]
             }),
         }
+    }
+
+    fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
+        let agents = self.agents.iter().map(|a| NamedSubAgent { orchestrator: a.orchestrator.charged_to(budget.clone()), ..a.clone() }).collect();
+        Some(Arc::new(Self { agents }))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {

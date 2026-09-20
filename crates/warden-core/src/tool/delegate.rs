@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::budget::TurnBudget;
 use crate::orchestrator::Orchestrator;
 use crate::tool::{Tool, ToolSpec};
 
@@ -54,6 +55,10 @@ impl Tool for DelegateTool {
                 "required": ["task"]
             }),
         }
+    }
+
+    fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.charged_to(budget.clone()) }))
     }
 
     fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {

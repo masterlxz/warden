@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::budget::TurnBudget;
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
@@ -51,11 +52,19 @@ pub struct Orchestrator {
     /// `use_skill`. Set per turn through `with_agent`; `None` (every channel without agents) sees
     /// just the skills that aren't restricted to an agent.
     agent_id: Option<String>,
+    /// How many model calls the sub-agents of one turn may make in total (P46/P60), or `None` for
+    /// no limit. Set once at startup (`with_delegation_limit`); each turn gets a fresh `TurnBudget`.
+    delegation_limit: Option<u32>,
+    /// The budget of the turn this orchestrator is running in. Present on the root once the turn
+    /// starts (it only adds the sub-agents' usage to its own) and on every sub-agent (`charged`).
+    budget: Option<Arc<TurnBudget>>,
+    /// This orchestrator runs as a sub-agent, so each of its model calls is charged to `budget`.
+    charged: bool,
 }
 
 impl Orchestrator {
     pub fn new(model: Arc<dyn ModelProvider>, vault: Arc<Vault>) -> Self {
-        Self { model, vault, tools: Vec::new(), media_root: None, agent_id: None }
+        Self { model, vault, tools: Vec::new(), media_root: None, agent_id: None, delegation_limit: None, budget: None, charged: false }
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -140,6 +149,40 @@ impl Orchestrator {
             }
         }
         clone
+    }
+
+    /// Returns a copy that lets the sub-agents of a single turn make at most `max_calls` model calls
+    /// between them (P46/P60); `0` removes the limit. Every turn starts with the full amount.
+    pub fn with_delegation_limit(&self, max_calls: u32) -> Self {
+        Self { delegation_limit: (max_calls > 0).then_some(max_calls), ..self.clone() }
+    }
+
+    /// The root of a turn: sub-agents reached through its tools spend from `budget`, and their token
+    /// usage is added to this orchestrator's own at the end of the turn.
+    fn with_turn_budget(&self, budget: Arc<TurnBudget>) -> Self {
+        let mut clone = self.clone();
+        clone.budget = Some(budget);
+        clone.share_budget_with_tools();
+        clone
+    }
+
+    /// A sub-agent of the turn `budget` belongs to: every model call it makes is charged to it, and so
+    /// is everything it delegates to in turn — one budget for the whole tree.
+    pub fn charged_to(&self, budget: Arc<TurnBudget>) -> Self {
+        let mut clone = self.clone();
+        clone.budget = Some(budget);
+        clone.charged = true;
+        clone.share_budget_with_tools();
+        clone
+    }
+
+    fn share_budget_with_tools(&mut self) {
+        let Some(budget) = self.budget.clone() else { return };
+        for tool in &mut self.tools {
+            if let Some(charged) = tool.with_budget(&budget) {
+                *tool = charged;
+            }
+        }
     }
 
     /// Returns a copy of this orchestrator whose tools that need a human "yes" (`ssh_*` on a host
@@ -231,6 +274,25 @@ impl Orchestrator {
         user_input: &str,
         attachments: Vec<Attachment>,
         system_prompt: Option<&str>,
+        on_event: impl FnMut(&StreamEvent) + Send,
+    ) -> anyhow::Result<MessageOutcome> {
+        // A turn that starts here (not one a parent orchestrator started for a sub-agent, which
+        // already carries its parent's budget) gets its own budget, so the limit applies whichever
+        // channel called and starts from zero every turn.
+        match (&self.budget, self.delegation_limit) {
+            (None, Some(limit)) => {
+                self.with_turn_budget(TurnBudget::new(limit)).run_turn(history, user_input, attachments, system_prompt, on_event).await
+            }
+            _ => self.run_turn(history, user_input, attachments, system_prompt, on_event).await,
+        }
+    }
+
+    async fn run_turn(
+        &self,
+        history: &[Message],
+        user_input: &str,
+        attachments: Vec<Attachment>,
+        system_prompt: Option<&str>,
         mut on_event: impl FnMut(&StreamEvent) + Send,
     ) -> anyhow::Result<MessageOutcome> {
         let mut messages = Vec::new();
@@ -302,10 +364,19 @@ impl Orchestrator {
         let mut attachments: Vec<Attachment> = Vec::new();
         let mut generated_files: Vec<String> = Vec::new();
 
+        // Only sub-agents spend from the turn's budget (see `TurnBudget`).
+        let sub_agent_budget = self.budget.as_ref().filter(|_| self.charged);
+
         for _ in 0..MAX_TOOL_ITERATIONS {
+            if let Some(budget) = sub_agent_budget {
+                budget.charge()?;
+            }
             let stream = self.model.chat_stream(messages.clone(), tool_specs.clone()).await?;
             let response = crate::model::drain_chat_stream(stream, &mut on_event).await?;
 
+            if let Some(budget) = sub_agent_budget {
+                budget.record(response.usage.as_ref());
+            }
             if let Some(u) = response.usage {
                 usage.prompt_tokens += u.prompt_tokens;
                 usage.completion_tokens += u.completion_tokens;
@@ -314,6 +385,11 @@ impl Orchestrator {
             }
 
             if response.tool_calls.is_empty() {
+                // The turn's root also reports what its sub-agents used (P18).
+                if let Some(sub_agents) = self.budget.as_ref().filter(|_| !self.charged).and_then(|b| b.usage()) {
+                    usage += &sub_agents;
+                    has_usage = true;
+                }
                 return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments, generated_files });
             }
 
@@ -875,6 +951,125 @@ mod tests {
         let restricted = outer.with_allowed_tools(Some(&allowed));
         let result = delegate_only(&restricted).call(serde_json::json!({ "task": "x" })).await.unwrap();
         assert_eq!(result["result"], "read_file");
+    }
+
+    /// Scripted by what it is offered, and it reports 1+1 tokens per call. Whoever can `delegate_task`
+    /// delegates once and then repeats what came back; a leaf with a `noop` tool keeps calling it
+    /// (burns model calls until something stops it); any other leaf just answers "leaf".
+    struct Delegator {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ModelProvider for Delegator {
+        async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let offered = |name: &str| tools.iter().any(|t| t.name == name);
+            let call = |name: &str, args: serde_json::Value| vec![ToolCall { id: "c".into(), name: name.into(), arguments: args, thought_signature: None }];
+            let (content, tool_calls) = if offered("delegate_task") {
+                if messages.last().is_some_and(|m| m.role == Role::Tool) {
+                    (format!("got: {}", messages.last().unwrap().content), Vec::new())
+                } else {
+                    (String::new(), call("delegate_task", json!({ "task": "go" })))
+                }
+            } else if offered("noop") {
+                (String::new(), call("noop", json!({})))
+            } else {
+                ("leaf".to_string(), Vec::new())
+            };
+            let usage = Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
+            Ok(response_stream(Response { content, tool_calls, usage }))
+        }
+    }
+
+    /// A root that can delegate to one sub-agent (with a `noop` tool, so it keeps burning calls).
+    fn root_with_burning_sub_agent(model: Arc<Delegator>, limit: u32) -> Orchestrator {
+        use crate::tool::delegate::DelegateTool;
+        let mut sub = Orchestrator::new(model.clone(), temp_vault());
+        sub.register_tool(Arc::new(NamedTool("noop")));
+        let mut root = Orchestrator::new(model, temp_vault());
+        root.register_tool(Arc::new(DelegateTool::new(sub)));
+        root.with_delegation_limit(limit)
+    }
+
+    #[tokio::test]
+    async fn the_turn_budget_stops_a_sub_agent_and_the_root_still_answers() {
+        let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+        let root = root_with_burning_sub_agent(model.clone(), 3);
+
+        let outcome = root.handle_message(&[], "go").await.unwrap();
+
+        // The sub-agent's refusal reaches the root as a tool error, and the root answers with it.
+        assert!(outcome.content.contains("limit of 3 model calls"), "{}", outcome.content);
+        // root, 3 charged sub-agent calls (the fourth was refused before reaching the model), root again.
+        assert_eq!(model.calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn every_turn_starts_with_a_fresh_budget() {
+        let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+        let root = root_with_burning_sub_agent(model.clone(), 3);
+
+        root.handle_message(&[], "one").await.unwrap();
+        let after_first = model.calls.load(Ordering::SeqCst);
+        root.handle_message(&[], "two").await.unwrap();
+
+        assert_eq!(model.calls.load(Ordering::SeqCst) - after_first, 5);
+    }
+
+    #[tokio::test]
+    async fn without_a_limit_nothing_is_capped_or_counted() {
+        let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+        let mut sub = Orchestrator::new(model.clone(), temp_vault());
+        sub.register_tool(Arc::new(NamedTool("noop")));
+        let mut root = Orchestrator::new(model.clone(), temp_vault());
+        root.register_tool(Arc::new(crate::tool::delegate::DelegateTool::new(sub)));
+
+        // No budget: the sub-agent burns its whole iteration allowance, then its own cap ends it.
+        let outcome = root.handle_message(&[], "go").await.unwrap();
+        assert!(outcome.content.contains("exceeded max tool-call iterations"), "{}", outcome.content);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1 + MAX_TOOL_ITERATIONS + 1);
+        // And a zero limit means "no limit", not "nothing allowed".
+        assert!(root.with_delegation_limit(0).delegation_limit.is_none());
+    }
+
+    #[tokio::test]
+    async fn sub_agent_tokens_are_added_to_the_roots_usage() {
+        use crate::tool::delegate::DelegateTool;
+        let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+        let leaf = Orchestrator::new(model.clone(), temp_vault()); // answers "leaf" in one call
+        let mut root = Orchestrator::new(model.clone(), temp_vault());
+        root.register_tool(Arc::new(DelegateTool::new(leaf)));
+
+        let outcome = root.with_delegation_limit(10).handle_message(&[], "go").await.unwrap();
+
+        // Two root calls and one sub-agent call, 2 tokens each.
+        assert_eq!(outcome.usage, Some(Usage { prompt_tokens: 3, completion_tokens: 3, total_tokens: 6 }));
+        // The same turn without a budget still drops the sub-agent's share (nothing to add it up).
+        let unlimited = root.handle_message(&[], "go").await.unwrap();
+        assert_eq!(unlimited.usage, Some(Usage { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 }));
+    }
+
+    #[tokio::test]
+    async fn a_chain_of_sub_agents_shares_one_budget() {
+        use crate::tool::delegate::DelegateTool;
+        // root -> level1 -> leaf. Charged calls: level1 (delegates), leaf (answers), level1 (answers).
+        let build = |limit: u32| {
+            let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+            let leaf = Orchestrator::new(model.clone(), temp_vault());
+            let mut level1 = Orchestrator::new(model.clone(), temp_vault());
+            level1.register_tool(Arc::new(DelegateTool::new(leaf)));
+            let mut root = Orchestrator::new(model, temp_vault());
+            root.register_tool(Arc::new(DelegateTool::new(level1)));
+            root.with_delegation_limit(limit)
+        };
+
+        let enough = build(3).handle_message(&[], "go").await.unwrap();
+        assert!(enough.content.contains("got: {\"result\":\"got: {\\\"result\\\":\\\"leaf\\\"}\"}"), "{}", enough.content);
+
+        // One short: level1's second call is refused, whichever level made the earlier ones.
+        let short = build(2).handle_message(&[], "go").await.unwrap();
+        assert!(short.content.contains("limit of 2 model calls"), "{}", short.content);
     }
 
     #[tokio::test]

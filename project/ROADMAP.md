@@ -137,6 +137,10 @@ código; `None` = todas). Vale também para o sub-agente de `delegate_task` e pa
 (com a lista dele, não a do chefe). Um agente criado por outro agente nasce só com tools de leitura e ninguém dá uma
 tool que não tem. Falta o resto do pacote: fila de jobs e custo por sub-agente (P18/P60).
 
+**Teto de custo dos sub-agentes (Sessão 82)**: `TurnBudget` — um teto de chamadas de modelo por turno, compartilhado
+por toda a árvore de sub-agentes (`max_delegated_calls`, padrão 30, `0` desliga), e o uso deles passa a somar no total
+do turno (P18). Falta do P46: fila de jobs, `delete_agent`.
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA
