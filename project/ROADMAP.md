@@ -145,6 +145,11 @@ do turno (P18). Falta do P46: fila de jobs, `delete_agent`.
 limpa os hosts SSH que citavam o agente sem alargar o acesso (host sem agente fica desligado). O `/agents remove` do CLI
 usa a mesma limpeza. Falta do P46: fila de jobs.
 
+**Fila de jobs em segundo plano (Sessão 85)**: `background: true` em `delegate_task`/`delegate_to_agent` devolve um
+`job_id` na hora; a tool `jobs` (`list`/`result`) coleta. Até `max_parallel_jobs` (padrão 3) rodam juntos, o resto espera;
+gasta do mesmo teto de chamadas do turno e o que não foi coletado é cancelado ao fim do turno (nada persistido). Com isso
+o pacote do P46 está completo; falta só validar com modelo real e o teto por período/usuário (P4).
+
 ### SSH — conectar com VPS e máquinas externas
 
 Ideia nova (2026-09-06): cadastrar chaves SSH nas configurações do Warden, dar (ou negar) à IA
@@ -253,7 +258,7 @@ ainda em aberto, ver P8 em `PENDING.md`. Precisa de:
 - ~~Recursão em si (agente cria agente que cria agente)~~ — **núcleo feito (Sessão 57, P46)**:
   `DelegateTool` recursivo, profundidade default 2 (`config.toml`/`WARDEN_DELEGATE_MAX_DEPTH`
   ajustam, sem UI ainda — Sessão 57), sem controle de custo
-- Fila de jobs
+- ~~Fila de jobs~~ — **feito (Sessão 85, P46)**: `background: true` + tool `jobs`, teto de paralelismo `max_parallel_jobs`
 - Controle de custo por sub-agente
 - Isolamento de tools por sub-agente
 - Critério de parada — parcialmente coberto: a profundidade fixa acima é estrutural (o nível
