@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::budget::TurnBudget;
+use crate::jobs::JobBoard;
 use crate::orchestrator::Orchestrator;
+use crate::tool::job_tools::{background_property, job_label, start_background, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// Delegates a scoped, self-contained task to a fresh sub-agent — its own `Orchestrator`
@@ -20,17 +22,31 @@ use crate::tool::{Tool, ToolSpec};
 /// the caller-chosen subset — those remain out of scope (see `PENDING.md` P46/P60).
 pub struct DelegateTool {
     orchestrator: Orchestrator,
+    /// The turn's background jobs, once bound (`with_jobs`). Only then does the tool accept
+    /// `background: true` and say so in its spec.
+    jobs: Option<Arc<JobBoard>>,
 }
 
 impl DelegateTool {
     pub fn new(orchestrator: Orchestrator) -> Self {
-        Self { orchestrator }
+        Self { orchestrator, jobs: None }
     }
 }
 
 #[async_trait]
 impl Tool for DelegateTool {
     fn spec(&self) -> ToolSpec {
+        let mut properties = json!({
+            "task": {
+                "type": "string",
+                "description": "A complete, self-contained description of the task for \
+                    the sub-agent to perform. Include everything it needs to know, since \
+                    it starts with no memory of the current conversation."
+            }
+        });
+        if self.jobs.is_some() {
+            properties["background"] = background_property();
+        }
         ToolSpec {
             name: "delegate_task".to_string(),
             description: "Delegate a scoped, self-contained task to a fresh sub-agent that runs \
@@ -44,25 +60,22 @@ impl Tool for DelegateTool {
                 .to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "A complete, self-contained description of the task for \
-                            the sub-agent to perform. Include everything it needs to know, since \
-                            it starts with no memory of the current conversation."
-                    }
-                },
+                "properties": properties,
                 "required": ["task"]
             }),
         }
     }
 
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.charged_to(budget.clone()) }))
+        Some(Arc::new(Self { orchestrator: self.orchestrator.charged_to(budget.clone()), jobs: self.jobs.clone() }))
     }
 
     fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_allowed_tools(Some(allowed)) }))
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_allowed_tools(Some(allowed)), jobs: self.jobs.clone() }))
+    }
+
+    fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.clone(), jobs: Some(board.clone()) }))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
@@ -70,6 +83,14 @@ impl Tool for DelegateTool {
             .get("task")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required 'task' argument"))?;
+
+        if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
+            let orchestrator = self.orchestrator.clone();
+            let owned_task = task.to_string();
+            return Ok(start_background(board, job_label("helper", task), async move {
+                Ok(orchestrator.handle_message(&[], &owned_task).await?.content)
+            }));
+        }
 
         // Sub-agent's token usage is dropped here, not rolled up into the parent conversation's
         // total — Tool::call only returns serde_json::Value, not a MessageOutcome.

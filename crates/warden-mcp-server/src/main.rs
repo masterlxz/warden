@@ -92,7 +92,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let orchestrator = bootstrap(cli.config.as_deref(), Overrides { vault_path: cli.vault_path, ..Default::default() }, default_vault_path()).await?;
-    let tools = orchestrator.tools().to_vec();
+    // Same rule the orchestrator applies before offering a tool to a model: one that can't work here
+    // (`jobs` only exists inside a turn that started background jobs) isn't advertised to clients.
+    let tools: Vec<_> = orchestrator.tools().iter().filter(|t| t.is_available()).cloned().collect();
 
     // stderr, not stdout — stdout is the MCP JSON-RPC transport itself (same separation of
     // channels already used by the WhatsApp sidecar and every other stdio-transport process here).

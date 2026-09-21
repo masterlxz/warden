@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::budget::TurnBudget;
+use crate::jobs::JobBoard;
 use crate::orchestrator::Orchestrator;
+use crate::tool::job_tools::{background_property, job_label, start_background, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// One addressable target for `DelegateToAgentTool` (P46's opt-in "chief" mechanism) — a
@@ -73,18 +75,26 @@ pub struct DelegateToAgentTool {
     targets: Mutex<Targets>,
     live: Option<LiveAgents>,
     budget: Option<Arc<TurnBudget>>,
+    /// The turn's background jobs, once bound (`with_jobs`): only then does the tool accept
+    /// `background: true` and say so in its spec.
+    jobs: Option<Arc<JobBoard>>,
 }
 
 impl DelegateToAgentTool {
     pub fn new(agents: Vec<NamedSubAgent>) -> Self {
-        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None }
+        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None, jobs: None }
     }
 
     /// Like `new`, but re-resolves the targets through `resolver` whenever `revision` has moved
     /// since the last look.
     pub fn live(agents: Vec<NamedSubAgent>, revision: AgentsRevision, resolver: AgentResolver) -> Self {
         let seen = revision.current();
-        Self { targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }), live: Some(LiveAgents { revision, resolver }), budget: None }
+        Self {
+            targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }),
+            live: Some(LiveAgents { revision, resolver }),
+            budget: None,
+            jobs: None,
+        }
     }
 
     /// The targets to use right now, re-resolved first if agents changed since the last look. Held
@@ -114,6 +124,22 @@ impl Tool for DelegateToAgentTool {
     fn spec(&self) -> ToolSpec {
         let agents = self.current();
         let listing = agents.iter().map(|a| format!("- {}: {}", a.id, a.description)).collect::<Vec<_>>().join("\n");
+        let mut properties = json!({
+            "agent_id": {
+                "type": "string",
+                "enum": agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                "description": "Which configured agent to delegate to."
+            },
+            "task": {
+                "type": "string",
+                "description": "A complete, self-contained description of the task for \
+                    the chosen agent to perform. Include everything it needs to know, \
+                    since it starts with no memory of the current conversation."
+            }
+        });
+        if self.jobs.is_some() {
+            properties["background"] = background_property();
+        }
         ToolSpec {
             name: "delegate_to_agent".to_string(),
             description: format!(
@@ -126,19 +152,7 @@ impl Tool for DelegateToAgentTool {
             ),
             parameters: json!({
                 "type": "object",
-                "properties": {
-                    "agent_id": {
-                        "type": "string",
-                        "enum": agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
-                        "description": "Which configured agent to delegate to."
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": "A complete, self-contained description of the task for \
-                            the chosen agent to perform. Include everything it needs to know, \
-                            since it starts with no memory of the current conversation."
-                    }
-                },
+                "properties": properties,
                 "required": ["agent_id", "task"]
             }),
         }
@@ -147,7 +161,23 @@ impl Tool for DelegateToAgentTool {
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
         let agents = self.current().iter().map(|a| NamedSubAgent { orchestrator: a.orchestrator.charged_to(budget.clone()), ..a.clone() }).collect();
         let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;
-        Some(Arc::new(Self { targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }), live: self.live.clone(), budget: Some(budget.clone()) }))
+        Some(Arc::new(Self {
+            targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }),
+            live: self.live.clone(),
+            budget: Some(budget.clone()),
+            jobs: self.jobs.clone(),
+        }))
+    }
+
+    fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
+        let agents = self.current();
+        let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;
+        Some(Arc::new(Self {
+            targets: Mutex::new(Targets { seen, agents }),
+            live: self.live.clone(),
+            budget: self.budget.clone(),
+            jobs: Some(board.clone()),
+        }))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
@@ -159,6 +189,13 @@ impl Tool for DelegateToAgentTool {
             let available = agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
             anyhow::anyhow!("unknown agent_id '{agent_id}' — must be one of: {available}")
         })?;
+
+        if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
+            let (orchestrator, persona, owned_task) = (agent.orchestrator.clone(), agent.persona.clone(), task.to_string());
+            return Ok(start_background(board, job_label(&agent.id, task), async move {
+                Ok(orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?.content)
+            }));
+        }
 
         let result = agent.orchestrator.handle_turn(&[], task, Vec::new(), agent.persona.as_deref()).await?;
         Ok(json!({ "result": result.content }))
@@ -335,5 +372,73 @@ mod tests {
         let charged = tool.with_budget(&TurnBudget::new(10)).unwrap();
         revision.bump();
         assert_eq!(charged.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate", "robot"]));
+    }
+
+    #[test]
+    fn background_is_only_offered_once_the_tool_is_bound_to_a_job_board() {
+        let tool = DelegateToAgentTool::new(vec![agent("pirate", "arr", None)]);
+        assert!(tool.spec().parameters["properties"].get("background").is_none());
+
+        let bound = tool.with_jobs(&JobBoard::new(2)).unwrap();
+        assert_eq!(bound.spec().parameters["properties"]["background"]["type"], "boolean");
+        // The rest of the spec is untouched.
+        assert_eq!(bound.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate"]));
+    }
+
+    #[tokio::test]
+    async fn a_background_call_returns_a_job_id_and_the_agents_answer_arrives_through_the_board() {
+        let board = JobBoard::new(2);
+        let tool = DelegateToAgentTool::new(vec![agent("pirate", "arr matey", Some("A pirate."))]).with_jobs(&board).unwrap();
+
+        let started = tool.call(json!({ "agent_id": "pirate", "task": "say hi", "background": true })).await.unwrap();
+
+        assert_eq!(started["job_id"], "job-1");
+        assert!(started.get("result").is_none(), "a background call must not wait for the answer");
+        assert_eq!(board.list()[0].label, "pirate: say hi");
+        assert_eq!(board.wait("job-1").await, Some(crate::jobs::JobState::Done("arr matey".to_string())));
+    }
+
+    #[tokio::test]
+    async fn without_background_a_bound_tool_still_waits_for_the_answer() {
+        let board = JobBoard::new(2);
+        let tool = DelegateToAgentTool::new(vec![agent("pirate", "arr", None)]).with_jobs(&board).unwrap();
+
+        let result = tool.call(json!({ "agent_id": "pirate", "task": "say hi" })).await.unwrap();
+
+        assert_eq!(result, json!({ "result": "arr" }));
+        assert!(board.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unbound_tool_ignores_background_and_runs_synchronously() {
+        let tool = DelegateToAgentTool::new(vec![agent("pirate", "arr", None)]);
+
+        let result = tool.call(json!({ "agent_id": "pirate", "task": "say hi", "background": true })).await.unwrap();
+
+        assert_eq!(result, json!({ "result": "arr" }));
+    }
+
+    #[tokio::test]
+    async fn a_background_call_to_an_unknown_agent_fails_at_once_instead_of_becoming_a_job() {
+        let board = JobBoard::new(2);
+        let tool = DelegateToAgentTool::new(vec![agent("pirate", "arr", None)]).with_jobs(&board).unwrap();
+
+        let err = tool.call(json!({ "agent_id": "ghost", "task": "boo", "background": true })).await.unwrap_err();
+
+        assert!(err.to_string().contains("ghost"));
+        assert!(board.list().is_empty());
+    }
+
+    #[test]
+    fn binding_a_board_keeps_a_live_tool_refreshing() {
+        let revision = AgentsRevision::default();
+        let resolver: AgentResolver = Arc::new(|| Some(vec![agent("pirate", "arr", None), agent("robot", "beep", None)]));
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+
+        let bound = tool.with_jobs(&JobBoard::new(2)).unwrap();
+        revision.bump();
+
+        assert_eq!(bound.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate", "robot"]));
+        assert!(bound.spec().parameters["properties"].get("background").is_some());
     }
 }

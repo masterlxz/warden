@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::budget::TurnBudget;
+use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
 use crate::tool::{Tool, ToolProvider};
@@ -60,11 +61,24 @@ pub struct Orchestrator {
     budget: Option<Arc<TurnBudget>>,
     /// This orchestrator runs as a sub-agent, so each of its model calls is charged to `budget`.
     charged: bool,
+    /// How many background jobs (P46) one turn may run at once, or `None` for no background jobs.
+    /// Set once at startup (`with_parallel_jobs`); each turn's root gets a fresh `JobBoard`.
+    job_limit: Option<usize>,
 }
 
 impl Orchestrator {
     pub fn new(model: Arc<dyn ModelProvider>, vault: Arc<Vault>) -> Self {
-        Self { model, vault, tools: Vec::new(), media_root: None, agent_id: None, delegation_limit: None, budget: None, charged: false }
+        Self {
+            model,
+            vault,
+            tools: Vec::new(),
+            media_root: None,
+            agent_id: None,
+            delegation_limit: None,
+            budget: None,
+            charged: false,
+            job_limit: None,
+        }
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -155,6 +169,32 @@ impl Orchestrator {
     /// between them (P46/P60); `0` removes the limit. Every turn starts with the full amount.
     pub fn with_delegation_limit(&self, max_calls: u32) -> Self {
         Self { delegation_limit: (max_calls > 0).then_some(max_calls), ..self.clone() }
+    }
+
+    /// Returns a copy whose turns let the model start background jobs (P46): delegation calls accept
+    /// `background: true`, and up to `max_parallel` of those sub-agents run at the same time while the
+    /// rest wait their turn (`0` still means one at a time). Only takes effect when the `jobs` tool is
+    /// among this orchestrator's tools — see `attach_jobs`.
+    pub fn with_parallel_jobs(&self, max_parallel: usize) -> Self {
+        Self { job_limit: Some(max_parallel), ..self.clone() }
+    }
+
+    /// Starts the background jobs of the turn this orchestrator is about to run: a fresh board bound
+    /// to every tool that takes one (`Tool::with_jobs`). Returns the guard that cancels whatever is
+    /// still running when the turn ends, or `None` — no board — when jobs are off or the `jobs` tool
+    /// isn't here (an agent whose `allowed_tools` left it out must not start jobs it can't collect).
+    fn attach_jobs(&mut self) -> Option<JobsGuard> {
+        let limit = self.job_limit?;
+        if !self.tools.iter().any(|t| t.spec().name == "jobs") {
+            return None;
+        }
+        let board = JobBoard::new(limit);
+        for tool in &mut self.tools {
+            if let Some(bound) = tool.with_jobs(&board) {
+                *tool = bound;
+            }
+        }
+        Some(JobsGuard(board))
     }
 
     /// The root of a turn: sub-agents reached through its tools spend from `budget`, and their token
@@ -279,12 +319,15 @@ impl Orchestrator {
         // A turn that starts here (not one a parent orchestrator started for a sub-agent, which
         // already carries its parent's budget) gets its own budget, so the limit applies whichever
         // channel called and starts from zero every turn.
-        match (&self.budget, self.delegation_limit) {
-            (None, Some(limit)) => {
-                self.with_turn_budget(TurnBudget::new(limit)).run_turn(history, user_input, attachments, system_prompt, on_event).await
-            }
-            _ => self.run_turn(history, user_input, attachments, system_prompt, on_event).await,
-        }
+        let mut turn = match (&self.budget, self.delegation_limit) {
+            (None, Some(limit)) => self.with_turn_budget(TurnBudget::new(limit)),
+            _ => self.clone(),
+        };
+        // Background jobs belong to the turn's root only: a sub-agent's tools stay unbound, so it
+        // can't start jobs that would outlive its own short turn. Held until the turn ends (or its
+        // future is dropped), which cancels the jobs nobody collected.
+        let _jobs = if self.charged { None } else { turn.attach_jobs() };
+        turn.run_turn(history, user_input, attachments, system_prompt, on_event).await
     }
 
     async fn run_turn(
@@ -940,6 +983,203 @@ mod tests {
 
         let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
         assert_eq!(result.content, "called 1 times");
+    }
+
+    /// A sub-agent's model: every call takes 150 ms and the number running at once is recorded. Long
+    /// enough that jobs reaching it a few ms apart (each first searches the vault) still overlap.
+    struct SlowSubAgentModel {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        tools_seen: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for SlowSubAgentModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            self.tools_seen.lock().unwrap().extend(tools.into_iter().map(|t| t.name));
+            let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(response_stream(Response { content: "sub-agent done".to_string(), tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    /// The chief: starts three background jobs, reads all three, then reports what came back.
+    struct ChiefStartsThreeJobs;
+
+    #[async_trait]
+    impl ModelProvider for ChiefStartsThreeJobs {
+        async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let call = |id: &str, name: &str, arguments: Value| ToolCall { id: id.into(), name: name.into(), arguments, thought_signature: None };
+            let results: Vec<String> = messages.iter().filter(|m| m.role == Role::Tool).map(|m| m.content.clone()).collect();
+            let response = match results.len() {
+                0 => {
+                    let offered = tools.iter().find(|t| t.name == "delegate_task").is_some_and(|t| t.parameters["properties"].get("background").is_some());
+                    if !offered {
+                        Response { content: "background not offered".to_string(), tool_calls: Vec::new(), usage: None }
+                    } else {
+                        let start = |n: usize| call(&format!("start_{n}"), "delegate_task", json!({ "task": format!("task {n}"), "background": true }));
+                        Response { content: String::new(), tool_calls: vec![start(1), start(2), start(3)], usage: None }
+                    }
+                }
+                3 => Response {
+                    content: String::new(),
+                    tool_calls: (1..=3).map(|n| call(&format!("read_{n}"), "jobs", json!({ "action": "result", "job_id": format!("job-{n}") }))).collect(),
+                    usage: None,
+                },
+                _ => Response { content: results[3..].join(" | "), tool_calls: Vec::new(), usage: None },
+            };
+            Ok(response_stream(response))
+        }
+    }
+
+    fn chief_with_jobs(sub_model: Arc<dyn ModelProvider>, limit: usize) -> Orchestrator {
+        use crate::tool::delegate::DelegateTool;
+        use crate::tool::job_tools::JobsTool;
+
+        let mut sub = Orchestrator::new(sub_model, temp_vault());
+        sub.register_tool(Arc::new(JobsTool::new()));
+        let mut chief = Orchestrator::new(Arc::new(ChiefStartsThreeJobs), temp_vault());
+        chief.register_tool(Arc::new(DelegateTool::new(sub)));
+        chief.register_tool(Arc::new(JobsTool::new()));
+        chief.with_parallel_jobs(limit)
+    }
+
+    #[tokio::test]
+    async fn background_jobs_run_in_parallel_up_to_the_limit_and_are_collected() {
+        let (active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let sub = Arc::new(SlowSubAgentModel { active, peak: peak.clone(), tools_seen: Default::default() });
+        let chief = chief_with_jobs(sub, 2);
+
+        let answer = chief.handle_message(&[], "go").await.unwrap().content;
+
+        assert_eq!(answer.matches("sub-agent done").count(), 3, "{answer}");
+        assert_eq!(peak.load(Ordering::SeqCst), 2, "three jobs under a limit of 2 should peak at 2 at once");
+    }
+
+    #[tokio::test]
+    async fn without_the_jobs_tool_background_is_not_offered() {
+        use crate::tool::delegate::DelegateTool;
+
+        let sub = Arc::new(SlowSubAgentModel { active: Default::default(), peak: Default::default(), tools_seen: Default::default() });
+        let mut chief = Orchestrator::new(Arc::new(ChiefStartsThreeJobs), temp_vault());
+        chief.register_tool(Arc::new(DelegateTool::new(Orchestrator::new(sub, temp_vault()))));
+
+        let answer = chief.with_parallel_jobs(2).handle_message(&[], "go").await.unwrap().content;
+
+        assert_eq!(answer, "background not offered");
+    }
+
+    #[tokio::test]
+    async fn background_is_not_offered_when_jobs_are_not_configured() {
+        use crate::tool::delegate::DelegateTool;
+        use crate::tool::job_tools::JobsTool;
+
+        let sub = Arc::new(SlowSubAgentModel { active: Default::default(), peak: Default::default(), tools_seen: Default::default() });
+        let mut chief = Orchestrator::new(Arc::new(ChiefStartsThreeJobs), temp_vault());
+        chief.register_tool(Arc::new(DelegateTool::new(Orchestrator::new(sub, temp_vault()))));
+        chief.register_tool(Arc::new(JobsTool::new()));
+
+        // No `with_parallel_jobs`: behaves exactly as before jobs existed.
+        assert_eq!(chief.handle_message(&[], "go").await.unwrap().content, "background not offered");
+    }
+
+    #[tokio::test]
+    async fn a_sub_agent_is_never_offered_jobs_or_background() {
+        let tools_seen: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let sub = Arc::new(SlowSubAgentModel { active: Default::default(), peak: Default::default(), tools_seen: tools_seen.clone() });
+
+        chief_with_jobs(sub, 2).handle_message(&[], "go").await.unwrap();
+
+        assert!(!tools_seen.lock().unwrap().iter().any(|name| name == "jobs"), "{:?}", tools_seen.lock().unwrap());
+    }
+
+    /// Never answers: stands in for a job that is still running when the turn ends.
+    struct HangingSubAgent {
+        dropped: Arc<AtomicUsize>,
+        entered: Arc<AtomicUsize>,
+    }
+
+    struct CountsDrops(Arc<AtomicUsize>);
+    impl Drop for CountsDrops {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl ModelProvider for HangingSubAgent {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let _guard = CountsDrops(self.dropped.clone());
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    /// Starts one job and answers straight away, without ever reading it.
+    struct ChiefForgetsItsJob {
+        /// Counts the hung job's entries into its model call.
+        job_entered: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for ChiefForgetsItsJob {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let response = if messages.iter().any(|m| m.role == Role::Tool) {
+                // Don't answer until the job is really running (inside its model call), so ending the
+                // turn has something to cancel. Bounded: a job that never gets there fails the test below.
+                for _ in 0..500 {
+                    if self.job_entered.load(Ordering::SeqCst) > 0 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Response { content: "answered without waiting".to_string(), tool_calls: Vec::new(), usage: None }
+            } else {
+                let start = ToolCall { id: "1".into(), name: "delegate_task".into(), arguments: json!({ "task": "slow", "background": true }), thought_signature: None };
+                Response { content: String::new(), tool_calls: vec![start], usage: None }
+            };
+            Ok(response_stream(response))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_job_nobody_collects_is_cancelled_when_the_turn_ends() {
+        use crate::tool::delegate::DelegateTool;
+        use crate::tool::job_tools::JobsTool;
+
+        let (dropped, entered) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let hanging = HangingSubAgent { dropped: dropped.clone(), entered: entered.clone() };
+        let mut chief = Orchestrator::new(Arc::new(ChiefForgetsItsJob { job_entered: entered.clone() }), temp_vault());
+        chief.register_tool(Arc::new(DelegateTool::new(Orchestrator::new(Arc::new(hanging), temp_vault()))));
+        chief.register_tool(Arc::new(JobsTool::new()));
+
+        // The turn is not held up by the hung job...
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), chief.with_parallel_jobs(2).handle_message(&[], "go"))
+            .await
+            .expect("the turn must not wait for a job it never asked for")
+            .unwrap()
+            .content;
+        assert_eq!(answer, "answered without waiting");
+        assert_eq!(entered.load(Ordering::SeqCst), 1, "the job never started running, so there was nothing to cancel");
+
+        // ...and the job's work was stopped, not left running in the background.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn background_jobs_spend_from_the_turns_shared_budget() {
+        let sub = Arc::new(SlowSubAgentModel { active: Default::default(), peak: Default::default(), tools_seen: Default::default() });
+        // Room for two sub-agent model calls in the whole turn; three jobs each want one.
+        let chief = chief_with_jobs(sub, 3).with_delegation_limit(2);
+
+        let outcome = chief.handle_message(&[], "go").await.unwrap();
+
+        assert_eq!(outcome.content.matches("sub-agent done").count(), 2, "{}", outcome.content);
+        assert_eq!(outcome.content.matches("limit of 2 model calls").count(), 1, "{}", outcome.content);
     }
 
     struct NamedTool(&'static str);

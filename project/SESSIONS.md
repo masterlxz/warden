@@ -2,7 +2,35 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 84)
+> Última atualização: 2026-09-20 (Sessão 85)
+
+---
+
+### 2026-09-20 — Sessão 85
+
+- **Objetivo**: retomar o P46 (fila de jobs em segundo plano) depois que a sessão anterior parou no meio — o usuário
+  achou que tinha dado crash. Não foi crash: o código estava completo e compilando, mas a suíte de testes travava.
+
+**O que foi feito (P46 — jobs em segundo plano)**:
+
+- Implementação que já estava no working tree, agora verificada e commitada: `JobBoard`/`JobsGuard` (`jobs.rs`), tool
+  `jobs` (`job_tools.rs`), `background: true` em `delegate_task`/`delegate_to_agent`, `Tool::with_jobs`,
+  `Orchestrator::with_parallel_jobs`/`attach_jobs`, `max_parallel_jobs` (config.toml/env, padrão 3), feature `sync` do
+  `tokio`, e `warden-mcp-server` filtrando `is_available()`. Decisões em `ARCHITECTURE.md`.
+
+**O que foi feito (bug do teste travado)**:
+
+- `tool::ssh::tests::a_download_over_the_limit_is_cut_off_and_cleaned_up` travava **para sempre** na suíte paralela
+  (passava sozinho e em `--test-threads=1`). Havia um processo de teste preso desde 20:42, com mais de 1h — foi isso que
+  pareceu crash. Causa (por leitura do código, o processo preso não foi inspecionado): o limite estoura, só o `sh` é
+  morto, o `head` neto fica bloqueado num pipe cheio segurando o stderr, e o `stderr_task.await` — fora do `timeout` —
+  nunca volta. Correção: `drop(stdout)` antes de esperar o filho (`ssh.rs`).
+- **Verificação**: antes, 2 de 2 execuções paralelas da lib travaram; depois, 3 de 3 passam em ~7s (221 testes).
+  `cargo test --workspace`: **533 passam, 0 falham, 2 ignorados** (os do modelo ONNX, precisam de rede); `cargo clippy
+  --workspace --all-targets` limpo. **Não feito**: modelo real decidindo paralelizar, binário real no pty, app Tauri.
+- **Achados de método**: (1) rodar `cargo test` sem `timeout` num teste que pode travar prende a sessão inteira — usar
+  `timeout` e comparar `--list` com os `... ok` para achar qual não terminou; (2) `pkill -f "deps/warden"` dentro do
+  próprio comando mata o shell (a linha de comando casa com o padrão) — usar um padrão que não apareça no comando.
 
 ---
 

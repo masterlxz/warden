@@ -18,6 +18,7 @@ use warden_core::model::{Attachment, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, NamedSubAgent};
+use warden_core::tool::job_tools::JobsTool;
 use warden_core::tool::document::GenerateDocumentTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
@@ -280,6 +281,12 @@ pub struct FileConfig {
     /// `DEFAULT_MAX_DELEGATED_CALLS`; `WARDEN_MAX_DELEGATED_CALLS` wins over this if set; `0` turns
     /// the limit off. No UI — config.toml/env only, same posture as `delegate_max_depth`.
     pub max_delegated_calls: Option<u32>,
+    /// How many background jobs (`background: true` on a delegation call, P46) one turn may run at
+    /// the same time; the rest wait in the queue. `None` keeps `DEFAULT_MAX_PARALLEL_JOBS`;
+    /// `WARDEN_MAX_PARALLEL_JOBS` wins over this if set; `0` means one at a time (jobs stay on, they
+    /// just never overlap). Every job still spends from `max_delegated_calls`. No UI — config.toml/env
+    /// only, same posture as `delegate_max_depth`.
+    pub max_parallel_jobs: Option<u32>,
     #[serde(default)]
     pub api_keys: ApiKeys,
     /// The provider registry (Sessão 35). Empty means "not migrated to the registry yet" —
@@ -823,6 +830,12 @@ pub fn resolve_max_delegated_calls(from_env: Option<String>, from_file: Option<u
     from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_MAX_DELEGATED_CALLS)
 }
 
+/// Same precedence and leniency again, for `max_parallel_jobs`. Unlike the two limits above, `0`
+/// does not switch the feature off — it means "one at a time" (the job queue clamps to 1).
+pub fn resolve_max_parallel_jobs(from_env: Option<String>, from_file: Option<u32>) -> u32 {
+    from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_MAX_PARALLEL_JOBS)
+}
+
 /// Same env-wins-over-file precedence as `resolve_flag`, for `delegate_max_depth` (P46). An env
 /// value that doesn't parse as a `u32` is treated the same as it not being set at all — falls
 /// back to `from_file`, then `DEFAULT_DELEGATE_MAX_DEPTH` — rather than failing `bootstrap()`
@@ -1239,8 +1252,14 @@ pub async fn bootstrap(
         resolve_delegate_max_depth(std::env::var("WARDEN_DELEGATE_MAX_DEPTH").ok(), config.delegate_max_depth);
     let max_delegated_calls =
         resolve_max_delegated_calls(std::env::var("WARDEN_MAX_DELEGATED_CALLS").ok(), config.max_delegated_calls);
+    let max_parallel_jobs =
+        resolve_max_parallel_jobs(std::env::var("WARDEN_MAX_PARALLEL_JOBS").ok(), config.max_parallel_jobs);
+    // Reads background jobs' results (P46). Registered unbound: the orchestrator binds it to each turn's
+    // job board, and until then it is hidden from the model — sub-agents, which inherit it, never see it.
+    base_tools.push(Arc::new(JobsTool::new()));
     let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path)
-        .with_delegation_limit(max_delegated_calls);
+        .with_delegation_limit(max_delegated_calls)
+        .with_parallel_jobs(max_parallel_jobs as usize);
 
     Ok(orchestrator)
 }
@@ -1279,6 +1298,10 @@ const DEFAULT_DELEGATE_MAX_DEPTH: u32 = 2;
 /// the `MAX_TOOL_ITERATIONS ^ depth` worst case a runaway chain could otherwise reach (P60). The
 /// turn's own agent isn't counted, so it can always answer once the limit is hit.
 const DEFAULT_MAX_DELEGATED_CALLS: u32 = 30;
+
+/// Default for `max_parallel_jobs`: how many background sub-agent jobs of one turn run at once.
+/// Small on purpose — each is a full model conversation, and providers rate-limit concurrent calls.
+const DEFAULT_MAX_PARALLEL_JOBS: u32 = 3;
 
 /// Builds an `Orchestrator` with `base_tools` registered, plus — while `depth > 0` — a
 /// `DelegateTool` wrapping another orchestrator built the same way one level shallower. The
@@ -1546,6 +1569,7 @@ oauth = true
             enable_shell: Some(true),
             delegate_max_depth: Some(3),
             max_delegated_calls: Some(12),
+            max_parallel_jobs: Some(2),
             api_keys: ApiKeys {
                 gemini: Some("gk".to_string()),
                 openai: Some("ok".to_string()),
@@ -1799,6 +1823,16 @@ oauth = true
         assert_eq!(resolve_max_delegated_calls(None, Some(9)), 9);
         assert_eq!(resolve_max_delegated_calls(None, None), DEFAULT_MAX_DELEGATED_CALLS);
         assert_eq!(resolve_max_delegated_calls(Some("0".to_string()), Some(9)), 0);
+    }
+
+    #[test]
+    fn resolve_max_parallel_jobs_prefers_env_over_file_and_defaults_to_three() {
+        assert_eq!(resolve_max_parallel_jobs(Some("5".to_string()), Some(1)), 5);
+        assert_eq!(resolve_max_parallel_jobs(Some("nonsense".to_string()), Some(7)), 7);
+        assert_eq!(resolve_max_parallel_jobs(None, Some(2)), 2);
+        assert_eq!(resolve_max_parallel_jobs(None, None), 3);
+        // `0` is kept as given (the queue itself treats it as one at a time).
+        assert_eq!(resolve_max_parallel_jobs(Some("0".to_string()), Some(9)), 0);
     }
 
     #[test]

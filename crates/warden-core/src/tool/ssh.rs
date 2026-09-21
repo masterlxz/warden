@@ -378,6 +378,10 @@ async fn download_from_host(
             Ok(total)
         }
         .await;
+        // Close our end of stdout before waiting on anything else: a grandchild of the killed process
+        // (a wrapper script's `head`, say) that is blocked writing to a full pipe gets SIGPIPE and
+        // exits, which is what finally closes its stderr for `stderr_task` below.
+        drop(stdout);
         if copied.is_err() {
             let _ = child.start_kill();
         }

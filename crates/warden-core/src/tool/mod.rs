@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::budget::TurnBudget;
+use crate::jobs::JobBoard;
 
 pub mod delegate;
 pub mod delegate_to_agent;
 pub mod document;
 pub mod file_tools;
+pub mod job_tools;
 pub mod mcp;
 pub mod mcp_oauth;
 pub mod shell;
@@ -53,6 +55,15 @@ pub trait Tool: Send + Sync {
     /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
     /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`.
     fn with_budget(&self, _budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
+    /// A copy of this tool bound to `board`, the background jobs of the turn that is starting, or
+    /// `None` when it has nothing to do with jobs. Called by `Orchestrator::with_turn_jobs` on the
+    /// turn's root only: the delegation tools use it to accept `background: true`, and the `jobs` tool
+    /// to read the results. Until a tool is bound it should keep itself out of the model's sight
+    /// (`is_available`/its spec), so nothing advertises a feature that can't work.
+    fn with_jobs(&self, _board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
         None
     }
 

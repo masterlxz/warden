@@ -1251,3 +1251,34 @@ montada no início do turno com a lista fixa, e o `Orchestrator` calculava as sp
   de leitura (sem `delegate_to_agent`/`manage_agents`/`write_file`) e o `poet` fica salvo em disco. **Não feito**:
   modelo real (sem chave), app Tauri aberto de verdade.
 
+## Fila de jobs em segundo plano (P46, Sessão 85)
+
+Até a Sessão 84 o chefe delegava e **esperava**: cada `delegate_task`/`delegate_to_agent` bloqueava o turno até o
+sub-agente responder, então três tarefas independentes rodavam em série. Agora a chamada aceita `background: true`.
+
+- **`JobBoard`** (`warden-core/src/jobs.rs`): os jobs de **um turno**. `spawn` devolve o id (`job-1`, `job-2`…) na hora;
+  o trabalho roda numa `tokio::spawn` que primeiro pega um slot de um `Semaphore` (`max_parallel`, no mínimo 1). O
+  estado (`Queued → Running → Done|Failed`) vive num `watch` — `wait` dorme até terminar e um job que morreu por
+  pânico volta como `Failed`, nunca como travamento. **Nada é persistido**: o quadro nasce e morre com o turno.
+- **`JobsGuard`**: quem é dono do turno segura o guard; ao cair (turno terminou, deu erro ou o usuário cancelou e o
+  future foi largado) chama `abort_unfinished`. Nada sobrevive ao turno — um job que o chefe não coletou é cancelado,
+  e a descrição do `background` avisa isso ao modelo.
+- **Tool `jobs`** (`list` / `result`, com `wait` por padrão `true`): registrada uma vez no `bootstrap()` **sem quadro**
+  e escondida do modelo (`is_available` falso). O `Orchestrator` liga uma cópia ao quadro de cada turno.
+- **`Tool::with_jobs(&Arc<JobBoard>)`** (método novo do trait, padrão `None`): é como a tool de delegação e a `jobs`
+  recebem o quadro. Só depois de ligada a delegação inclui `background` na spec — nada anuncia o que não funciona.
+  `attach_jobs` roda **só na raiz do turno** e só se a `jobs` estiver entre as tools: um agente cujo `allowed_tools` a
+  deixou de fora não pode iniciar jobs que não consegue coletar, e sub-agentes nunca veem `jobs` nem `background`
+  (não há jobs aninhados).
+- **Teto de paralelismo** `max_parallel_jobs` (`config.toml`, `WARDEN_MAX_PARALLEL_JOBS` vence; padrão **3**; `0` =
+  um de cada vez, **não** desliga). Baixo de propósito: cada job é uma conversa inteira de modelo e os provedores
+  limitam concorrência. Sem UI, mesma postura de `delegate_max_depth`; o desktop preserva o valor ao salvar.
+- **Custo**: o job gasta do mesmo `TurnBudget` (`max_delegated_calls`) — background não é jeito de furar o teto. Um
+  argumento inválido (agente inexistente) falha **na chamada**, não vira job que falha depois.
+- **MCP server**: `warden-mcp-server` passou a filtrar `is_available()` antes de anunciar as tools — sem isso a
+  `jobs`, que só existe dentro de um turno com jobs, apareceria pra clientes MCP.
+- **Verificação**: testes em `jobs.rs` (limite de concorrência, espera, cancelamento), `job_tools.rs`, na delegação
+  (`background` só com quadro ligado) e no orquestrador (três jobs em paralelo coletados, `jobs` ausente ⇒ sem
+  `background`, sub-agente nunca vê jobs, job não coletado cancelado ao fim do turno, orçamento compartilhado).
+  **Não feito**: modelo real decidindo sozinho paralelizar, binário real no pty, app Tauri aberto.
+
