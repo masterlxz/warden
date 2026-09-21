@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
+    aggregate_usage, bootstrap, build_live_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
     default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, ManageAgentsTool, McpServerConfig,
@@ -25,6 +25,7 @@ use warden_bootstrap::{
 use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
+use warden_core::tool::delegate_to_agent::AgentsRevision;
 
 struct AppState {
     orchestrator: Mutex<Result<Orchestrator, String>>,
@@ -181,7 +182,13 @@ async fn send_message(
                 orchestrator = orchestrator.with_agent(Some(id.clone()));
                 // Delegation targets are built from the orchestrator *before* it is narrowed to this
                 // agent's tools, so each target gets its own list rather than this agent's (P46).
-                let delegate_tool = if agent.can_delegate_to_agents { build_delegate_to_agent_tool(&config, &orchestrator) } else { None };
+                // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
+                let agents_revision = AgentsRevision::default();
+                let delegate_tool = if agent.can_delegate_to_agents {
+                    build_live_delegate_to_agent_tool(&path, &config, &orchestrator, agents_revision.clone())
+                } else {
+                    None
+                };
                 let known_tools: Vec<String> = orchestrator.tools().iter().map(|t| t.spec().name).collect();
                 orchestrator = orchestrator.with_allowed_tools(agent.allowed_tools.as_deref());
                 if let Some(tool) = delegate_tool {
@@ -191,7 +198,8 @@ async fn send_message(
                 if agent.can_manage_agents {
                     let manage = ManageAgentsTool::new(path.clone())
                         .with_known_tools(known_tools)
-                        .with_caller_limit(agent.allowed_tools.clone());
+                        .with_caller_limit(agent.allowed_tools.clone())
+                        .with_agents_revision(agents_revision);
                     orchestrator = orchestrator.with_tool(Arc::new(manage));
                 }
             }

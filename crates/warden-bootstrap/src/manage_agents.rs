@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
 use crate::{load_config_from_path, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
@@ -89,11 +90,20 @@ pub struct ManageAgentsTool {
     approver: Option<Arc<dyn Approver>>,
     approval_timeout: Duration,
     rules: ToolRules,
+    /// Bumped after every applied change, so a `delegate_to_agent` built earlier in the same turn
+    /// (given the same handle) sees the new agent list right away.
+    revision: Option<AgentsRevision>,
 }
 
 impl ManageAgentsTool {
     pub fn new(config_path: impl Into<PathBuf>) -> Self {
-        Self { config_path: config_path.into(), approver: None, approval_timeout: APPROVAL_TIMEOUT, rules: ToolRules::default() }
+        Self { config_path: config_path.into(), approver: None, approval_timeout: APPROVAL_TIMEOUT, rules: ToolRules::default(), revision: None }
+    }
+
+    /// Tells a `delegate_to_agent` sharing `revision` that the agent list changed.
+    pub fn with_agents_revision(mut self, revision: AgentsRevision) -> Self {
+        self.revision = Some(revision);
+        self
     }
 
     /// The names of every tool the running orchestrator has (`Orchestrator::tools`), so a made-up
@@ -168,12 +178,16 @@ impl ManageAgentsTool {
         config.agents = planned.agents;
         config.ssh_hosts = planned.ssh_hosts;
         save_config(&self.config_path, &config)?;
+        if let Some(revision) = &self.revision {
+            revision.bump();
+        }
         let message = match change {
             Change::Delete { .. } => format!("Agent '{}' deleted.", change.id()),
             Change::Create { .. } | Change::Update { .. } => format!(
-                "Agent '{}' {}. It becomes available from the user's next message (agents are read at the start of each turn).",
+                "Agent '{}' {}. It can be picked as the conversation's agent from the user's next message{}.",
                 change.id(),
-                if matches!(change, Change::Create { .. }) { "created" } else { "updated" }
+                if matches!(change, Change::Create { .. }) { "created" } else { "updated" },
+                if self.revision.is_some() { "; delegate_to_agent already lists it" } else { "" }
             ),
         };
         Ok(json!({ "status": "ok", "message": message }))
@@ -406,8 +420,9 @@ impl Tool for ManageAgentsTool {
                           create/update/delete is shown to the user, who must approve it (a delete shows the whole \
                           persona that will be lost); you cannot give any agent the power to delegate or manage other \
                           agents, and you cannot delete one that has it. A new agent starts with read-only tools \
-                          unless you list others, and is usable from the user's next message. Start with 'list' to \
-                          see what exists."
+                          unless you list others. It can be picked as the conversation's agent from the user's next \
+                          message; if you have delegate_to_agent, you can delegate to it right away. Start with \
+                          'list' to see what exists."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -558,6 +573,26 @@ mod tests {
         let asked = approver.asked.lock().unwrap();
         assert_eq!((asked[0].action.as_str(), asked[0].target.as_str()), ("create_agent", "linux-admin"));
         assert!(asked[0].detail.contains("You administer Linux servers.") && asked[0].detail.contains("local"));
+    }
+
+    #[tokio::test]
+    async fn the_agents_revision_moves_only_when_a_change_is_applied() {
+        let path = write_config(vec![]);
+        let revision = AgentsRevision::default();
+        let with = |answer: bool| {
+            let approver = Arc::new(Scripted { answer, asked: Mutex::new(Vec::new()) });
+            ManageAgentsTool::new(&path).with_agents_revision(revision.clone()).with_approver(approver).unwrap()
+        };
+        let before = revision.current();
+
+        // Refused, invalid, and read-only calls leave it alone.
+        with(false).call(json!({ "action": "create", "id": "x", "persona": "p" })).await.unwrap_err();
+        with(true).call(json!({ "action": "delete", "id": "ghost" })).await.unwrap_err();
+        with(true).call(json!({ "action": "list" })).await.unwrap();
+        assert_eq!(revision.current(), before);
+
+        with(true).call(json!({ "action": "create", "id": "x", "persona": "p" })).await.unwrap();
+        assert_ne!(revision.current(), before);
     }
 
     #[tokio::test]

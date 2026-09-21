@@ -17,7 +17,7 @@ use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::{Attachment, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
-use warden_core::tool::delegate_to_agent::{DelegateToAgentTool, NamedSubAgent};
+use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, NamedSubAgent};
 use warden_core::tool::document::GenerateDocumentTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::mcp::McpToolProvider;
@@ -1046,7 +1046,7 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
 /// Returns `None` when there's nothing to delegate to — no agents configured, or every one of
 /// them failed to resolve a valid provider (logged via `eprintln!`, not fatal — one broken agent
 /// shouldn't take down every other agent's ability to delegate).
-pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator) -> Option<Arc<dyn Tool>> {
+fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<NamedSubAgent> {
     let mut targets = Vec::new();
     for agent in &config.agents {
         let target_orchestrator = match &agent.provider_id {
@@ -1080,7 +1080,37 @@ pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestr
             persona,
         });
     }
+    targets
+}
+
+pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator) -> Option<Arc<dyn Tool>> {
+    let targets = delegate_targets(config, orchestrator);
     (!targets.is_empty()).then(|| Arc::new(DelegateToAgentTool::new(targets)) as Arc<dyn Tool>)
+}
+
+/// Same tool as `build_delegate_to_agent_tool`, but its target list follows the agents on disk
+/// during the turn: when `revision` moves (a `ManageAgentsTool` given the same `AgentsRevision`
+/// created, edited or deleted an agent), the targets are rebuilt from `config_path` — so an agent
+/// the chief just created can be delegated to in that same turn instead of from the next one. The
+/// rebuilt targets clone the same `orchestrator` the first ones did, so they carry exactly the
+/// same tools and delegation depth. An unreadable config keeps the previous list.
+pub fn build_live_delegate_to_agent_tool(
+    config_path: &Path,
+    config: &FileConfig,
+    orchestrator: &Orchestrator,
+    revision: AgentsRevision,
+) -> Option<Arc<dyn Tool>> {
+    let targets = delegate_targets(config, orchestrator);
+    if targets.is_empty() {
+        return None;
+    }
+    let path = config_path.to_path_buf();
+    let base = orchestrator.clone();
+    let resolver: AgentResolver = Arc::new(move || {
+        let config = load_config_from_path(&path, false).ok()?;
+        Some(delegate_targets(&config, &base))
+    });
+    Some(Arc::new(DelegateToAgentTool::live(targets, revision, resolver)))
 }
 
 /// Resolves which `ModelProvider` to build, in order: an explicit `overrides.provider_id` or
@@ -2070,6 +2100,81 @@ oauth = true
         assert_eq!(tool.call(ask("reader")).await.unwrap()["result"], "read_file");
         assert_eq!(tool.call(ask("ops")).await.unwrap()["result"], "shell");
         assert_eq!(tool.call(ask("open")).await.unwrap()["result"], "read_file,write_file,shell");
+    }
+
+    #[tokio::test]
+    async fn an_agent_created_mid_turn_can_be_delegated_to_in_the_same_turn() {
+        use warden_core::model::{response_stream, ChatStream, Response, Role, ToolCall};
+        use warden_core::tool::{ApprovalRequest, Approver, ToolSpec};
+
+        /// The chief creates "poet", then delegates to it only if the tool now lists it, then repeats the result.
+        struct ChiefCreatesThenDelegates;
+        #[async_trait::async_trait]
+        impl ModelProvider for ChiefCreatesThenDelegates {
+            async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                if !tools.iter().any(|t| t.name == "manage_agents") {
+                    // The delegation target: it must not be handed the chief's powers.
+                    let leaked = tools.iter().any(|t| t.name == "delegate_to_agent");
+                    return Ok(response_stream(Response { content: format!("poem (leaked powers: {leaked})"), tool_calls: Vec::new(), usage: None }));
+                }
+                let call = |name: &str, arguments: serde_json::Value| ToolCall { id: "1".into(), name: name.into(), arguments, thought_signature: None };
+                let response = match messages.iter().filter(|m| m.role == Role::Tool).count() {
+                    0 => Response {
+                        content: String::new(),
+                        tool_calls: vec![call("manage_agents", serde_json::json!({ "action": "create", "id": "poet", "persona": "You write poems." }))],
+                        usage: None,
+                    },
+                    1 => {
+                        let listed = tools
+                            .iter()
+                            .find(|t| t.name == "delegate_to_agent")
+                            .map(|t| t.parameters["properties"]["agent_id"]["enum"].to_string())
+                            .unwrap_or_default();
+                        if listed.contains("poet") {
+                            Response {
+                                content: String::new(),
+                                tool_calls: vec![call("delegate_to_agent", serde_json::json!({ "agent_id": "poet", "task": "write" }))],
+                                usage: None,
+                            }
+                        } else {
+                            Response { content: format!("poet not offered: {listed}"), tool_calls: Vec::new(), usage: None }
+                        }
+                    }
+                    _ => Response { content: messages.last().unwrap().content.clone(), tool_calls: Vec::new(), usage: None },
+                };
+                Ok(response_stream(response))
+            }
+        }
+        struct Yes;
+        #[async_trait::async_trait]
+        impl Approver for Yes {
+            async fn approve(&self, _request: ApprovalRequest) -> bool {
+                true
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "warden-live-delegate-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let chief_config = AgentConfig { can_delegate_to_agents: true, can_manage_agents: true, ..agent_config("chief", None) };
+        let config = FileConfig { agents: vec![chief_config], ..FileConfig::default() };
+        save_config(&path, &config).unwrap();
+
+        let vault = Arc::new(Vault::new(dir.join("vault")));
+        let orchestrator = Orchestrator::new(Arc::new(ChiefCreatesThenDelegates), vault).with_delegation_limit(10);
+        let revision = AgentsRevision::default();
+        let delegate = build_live_delegate_to_agent_tool(&path, &config, &orchestrator, revision.clone()).unwrap();
+        let manage = ManageAgentsTool::new(&path).with_agents_revision(revision);
+        let chief = orchestrator.with_tool(delegate).with_tool(Arc::new(manage)).with_approver(Arc::new(Yes));
+
+        let answer = chief.handle_message(&[], "make me a poet and ask it for a poem").await.unwrap().content;
+
+        assert!(answer.contains("poem (leaked powers: false)"), "{answer}");
+        // ...and the agent really was saved, not just faked in memory.
+        assert!(load_config_from_path(&path, false).unwrap().agents.iter().any(|a| a.id == "poet"));
     }
 
     #[tokio::test]

@@ -59,7 +59,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
+    build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
     rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
     ManageAgentsTool, Provider, ProviderConfig, SshHostConfig,
 };
@@ -67,6 +67,7 @@ use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
+use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::ssh::test_connection;
 use warden_core::tool::{ApprovalRequest, Approver, Tool};
 
@@ -1098,8 +1099,13 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
     let system_prompt = active_agent.map(|a| a.persona.clone());
     let mut extra_tools: Vec<Arc<dyn Tool>> = Vec::new();
     if let Some(agent) = active_agent {
+        // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
+        let agents_revision = AgentsRevision::default();
         if agent.can_delegate_to_agents {
-            extra_tools.extend(build_delegate_to_agent_tool(&config, orchestrator));
+            extra_tools.extend(match &session.config_path {
+                Some(path) => build_live_delegate_to_agent_tool(path, &config, orchestrator, agents_revision.clone()),
+                None => build_delegate_to_agent_tool(&config, orchestrator),
+            });
         }
         if agent.can_manage_agents {
             // The tool reads and writes the same file `/agents` does; without a path there is nothing to edit.
@@ -1107,7 +1113,8 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
                 extra_tools.push(Arc::new(
                     ManageAgentsTool::new(path)
                         .with_known_tools(session.tool_names.clone())
-                        .with_caller_limit(agent.allowed_tools.clone()),
+                        .with_caller_limit(agent.allowed_tools.clone())
+                        .with_agents_revision(agents_revision),
                 ));
             }
         }

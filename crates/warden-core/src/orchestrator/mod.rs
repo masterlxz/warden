@@ -357,8 +357,6 @@ impl Orchestrator {
         messages.extend(history.iter().cloned());
         messages.push(Message::user_with_attachments(user_input, attachments));
 
-        let tool_specs = self.tools.iter().filter(|t| t.is_available()).map(|t| t.spec()).collect::<Vec<_>>();
-
         let mut usage = Usage::default();
         let mut has_usage = false;
         let mut attachments: Vec<Attachment> = Vec::new();
@@ -371,7 +369,10 @@ impl Orchestrator {
             if let Some(budget) = sub_agent_budget {
                 budget.charge()?;
             }
-            let stream = self.model.chat_stream(messages.clone(), tool_specs.clone()).await?;
+            // Recomputed every iteration: a tool's spec can change mid-turn (`delegate_to_agent`
+            // lists the agents `manage_agents` created a moment ago).
+            let tool_specs = self.tools.iter().filter(|t| t.is_available()).map(|t| t.spec()).collect::<Vec<_>>();
+            let stream = self.model.chat_stream(messages.clone(), tool_specs).await?;
             let response = crate::model::drain_chat_stream(stream, &mut on_event).await?;
 
             if let Some(budget) = sub_agent_budget {
@@ -894,6 +895,51 @@ mod tests {
         assert!(ops.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
         let back_and_forth = ops.with_agent(Some("writer".into())).with_agent(Some("ops".into()));
         assert!(back_and_forth.handle_turn(&[], "hi", Vec::new(), None).await.unwrap().content.contains("ssh_exec"));
+    }
+
+    /// Its description changes once it has been called — like `delegate_to_agent` gaining an agent.
+    struct ChangesItsSpecWhenCalled(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for ChangesItsSpecWhenCalled {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "evolving".to_string(),
+                description: format!("called {} times", self.0.load(Ordering::SeqCst)),
+                parameters: serde_json::json!({}),
+            }
+        }
+        async fn call(&self, _args: Value) -> anyhow::Result<Value> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!("ok"))
+        }
+    }
+
+    /// Calls `evolving` once, then answers with the description it saw on the second look.
+    struct ReportsToolDescriptionOnSecondCall(AtomicUsize);
+
+    #[async_trait]
+    impl ModelProvider for ReportsToolDescriptionOnSecondCall {
+        async fn chat_stream(&self, _messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "1".into(), name: "evolving".into(), arguments: serde_json::json!({}), thought_signature: None }],
+                    usage: None,
+                }));
+            }
+            let seen = tools.iter().find(|t| t.name == "evolving").map(|t| t.description.clone()).unwrap_or_default();
+            Ok(response_stream(Response { content: seen, tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tool_spec_that_changes_mid_turn_is_seen_by_the_next_model_call() {
+        let mut orchestrator = Orchestrator::new(Arc::new(ReportsToolDescriptionOnSecondCall(AtomicUsize::new(0))), temp_vault());
+        orchestrator.register_tool(Arc::new(ChangesItsSpecWhenCalled(Arc::new(AtomicUsize::new(0)))));
+
+        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
+        assert_eq!(result.content, "called 1 times");
     }
 
     struct NamedTool(&'static str);

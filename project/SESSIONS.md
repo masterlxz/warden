@@ -2,7 +2,38 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 83)
+> Última atualização: 2026-09-20 (Sessão 84)
+
+---
+
+### 2026-09-20 — Sessão 84
+
+- **Objetivo**: P74 — espaço em disco da máquina de dev; depois P46 — agente criado no meio do turno já vira alvo de
+  `delegate_to_agent`. Plano aprovado antes de codar.
+
+**O que foi feito (P46)**:
+
+- **`AgentsRevision`** + modo vivo no `DelegateToAgentTool` (`warden-core`): a tool refaz a lista de alvos só quando o
+  contador compartilhado muda; o `ManageAgentsTool` dá `bump()` depois de salvar. `Orchestrator` recalcula as specs a
+  cada iteração do loop (antes, uma vez por turno).
+- **`build_live_delegate_to_agent_tool`** (`warden-bootstrap`): resolver relê o `config.toml`; alvos recarregados mantêm
+  `allowed_tools` próprio e o `TurnBudget`. Desktop e CLI ligam as duas tools ao mesmo contador.
+- **Verificação**: `cargo test --workspace` sem falhas, clippy limpo, teste de turno completo com teste de mutação
+  (sem o `bump()` falha), e o binário real do CLI num pty contra modelo **falso** (4 checagens: o `enum` do `agent_id`
+  passa de `["chief"]` a `["chief","poet"]`, o alvo só recebe tools de leitura, o `poet` fica salvo em disco).
+  **Não feito**: modelo real (sem chave), app Tauri aberto.
+- **Achados de método**: (1) o pty precisa de tamanho de janela (`TIOCSWINSZ`) e de resposta ao `ESC[6n` — sem isso o
+  ratatui desenha em branco ou aborta com "cursor position could not be read"; (2) `git stash` dentro de um comando que
+  estoura o timeout vira tarefa em segundo plano com o trabalho guardado — não usar; (3) a implementação foi feita por
+  script no Bash e o usuário não via o diff — daqui em diante, edição de código só por Edit/Write.
+
+**O que foi feito (P74)**:
+
+- `/home` estava em 87% (24 GB livres). Causa: `target/debug` do host com 37 GB, não os volumes Docker. `cargo clean`
+  liberou 41,1 GB (`/home` → 60 GB livres). Volumes Docker do Warden e o `anchor_cargo-target` (outro projeto) intocados.
+- **Achado**: `sudo paccache -rk1` não liberou nada — o cache de 2,9 GB da `/` são pastas `download-*` de root que o
+  `paccache` não limpa; falta `sudo rm -rf /var/cache/pacman/pkg/download-*` (pendente de confirmação).
+- Próximo build do Warden compila do zero.
 
 ---
 

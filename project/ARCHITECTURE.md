@@ -1215,3 +1215,39 @@ Agora tem, porque todo delete passa pela aprovação humana e o card mostra a pe
 - **Desktop**: só o verbo `delete_agent` no `ApprovalModal`. **Não desfaz**: o único registro da persona apagada é o
   card mostrado antes do "sim".
 
+## Agente criado no meio do turno já é alvo de delegação (P46, Sessão 84)
+
+Até a Sessão 83 um agente criado por `manage_agents` só virava alvo de `delegate_to_agent` no turno seguinte: a tool era
+montada no início do turno com a lista fixa, e o `Orchestrator` calculava as specs das tools **uma vez**, antes do loop.
+
+- **Duas causas, dois ajustes**: (1) `handle_turn_streaming` agora recalcula `tool_specs` a **cada iteração** do loop
+  (só chamadas a `spec()`, baratas), então uma spec que muda no meio do turno chega ao modelo; (2) o
+  `DelegateToAgentTool` ganhou um modo "vivo" (`DelegateToAgentTool::live`) que refaz a lista de alvos.
+- **`AgentsRevision`** (`warden-core`, `Arc<AtomicU64>`) é o aviso de que a lista mudou: o `ManageAgentsTool` chama
+  `bump()` **depois** de `save_config` bem-sucedido; a tool de delegação compara com a revisão que viu e, se mudou,
+  chama o `AgentResolver` (`Fn() -> Option<Vec<NamedSubAgent>>`). O resolver **só roda quando a revisão mudou**, não a
+  cada `spec()` (o `run_tool` chama `spec()` de todas as tools a cada chamada de tool). Sem contador compartilhado
+  nada muda: o comportamento é o de antes.
+- **Por que contador e não olhar o arquivo**: mtime tem granularidade e corrida; um contador explícito é exato e nunca
+  relê o `config.toml` sem motivo. Recusa, erro de validação e `list` **não** movem a revisão (teste dedicado).
+- **`build_live_delegate_to_agent_tool`** (`warden-bootstrap`): o resolver relê o `config.toml` e reaproveita a mesma
+  `delegate_targets` que já montava os alvos (extraída de `build_delegate_to_agent_tool`, que continua existindo para
+  quem não tem `manage_agents`). Os alvos recarregados clonam o **mesmo** `orchestrator` de base, então têm as mesmas
+  tools/profundidade e a `allowed_tools` própria; e passam por `charged_to` quando o turno tem `TurnBudget`, então o
+  teto de custo continua valendo pra eles (`with_budget` propaga o orçamento e mantém o modo vivo).
+- **Resolver sem resultado mantém a lista anterior** (config ilegível ou lista vazia): um tropeço no meio do turno não
+  tira a delegação. Efeito colateral aceito: se a lista ficasse vazia de verdade, o agente apagado continuaria
+  endereçável até o fim do turno — na prática impossível, porque o próprio chefe (com poder) está sempre na lista e
+  não pode ser apagado.
+- **Ligação**: desktop e CLI criam um `AgentsRevision` por turno e o entregam às duas tools. CLI sem `config_path` usa o
+  builder antigo (sem `manage_agents` também, então não há o que atualizar). O texto da tool e a mensagem de retorno
+  agora dizem que o agente já aparece no `delegate_to_agent`; **como agente da conversa** (seletor) continua a partir
+  da próxima mensagem — o agente ativo é escolhido pelo usuário, não pela tool.
+- **Verificação**: 6 testes novos no `warden-core` (5 da tool viva — lista, `call`, resolver sem resultado, uma
+  resolução por mudança, orçamento — e 1 do orquestrador); no `warden-bootstrap`, um turno completo em que o chefe cria
+  `poet` e delega a ele no mesmo turno (com **teste de mutação**: sem o `bump()` falha com `poet not offered`) e o teste
+  da revisão. Binário real do CLI num pty contra um servidor de modelo **falso** (4 checagens): o `enum` de
+  `agent_id` passa de `["chief"]` para `["chief","poet"]` na requisição seguinte à criação, o alvo recebe só as tools
+  de leitura (sem `delegate_to_agent`/`manage_agents`/`write_file`) e o `poet` fica salvo em disco. **Não feito**:
+  modelo real (sem chave), app Tauri aberto de verdade.
+

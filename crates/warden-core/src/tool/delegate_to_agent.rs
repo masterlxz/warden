@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -27,24 +28,92 @@ pub struct NamedSubAgent {
     pub persona: Option<String>,
 }
 
+/// Bumped whenever the set of configured agents changes mid-turn (`manage_agents` creating,
+/// editing or deleting one), so a `DelegateToAgentTool` built earlier in the same turn knows its
+/// target list went stale. A plain counter shared by `Arc`: whoever changes agents calls `bump`,
+/// the tool compares it against the value it last saw.
+#[derive(Clone, Default)]
+pub struct AgentsRevision(Arc<AtomicU64>);
+
+impl AgentsRevision {
+    pub fn bump(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Rebuilds the target list from whatever is configured *now*. `None` (config unreadable, or
+/// nothing resolvable) keeps the previous list — a hiccup must not take delegation away mid-turn.
+pub type AgentResolver = Arc<dyn Fn() -> Option<Vec<NamedSubAgent>> + Send + Sync>;
+
+#[derive(Clone)]
+struct LiveAgents {
+    revision: AgentsRevision,
+    resolver: AgentResolver,
+}
+
+struct Targets {
+    /// The `AgentsRevision` value these `agents` were resolved at.
+    seen: u64,
+    agents: Arc<Vec<NamedSubAgent>>,
+}
+
 /// Delegates a scoped, self-contained task to one specific *configured* agent, addressed by id —
 /// unlike `DelegateTool`, which spins up an anonymous helper with no persona of its own. Only
 /// attached to a turn whose active agent has opted in (`AgentConfig.can_delegate_to_agents`); see
 /// `warden_bootstrap::build_delegate_to_agent_tool` and `Orchestrator::with_tool`.
+///
+/// Built with `live`, the target list is refreshed when the shared `AgentsRevision` moves — that is
+/// how an agent created by `manage_agents` earlier in the *same turn* becomes a valid `agent_id`
+/// right away instead of from the next turn.
 pub struct DelegateToAgentTool {
-    agents: Vec<NamedSubAgent>,
+    targets: Mutex<Targets>,
+    live: Option<LiveAgents>,
+    budget: Option<Arc<TurnBudget>>,
 }
 
 impl DelegateToAgentTool {
     pub fn new(agents: Vec<NamedSubAgent>) -> Self {
-        Self { agents }
+        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None }
+    }
+
+    /// Like `new`, but re-resolves the targets through `resolver` whenever `revision` has moved
+    /// since the last look.
+    pub fn live(agents: Vec<NamedSubAgent>, revision: AgentsRevision, resolver: AgentResolver) -> Self {
+        let seen = revision.current();
+        Self { targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }), live: Some(LiveAgents { revision, resolver }), budget: None }
+    }
+
+    /// The targets to use right now, re-resolved first if agents changed since the last look. Held
+    /// only briefly and never across an `.await`.
+    fn current(&self) -> Arc<Vec<NamedSubAgent>> {
+        let mut targets = self.targets.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(live) = &self.live {
+            let revision = live.revision.current();
+            if revision != targets.seen {
+                targets.seen = revision;
+                if let Some(mut fresh) = (live.resolver)().filter(|list| !list.is_empty()) {
+                    if let Some(budget) = &self.budget {
+                        for agent in &mut fresh {
+                            agent.orchestrator = agent.orchestrator.charged_to(budget.clone());
+                        }
+                    }
+                    targets.agents = Arc::new(fresh);
+                }
+            }
+        }
+        targets.agents.clone()
     }
 }
 
 #[async_trait]
 impl Tool for DelegateToAgentTool {
     fn spec(&self) -> ToolSpec {
-        let listing = self.agents.iter().map(|a| format!("- {}: {}", a.id, a.description)).collect::<Vec<_>>().join("\n");
+        let agents = self.current();
+        let listing = agents.iter().map(|a| format!("- {}: {}", a.id, a.description)).collect::<Vec<_>>().join("\n");
         ToolSpec {
             name: "delegate_to_agent".to_string(),
             description: format!(
@@ -60,7 +129,7 @@ impl Tool for DelegateToAgentTool {
                 "properties": {
                     "agent_id": {
                         "type": "string",
-                        "enum": self.agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                        "enum": agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
                         "description": "Which configured agent to delegate to."
                     },
                     "task": {
@@ -76,16 +145,18 @@ impl Tool for DelegateToAgentTool {
     }
 
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
-        let agents = self.agents.iter().map(|a| NamedSubAgent { orchestrator: a.orchestrator.charged_to(budget.clone()), ..a.clone() }).collect();
-        Some(Arc::new(Self { agents }))
+        let agents = self.current().iter().map(|a| NamedSubAgent { orchestrator: a.orchestrator.charged_to(budget.clone()), ..a.clone() }).collect();
+        let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;
+        Some(Arc::new(Self { targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }), live: self.live.clone(), budget: Some(budget.clone()) }))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let agent_id = args.get("agent_id").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'agent_id' argument"))?;
         let task = args.get("task").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'task' argument"))?;
 
-        let agent = self.agents.iter().find(|a| a.id == agent_id).ok_or_else(|| {
-            let available = self.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
+        let agents = self.current();
+        let agent = agents.iter().find(|a| a.id == agent_id).ok_or_else(|| {
+            let available = agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ");
             anyhow::anyhow!("unknown agent_id '{agent_id}' — must be one of: {available}")
         })?;
 
@@ -195,5 +266,74 @@ mod tests {
         assert!(spec.description.contains("pirate: A pirate."));
         assert!(spec.description.contains("robot: A robot."));
         assert_eq!(spec.parameters["properties"]["agent_id"]["enum"], json!(["pirate", "robot"]));
+    }
+
+    #[test]
+    fn a_live_tool_picks_up_an_agent_added_after_it_was_built() {
+        let revision = AgentsRevision::default();
+        let resolver: AgentResolver = Arc::new(|| Some(vec![agent("pirate", "arr", None), agent("robot", "beep", None)]));
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+        assert_eq!(tool.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate"]));
+
+        // Nothing moved yet: the old list stays, the resolver isn't consulted.
+        assert_eq!(tool.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate"]));
+
+        revision.bump();
+        assert_eq!(tool.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate", "robot"]));
+    }
+
+    #[tokio::test]
+    async fn a_live_tool_can_call_an_agent_added_after_it_was_built() {
+        let revision = AgentsRevision::default();
+        let resolver: AgentResolver = Arc::new(|| Some(vec![agent("pirate", "arr", None), agent("robot", "beep boop", None)]));
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+
+        assert!(tool.call(json!({ "agent_id": "robot", "task": "hi" })).await.is_err());
+        revision.bump();
+        let result = tool.call(json!({ "agent_id": "robot", "task": "hi" })).await.unwrap();
+        assert_eq!(result, json!({ "result": "beep boop" }));
+    }
+
+    #[test]
+    fn a_live_tool_keeps_its_list_when_the_resolver_has_nothing() {
+        let revision = AgentsRevision::default();
+        let resolver: AgentResolver = Arc::new(|| None);
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+
+        revision.bump();
+        assert_eq!(tool.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate"]));
+    }
+
+    #[test]
+    fn the_resolver_runs_once_per_change_not_once_per_look() {
+        let revision = AgentsRevision::default();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let resolver: AgentResolver = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(vec![agent("pirate", "arr", None)])
+        });
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+
+        for _ in 0..5 {
+            tool.spec();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        revision.bump();
+        for _ in 0..5 {
+            tool.spec();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_budgeted_live_tool_still_refreshes() {
+        let revision = AgentsRevision::default();
+        let resolver: AgentResolver = Arc::new(|| Some(vec![agent("pirate", "arr", None), agent("robot", "beep", None)]));
+        let tool = DelegateToAgentTool::live(vec![agent("pirate", "arr", None)], revision.clone(), resolver);
+
+        let charged = tool.with_budget(&TurnBudget::new(10)).unwrap();
+        revision.bump();
+        assert_eq!(charged.spec().parameters["properties"]["agent_id"]["enum"], json!(["pirate", "robot"]));
     }
 }
