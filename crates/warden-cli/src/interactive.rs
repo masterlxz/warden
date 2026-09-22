@@ -59,15 +59,15 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, build_model_provider, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
-    rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig, FileConfig, Overrides,
-    ManageAgentsTool, Provider, ProviderConfig, SshHostConfig,
+    build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, build_model_provider, default_limit_configs, default_model_for, load_config_from_path,
+    remove_agent_references, remove_provider_references, rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig,
+    FileConfig, LimitConfig, LimitScope, ManageAgentsTool, Overrides, Provider, ProviderConfig, SshHostConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
-use warden_core::spend::{now_millis, LimitStatus, SpendGuard, Spent};
+use warden_core::spend::{now_millis, LimitStatus, Price, SpendGuard, Spent, DEFAULT_EXTEND_STEP, DEFAULT_WARN_AT};
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::ssh::test_connection;
 use warden_core::tool::{ApprovalRequest, Approver, Tool};
@@ -1153,7 +1153,16 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/help — esta lista",
         "/usage — tokens e $ gastos nesta sessão do terminal ($ só com [[prices]] cadastrado)",
         "/limits — situação de cada limite de gasto (tokens e $ por janela de tempo)",
+        "/limits add — cadastrar um limite de gasto novo",
+        "/limits edit <id> — editar um limite",
+        "/limits remove <id> — remover um limite (pede confirmação)",
+        "/limits off — desligar todos os limites de gasto (pede confirmação)",
+        "/limits reset — voltar pra rede de segurança padrão, descartando qualquer limite customizado (pede confirmação)",
         "/extend <id> — liberar mais um passo de um limite, até a janela andar",
+        "/prices — listar os preços de modelo cadastrados (usados pros limites em $)",
+        "/prices add — cadastrar o preço de um modelo",
+        "/prices edit <model> — editar o preço de um modelo",
+        "/prices remove <model> — remover o preço de um modelo (pede confirmação)",
         "/models — listar os modelos configurados",
         "/models use <id> — usar um modelo pro resto da sessão",
         "/models reset — voltar pro modelo com que o Warden foi iniciado",
@@ -1312,6 +1321,428 @@ async fn cmd_extend(terminal: &mut CliTerminal, session: &CliSession, id: String
             vec![(format!("{err:#} — use /limits pra ver os ids"), Style::default())],
         ),
     }
+}
+
+// --- Wizard de `[[limits]]`/`[[prices]]` (P4) ---------------------------------------------------
+//
+// `/limits`/`/extend` (acima) só leem o estado já em vigor; o que segue escreve `config.toml`, no
+// mesmo molde do wizard de SSH (`prompt_ssh_host` e cia, mais abaixo neste arquivo): um `prompt_*`
+// que monta a struct inteira campo a campo (cancelável a qualquer ponto, `Esc`/`Ctrl+C`), validada
+// de verdade por `LimitConfig::to_limit()` — a mesma regra que o startup e a tela do desktop usam —
+// e um `wizard_*`/`cmd_*` por comando que carrega, aplica e salva.
+
+/// Loops a single wizard field through a pure parser until it's valid, re-prompting with the
+/// parser's own error card — the same shape `prompt_provider_kind` uses for its one `match`,
+/// generalized so every numeric field below shares one loop.
+async fn prompt_parsed<T>(terminal: &mut CliTerminal, title: &str, initial: &str, parse: impl Fn(&str) -> Result<T, String>) -> anyhow::Result<Option<T>> {
+    loop {
+        let Some(input) = prompt_field(terminal, title, initial).await? else {
+            return Ok(None);
+        };
+        match parse(&input) {
+            Ok(value) => return Ok(Some(value)),
+            Err(err) => render_message_card(terminal, "erro", error_style(), vec![(err, Style::default())])?,
+        }
+    }
+}
+
+/// `/limits add`/`edit`'s "window (hours)" field: an integer of at least 1.
+fn parse_limit_window_hours(input: &str) -> Result<u32, String> {
+    match input.trim().parse::<u32>() {
+        Ok(n) if n >= 1 => Ok(n),
+        _ => Err("a janela precisa ser um número inteiro de horas, no mínimo 1".to_string()),
+    }
+}
+
+/// A blank "max tokens" field is "no cap" (`None`); anything else must be a positive integer.
+fn parse_optional_u64(input: &str) -> Result<Option<u64>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<u64>() {
+        Ok(n) if n > 0 => Ok(Some(n)),
+        _ => Err("use um número inteiro acima de 0, ou deixe em branco pra sem teto".to_string()),
+    }
+}
+
+/// Same shape as `parse_optional_u64` but for a dollar figure (`max_cost_usd`), which may have a
+/// decimal point.
+fn parse_optional_cost(input: &str) -> Result<Option<f64>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<f64>() {
+        Ok(n) if n.is_finite() && n > 0.0 => Ok(Some(n)),
+        _ => Err("use um número acima de 0, ou deixe em branco pra sem teto".to_string()),
+    }
+}
+
+/// A model price (`$`/1M tokens) is the same shape as a cost, but `0` is valid — a free/local
+/// model — and it's never optional (both prices are always asked).
+fn parse_price_amount(input: &str) -> Result<f64, String> {
+    match input.trim().parse::<f64>() {
+        Ok(n) if n.is_finite() && n >= 0.0 => Ok(n),
+        _ => Err("use um número de 0 ou mais".to_string()),
+    }
+}
+
+/// `warn_at`/`extend_step` as typed in percent (1-100); blank keeps the default. Converts to the
+/// 0-1 fraction the config stores — same convention as the desktop's `PercentField`.
+fn parse_optional_percent(input: &str) -> Result<Option<f64>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed.parse::<f64>() {
+        Ok(n) if n.is_finite() && n > 0.0 && n <= 100.0 => Ok(Some(n / 100.0)),
+        _ => Err("use um número entre 1 e 100, ou deixe em branco pro padrão".to_string()),
+    }
+}
+
+fn limit_scope_label(scope: LimitScope) -> &'static str {
+    match scope {
+        LimitScope::Global => "global",
+        LimitScope::Agent => "agent",
+        LimitScope::Channel => "channel",
+        LimitScope::User => "user",
+    }
+}
+
+fn parse_limit_scope(input: &str) -> Result<LimitScope, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "global" => Ok(LimitScope::Global),
+        "agent" => Ok(LimitScope::Agent),
+        "channel" => Ok(LimitScope::Channel),
+        "user" => Ok(LimitScope::User),
+        _ => Err("use global, agent, channel ou user".to_string()),
+    }
+}
+
+/// Validates the target text against the scope it goes with (`LimitConfig::target`): `global`
+/// takes none, `agent` must name a configured agent, `channel` just can't be blank, `user` needs
+/// the `channel:user` shape `to_limit()` itself checks again later. The real cross-field rule
+/// stays in `LimitConfig::to_limit()` — this only turns typed text into a typed value with an
+/// error in the wizard's voice.
+fn validate_limit_target(scope: LimitScope, target: &str, known_agents: &[String]) -> Result<Option<String>, String> {
+    let trimmed = target.trim();
+    match scope {
+        LimitScope::Global => Ok(None),
+        LimitScope::Agent if trimmed.is_empty() => Err("informe o id de um agente cadastrado".to_string()),
+        LimitScope::Agent if !known_agents.iter().any(|a| a == trimmed) => Err(format!("agente '{trimmed}' não existe — veja /agents")),
+        LimitScope::Agent => Ok(Some(trimmed.to_string())),
+        LimitScope::Channel if trimmed.is_empty() => Err("informe um canal (ex.: desktop, cli, telegram, whatsapp, server)".to_string()),
+        LimitScope::Channel => Ok(Some(trimmed.to_string())),
+        LimitScope::User if !trimmed.contains(':') => Err("escreva como canal:usuário, ex.: telegram:12345".to_string()),
+        LimitScope::User => Ok(Some(trimmed.to_string())),
+    }
+}
+
+/// The effective `[[limits]]` list a wizard edit should start from: the file's own list when it
+/// has one, or the built-in safety net materialized into real entries when it's `None` — so
+/// `/limits add`/`edit` on a config that never customized limits never silently drops the default
+/// protection (same intent as the desktop's "Customize limits" button, done automatically since
+/// there's no single screen here to show both cards for review first).
+fn effective_limit_configs(config: &FileConfig) -> Vec<LimitConfig> {
+    config.limits.clone().unwrap_or_else(default_limit_configs)
+}
+
+/// Asks every field of a spending limit, pre-filled from `current` when editing. `existing` is the
+/// full effective list (including `current` itself, when editing) — uniqueness is checked the same
+/// way `prompt_ssh_host`/`prompt_provider_id` do it, against everything but the entry being kept.
+/// `Ok(None)` means cancelled or a real validation error already rendered as a card. The final say
+/// is always `LimitConfig::to_limit()`, run once more on the assembled value.
+async fn prompt_limit(terminal: &mut CliTerminal, config: &FileConfig, existing: &[LimitConfig], current: Option<&LimitConfig>) -> anyhow::Result<Option<LimitConfig>> {
+    let keep_id = current.map(|l| l.id.as_str());
+    let id = loop {
+        let Some(input) = prompt_field(terminal, " id (nome único do limite) ", keep_id.unwrap_or("")).await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if candidate.is_empty() {
+            render_message_card(terminal, "erro", error_style(), vec![("id não pode ficar em branco".to_string(), Style::default())])?;
+        } else if Some(candidate.as_str()) != keep_id && existing.iter().any(|l| l.id == candidate) {
+            render_message_card(terminal, "erro", error_style(), vec![(format!("já existe um limite com id '{candidate}'"), Style::default())])?;
+        } else {
+            break candidate;
+        }
+    };
+
+    let known_agents: Vec<String> = config.agents.iter().map(|a| a.id.clone()).collect();
+    let (scope, target) = loop {
+        let Some(scope_input) = prompt_field(terminal, " aplica a: global | agent | channel | user ", current.map_or("global", |l| limit_scope_label(l.scope))).await? else {
+            return Ok(None);
+        };
+        let scope = match parse_limit_scope(&scope_input) {
+            Ok(s) => s,
+            Err(err) => {
+                render_message_card(terminal, "erro", error_style(), vec![(err, Style::default())])?;
+                continue;
+            }
+        };
+        if scope == LimitScope::Global {
+            break (scope, None);
+        }
+        let hint = match scope {
+            LimitScope::Agent if !known_agents.is_empty() => format!(" alvo (agente — um de: {}) ", known_agents.join(", ")),
+            LimitScope::Agent => " alvo (nenhum agente cadastrado ainda — veja /agents) ".to_string(),
+            LimitScope::Channel => " alvo (canal — ex.: desktop, cli, telegram, whatsapp, server) ".to_string(),
+            LimitScope::User => " alvo (canal:usuário, ex.: telegram:12345) ".to_string(),
+            LimitScope::Global => unreachable!("handled above"),
+        };
+        let Some(target_input) = prompt_field(terminal, &hint, current.and_then(|l| l.target.as_deref()).unwrap_or("")).await? else {
+            return Ok(None);
+        };
+        match validate_limit_target(scope, &target_input, &known_agents) {
+            Ok(target) => break (scope, target),
+            Err(err) => render_message_card(terminal, "erro", error_style(), vec![(err, Style::default())])?,
+        }
+    };
+
+    let Some(window_hours) = prompt_parsed(terminal, " janela (horas) ", &current.map_or(24, |l| l.window_hours).to_string(), parse_limit_window_hours).await? else {
+        return Ok(None);
+    };
+    let Some(max_tokens) = prompt_parsed(
+        terminal,
+        " tokens máx. na janela (vazio = sem teto) ",
+        &current.and_then(|l| l.max_tokens).map(|n| n.to_string()).unwrap_or_default(),
+        parse_optional_u64,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some(max_cost_usd) = prompt_parsed(
+        terminal,
+        " custo máx. em $ na janela (vazio = sem teto; precisa de um preço em /prices pro modelo usado) ",
+        &current.and_then(|l| l.max_cost_usd).map(|n| n.to_string()).unwrap_or_default(),
+        parse_optional_cost,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    if max_tokens.is_none() && max_cost_usd.is_none() {
+        render_message_card(terminal, "erro", error_style(), vec![("defina um teto de tokens, de $, ou os dois".to_string(), Style::default())])?;
+        return Ok(None);
+    }
+    let Some(warn_at) = prompt_parsed(
+        terminal,
+        &format!(" avisar o modelo a partir de quanto % do teto (vazio = padrão {:.0}%) ", DEFAULT_WARN_AT * 100.0),
+        &current.and_then(|l| l.warn_at).map(|n| format!("{:.0}", n * 100.0)).unwrap_or_default(),
+        parse_optional_percent,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some(extend_step) = prompt_parsed(
+        terminal,
+        &format!(" cada extensão libera quanto % do teto (vazio = padrão {:.0}%) ", DEFAULT_EXTEND_STEP * 100.0),
+        &current.and_then(|l| l.extend_step).map(|n| format!("{:.0}", n * 100.0)).unwrap_or_default(),
+        parse_optional_percent,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let entry = LimitConfig { id, scope, target, window_hours, max_tokens, max_cost_usd, warn_at, extend_step };
+    if let Err(err) = entry.to_limit() {
+        render_message_card(terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
+        return Ok(None);
+    }
+    Ok(Some(entry))
+}
+
+fn limits_cancelled(terminal: &mut CliTerminal, what: &str) -> anyhow::Result<()> {
+    render_message_card(terminal, "limites", dim_style(), vec![(format!("{what} cancelada"), dim_style())])
+}
+
+async fn wizard_limits_add(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let materialized = config.limits.is_none();
+    let mut limits = effective_limit_configs(&config);
+
+    let Some(limit) = prompt_limit(terminal, &config, &limits, None).await? else {
+        return limits_cancelled(terminal, "criação");
+    };
+    let id = limit.id.clone();
+    limits.push(limit);
+    config.limits = Some(limits);
+
+    save_config_or_report(session, &config).await?;
+    let mut lines = vec![(format!("limite '{id}' criado — {CONFIG_RESTART_NOTE}"), Style::default())];
+    if materialized {
+        lines.push(("a rede de segurança padrão (default-hour, default-day) foi mantida junto".to_string(), dim_style()));
+    }
+    render_message_card(terminal, "limites", accent_style(), lines)
+}
+
+async fn wizard_limits_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let materialized = config.limits.is_none();
+    let mut limits = effective_limit_configs(&config);
+    let Some(index) = limits.iter().position(|l| l.id == target_id) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("limite '{target_id}' não encontrado — use /limits pra ver os ids"), Style::default())]);
+    };
+    let current = limits[index].clone();
+
+    let Some(updated) = prompt_limit(terminal, &config, &limits, Some(&current)).await? else {
+        return limits_cancelled(terminal, "edição");
+    };
+    let new_id = updated.id.clone();
+    limits[index] = updated;
+    config.limits = Some(limits);
+
+    save_config_or_report(session, &config).await?;
+    let mut lines = vec![(format!("limite '{new_id}' atualizado — {CONFIG_RESTART_NOTE}"), Style::default())];
+    if materialized {
+        lines.push(("os demais limites padrão foram mantidos junto".to_string(), dim_style()));
+    }
+    render_message_card(terminal, "limites", accent_style(), lines)
+}
+
+async fn cmd_limits_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let mut limits = effective_limit_configs(&config);
+    if !limits.iter().any(|l| l.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("limite '{id}' não encontrado — use /limits pra ver os ids"), Style::default())]);
+    }
+    let Some(answer) = prompt_field(terminal, &format!(" remover o limite '{id}'? (s/n) "), "").await? else {
+        return limits_cancelled(terminal, "remoção");
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return limits_cancelled(terminal, "remoção");
+    }
+    limits.retain(|l| l.id != id);
+    config.limits = Some(limits);
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "limites", accent_style(), vec![(format!("limite '{id}' removido — {CONFIG_RESTART_NOTE}"), Style::default())])
+}
+
+/// `/limits off` — the riskiest of the bunch (drops every ceiling, so nothing stops a runaway
+/// agent), hence the confirmation and the explicit warning in the prompt itself, not just the
+/// generic "(s/n)" the other confirmations use.
+async fn cmd_limits_off(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    if config.limits.as_ref().is_some_and(Vec::is_empty) {
+        return render_message_card(terminal, "limites", accent_style(), vec![("já estão todos desligados".to_string(), Style::default())]);
+    }
+    let Some(answer) =
+        prompt_field(terminal, " desligar TODOS os limites de gasto? nada mais impede um agente em loop de gastar sem teto (s/n) ", "").await?
+    else {
+        return limits_cancelled(terminal, "desativação");
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return limits_cancelled(terminal, "desativação");
+    }
+    config.limits = Some(Vec::new());
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "limites", accent_style(), vec![(format!("todos os limites desligados — {CONFIG_RESTART_NOTE}"), Style::default())])
+}
+
+/// `/limits reset` — back to the built-in safety net (`limits` field removed from the file, not
+/// written as `[]`), discarding any customized list.
+async fn cmd_limits_reset(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    if config.limits.is_none() {
+        return render_message_card(terminal, "limites", accent_style(), vec![("já está na rede de segurança padrão".to_string(), Style::default())]);
+    }
+    let Some(answer) =
+        prompt_field(terminal, " voltar pra rede de segurança padrão? qualquer limite customizado aqui é perdido (s/n) ", "").await?
+    else {
+        return limits_cancelled(terminal, "restauração");
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return limits_cancelled(terminal, "restauração");
+    }
+    config.limits = None;
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "limites", accent_style(), vec![(format!("rede de segurança padrão restaurada — {CONFIG_RESTART_NOTE}"), Style::default())])
+}
+
+/// Asks the two fields of a `[[prices]]` entry, `model` kept fixed when editing (same
+/// keep-if-same-as-current convention `prompt_limit`'s id uses). `0` is a valid price here — a
+/// free/local model — unlike a limit's ceilings.
+async fn prompt_price(terminal: &mut CliTerminal, existing: &[Price], current: Option<&Price>) -> anyhow::Result<Option<Price>> {
+    let keep_model = current.map(|p| p.model.as_str());
+    let model = loop {
+        let Some(input) = prompt_field(terminal, " model id (exatamente como o provedor relata) ", keep_model.unwrap_or("")).await? else {
+            return Ok(None);
+        };
+        let candidate = input.trim().to_string();
+        if candidate.is_empty() {
+            render_message_card(terminal, "erro", error_style(), vec![("model id não pode ficar em branco".to_string(), Style::default())])?;
+        } else if Some(candidate.as_str()) != keep_model && existing.iter().any(|p| p.model == candidate) {
+            render_message_card(terminal, "erro", error_style(), vec![(format!("já existe um preço pro modelo '{candidate}'"), Style::default())])?;
+        } else {
+            break candidate;
+        }
+    };
+    let Some(input_per_mtok) = prompt_parsed(terminal, " $ por 1M tokens de entrada ", &current.map_or(String::new(), |p| p.input_per_mtok.to_string()), parse_price_amount).await? else {
+        return Ok(None);
+    };
+    let Some(output_per_mtok) = prompt_parsed(terminal, " $ por 1M tokens de saída ", &current.map_or(String::new(), |p| p.output_per_mtok.to_string()), parse_price_amount).await? else {
+        return Ok(None);
+    };
+    Ok(Some(Price { model, input_per_mtok, output_per_mtok }))
+}
+
+async fn cmd_prices_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if config.prices.is_empty() {
+        return render_message_card(terminal, "preços", accent_style(), vec![("nenhum preço cadastrado — use /prices add".to_string(), Style::default())]);
+    }
+    let lines = config
+        .prices
+        .iter()
+        .map(|p| (format!("{} — entrada ${:.4}/1M, saída ${:.4}/1M", p.model, p.input_per_mtok, p.output_per_mtok), Style::default()))
+        .collect();
+    render_message_card(terminal, "preços", accent_style(), lines)
+}
+
+async fn wizard_prices_add(terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(price) = prompt_price(terminal, &config.prices, None).await? else {
+        return render_message_card(terminal, "preços", dim_style(), vec![("cadastro cancelado".to_string(), dim_style())]);
+    };
+    let model = price.model.clone();
+    config.prices.push(price);
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "preços", accent_style(), vec![(format!("preço de '{model}' cadastrado — {CONFIG_RESTART_NOTE}"), Style::default())])
+}
+
+async fn wizard_prices_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_model: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let Some(index) = config.prices.iter().position(|p| p.model == target_model) else {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("nenhum preço pro modelo '{target_model}' — use /prices pra ver a lista"), Style::default())]);
+    };
+    let current = config.prices[index].clone();
+    let Some(updated) = prompt_price(terminal, &config.prices, Some(&current)).await? else {
+        return render_message_card(terminal, "preços", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let model = updated.model.clone();
+    config.prices[index] = updated;
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "preços", accent_style(), vec![(format!("preço de '{model}' atualizado — {CONFIG_RESTART_NOTE}"), Style::default())])
+}
+
+async fn cmd_prices_remove(terminal: &mut CliTerminal, session: &mut CliSession, model: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    if !config.prices.iter().any(|p| p.model == model) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("nenhum preço pro modelo '{model}'"), Style::default())]);
+    }
+    let Some(answer) = prompt_field(terminal, &format!(" remover o preço de '{model}'? (s/n) "), "").await? else {
+        return render_message_card(terminal, "preços", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes") {
+        return render_message_card(terminal, "preços", dim_style(), vec![("remoção cancelada".to_string(), dim_style())]);
+    }
+    config.prices.retain(|p| p.model != model);
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "preços", accent_style(), vec![(format!("preço de '{model}' removido — {CONFIG_RESTART_NOTE}"), Style::default())])
 }
 
 fn provider_display_model(provider: &ProviderConfig) -> String {
@@ -1695,9 +2126,9 @@ async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession,
     for effect in effects {
         lines.push((
             if effect.switched_off {
-                format!("servidor ssh '{}' era só desse agente e foi bloqueado — {SSH_RESTART_NOTE}", effect.host_id)
+                format!("servidor ssh '{}' era só desse agente e foi bloqueado — {CONFIG_RESTART_NOTE}", effect.host_id)
             } else {
-                format!("servidor ssh '{}' deixou de listar esse agente — {SSH_RESTART_NOTE}", effect.host_id)
+                format!("servidor ssh '{}' deixou de listar esse agente — {CONFIG_RESTART_NOTE}", effect.host_id)
             },
             Style::default(),
         ));
@@ -1705,9 +2136,10 @@ async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession,
     render_message_card(terminal, "agentes", accent_style(), lines)
 }
 
-/// The note every SSH card that changes what the AI can reach ends with: the tool is registered once
-/// at startup (unlike agents/models, which are re-read each turn), so a change applies next launch.
-const SSH_RESTART_NOTE: &str = "vale a partir da próxima vez que o Warden for iniciado";
+/// The note every card that changes something baked into the `Orchestrator` at startup ends with —
+/// SSH hosts (the tool), and spending limits/prices (the `SpendGuard`) are both registered once in
+/// `bootstrap()`, unlike agents/models, which are re-read fresh from disk each turn/command.
+const CONFIG_RESTART_NOTE: &str = "vale a partir da próxima vez que o Warden for iniciado";
 
 async fn cmd_ssh_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
     let config = load_fresh_config(session.config_path.as_deref())?;
@@ -1808,7 +2240,7 @@ async fn wizard_ssh_add(terminal: &mut CliTerminal, session: &mut CliSession) ->
     let id = host.id.clone();
     config.ssh_hosts.push(host);
     save_config_or_report(session, &config).await?;
-    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' cadastrado — {SSH_RESTART_NOTE}"), Style::default())])
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' cadastrado — {CONFIG_RESTART_NOTE}"), Style::default())])
 }
 
 async fn wizard_ssh_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
@@ -1823,7 +2255,7 @@ async fn wizard_ssh_edit(terminal: &mut CliTerminal, session: &mut CliSession, t
     let id = host.id.clone();
     config.ssh_hosts[index] = host;
     save_config_or_report(session, &config).await?;
-    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' atualizado — {SSH_RESTART_NOTE}"), Style::default())])
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' atualizado — {CONFIG_RESTART_NOTE}"), Style::default())])
 }
 
 async fn cmd_ssh_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
@@ -1839,7 +2271,7 @@ async fn cmd_ssh_remove(terminal: &mut CliTerminal, session: &mut CliSession, id
     }
     config.ssh_hosts.retain(|h| h.id != id);
     save_config_or_report(session, &config).await?;
-    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' removido — {SSH_RESTART_NOTE}"), Style::default())])
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' removido — {CONFIG_RESTART_NOTE}"), Style::default())])
 }
 
 async fn cmd_ssh_enable(terminal: &mut CliTerminal, session: &mut CliSession, id: String, enabled: bool) -> anyhow::Result<()> {
@@ -1850,7 +2282,7 @@ async fn cmd_ssh_enable(terminal: &mut CliTerminal, session: &mut CliSession, id
     host.enabled = enabled;
     save_config_or_report(session, &config).await?;
     let state = if enabled { "liberado pra IA" } else { "bloqueado pra IA" };
-    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' {state} — {SSH_RESTART_NOTE}"), Style::default())])
+    render_message_card(terminal, "ssh", accent_style(), vec![(format!("servidor '{id}' {state} — {CONFIG_RESTART_NOTE}"), Style::default())])
 }
 
 async fn cmd_ssh_test(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
@@ -2258,7 +2690,16 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::Help => cmd_help(terminal).await,
         Command::Usage => cmd_usage(terminal, session).await,
         Command::Limits => cmd_limits(terminal, session).await,
+        Command::LimitsAdd => wizard_limits_add(terminal, session).await,
+        Command::LimitsEdit(id) => wizard_limits_edit(terminal, session, id).await,
+        Command::LimitsRemove(id) => cmd_limits_remove(terminal, session, id).await,
+        Command::LimitsOff => cmd_limits_off(terminal, session).await,
+        Command::LimitsReset => cmd_limits_reset(terminal, session).await,
         Command::Extend(id) => cmd_extend(terminal, session, id).await,
+        Command::PricesList => cmd_prices_list(terminal, session).await,
+        Command::PricesAdd => wizard_prices_add(terminal, session).await,
+        Command::PricesEdit(model) => wizard_prices_edit(terminal, session, model).await,
+        Command::PricesRemove(model) => cmd_prices_remove(terminal, session, model).await,
         Command::ModelsList => cmd_models_list(terminal, session).await,
         Command::ModelsUse(id) => cmd_models_use(terminal, session, id).await,
         Command::ModelsReset => cmd_models_reset(terminal, session).await,
@@ -2421,6 +2862,74 @@ mod tests {
         assert!(none_priced.contains("indisponível") && none_priced.contains("3 chamadas") && none_priced.contains("[[prices]]"));
         let some_priced = cost_line(Some(&spent(5, 2, 1.5)));
         assert!(some_priced.starts_with("$1.5000 ou mais") && some_priced.contains("2 chamadas"), "{some_priced}");
+    }
+
+    #[test]
+    fn limit_window_hours_needs_a_positive_integer() {
+        assert_eq!(parse_limit_window_hours("24"), Ok(24));
+        assert_eq!(parse_limit_window_hours(" 1 "), Ok(1));
+        assert!(parse_limit_window_hours("0").is_err());
+        assert!(parse_limit_window_hours("-1").is_err());
+        assert!(parse_limit_window_hours("").is_err());
+        assert!(parse_limit_window_hours("1.5").is_err());
+    }
+
+    #[test]
+    fn optional_u64_is_none_when_blank_and_rejects_zero_or_negative() {
+        assert_eq!(parse_optional_u64(""), Ok(None));
+        assert_eq!(parse_optional_u64("   "), Ok(None));
+        assert_eq!(parse_optional_u64("500000"), Ok(Some(500_000)));
+        assert!(parse_optional_u64("0").is_err());
+        assert!(parse_optional_u64("-5").is_err());
+        assert!(parse_optional_u64("abc").is_err());
+    }
+
+    #[test]
+    fn optional_cost_is_none_when_blank_and_rejects_zero_or_negative() {
+        assert_eq!(parse_optional_cost(""), Ok(None));
+        assert_eq!(parse_optional_cost("5.5"), Ok(Some(5.5)));
+        assert!(parse_optional_cost("0").is_err());
+        assert!(parse_optional_cost("-1").is_err());
+        assert!(parse_optional_cost("nan").is_err());
+    }
+
+    #[test]
+    fn price_amount_allows_zero_but_not_negative() {
+        assert_eq!(parse_price_amount("0"), Ok(0.0));
+        assert_eq!(parse_price_amount("0.15"), Ok(0.15));
+        assert!(parse_price_amount("-0.01").is_err());
+        assert!(parse_price_amount("nan").is_err());
+    }
+
+    #[test]
+    fn optional_percent_is_none_when_blank_and_converts_1_to_100_into_a_fraction() {
+        assert_eq!(parse_optional_percent(""), Ok(None));
+        assert_eq!(parse_optional_percent("80"), Ok(Some(0.8)));
+        assert_eq!(parse_optional_percent("100"), Ok(Some(1.0)));
+        assert!(parse_optional_percent("0").is_err());
+        assert!(parse_optional_percent("101").is_err());
+    }
+
+    #[test]
+    fn limit_scope_parses_the_four_fixed_words_case_insensitively() {
+        assert_eq!(parse_limit_scope("Global"), Ok(LimitScope::Global));
+        assert_eq!(parse_limit_scope("agent"), Ok(LimitScope::Agent));
+        assert_eq!(parse_limit_scope("CHANNEL"), Ok(LimitScope::Channel));
+        assert_eq!(parse_limit_scope("user"), Ok(LimitScope::User));
+        assert!(parse_limit_scope("bogus").is_err());
+    }
+
+    #[test]
+    fn limit_target_validation_matches_each_scope_shape() {
+        let agents = vec!["pirata".to_string()];
+        assert_eq!(validate_limit_target(LimitScope::Global, "anything", &agents), Ok(None));
+        assert_eq!(validate_limit_target(LimitScope::Agent, "pirata", &agents), Ok(Some("pirata".to_string())));
+        assert!(validate_limit_target(LimitScope::Agent, "unknown", &agents).unwrap_err().contains("não existe"));
+        assert!(validate_limit_target(LimitScope::Agent, "", &agents).is_err());
+        assert_eq!(validate_limit_target(LimitScope::Channel, "telegram", &agents), Ok(Some("telegram".to_string())));
+        assert!(validate_limit_target(LimitScope::Channel, "  ", &agents).is_err());
+        assert_eq!(validate_limit_target(LimitScope::User, "telegram:12345", &agents), Ok(Some("telegram:12345".to_string())));
+        assert!(validate_limit_target(LimitScope::User, "12345", &agents).is_err());
     }
 
     #[test]

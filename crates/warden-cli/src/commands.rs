@@ -12,6 +12,17 @@ pub enum Command {
     Limits,
     /// `/extend <id>` — lets a limit go one step further for the rest of its window.
     Extend(String),
+    LimitsAdd,
+    LimitsEdit(String),
+    LimitsRemove(String),
+    /// `/limits off` — turns every spending limit off (`limits = []`).
+    LimitsOff,
+    /// `/limits reset` — drops back to the built-in safety net (no `[[limits]]` in the file).
+    LimitsReset,
+    PricesList,
+    PricesAdd,
+    PricesEdit(String),
+    PricesRemove(String),
     ModelsList,
     ModelsUse(String),
     ModelsReset,
@@ -79,7 +90,16 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("help", []) => Command::Help,
         ("usage", []) => Command::Usage,
         ("limits", []) => Command::Limits,
+        ("limits", ["add"]) => Command::LimitsAdd,
+        ("limits", ["edit", id]) => Command::LimitsEdit(id.to_string()),
+        ("limits", ["remove", id]) => Command::LimitsRemove(id.to_string()),
+        ("limits", ["off"]) => Command::LimitsOff,
+        ("limits", ["reset"]) => Command::LimitsReset,
         ("extend", [id]) => Command::Extend(id.to_string()),
+        ("prices", []) => Command::PricesList,
+        ("prices", ["add"]) => Command::PricesAdd,
+        ("prices", ["edit", model]) => Command::PricesEdit(model.to_string()),
+        ("prices", ["remove", model]) => Command::PricesRemove(model.to_string()),
         ("models", []) => Command::ModelsList,
         ("models", ["use", id]) => Command::ModelsUse(id.to_string()),
         ("models", ["reset"]) => Command::ModelsReset,
@@ -148,7 +168,9 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "limits", "extend", "models", "agents", "skills", "ssh", "sync"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "limits", "extend", "prices", "models", "agents", "skills", "ssh", "sync"];
+const LIMITS_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "off", "reset"];
+const PRICES_SUBCOMMANDS: &[&str] = &["add", "edit", "remove"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
 const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
@@ -171,6 +193,8 @@ fn current_word(input: &str) -> Option<(&str, Vec<&'static str>)> {
             return None;
         }
         let subcommands: &[&str] = match head.as_str() {
+            "limits" => LIMITS_SUBCOMMANDS,
+            "prices" => PRICES_SUBCOMMANDS,
             "models" => MODELS_SUBCOMMANDS,
             "agents" => AGENTS_SUBCOMMANDS,
             "skills" => SKILLS_SUBCOMMANDS,
@@ -255,6 +279,27 @@ mod tests {
         assert!(matches!(assert_recognized("/extend default-day"), Command::Extend(id) if id == "default-day"));
         assert!(matches!(parse_command("/extend"), ParseOutcome::Unrecognized(_)));
         assert!(matches!(parse_command("/limits now"), ParseOutcome::Unrecognized(_)));
+    }
+
+    #[test]
+    fn limits_subcommands_parse_their_arguments() {
+        assert!(matches!(assert_recognized("/limits add"), Command::LimitsAdd));
+        assert!(matches!(assert_recognized("/limits edit daily"), Command::LimitsEdit(id) if id == "daily"));
+        assert!(matches!(assert_recognized("/limits remove daily"), Command::LimitsRemove(id) if id == "daily"));
+        assert!(matches!(assert_recognized("/limits off"), Command::LimitsOff));
+        assert!(matches!(assert_recognized("/limits reset"), Command::LimitsReset));
+        assert!(matches!(parse_command("/limits edit"), ParseOutcome::Unrecognized(_)));
+        assert!(matches!(parse_command("/limits bogus"), ParseOutcome::Unrecognized(_)));
+    }
+
+    #[test]
+    fn prices_subcommands_parse_their_arguments() {
+        assert!(matches!(assert_recognized("/prices"), Command::PricesList));
+        assert!(matches!(assert_recognized("/prices add"), Command::PricesAdd));
+        assert!(matches!(assert_recognized("/prices edit gpt-4o-mini"), Command::PricesEdit(m) if m == "gpt-4o-mini"));
+        assert!(matches!(assert_recognized("/prices remove gpt-4o-mini"), Command::PricesRemove(m) if m == "gpt-4o-mini"));
+        assert!(matches!(parse_command("/prices edit"), ParseOutcome::Unrecognized(_)));
+        assert!(matches!(parse_command("/prices bogus"), ParseOutcome::Unrecognized(_)));
     }
 
     #[test]
@@ -353,6 +398,8 @@ mod tests {
         assert_eq!(candidates_for("/skills "), vec!["attach", "create", "detach", "edit", "file", "path", "remove", "show"]);
         assert_eq!(candidates_for("/sync pu"), vec!["pull", "push"]);
         assert_eq!(candidates_for("/sync g"), vec!["git"]);
+        assert_eq!(candidates_for("/limits "), vec!["add", "edit", "off", "remove", "reset"]);
+        assert_eq!(candidates_for("/prices "), vec!["add", "edit", "remove"]);
     }
 
     #[test]

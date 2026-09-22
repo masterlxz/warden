@@ -1360,3 +1360,12 @@ dólares por janela deslizante**, por escopo, checado **antes de cada chamada de
   a extensão não é permanente (expira com a janela).
 - **Limitação aceita**: o teto é **por chamada**, não por token — uma chamada grande que começa abaixo do teto pode
   ultrapassá-lo (o excesso é gasto e contado; a próxima chamada é que é barrada).
+- **Wizard de limites e preços no CLI (Sessão 89)**: `/limits add`/`edit <id>`/`remove <id>`/`off`/`reset` e
+  `/prices`/`add`/`edit <model>`/`remove <model>`, mesmo molde do wizard de SSH (`prompt_limit`/`prompt_price`
+  montam a struct campo a campo, validada de verdade por `LimitConfig::to_limit()`). `/limits add`/`edit` sobre um
+  `config.limits` em `None` materializam `default_limit_configs()` antes de aplicar a mudança — um `/limits add`
+  nunca desliga a rede padrão sem querer; `off`/`reset` (os dois que perdem proteção de verdade) e `remove` pedem
+  confirmação. `CONFIG_RESTART_NOTE` (ex-`SSH_RESTART_NOTE`, renomeada — texto já era genérico) documenta em toda
+  confirmação a mesma limitação que a tela do desktop já tinha: `SpendGuard` é montado uma vez em `bootstrap()`, sem
+  recarga em quente — uma edição só vale no próximo `warden` iniciado, `/limits`/`/prices` (leitura) continuam
+  mostrando o estado **congelado no boot**, nunca a própria edição da sessão atual.

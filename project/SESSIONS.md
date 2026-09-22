@@ -2,7 +2,53 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-21 (Sessão 88)
+> Última atualização: 2026-09-22 (Sessão 89)
+
+---
+
+### 2026-09-22 — Sessão 89
+
+- **Objetivo**: P4 — wizard de limites e preços de gasto no `warden-cli`. Plano aprovado antes de codar (Plan mode).
+
+**O que foi feito**:
+
+- `/limits add`/`edit <id>`/`remove <id>`/`off`/`reset` e `/prices`/`add`/`edit <model>`/`remove <model>`
+  (`crates/warden-cli/src/interactive.rs`), no mesmo molde de `prompt_ssh_host`: um `prompt_limit`/`prompt_price`
+  monta a struct campo a campo (cancelável a qualquer ponto), validada de verdade por `LimitConfig::to_limit()` — a
+  mesma regra do startup e da tela de Settings do desktop (Sessão 88).
+- **Materialização implícita da rede de segurança**: `/limits add`/`edit` sobre um `config.limits` ainda em `None`
+  copiam `default_limit_configs()` pra lista antes de aplicar a mudança pedida, pra um `/limits add` nunca desligar
+  a rede padrão (500k/1h, 2M/24h) sem querer — mesmo espírito do botão "Customize limits" do desktop, automático
+  aqui por não haver uma tela única mostrando os dois cartões primeiro pra revisão. `off`/`reset` — os dois que de
+  fato **perdem** proteção — pedem confirmação (s/n), igual `remove` e o `/ssh remove`/`/skills remove` já
+  existentes.
+- **Achado, não bug**: `SSH_RESTART_NOTE` já tinha texto genérico ("vale a partir da próxima vez que o Warden for
+  iniciado"), só o nome era de SSH — renomeada pra `CONFIG_RESTART_NOTE` e reaproveitada por limites/preços, que têm
+  exatamente a mesma limitação: `SpendGuard` é montado uma vez em `bootstrap()` e não recarrega em quente na mesma
+  sessão (nem o desktop faz isso hoje — não é regressão desta sessão, é a arquitetura já existente).
+- Parsers puros (`parse_limit_window_hours`, `parse_optional_u64`/`cost`/`percent`, `parse_price_amount`,
+  `parse_limit_scope`, `validate_limit_target`) testados diretamente, sem terminal — mesmo padrão de
+  `parse_agent_tools` já usado pelo wizard de agentes.
+- **Achado no meu próprio script de verificação, não no código**: os primeiros rascunhos do driver pty checavam
+  `/limits`/`/prices` (leitura) depois de cada edição — mas esses comandos leem o `SpendGuard`/config **congelados
+  no boot**, nunca uma edição feita pelo próprio wizard na mesma sessão (mesma arquitetura do parágrafo acima), então
+  toda checagem contra a tela dava falso-negativo; reescrito pra checar o `config.toml` gravado via `tomllib`, que é
+  a fonte de verdade de verdade. Um rascunho também esqueceu que `/prices edit` reabre o campo do model id primeiro
+  (renomeável, igual todo outro campo de id nesta base) antes dos dois preços — testado como se fosse direto pro
+  preço de entrada.
+- **Verificação**: `cargo test --workspace` 588 → 614 verdes (26 testes novos), `cargo clippy --workspace
+  --all-targets` sem avisos. Binário real do CLI num pty (script Python ad-hoc em `/tmp`, sem servidor de modelo —
+  nenhuma mensagem de chat é enviada por nenhum destes comandos — não commitado, mesmo método das Sessões 79-83):
+  45 checagens — fluxo completo de `/limits add` (materializa a rede padrão + o novo limite), `/limits edit` num id
+  padrão, `/limits remove`/`off`/`reset` com cancelamento e confirmação (incluindo os dois idempotentes: repetir
+  `off`/`reset` já aplicado não pergunta de novo), o espelho inteiro pra `/prices`, e `/help` listando os comandos
+  novos — cada valor conferido no `config.toml` real gravado em disco.
+- **Não feito**: efeito em quente na mesma sessão (arquitetural, ver achado acima — fora de escopo deste plano);
+  modelo real reagindo ao aviso de orçamento (segue bloqueado por falta de chave de API real neste ambiente).
+
+**Ainda aberto no P4**: app Tauri real (nem o modal de pausa nem a tela de limites do desktop foram vistos numa
+janela nativa), modelo real reagindo ao aviso de orçamento, consumo atual de cada limite não aparece na tela do
+desktop (só no `/limits` do CLI e na tool `budget`).
 
 ---
 
