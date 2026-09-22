@@ -1520,3 +1520,54 @@ Claude no Chrome: um grupo de abas dedicado onde a IA age em qualquer aba do gru
   `chrome.tabGroups` não têm equivalente direto lá); a IA abrir/adicionar abas novas sozinha (fora do modelo de
   permissão escolhido); persistir o grupo entre reinícios do service worker (mesma postura efêmera do resto do
   estado em `index.ts`).
+
+## MarkdownV2 nas respostas do Telegram (P19, Sessão 92)
+
+`TelegramClient::send_message` (`crates/warden-telegram/src/telegram.rs`) mandava a resposta do modelo como texto
+cru — decisão explícita da Fase 2 porque o MarkdownV2 do Telegram tem sintaxe própria (diferente de CommonMark) e a
+API rejeita a mensagem **inteira** se um caractere reservado não for escapado direito. O desktop já renderiza a
+mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor de verdade pro Telegram.
+
+- **`pulldown-cmark` como dependência nova** (`crates/warden-telegram/Cargo.toml`) — parser CommonMark real,
+  orientado a eventos, em vez de regex (regex quebra em qualquer aninhamento: negrito dentro de item de lista,
+  código dentro de link). Único crate de Markdown no workspace inteiro até aqui. Só `ENABLE_STRIKETHROUGH`
+  habilitada, pareando com o `remark-gfm` do desktop — **deliberadamente sem** `ENABLE_TABLES`/`ENABLE_TASKLISTS`:
+  sem essas extensões o parser trata essa sintaxe como texto de parágrafo comum, que o escape de texto solto já
+  degrada pra algo legível, sem exigir nenhum código de tabela dedicado (o Telegram não tem como renderizar uma
+  mesmo).
+- **`crates/warden-telegram/src/markdown_v2.rs::to_markdown_v2`** — percorre os `Event`s do parser: negrito/
+  itálico/tachado viram `*`/`_`/`~` (mapeamento direto Start/End, válido mesmo aninhado — MarkdownV2 aceita
+  `_*negrito itálico*_`); heading vira uma linha em negrito (sem equivalente no Telegram); listas viram linhas
+  prefixadas com `• ` (não-ordenada) ou `N\. ` (ordenada, contador de `Tag::List(Some(start))`) — bullet Unicode em
+  vez de `-` literal pra não precisar escapar o marcador; link vira `[texto](url)`, com o texto passando pelo
+  escape de texto solto e a URL por um escape próprio (só `)`/`\`, regra específica do Telegram pro parêntese de um
+  link). Texto solto escapa os 18 caracteres reservados do MarkdownV2 (`_*[]()~\`>#+-=|{}.!\`, a barra invertida
+  inclusa nessa lista).
+- **Achado real ao codar, corrigido antes de fechar**: o conteúdo de um bloco de código chega como `Event::Text`
+  comum (não `Event::Code`, que é só pra spans inline) — sem tratar isso, `(`/`)`/`.` etc. dentro de um bloco de
+  código viravam `\(`/`\)`/`\.`, quebrando a formatação (código com parênteses é praticamente garantido). Corrigido
+  com uma flag `in_code_block` que roteia `Event::Text` pro `escape_code` (só `` ` ``/`\`, a regra mais permissiva
+  que o Telegram usa dentro de `code`/`pre`) em vez do `escape_text` normal enquanto dentro de um bloco.
+- **Blockquote (`>` por linha)**: como o texto flui incrementalmente por um `String` só, e o conteúdo de dentro de
+  um blockquote pode ter suas próprias entidades/quebras de linha, o marcador de abertura (`Tag::BlockQuote`)
+  grava o índice (`out.len()`) onde o conteúdo começou; o de fechamento usa `String::split_off` pra recortar tudo
+  que foi emitido desde ali, reemitindo linha por linha com `>` na frente.
+- **`TelegramClient::send_message`** — fatorado em `send_message` (assinatura pública de sempre) + `send_one`
+  (privado, um `sendMessage` com `parse_mode` opcional). Converte a resposta inteira; se coube num chunk só
+  (`<= TELEGRAM_MESSAGE_LIMIT`), tenta mandar formatada — se o Telegram rejeitar (`ok: false`, o cenário que
+  motivou a decisão original de não fazer isso), loga em stderr e reenvia o **texto original sem formatação** como
+  fallback, nunca perdendo a resposta por causa de um bug de escape. **Réplicas longas o bastante pra precisar de
+  mais de um chunk continuam em texto puro, decisão deliberada, não lacuna**: não há garantia de que o texto
+  convertido e o texto puro cortariam nos mesmos pontos de byte, e um fallback por chunk arriscaria reenviar um
+  chunk já bem-sucedido duas vezes se um chunk posterior falhasse — restringir ao caso de chunk único elimina o
+  risco por completo; como a maioria das respostas cabe num chunk só, isso cobre o caso comum sem regressão no raro
+  (a resposta longa simplesmente perde a formatação, exatamente como sempre foi).
+- **Fronteira de teste inalterada**: a lógica de fallback vive dentro de `TelegramClient` (a implementação HTTP
+  real), não no trait `TelegramApi` mockado pelos testes de `process_updates`/`handle_update` já existentes — não
+  ganhou cobertura nova (mesma lacuna que já existia pra `TelegramClient` antes deste plano, o crate não tem
+  mock de HTTP). O `to_markdown_v2` puro, testável sem rede, é quem ganhou os 11 testes novos.
+- **Verificação**: `cargo test -p warden-telegram` (22, 11 novos) e `cargo test --workspace`/`cargo clippy
+  --workspace --all-targets` limpos. Sem teste de ponta a ponta contra o Bot API real (sem token/chat de Telegram
+  disponível neste ambiente) — mesma lacuna aceita de sempre pra esse canal.
+- **Fora de escopo, documentado**: tabelas do GFM (degradam pra texto escapado); chunking "esperto" que preserva
+  entidades através de múltiplas mensagens; spoilers (`||texto||`, sem equivalente em CommonMark).

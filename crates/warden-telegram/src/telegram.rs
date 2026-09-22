@@ -1,8 +1,9 @@
 //! Telegram Bot API client and receive loop (Fase 2). Long polling only (`getUpdates`, no
 //! webhook) — matches the project's "no server required" principle (ARCHITECTURE.md): a
-//! personal always-on client process is enough, no public HTTPS endpoint needed. Replies are
-//! sent as plain text (no `parse_mode`) — a real MarkdownV2 conversion is a bigger job (Telegram
-//! rejects the whole message if a reserved character isn't escaped right) left for later.
+//! personal always-on client process is enough, no public HTTPS endpoint needed. Replies go
+//! through `crate::markdown_v2::to_markdown_v2` (P19) and are sent with `parse_mode:
+//! "MarkdownV2"`; see `TelegramClient::send_message` for the plain-text fallback around a
+//! rejected conversion.
 
 use std::path::Path;
 use std::time::Duration;
@@ -89,6 +90,21 @@ impl TelegramClient {
     fn url(&self, method: &str) -> String {
         format!("https://api.telegram.org/bot{}/{method}", self.token)
     }
+
+    /// One `sendMessage` call — `as_markdown` sets `parse_mode: "MarkdownV2"`, otherwise the text
+    /// is sent exactly as given, no `parse_mode` at all (Telegram's default, always accepted).
+    async fn send_one(&self, chat_id: i64, text: &str, as_markdown: bool) -> anyhow::Result<()> {
+        let mut body = serde_json::json!({ "chat_id": chat_id, "text": text });
+        if as_markdown {
+            body["parse_mode"] = serde_json::json!("MarkdownV2");
+        }
+        let response = self.client.post(self.url("sendMessage")).json(&body).send().await?;
+        let parsed: ApiResponse<serde_json::Value> = response.json().await.context("failed to parse sendMessage response")?;
+        if !parsed.ok {
+            anyhow::bail!("Telegram sendMessage error: {}", parsed.description.unwrap_or_default());
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -108,18 +124,26 @@ impl TelegramApi for TelegramClient {
     }
 
     async fn send_message(&self, chat_id: i64, text: &str) -> anyhow::Result<()> {
-        for chunk in split_into_chunks(text) {
-            let response = self
-                .client
-                .post(self.url("sendMessage"))
-                .json(&serde_json::json!({ "chat_id": chat_id, "text": chunk }))
-                .send()
-                .await?;
-            let parsed: ApiResponse<serde_json::Value> =
-                response.json().await.context("failed to parse sendMessage response")?;
-            if !parsed.ok {
-                anyhow::bail!("Telegram sendMessage error: {}", parsed.description.unwrap_or_default());
+        let formatted = crate::markdown_v2::to_markdown_v2(text);
+
+        // Only attempted when the *formatted* text fits in one message: a multi-chunk reply has
+        // no guarantee the conversion and the plain-text chunker would cut at the same byte
+        // offsets, so a partial-chunk failure could resend an earlier chunk twice. Restricting to
+        // the single-chunk case sidesteps that — the rare long reply just degrades to plain text,
+        // exactly like before this feature existed (see `crates/warden-telegram/src/markdown_v2.rs`
+        // module doc and the P19 entry in `project/PENDING.md` for the full reasoning).
+        if formatted.len() <= TELEGRAM_MESSAGE_LIMIT {
+            match self.send_one(chat_id, &formatted, true).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    eprintln!("Telegram rejected MarkdownV2 formatting for chat {chat_id} ({err:#}) — retrying as plain text");
+                }
             }
+            return self.send_one(chat_id, text, false).await;
+        }
+
+        for chunk in split_into_chunks(text) {
+            self.send_one(chat_id, chunk, false).await?;
         }
         Ok(())
     }

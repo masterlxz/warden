@@ -13,6 +13,9 @@ async-trait.workspace = true
 base64.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs.workspace = true
+# CommonMark → Telegram MarkdownV2 conversion (P19) — a real parser instead of regex, since regex
+# breaks on any nesting (bold inside a list item, code inside a link, etc.).
+pulldown-cmark = "0.13"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

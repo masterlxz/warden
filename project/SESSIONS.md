@@ -122,6 +122,53 @@ estado em `index.ts`).
 
 ---
 
+### 2026-09-22 — Sessão 92 (continuação 2)
+
+- **Objetivo**: P19 — MarkdownV2 nas respostas do Telegram. Plano aprovado antes de codar (Plan
+  mode) — decisão de usar um parser CommonMark real (`pulldown-cmark`) em vez de regex.
+
+**O que foi feito**:
+
+- **`pulldown-cmark` nova em `crates/warden-telegram/Cargo.toml`** — único crate de Markdown no
+  workspace até aqui. Só `ENABLE_STRIKETHROUGH` habilitada (pareia com o `remark-gfm` do desktop);
+  deliberadamente sem `ENABLE_TABLES`/`ENABLE_TASKLISTS` — sem elas essa sintaxe vira texto de
+  parágrafo comum, que o escape de texto já degrada pra algo legível.
+- **`crates/warden-telegram/src/markdown_v2.rs::to_markdown_v2`** novo — percorre os eventos do
+  parser emitindo a sintaxe MarkdownV2 do Telegram: negrito/itálico/tachado (`*`/`_`/`~`), heading
+  vira negrito, listas viram linhas `• `/`N\. `, link vira `[texto](url)` com escapes diferentes
+  pro texto e pra URL, blockquote vira `>` por linha (via `String::split_off` — grava onde o
+  conteúdo começou no buffer de saída, recorta e reemite linha por linha ao fechar). Texto solto
+  escapa os 18 caracteres reservados do MarkdownV2.
+- **Achado real ao codar, corrigido antes de fechar**: o conteúdo de um bloco de código chega como
+  `Event::Text` comum, não `Event::Code` (só pra spans inline) — sem tratar isso, `(`/`)`/`.` dentro
+  de um bloco de código quase certamente presente em qualquer resposta com trecho de código viravam
+  escapados e quebravam a formatação. Corrigido com uma flag `in_code_block` que roteia pro escape
+  mais permissivo (só `` ` ``/`\`) enquanto dentro de um bloco.
+- **`TelegramClient::send_message`** fatorado em `send_message` + `send_one` (privado, `parse_mode`
+  opcional). Converte a resposta inteira; se coube num chunk só, tenta formatada e cai pro texto
+  original sem formatação se o Telegram rejeitar — nunca perde a resposta por um bug de escape.
+  Réplicas longas o bastante pra precisar de mais de um chunk continuam em texto puro, decisão
+  deliberada (sem garantia de que o texto convertido e o puro cortariam nos mesmos bytes; um
+  fallback por chunk arriscaria reenviar um chunk já bem-sucedido duas vezes).
+- **Testes**: 11 novos em `markdown_v2.rs` (um por construção), incluindo dois achados corrigidos no
+  processo de escrever os próprios testes — nesting `***x***` (pulldown-cmark produz
+  Emphasis-por-fora-de-Strong, não o inverso que eu tinha assumido; ambas as ordens são MarkdownV2
+  válido, só ajustei a expectativa) e escape de URL com parêntese (precisou da sintaxe `<...>` de
+  destino do CommonMark pra incluir um `)` literal na URL sem fechar o link antes da hora). Suíte de
+  `telegram.rs` inalterada e verde — a lógica de fallback vive dentro de `TelegramClient` (a
+  implementação HTTP real), não o trait `TelegramApi` mockado pelos testes existentes, mesma
+  fronteira de teste que já existia antes.
+- **Verificação**: `cargo test -p warden-telegram` (22, 11 novos), `cargo test --workspace`/`cargo
+  clippy --workspace --all-targets` limpos. Sem teste de ponta a ponta contra o Bot API real do
+  Telegram — sem token/chat disponível neste ambiente, mesma lacuna aceita de sempre pra esse canal.
+
+**Não feito**: tabelas do GFM (degradam pra texto escapado); chunking "esperto" preservando
+entidades através de múltiplas mensagens; spoilers (`||texto||`, sem equivalente em CommonMark).
+
+**Fecha o P19.**
+
+---
+
 ### 2026-09-22 — Sessão 91
 
 - **Objetivo**: P42 — colisão de nome de tool entre um cliente remoto (celular/extensão) e o `Orchestrator`

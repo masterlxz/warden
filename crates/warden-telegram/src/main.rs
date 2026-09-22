@@ -1,3 +1,4 @@
+mod markdown_v2;
 mod telegram;
 
 use std::path::PathBuf;
