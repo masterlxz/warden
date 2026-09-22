@@ -148,7 +148,13 @@ usa a mesma limpeza. Falta do P46: fila de jobs.
 **Fila de jobs em segundo plano (Sessão 85)**: `background: true` em `delegate_task`/`delegate_to_agent` devolve um
 `job_id` na hora; a tool `jobs` (`list`/`result`) coleta. Até `max_parallel_jobs` (padrão 3) rodam juntos, o resto espera;
 gasta do mesmo teto de chamadas do turno e o que não foi coletado é cancelado ao fim do turno (nada persistido). Com isso
-o pacote do P46 está completo; falta só validar com modelo real e o teto por período/usuário (P4).
+o pacote do P46 está completo; falta só validar com modelo real (o teto por período/usuário do P4 veio na Sessão 86).
+
+**Limites de gasto por janela (P4, Sessão 86)**: teto em tokens e/ou $ por janela deslizante configurável, por escopo
+(global, agente, canal, usuário do canal), checado antes de cada chamada de modelo. Ao esgotar, o turno **pausa e
+pergunta** (desktop/CLI) — "sim" libera um passo pelo resto da janela, "não" encerra — e o agente enxerga o medidor
+(tool `budget` + aviso a partir de 80%). Sem `[[limits]]` vale uma rede de segurança padrão (500k/1h e 2M/24h).
+Falta: tela de limites/preços no desktop, criar limite pelo wizard do CLI, validar com modelo real.
 
 ### SSH — conectar com VPS e máquinas externas
 

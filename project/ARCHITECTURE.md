@@ -1282,3 +1282,57 @@ sub-agente responder, então três tarefas independentes rodavam em série. Agor
   `background`, sub-agente nunca vê jobs, job não coletado cancelado ao fim do turno, orçamento compartilhado).
   **Não feito**: modelo real decidindo sozinho paralelizar, binário real no pty, app Tauri aberto.
 
+
+---
+
+## Limites de gasto por janela de tempo (P4, Sessão 86)
+
+Até a Sessão 85 só existia o teto **por turno** dos sub-agentes (`TurnBudget`). Nada limitava o gasto ao longo do
+tempo: um agente em loop ou uma conversa longa gastava até o provedor cortar. Agora há um teto em **tokens e/ou
+dólares por janela deslizante**, por escopo, checado **antes de cada chamada de modelo**.
+
+- **`warden-core/src/spend.rs`** (puro, sem modelo nem humano): `Limit` (`id`, `Scope`, `window_hours`, `max_tokens`,
+  `max_cost_usd`, `warn_at` = 0.8, `extend_step` = 0.25), `PriceTable`, o **ledger** (`SpendStore` → `FileStore` em
+  JSON-lines com um `write` por linha, ou `MemoryStore`), `SpendGuard` (`check`, `record`, `extend`, `status`) e
+  `LimitStatus`. Um limite é **a soma do ledger na janela** — não há contador em memória, então desktop, CLI e o bot do
+  Telegram (processos separados) gastam da mesma conta se apontam pro mesmo arquivo. A janela **desliza** (últimas N
+  horas, não "desde meia-noite"): um de 1h pega loop, um de 24h é o orçamento diário, e os dois valem ao mesmo tempo.
+- **Escopos empilhados**: `global`, `agent`, `channel` (`desktop`/`cli`/`telegram`/`whatsapp`/`server`) e `user`
+  (`canal:usuário`). Vale o **mais gasto** entre os que se aplicam ao turno (`Check.exceeded`). O gasto de um
+  sub-agente conta no contexto da **raiz** (canal/usuário/agente do turno): quem causou o custo é o chefe.
+- **Preço**: só o que o usuário cadastra em `[[prices]]` (por milhão de tokens, entrada e saída, chave = id exato do
+  modelo). Nada embutido — preço envelhece e um `$` errado com cara de certo é pior que nenhum. Modelo sem preço entra
+  nos limites de tokens, e `unpriced_calls` avisa que o `$` está subestimado. Pra isso `ModelProvider::model_id()`
+  (padrão `""`) passou a existir e os três providers o implementam.
+- **Onde é checado**: no `Orchestrator`, dentro do laço de cada turno (`run_turn`), **antes de cada chamada**, e o uso é
+  gravado **depois de cada chamada** — um loop é parado no meio do turno, não depois dele. Cobre todos os canais e
+  sub-agentes. O contexto viaja no **`TurnBudget`** (`SpendTurn`), porque ele já é a única coisa que a raiz e cada
+  sub-agente (inclusive `delegate_to_agent` e jobs) compartilham — sem segundo canal de propagação. O `TurnBudget`
+  agora é criado quando há teto de sub-agentes **ou** limites (`max_calls: Option<u32>`).
+- **Pausa em vez de morte** (`SpendTurn::gate`): ao esgotar, o turno **pergunta** pelo `Approver` que o canal já tem
+  (desktop, CLI): "sim" concede um `Grant` de um passo (`extend_step` × teto, ex. 25%) **só pelo resto da janela** e o
+  turno continua de onde parou; "não"/parar encerra com `SpendLimitReached` (erro tipado, `downcast_ref`). Canal sem
+  approver (Telegram, WhatsApp, server, modo por pipe) **bloqueia** com a mensagem — `chat_error_reply` diz o motivo
+  sem números. Um `tokio::Mutex` deixa **uma pergunta por vez**: jobs em paralelo batendo no mesmo teto compartilham a
+  resposta. Como o limite é da janela e não da conversa, **abrir outra conversa não zera nada** — só estender.
+- **O agente enxerga o medidor**: a tool **`budget`** (só leitura, ligada ao turno por `Tool::with_budget`, escondida se
+  não há limites; entrou em `SAFE_AGENT_TOOLS`) mostra usado/restante em tokens e $, e quando volta a liberar; e a
+  partir de `warn_at` o orquestrador **injeta uma mensagem de sistema só naquela chamada** ("você está perto do limite,
+  prefira concluir…"). Longe do teto o custo de contexto é zero.
+- **Config** (`warden-bootstrap/src/spend.rs`): `[[limits]]` (`id`, `scope`, `target`, `window_hours`, `max_tokens`,
+  `max_cost_usd`, `warn_at`, `extend_step`) e `[[prices]]`. **Sem `[[limits]]` = rede de segurança padrão** (global:
+  500k tokens/1h e 2M/24h — folgada pro uso normal, pega loop na primeira hora); `limits = []` ou
+  `WARDEN_SPEND_LIMITS=off` desliga tudo. Entrada inválida é **pulada com aviso** e não derruba a inicialização (o app
+  é o que deixaria o usuário consertar). `WARDEN_SPEND_LEDGER` troca o arquivo (padrão
+  `<config>/warden/spend_ledger.jsonl`, podado na abertura ao tamanho da janela mais longa). O desktop **preserva**
+  `limits`/`prices` ao salvar Settings (mesmo tratamento de `max_delegated_calls`) — sem UI ainda.
+- **Falha do ledger não trava o app**: leitura ilegível = vazio; escrita que falha fica em `last_error`, mostrada por
+  `/limits` e pela tool `budget` ("os números podem estar baixos").
+- **CLI**: `/limits` (todos os limites, não só os do terminal) e `/extend <id>`; o canal `cli` é fixado em `main.rs`
+  pros dois modos. `/e`/`/ex` deixaram de completar sozinhos pra `exit` (agora há `/extend`). **Desktop**: só o
+  `ApprovalModal` ("Spending limit reached", botões Stop/Allow more) — a tela de limites/preços fica pra outra sessão.
+- **Decisões deixadas de fora de propósito**: sem tabela de preço embutida; sem teto por turno (o loop já é parado pela
+  janela de 1h); Telegram/WhatsApp contam por **chat** (`chat.id`, não o id do remetente — num grupo, o grupo inteiro);
+  a extensão não é permanente (expira com a janela).
+- **Limitação aceita**: o teto é **por chamada**, não por token — uma chamada grande que começa abaixo do teto pode
+  ultrapassá-lo (o excesso é gasto e contado; a próxima chamada é que é barrada).

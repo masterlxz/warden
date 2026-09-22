@@ -2,7 +2,46 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-20 (Sessão 85)
+> Última atualização: 2026-09-21 (Sessão 86)
+
+---
+
+### 2026-09-21 — Sessão 86
+
+- **Objetivo**: P4 — limite de gasto **de verdade**, "customizável". Escopo fechado com o usuário antes de codar:
+  tokens **e** $, janela configurável, escopos global + agente + canal + usuário do canal, e ao estourar **pausar mas
+  deixar ir estendendo aos poucos** (ou parar), com o **agente vendo o medidor** pra decidir se continua — o medo
+  declarado era um agente em loop "torrando". Decisões extras: rede de segurança padrão ligada, sem tabela de preço
+  embutida, entrega em fatias (core/orquestrador/config/CLI agora; tela do desktop depois).
+
+**O que foi feito**:
+
+- `warden-core/src/spend.rs` (novo): `Limit`/`Scope`, `PriceTable`, ledger (`FileStore` JSON-lines / `MemoryStore`),
+  `SpendGuard` (`check`/`record`/`extend`/`status`), `LimitStatus`, `meter_notice`; janela deslizante com relógio
+  injetável nos testes. `budget.rs`: `SpendTurn` (`gate` pausa, pergunta e retoma) e `SpendLimitReached` (erro tipado);
+  `TurnBudget::for_turn` (teto de sub-agentes agora opcional). `Orchestrator`: `with_spend_guard`/`with_spend_context`/
+  `spend_guard()`, checagem **antes** e registro **depois** de cada chamada de modelo (raiz e sub-agentes), aviso de
+  sistema só naquela chamada. `ModelProvider::model_id()` (preço por modelo). Tool `budget` (`tool/spend_tool.rs`).
+- `warden-bootstrap/src/spend.rs` (novo): `[[limits]]`/`[[prices]]`, padrão 500k/1h + 2M/24h, `WARDEN_SPEND_LIMITS=off`,
+  `WARDEN_SPEND_LEDGER`, `chat_error_reply`. `budget` entrou em `SAFE_AGENT_TOOLS`. Canais informam quem gasta:
+  desktop, CLI (em `main.rs`, os dois modos), Telegram/WhatsApp (por chat), server (por device).
+- CLI: `/limits`, `/extend <id>`, ajuda. Desktop: só o `ApprovalModal` (título "Spending limit reached", botões
+  Stop/Allow more) e o carry-forward de `limits`/`prices` no `save_settings`.
+- **Verificação**: `cargo test --workspace` **578 passam, 0 falham, 2 ignorados** (eram 533, +45 — em `spend.rs`,
+  `budget.rs`, tool `budget`, orquestrador, bootstrap e comandos do CLI), `cargo clippy --workspace --all-targets` limpo,
+  `npm run build` verde. **Binário real do `warden`** contra um servidor de modelo **falso** compatível com OpenAI que
+  chama `budget` em loop (100 tokens/chamada): **modo por pipe** (10 checagens — turno parado na 5ª chamada, 2ª mensagem
+  barrada, medidor só a partir de 400/500, `$` pelo id do modelo, ledger com uma linha por chamada) e **pty** (17
+  checagens — card de pausa com o passo oferecido, tecla solta não aprova, "s" libera exatamente uma chamada e pergunta
+  de novo, "n" para, `/limits` mostra o teto subindo 500→700, `/extend`, id inexistente, outra mensagem continua barrada).
+- **Não feito**: modelo **real** reagindo ao medidor; app Tauri aberto com o modal novo; tela de limites/preços no
+  desktop; wizard do CLI pra criar limite; `$` no `/usage` da sessão.
+- **Achados de método**: (1) num teste com `HOME` temporário o cache do modelo ONNX da busca semântica some (`dirs::
+  cache_dir` segue o `HOME`) e cada turno tenta **baixar** o modelo — sem rede o turno fica "pensando" antes de chamar o
+  modelo e o teste parece travar de forma intermitente; apontar `XDG_CACHE_HOME` pro cache real resolve; (2) rodar a
+  suíte inteira duas vezes no mesmo comando dobra ~10 min — capturar a saída num arquivo e filtrar depois; (3) a linha
+  `io error when listing tests: Broken pipe` no `cargo test --workspace` vem de `tests/mcp_stdio.rs` e é anterior a esta
+  sessão (o cargo sai com 0).
 
 ---
 
