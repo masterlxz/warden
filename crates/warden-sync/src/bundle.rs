@@ -11,6 +11,7 @@ use warden_truthid::crypto::{decrypt_pin_content, encrypt_pin_content};
 
 use crate::diff::{sha256_hex, VaultDiff};
 use crate::manifest::{SyncDirection, SyncManifest};
+use crate::syncignore::SyncIgnore;
 
 /// Deliberately distinct from `warden_truthid::crypto`'s own `"TruthID Pin Content"` HKDF
 /// context — this key never needs to relate to TruthID's, and reusing their salt/info by
@@ -54,6 +55,11 @@ pub struct SyncBundle {
 pub struct ApplyReport {
     pub files_written: usize,
     pub files_deleted: usize,
+    /// Entries this bundle carried (write or delete) that were skipped because the destination
+    /// vault's own `.syncignore` (P75) matches them — a sender without that pattern (or one that
+    /// had it before the pattern existed) may still include them; this device just never touches
+    /// disk for them.
+    pub files_ignored: usize,
     pub config_updated: bool,
     pub config_deleted: bool,
 }
@@ -106,8 +112,14 @@ pub fn decrypt_bundle(blob: &[u8], vault_key: &[u8; 32]) -> anyhow::Result<SyncB
 /// beforehand whether any of this would clobber an unpushed local change (`pull::pull` does this
 /// by comparing current on-disk hashes against the *previous* manifest before calling this).
 pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> anyhow::Result<ApplyReport> {
+    let ignore = SyncIgnore::load(vault)?;
     let mut files_written = 0;
+    let mut files_ignored = 0;
     for (relative, encoded) in &bundle.vault_files {
+        if ignore.matches(relative) {
+            files_ignored += 1;
+            continue;
+        }
         let bytes = BASE64.decode(encoded.as_bytes())?;
         let path = vault.root().join(relative);
         if let Some(parent) = path.parent() {
@@ -123,6 +135,10 @@ pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> a
     // returns `anyhow::Error`, not `std::io::Error`, once past the `?`.
     let mut files_deleted = 0;
     for relative in &bundle.deleted_vault_files {
+        if ignore.matches(relative) {
+            files_ignored += 1;
+            continue;
+        }
         if vault.root().join(relative).exists() {
             vault.delete(relative)?;
             files_deleted += 1;
@@ -146,7 +162,7 @@ pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> a
         }
     }
 
-    Ok(ApplyReport { files_written, files_deleted, config_updated, config_deleted: bundle.config_deleted })
+    Ok(ApplyReport { files_written, files_deleted, files_ignored, config_updated, config_deleted: bundle.config_deleted })
 }
 
 /// Folds a decrypted bundle's changes into `manifest` — shared by `push::run_push` (after a
@@ -256,5 +272,31 @@ mod tests {
         assert_eq!(dest.read("notes/todo.md").unwrap(), "buy milk");
         assert!(!dest.root().join("old/gone.md").exists());
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "vault_path = \"vault\"");
+    }
+
+    #[test]
+    fn apply_bundle_skips_entries_matching_the_destination_syncignore() {
+        let bundle = SyncBundle {
+            schema_version: 1,
+            manifest_counter: 1,
+            created_at_ms: 0,
+            device_id: "device-a".to_string(),
+            vault_files: [("secret.md".to_string(), BASE64.encode(b"from another device"))].into_iter().collect(),
+            deleted_vault_files: vec!["private/old.md".to_string()],
+            config_toml: None,
+            config_deleted: false,
+        };
+
+        let dest = temp_vault("ignored-dest");
+        dest.write(".syncignore", "secret.md\nprivate/\n").unwrap();
+        dest.write("private/old.md", "still here locally").unwrap();
+        let config_path = dest.root().join("config.toml");
+
+        let report = apply_bundle(&bundle, &dest, &config_path).unwrap();
+        assert_eq!(report.files_written, 0);
+        assert_eq!(report.files_deleted, 0);
+        assert_eq!(report.files_ignored, 2);
+        assert!(!dest.root().join("secret.md").exists());
+        assert_eq!(dest.read("private/old.md").unwrap(), "still here locally");
     }
 }

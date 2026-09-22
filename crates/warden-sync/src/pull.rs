@@ -6,19 +6,23 @@ use crate::arweave::ArweaveClient;
 use crate::bundle;
 use crate::diff::sha256_hex;
 use crate::manifest::{SyncDirection, SyncManifest, SyncSecrets};
+use crate::syncignore::SyncIgnore;
 
 #[derive(Debug)]
 pub struct PullOutcome {
     pub tx_id: Option<String>,
     pub files_written: usize,
     pub files_deleted: usize,
+    /// Entries the remote snapshot carried but this device's own `.syncignore` (P75) excluded —
+    /// never written, never deleted.
+    pub files_ignored: usize,
     pub config_updated: bool,
     pub warnings: Vec<String>,
 }
 
 impl PullOutcome {
     fn up_to_date(tx_id: Option<String>, warning: &str) -> Self {
-        Self { tx_id, files_written: 0, files_deleted: 0, config_updated: false, warnings: vec![warning.to_string()] }
+        Self { tx_id, files_written: 0, files_deleted: 0, files_ignored: 0, config_updated: false, warnings: vec![warning.to_string()] }
     }
 }
 
@@ -56,8 +60,12 @@ pub async fn pull(
         return Ok((PullOutcome::up_to_date(Some(tx_id), &warning), manifest));
     }
 
+    let ignore = SyncIgnore::load(vault)?;
     let mut warnings = Vec::new();
     for relative in decoded_bundle.vault_files.keys().chain(decoded_bundle.deleted_vault_files.iter()) {
+        if ignore.matches(relative) {
+            continue;
+        }
         let current_hash = std::fs::read(vault.root().join(relative)).ok().map(|bytes| sha256_hex(&bytes));
         let known_hash = manifest.vault_files.get(relative).cloned();
         if current_hash != known_hash {
@@ -78,6 +86,7 @@ pub async fn pull(
         tx_id: Some(tx_id),
         files_written: report.files_written,
         files_deleted: report.files_deleted,
+        files_ignored: report.files_ignored,
         config_updated: report.config_updated,
         warnings,
     };
@@ -161,6 +170,34 @@ mod tests {
         assert_eq!(dest.read("notes/todo.md").unwrap(), "buy milk");
         assert_eq!(new_manifest.last_tx_id.as_deref(), Some("FAKE_TX_ID"));
         assert_eq!(new_manifest.last_sync_direction, Some(SyncDirection::Pull));
+    }
+
+    #[tokio::test]
+    async fn pull_skips_entries_matching_the_destination_syncignore() {
+        let secrets = crate::manifest::generate_secrets();
+        let source = temp_vault("pull-syncignore-source");
+        // Source has no `.syncignore` of its own — both files are in its bundle.
+        source.write("notes/todo.md", "buy milk").unwrap();
+        source.write("secret.md", "shh").unwrap();
+        let diff = crate::diff::diff_vault(&source, &SyncManifest::default()).unwrap();
+        let sync_bundle = bundle::build_bundle(&source, None, &diff, 1, &secrets.device_id).unwrap();
+        let encrypted = bundle::encrypt_bundle(&sync_bundle, &secrets.vault_key).unwrap();
+
+        let base_url = spawn_fake_gateway(encrypted).await;
+        let arweave = ArweaveClient::new(format!("{base_url}/graphql"), base_url);
+
+        let manifest = SyncManifest { owner_address: Some("wallet-abc".to_string()), ..Default::default() };
+
+        let dest = temp_vault("pull-syncignore-dest");
+        dest.write(".syncignore", "secret.md\n").unwrap();
+        let config_path = std::env::temp_dir().join("warden-sync-pull-test-syncignore-config.toml");
+
+        let (outcome, _) = pull(&arweave, &dest, &config_path, &secrets, manifest).await.unwrap();
+        assert_eq!(outcome.files_written, 1);
+        assert_eq!(outcome.files_ignored, 1);
+        assert_eq!(dest.read("notes/todo.md").unwrap(), "buy milk");
+        assert!(!dest.root().join("secret.md").exists());
+        assert!(outcome.warnings.is_empty());
     }
 
     #[tokio::test]

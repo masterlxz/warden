@@ -32,6 +32,7 @@ use warden_core::memory::Vault;
 use crate::bundle::{self, ConfigChange};
 use crate::diff;
 use crate::manifest::{self, SyncDirection, SyncSecrets};
+use crate::syncignore::SyncIgnore;
 
 const BUNDLE_FILE_NAME: &str = "bundle.enc";
 const BRANCH: &str = "main";
@@ -48,13 +49,15 @@ pub struct GitPullOutcome {
     pub commits_applied: usize,
     pub files_written: usize,
     pub files_deleted: usize,
+    /// Entries some replayed commit carried but this device's own `.syncignore` (P75) excluded.
+    pub files_ignored: usize,
     pub config_updated: bool,
     pub warnings: Vec<String>,
 }
 
 impl GitPullOutcome {
     fn up_to_date(warning: &str) -> Self {
-        Self { commits_applied: 0, files_written: 0, files_deleted: 0, config_updated: false, warnings: vec![warning.to_string()] }
+        Self { commits_applied: 0, files_written: 0, files_deleted: 0, files_ignored: 0, config_updated: false, warnings: vec![warning.to_string()] }
     }
 }
 
@@ -179,9 +182,11 @@ impl GitSyncEngine {
             return Ok(GitPullOutcome::up_to_date("já está atualizado"));
         }
 
+        let ignore = SyncIgnore::load(&self.vault)?;
         let mut current_manifest = manifest;
         let mut files_written = 0;
         let mut files_deleted = 0;
+        let mut files_ignored = 0;
         let mut config_updated = false;
         let mut warnings = Vec::new();
 
@@ -190,6 +195,9 @@ impl GitSyncEngine {
             let decoded = bundle::decrypt_bundle(&blob, &secrets.vault_key)?;
 
             for relative in decoded.vault_files.keys().chain(decoded.deleted_vault_files.iter()) {
+                if ignore.matches(relative) {
+                    continue;
+                }
                 let current_hash = std::fs::read(self.vault.root().join(relative)).ok().map(|bytes| diff::sha256_hex(&bytes));
                 let known_hash = current_manifest.vault_files.get(relative).cloned();
                 if current_hash != known_hash {
@@ -206,12 +214,14 @@ impl GitSyncEngine {
             let report = bundle::apply_bundle(&decoded, &self.vault, &self.config_path)?;
             files_written += report.files_written;
             files_deleted += report.files_deleted;
+            files_ignored += report.files_ignored;
             config_updated = config_updated || report.config_updated || report.config_deleted;
             current_manifest = bundle::fold_into_manifest(current_manifest, &decoded, sha.clone(), SyncDirection::Pull)?;
         }
 
         manifest::save_manifest(&self.manifest_path, &current_manifest)?;
-        let outcome = GitPullOutcome { commits_applied: shas_to_replay.len(), files_written, files_deleted, config_updated, warnings };
+        let outcome =
+            GitPullOutcome { commits_applied: shas_to_replay.len(), files_written, files_deleted, files_ignored, config_updated, warnings };
         Ok(outcome)
     }
 }
@@ -447,6 +457,26 @@ mod tests {
         assert_eq!(outcome.files_written, 2);
         assert_eq!(device_b.vault.read("a.md").unwrap(), "one");
         assert_eq!(device_b.vault.read("b.md").unwrap(), "two");
+    }
+
+    #[tokio::test]
+    async fn pull_skips_entries_matching_the_destination_syncignore() {
+        let remote = bare_remote("syncignore");
+        let vault_key = [9u8; 32];
+
+        let device_a = paired_engine(&remote, "syncignore-a", vault_key, "device-a");
+        device_a.vault.write("a.md", "one").unwrap();
+        device_a.vault.write("secret.md", "shh").unwrap();
+        device_a.push().await.unwrap().unwrap();
+
+        let device_b = paired_engine(&remote, "syncignore-b", vault_key, "device-b");
+        device_b.vault.write(".syncignore", "secret.md\n").unwrap();
+        let outcome = device_b.pull().await.unwrap();
+        assert_eq!(outcome.files_written, 1);
+        assert_eq!(outcome.files_ignored, 1);
+        assert_eq!(device_b.vault.read("a.md").unwrap(), "one");
+        assert!(!device_b.vault.root().join("secret.md").exists());
+        assert!(outcome.warnings.is_empty());
     }
 
     #[tokio::test]

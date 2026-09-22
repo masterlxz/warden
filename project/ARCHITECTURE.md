@@ -1429,3 +1429,44 @@ dólares por janela deslizante**, por escopo, checado **antes de cada chamada de
   confirmação a mesma limitação que a tela do desktop já tinha: `SpendGuard` é montado uma vez em `bootstrap()`, sem
   recarga em quente — uma edição só vale no próximo `warden` iniciado, `/limits`/`/prices` (leitura) continuam
   mostrando o estado **congelado no boot**, nunca a própria edição da sessão atual.
+
+## Sync seletivo do vault: `.syncignore` (P75, Sessão 92)
+
+Até aqui `diff::diff_vault` (`crates/warden-sync`) varria `Vault::list_all_files()` sem filtro nenhum — o motor de
+sync (tanto o backend Arweave/TruthID quanto o `GitSyncEngine` irmão do P63) sempre espelhava o vault inteiro entre
+devices. O usuário pediu uma forma de marcar parte do vault como "fica só neste device".
+
+- **`.syncignore` na raiz do vault**, um padrão glob por linha (`#` comenta, linha em branco ignorada) — estilo
+  `.gitignore` simplificado: sem `/` casa em qualquer profundidade (`secret.md` casa `notes/secret.md` também);
+  `pasta/` casa a pasta inteira; `/arquivo.md` ancora na raiz. Sem negação (`!padrão`) — não pedido. Módulo novo
+  `crates/warden-sync/src/syncignore.rs` (`SyncIgnore`, via `globset` — mesma lib do ripgrep, sem puxar o `ignore`
+  crate inteiro que também caminha diretório, coisa que `Vault::list_all_files` já faz). **Dot-prefixed de propósito**:
+  `Vault::collect_all_files` (`crates/warden-core/src/memory/mod.rs`) já pula qualquer entrada cujo nome comece com
+  `.` (mesma regra que esconde `.git`/`.DS_Store`), então o próprio `.syncignore` nunca aparece no diff — resolve de
+  graça o problema recursivo "o arquivo de exclusão precisa decidir se ele mesmo sincroniza".
+- **Regra uniforme, sem exceção** (decisão explícita do usuário ao aprovar o plano): um padrão que bate nos 3
+  arquivos fixos (`_profile.md`/`_behavior.md`/`_feedback.md`) ou em `skills/` também os exclui — mais simples e mais
+  flexível que dar imunidade especial a eles; quem não quiser isso simplesmente não escreve um padrão que bata.
+- **Efeito nas duas direções, sem tocar nas assinaturas públicas**: `diff_vault` e `bundle::apply_bundle` já recebem
+  `&Vault` em toda chamada existente (`push.rs`, `pull.rs`, `lib.rs::status`, `git.rs` push/pull) — carregar
+  `SyncIgnore::load(vault)` **dentro** das duas funções faz o recurso valer pros dois motores de sync de graça, sem
+  mudar nenhum call site.
+  - *Push*: `diff_vault` pula um path ignorado tanto no loop de `added_or_modified` quanto no filtro de `deleted` —
+    crítico este segundo: sem isso, ligar um `.syncignore` pra um arquivo **já sincronizado antes** faria o próximo
+    push reportá-lo como deletado e apagá-lo dos outros devices. Com o filtro, o arquivo simplesmente some do diff
+    nas duas direções; o hash antigo em `manifest.vault_files` fica inerte enquanto o padrão continuar batendo (se o
+    padrão for removido depois, o diff volta a examiná-lo normalmente contra esse hash antigo).
+  - *Pull*: `apply_bundle` pula escrita/deleção de qualquer path que bata no `.syncignore` **do vault de destino** —
+    um bundle de outro device que não tem essa regra (ou teve o arquivo sincronizado antes dela existir) nunca toca
+    esse path aqui. `ApplyReport` ganhou `files_ignored: usize`; o loop de aviso "mudança local foi sobrescrita pelo
+    pull" (`pull.rs`, `git.rs::pull`) também pula esses paths, senão avisaria sobre uma sobrescrita que não
+    aconteceu. `PullOutcome`/`GitPullOutcome` ganharam o mesmo campo, propagado até `/sync pull`/`/sync git pull` no
+    CLI e o card de resultado no desktop (`SyncView.tsx`).
+  - `SyncStatus` ganhou `syncignore_pattern_count` (visível em `/sync` no CLI e no card de status do desktop) — só a
+    contagem, não os padrões em si.
+- **Sem comando novo**: `.syncignore` é um arquivo de vault normal, editável com qualquer ferramenta de escrita já
+  existente (inclusive pelo próprio agente via `write_vault_file`) — não precisa de wizard dedicado.
+- **`config.toml` continua fora disso, de propósito**: o arquivo inteiro (chaves de API, agentes, SSH, limites de
+  gasto) segue sincronizando sempre, sem seleção por campo — comportamento antigo e intencional (P37, Sessão 50),
+  não uma regressão. Sync seletivo de `config.toml` ficou fora de escopo (mudaria a granularidade de "arquivo" pra
+  "campo", problema mais difícil que ninguém pediu ainda).

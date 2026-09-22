@@ -19,6 +19,10 @@ hex = "0.4"
 rand_core = { version = "0.6", features = ["getrandom"] }
 futures-util = "0.3"
 tokio-tungstenite = "0.30"
+# Glob matching for `.syncignore` (P75) — same crate ripgrep uses for `.gitignore`-style patterns;
+# deliberately not the full `ignore` crate (pulls in `walkdir` and a directory-walking API this
+# crate doesn't need — `Vault::list_all_files` already does the walking).
+globset = "0.4"
 # `default-features = false` — warden-sync only uses `Vault` for file I/O (list/read/write), never
 # `Orchestrator`/chat, so it doesn't need `semantic-search` (fastembed/ort) at all. Critically, this
 # keeps `ort` — which has no prebuilt binary for `armv7-linux-androideabi` — out of

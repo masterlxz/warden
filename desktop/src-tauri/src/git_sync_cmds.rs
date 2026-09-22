@@ -77,13 +77,21 @@ pub struct GitPullResultPayload {
     commits_applied: usize,
     files_written: usize,
     files_deleted: usize,
+    files_ignored: usize,
     config_updated: bool,
     warnings: Vec<String>,
 }
 
 impl From<GitPullOutcome> for GitPullResultPayload {
     fn from(o: GitPullOutcome) -> Self {
-        Self { commits_applied: o.commits_applied, files_written: o.files_written, files_deleted: o.files_deleted, config_updated: o.config_updated, warnings: o.warnings }
+        Self {
+            commits_applied: o.commits_applied,
+            files_written: o.files_written,
+            files_deleted: o.files_deleted,
+            files_ignored: o.files_ignored,
+            config_updated: o.config_updated,
+            warnings: o.warnings,
+        }
     }
 }
 
@@ -115,10 +123,17 @@ mod tests {
 
     #[test]
     fn git_pull_result_payload_serializes_as_camel_case() {
-        let outcome = GitPullOutcome { commits_applied: 3, files_written: 2, files_deleted: 1, config_updated: false, warnings: vec!["a".to_string()] };
+        let outcome = GitPullOutcome {
+            commits_applied: 3,
+            files_written: 2,
+            files_deleted: 1,
+            files_ignored: 1,
+            config_updated: false,
+            warnings: vec!["a".to_string()],
+        };
         assert_eq!(
             serde_json::to_string(&GitPullResultPayload::from(outcome)).unwrap(),
-            r#"{"commitsApplied":3,"filesWritten":2,"filesDeleted":1,"configUpdated":false,"warnings":["a"]}"#
+            r#"{"commitsApplied":3,"filesWritten":2,"filesDeleted":1,"filesIgnored":1,"configUpdated":false,"warnings":["a"]}"#
         );
     }
 }

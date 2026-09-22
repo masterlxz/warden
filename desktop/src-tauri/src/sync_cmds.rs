@@ -26,6 +26,7 @@ pub struct SyncStatusPayload {
     last_synced_at_ms: Option<i64>,
     pending_vault_changes: usize,
     pending_config_changed: bool,
+    syncignore_pattern_count: usize,
 }
 
 impl From<SyncStatus> for SyncStatusPayload {
@@ -38,6 +39,7 @@ impl From<SyncStatus> for SyncStatusPayload {
             last_synced_at_ms: s.last_synced_at_ms,
             pending_vault_changes: s.pending_vault_changes,
             pending_config_changed: s.pending_config_changed,
+            syncignore_pattern_count: s.syncignore_pattern_count,
         }
     }
 }
@@ -111,6 +113,7 @@ pub struct PullResultPayload {
     tx_id: Option<String>,
     files_written: usize,
     files_deleted: usize,
+    files_ignored: usize,
     config_updated: bool,
     warnings: Vec<String>,
 }
@@ -122,6 +125,7 @@ pub async fn sync_pull(state: State<'_, AppState>) -> Result<PullResultPayload, 
         tx_id: outcome.tx_id,
         files_written: outcome.files_written,
         files_deleted: outcome.files_deleted,
+        files_ignored: outcome.files_ignored,
         config_updated: outcome.config_updated,
         warnings: outcome.warnings,
     })
@@ -292,7 +296,14 @@ mod tests {
     // Locks in the exact camelCase JSON shape `desktop/src/types.ts` expects.
     #[test]
     fn auto_sync_pulled_payload_serializes_as_camel_case() {
-        let outcome = PullOutcome { tx_id: Some("tx-1".to_string()), files_written: 2, files_deleted: 1, config_updated: true, warnings: vec![] };
+        let outcome = PullOutcome {
+            tx_id: Some("tx-1".to_string()),
+            files_written: 2,
+            files_deleted: 1,
+            files_ignored: 0,
+            config_updated: true,
+            warnings: vec![],
+        };
         assert_eq!(
             serde_json::to_string(&AutoSyncPulledPayload::from(&outcome)).unwrap(),
             r#"{"txId":"tx-1","filesWritten":2,"filesDeleted":1,"configUpdated":true}"#

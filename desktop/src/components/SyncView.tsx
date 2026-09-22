@@ -33,6 +33,10 @@ function StatusCard({ status }: { status: SyncStatus }) {
             {status.pendingVaultChanges} arquivo(s){status.pendingConfigChanged ? " + config.toml" : ""}
           </span>
         </div>
+        <div className="sync-status-item">
+          <span className="sync-status-label">Regras .syncignore</span>
+          <span className="sync-status-value">{status.syncignorePatternCount}</span>
+        </div>
       </div>
     </section>
   );
@@ -311,6 +315,7 @@ function SyncView() {
             <div className="settings-success-banner">
               <p>
                 Pull concluído — {pullResult.filesWritten} escrito(s), {pullResult.filesDeleted} removido(s)
+                {pullResult.filesIgnored > 0 ? `, ${pullResult.filesIgnored} ignorado(s)` : ""}
                 {pullResult.configUpdated ? ", config.toml atualizado" : ""}.
               </p>
               {pullResult.warnings.length > 0 && (
@@ -362,6 +367,7 @@ function SyncView() {
                 <p>
                   Pull concluído — {gitPullResult.commitsApplied} commit(s), {gitPullResult.filesWritten} escrito(s),{" "}
                   {gitPullResult.filesDeleted} removido(s)
+                  {gitPullResult.filesIgnored > 0 ? `, ${gitPullResult.filesIgnored} ignorado(s)` : ""}
                   {gitPullResult.configUpdated ? ", config.toml atualizado" : ""}.
                 </p>
                 {gitPullResult.warnings.length > 0 && (

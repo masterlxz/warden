@@ -1196,6 +1196,8 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/sync pair <code> — parear com um device que já mostrou um código",
         "/sync git push — enviar mudanças locais via git remoto (precisa de [git_sync] no config.toml)",
         "/sync git pull — buscar as mudanças novas via git remoto",
+        "  um .syncignore na raiz do vault (um padrão por linha, tipo .gitignore) mantém o que bater",
+        "  só neste device — nunca sai no push, nunca chega no pull; edite como qualquer nota do vault",
     ]
     .into_iter()
     .map(|line| (line.to_string(), style))
@@ -2567,6 +2569,7 @@ async fn cmd_sync_status(terminal: &mut CliTerminal, session: &CliSession) -> an
             ),
             Style::default(),
         ),
+        (format!("regras .syncignore: {}", status.syncignore_pattern_count), Style::default()),
     ];
     render_message_card(terminal, "sync", accent_style(), lines)
 }
@@ -2606,9 +2609,10 @@ async fn cmd_sync_pull(terminal: &mut CliTerminal, session: &CliSession) -> anyh
     let outcome = engine.pull().await?;
     let mut lines = vec![(
         format!(
-            "pull concluído — {} escrito(s), {} removido(s){}",
+            "pull concluído — {} escrito(s), {} removido(s){}{}",
             outcome.files_written,
             outcome.files_deleted,
+            if outcome.files_ignored > 0 { format!(", {} ignorado(s)", outcome.files_ignored) } else { String::new() },
             if outcome.config_updated { ", config.toml atualizado" } else { "" }
         ),
         Style::default(),
@@ -2670,10 +2674,11 @@ async fn cmd_sync_git_pull(terminal: &mut CliTerminal, session: &CliSession) -> 
     let outcome = engine.pull().await?;
     let mut lines = vec![(
         format!(
-            "pull concluído — {} commit(s), {} escrito(s), {} removido(s){}",
+            "pull concluído — {} commit(s), {} escrito(s), {} removido(s){}{}",
             outcome.commits_applied,
             outcome.files_written,
             outcome.files_deleted,
+            if outcome.files_ignored > 0 { format!(", {} ignorado(s)", outcome.files_ignored) } else { String::new() },
             if outcome.config_updated { ", config.toml atualizado" } else { "" }
         ),
         Style::default(),

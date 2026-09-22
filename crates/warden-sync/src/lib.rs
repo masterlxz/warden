@@ -25,6 +25,7 @@ pub mod paths;
 pub mod pull;
 pub mod push;
 pub mod storage_provider;
+pub mod syncignore;
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ pub use manifest::{SyncManifest, SyncSecrets};
 pub use pull::PullOutcome;
 pub use push::PushOutcome;
 pub use storage_provider::DecentralizedVaultProvider;
+pub use syncignore::SyncIgnore;
 
 #[derive(Debug)]
 pub struct SyncStatus {
@@ -48,6 +50,9 @@ pub struct SyncStatus {
     pub last_synced_at_ms: Option<i64>,
     pub pending_vault_changes: usize,
     pub pending_config_changed: bool,
+    /// How many patterns are active in `.syncignore` (P75) — 0 when the file doesn't exist. Just
+    /// a count, not the patterns themselves; nothing here is secret, but there's no reader for it.
+    pub syncignore_pattern_count: usize,
 }
 
 pub struct SyncEngine {
@@ -106,6 +111,7 @@ impl SyncEngine {
             last_synced_at_ms: manifest.last_synced_at_ms,
             pending_vault_changes,
             pending_config_changed,
+            syncignore_pattern_count: syncignore::SyncIgnore::load(&self.vault)?.pattern_count(),
         })
     }
 

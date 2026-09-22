@@ -2,7 +2,78 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-22 (Sessão 91)
+> Última atualização: 2026-09-22 (Sessão 92)
+
+---
+
+### 2026-09-22 — Sessão 92
+
+- **Objetivo**: P75 — sync seletivo dentro do vault. Plano aprovado antes de codar (Plan mode) —
+  respondeu as 5 perguntas de design que a pendência tinha deixado em aberto, incluindo uma pergunta
+  direta ao usuário sobre se os 3 arquivos fixos/skills deveriam ficar imunes ao `.syncignore`
+  (respondida: não, regra uniforme).
+
+**O que foi feito**:
+
+- **`.syncignore` na raiz do vault** — padrão glob por linha, estilo `.gitignore` simplificado (sem
+  `/` casa em qualquer profundidade, `pasta/` casa a pasta inteira, `/arquivo` ancora na raiz; sem
+  negação `!padrão`, não pedido). Módulo novo `crates/warden-sync/src/syncignore.rs` (`SyncIgnore`,
+  via a dependência nova `globset` — mesma lib do ripgrep, sem puxar o crate `ignore` inteiro, que
+  também caminha diretório, coisa que `Vault::list_all_files` já faz). Dot-prefixed de propósito:
+  `Vault::collect_all_files` (`warden-core`) já pula qualquer entrada começando com `.`, então o
+  próprio `.syncignore` nunca aparece no diff — resolve de graça o problema recursivo "o arquivo de
+  exclusão precisa decidir se ele mesmo sincroniza", sem nenhum caso especial no código.
+- **`diff_vault`/`apply_bundle` (`warden-sync`) já recebiam `&Vault` em toda chamada existente**
+  (`push.rs`, `pull.rs`, `lib.rs::status`, `git.rs` push/pull) — carregar o `.syncignore` **dentro**
+  das duas funções fez o recurso valer pros dois motores de sync (Arweave/TruthID e o `GitSyncEngine`
+  irmão do P63) sem mudar nenhuma assinatura pública.
+  - `diff_vault` pula um path ignorado tanto no loop de `added_or_modified` quanto no filtro de
+    `deleted` — o segundo é o ponto crítico: sem isso, ligar um `.syncignore` pra um arquivo **já
+    sincronizado antes** faria o próximo push reportá-lo como deletado e apagá-lo dos outros
+    devices. Com o filtro, o hash antigo em `manifest.vault_files` só fica inerte enquanto o padrão
+    continuar batendo.
+  - `apply_bundle` pula escrita/deleção de qualquer path que bata no `.syncignore` **do vault de
+    destino** — um bundle vindo de um device sem essa regra (ou que sincronizou o arquivo antes dela
+    existir) nunca toca esse path aqui. `ApplyReport` ganhou `files_ignored: usize`.
+  - O loop de aviso "mudança local foi sobrescrita pelo pull" (`pull.rs`, `git.rs::pull`) também pula
+    paths ignorados, senão avisaria sobre uma sobrescrita que não aconteceu. `PullOutcome`/
+    `GitPullOutcome` ganharam `files_ignored`, propagado até `/sync pull`/`/sync git pull` no CLI e o
+    card de resultado no desktop (`SyncView.tsx`).
+  - `SyncStatus` ganhou `syncignore_pattern_count` (só a contagem, não os padrões) — visível em
+    `/sync` no CLI e no card de status do desktop.
+- **Sem comando novo**: `.syncignore` é um arquivo de vault normal, editável com qualquer ferramenta
+  de escrita já existente (inclusive pelo próprio agente via `write_vault_file`) — `/help`/`/sync` no
+  CLI ganharam só uma linha explicando o mecanismo.
+- **`config.toml` fica de fora, documentado**: o arquivo inteiro (API keys, agentes, SSH, limites)
+  continua sincronizando sempre, sem seleção por campo — comportamento antigo e intencional do P37,
+  não uma regressão; deixado explícito em `ARCHITECTURE.md` porque foi isso que surpreendeu o usuário
+  na conversa que originou o P75.
+- **Testes**: `syncignore.rs` (parse de padrões, `matches` positivo/negativo, arquivo ausente =
+  vazio); `diff.rs` (arquivo ignorado não entra em `added_or_modified`; arquivo já tracked que ganha
+  um padrão não vira `deleted` fantasma); `bundle.rs` (`apply_bundle` não escreve nem deleta path
+  ignorado, `files_ignored` correto); `pull.rs`/`git.rs` — dois testes de integração real (gateway
+  Arweave fake / bare repo git local, mesmo padrão dos testes já existentes) confirmando que um
+  bundle de outro device sem a regra não escreve o path ignorado nem gera aviso de sobrescrita.
+- **Verificação**: `cargo test --workspace` e `cargo clippy --workspace --all-targets` limpos (56
+  testes novos/alterados em `warden-sync` sozinho, incluindo os 2 bugs achados e corrigidos nos
+  próprios testes do `syncignore.rs` — ver achado de método abaixo); `desktop` (`cargo test -p
+  desktop`, `npx tsc --noEmit`) limpos. Sem device real necessário — mesma cobertura via testes de
+  integração que já existiam pra push/pull.
+- **Achado de método, no próprio código desta sessão**: a primeira versão de `normalize_pattern`
+  tinha dois bugs que só apareceram rodando os testes — (1) `globset` por padrão faz `*` casar `/`
+  também (não é comportamento gitignore), então `scratch/*.tmp` casava `scratch/nested/a.tmp`;
+  corrigido com `GlobBuilder::literal_separator(true)`, deixando só o `**` explícito cruzar
+  diretórios. (2) `/arquivo.md` (ancorado na raiz) virava `**/arquivo.md` depois de stripar a `/`
+  inicial, porque o código só decidia aplicar o prefixo `**/` olhando se o texto final continha `/`
+  — sem `/` sobrando, ganhava o prefixo errado e passava a casar em qualquer profundidade. Corrigido
+  guardando a intenção de "ancorado" antes de stripar o prefixo.
+
+**Não feito**: negação de padrão (`!padrão`) — não pedido; sync seletivo de `config.toml` — mudaria a
+granularidade de "arquivo" pra "campo", problema mais difícil que ninguém pediu ainda; editor visual
+de `.syncignore` no desktop (só a contagem de regras no card de status); `AutoSyncPulledPayload` (o
+toast do auto-sync no desktop) não ganhou `filesIgnored` — omissão menor, não bloqueante.
+
+**Fecha o P75.**
 
 ---
 

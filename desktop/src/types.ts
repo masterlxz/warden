@@ -186,6 +186,8 @@ export interface GitPullResult {
   commitsApplied: number;
   filesWritten: number;
   filesDeleted: number;
+  /** Skipped because they matched this device's own `.syncignore` (P75) — never written, never deleted. */
+  filesIgnored: number;
   configUpdated: boolean;
   warnings: string[];
 }
@@ -269,6 +271,8 @@ export interface SyncStatus {
   lastSyncedAtMs: number | null;
   pendingVaultChanges: number;
   pendingConfigChanged: boolean;
+  /** How many patterns are active in `.syncignore` (P75) at the vault root — 0 when it doesn't exist. */
+  syncignorePatternCount: number;
 }
 
 /** What `sync_push_begin` returns — the QR to show before blocking on `sync_push_await`. */
@@ -288,6 +292,8 @@ export interface SyncPullResult {
   txId: string | null;
   filesWritten: number;
   filesDeleted: number;
+  /** Skipped because they matched this device's own `.syncignore` (P75) — never written, never deleted. */
+  filesIgnored: number;
   configUpdated: boolean;
   warnings: string[];
 }

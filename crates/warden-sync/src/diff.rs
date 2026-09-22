@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use warden_core::memory::Vault;
 
 use crate::manifest::SyncManifest;
+use crate::syncignore::SyncIgnore;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -21,12 +22,21 @@ impl VaultDiff {
     }
 }
 
+/// A path matching `.syncignore` (P75) is skipped entirely, in both directions: never counted as
+/// added/modified (so it never leaves via push) and never counted as deleted either — otherwise
+/// adding a pattern for a file that's already synced elsewhere would show up as a deletion on the
+/// next push and wipe it from every other device. Its last-known hash in `manifest`, if any, is
+/// simply left untouched — inert for as long as the pattern keeps matching.
 pub fn diff_vault(vault: &Vault, manifest: &SyncManifest) -> anyhow::Result<VaultDiff> {
+    let ignore = SyncIgnore::load(vault)?;
     let mut added_or_modified = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for relative in vault.list_all_files()? {
         let key = relative.to_string_lossy().to_string();
+        if ignore.matches(&key) {
+            continue;
+        }
         seen.insert(key.clone());
         let content = std::fs::read(vault.root().join(&relative))?;
         let hash = sha256_hex(&content);
@@ -38,7 +48,7 @@ pub fn diff_vault(vault: &Vault, manifest: &SyncManifest) -> anyhow::Result<Vaul
     let deleted = manifest
         .vault_files
         .keys()
-        .filter(|path| !seen.contains(*path))
+        .filter(|path| !seen.contains(*path) && !ignore.matches(path))
         .map(PathBuf::from)
         .collect();
 
@@ -114,6 +124,29 @@ mod tests {
         let diff = diff_vault(&vault, &manifest).unwrap();
         assert!(diff.added_or_modified.is_empty());
         assert_eq!(path_strings(&diff.deleted), vec!["gone.md"]);
+    }
+
+    #[test]
+    fn syncignore_excludes_a_new_file_from_added_or_modified() {
+        let vault = temp_vault();
+        vault.write(".syncignore", "secret.md\n").unwrap();
+        vault.write("secret.md", "shh").unwrap();
+        vault.write("public.md", "hi").unwrap();
+
+        let diff = diff_vault(&vault, &SyncManifest::default()).unwrap();
+        assert_eq!(path_strings(&diff.added_or_modified), vec!["public.md"]);
+    }
+
+    #[test]
+    fn syncignore_added_for_an_already_synced_file_does_not_report_it_deleted() {
+        let vault = temp_vault();
+        vault.write(".syncignore", "secret.md\n").unwrap();
+        vault.write("secret.md", "still here").unwrap();
+        let mut manifest = SyncManifest::default();
+        manifest.vault_files.insert("secret.md".to_string(), sha256_hex(b"old content, tracked before the pattern existed"));
+
+        let diff = diff_vault(&vault, &manifest).unwrap();
+        assert!(diff.is_empty());
     }
 
     #[test]
