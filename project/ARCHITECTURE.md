@@ -1470,3 +1470,53 @@ devices. O usuário pediu uma forma de marcar parte do vault como "fica só nest
   gasto) segue sincronizando sempre, sem seleção por campo — comportamento antigo e intencional (P37, Sessão 50),
   não uma regressão. Sync seletivo de `config.toml` ficou fora de escopo (mudaria a granularidade de "arquivo" pra
   "campo", problema mais difícil que ninguém pediu ainda).
+
+## Grupo de abas na extensão de navegador (P69 item 1, Sessão 92)
+
+As 4 tools de DOM (`browser_read_page`/`click_element`/`navigate`/`extract_text`, Fase 8.3-8.6) operavam só na aba
+ativa no momento da chamada, via `activeTab` — permissão que só libera acesso à aba em foco no instante de um gesto
+do usuário (clicar no ícone, abrir o painel) e cai quando essa aba navega. O usuário pediu replicar o modelo do
+Claude no Chrome: um grupo de abas dedicado onde a IA age em qualquer aba do grupo, não só a ativa.
+
+- **Modelo de permissão confirmado com o usuário antes de codar**: o usuário adiciona aba por aba, não a IA. Um
+  botão "+ Adicionar esta aba" no painel lateral (`TabsView.tsx`) é o próprio gesto que concede `activeTab` pra
+  aquela aba específica — a mesma permissão de sempre, só que acumulada por aba em vez de reposta a cada gesto.
+  Nenhuma permissão nova no manifest além de `tabGroups` (API de agrupamento visual — `chrome.tabs.group`/
+  `chrome.tabGroups.update`), que por si só não amplia acesso a conteúdo nenhum. Mantém a postura "mínimo possível"
+  já documentada em `manifest.config.ts` (a nota sobre evitar `host_permissions: ["<all_urls>"]` continua valendo,
+  agora com uma frase a mais explicando por que `tabGroups` não é uma exceção a essa regra). A IA nunca abre nem
+  adiciona uma aba ao grupo sozinha — só enxerga e age nas que o usuário já adicionou.
+- **`extension/src/background/tab_group.ts`** novo — estado inteiramente em memória (`grantedTabs: Set<number>` +
+  `groupId`), mesma postura de `history`/`connection` em `index.ts`: morre com o service worker, sem persistência,
+  sem modo de falha novo. `addActiveTabToGroup()` resolve a aba ativa (mesma query que `dom_executor.ts` já fazia),
+  cria o grupo do Chrome na primeira adição e reaproveita depois; `removeTabFromGroup(tabId)` desagrupa e tolera a
+  aba já ter fechado; `isTabInGroup(tabId)` — usada por `dom_executor.ts` pra validar um `tabId` explícito antes de
+  tentar `executeScript` nele, com erro claro em vez de deixar a falha genérica do Chrome estourar; `listGroupTabs()`
+  lê `title`/`url` de cada aba do grupo **sem precisar da permissão `tabs`** — o `activeTab` concedido no gesto de
+  adicionar já libera ler esses campos daquela aba específica, então a lista funciona dentro do mesmo orçamento de
+  permissão. `chrome.tabs.onRemoved` poda o set proativamente quando uma aba do grupo fecha.
+- **`dom_executor.ts`**: `getActiveTabId` virou `resolveTabId(explicitTabId?)` — com um `tabId` explícito, valida
+  contra `isTabInGroup` e o usa; sem ele, cai no comportamento de sempre (aba ativa), **zero mudança pra quem nunca
+  abre a aba "Abas" do painel**. `runInPage`/`navigateActiveTab` ganharam esse parâmetro opcional a mais, e a
+  mensagem de erro de falta de acesso agora distingue os dois casos (aba explícita: "remova e adicione de novo";
+  aba implícita: "abra o painel lateral nessa aba").
+- **As 4 tools existentes ganharam um `tabId` opcional** no JSON Schema (`parseOptionalTabId`, helper compartilhado
+  em `dom_executor.ts` — mesmo padrão de parsing solto que cada tool já fazia pro próprio campo). **Tool nova
+  `browser_list_tabs`** — sem parâmetros, devolve a lista do grupo; é como a IA descobre quais `tabId` são válidos
+  antes de passar um pras outras 4.
+- **UI**: terceira aba "Abas" em `App.tsx` (ao lado de Chat/Skills, mesmo padrão de mount-sempre-mas-`hidden`/
+  renderiza-só-quando-ativa que as outras duas já usam). `TabsView.tsx` reaproveita as classes CSS de `SkillsView`
+  (`.skills-hint`/`.skills-list`/`.skills-item`/etc., estendidas com seletores `.tabs-*` irmãos em `App.css` em vez
+  de duplicar as regras) — lista as abas do grupo, botão de adicionar a atual, botão de remover por linha. Um
+  evento novo `groupChanged` (mesmo broadcast de `statusChanged`/`chatMessage` já existente) mantém a lista
+  atualizada quando uma aba do grupo fecha sem nenhuma ação do painel ter disparado isso.
+- **Verificação**: `npx tsc --noEmit`/`npm run build` limpos dentro de `extension/` (sem framework de teste no
+  projeto — mesma lacuna estrutural já registrada em P67/P68), `dist/manifest.json` conferido com `tabGroups` na
+  lista. **Não verificado de ponta a ponta contra um Chrome real** (carregar `extension/dist`, adicionar 2+ abas,
+  pedir pra IA agir numa que não é a ativa) — mesma lacuna aceita de sempre neste ambiente, sem browser interativo
+  disponível; fica pro usuário testar manualmente fora daqui, mesmo padrão que fechou a verificação original da
+  Fase 8.1/8.2 (Sessão 68).
+- **Fora deste plano, de propósito**: Firefox (a segunda metade do P69, decisão separada — `chrome.sidePanel`/
+  `chrome.tabGroups` não têm equivalente direto lá); a IA abrir/adicionar abas novas sozinha (fora do modelo de
+  permissão escolhido); persistir o grupo entre reinícios do service worker (mesma postura efêmera do resto do
+  estado em `index.ts`).

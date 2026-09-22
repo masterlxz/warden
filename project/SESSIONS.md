@@ -77,6 +77,51 @@ toast do auto-sync no desktop) não ganhou `filesIgnored` — omissão menor, n�
 
 ---
 
+### 2026-09-22 — Sessão 92 (continuação)
+
+- **Objetivo**: P69 item 1 — grupo de abas multi-tab na extensão de navegador (tipo Claude no
+  Chrome). Plano aprovado antes de codar (Plan mode) — incluiu uma pergunta direta ao usuário sobre
+  o modelo de permissão (usuário adiciona aba por aba vs. acesso mais amplo tipo `host_permissions`),
+  respondida: usuário adiciona aba por aba, sem ampliar permissão nenhuma além de `tabGroups`.
+
+**O que foi feito**:
+
+- **`extension/src/background/tab_group.ts`** novo — grupo "Warden" com estado só em memória
+  (`grantedTabs: Set<number>` + `groupId`), mesma postura efêmera de `history`/`connection` em
+  `index.ts`. `addActiveTabToGroup()` (o clique em "+ Adicionar esta aba" no painel É o gesto que
+  concede `activeTab` pra aquela aba), `removeTabFromGroup`, `isTabInGroup` (valida um `tabId`
+  explícito antes de agir), `listGroupTabs` (lê `title`/`url` sem precisar da permissão `tabs` — o
+  `activeTab` já concedido pelo gesto de adicionar libera isso pra aquela aba específica).
+  `chrome.tabs.onRemoved` poda o set quando uma aba do grupo fecha.
+- **`dom_executor.ts`**: `getActiveTabId` virou `resolveTabId(explicitTabId?)` — `tabId` explícito
+  valida contra `isTabInGroup`; sem ele, comportamento idêntico a antes (aba ativa), zero mudança
+  pra quem nunca usa o grupo. `runInPage`/`navigateActiveTab` ganharam o parâmetro opcional.
+- As 4 tools existentes (`browser_read_page`/`click_element`/`navigate`/`extract_text`) ganharam
+  `tabId` opcional no schema. Tool nova `browser_list_tabs` — como a IA descobre quais `tabId`
+  existem antes de passar um pras outras.
+- **`manifest.config.ts`**: só `tabGroups` adicionada (agrupamento visual, não amplia acesso a
+  conteúdo) — a nota existente sobre evitar `host_permissions`/`<all_urls>` continua valendo,
+  documentado por que `tabGroups` não é uma exceção a essa regra.
+- **UI**: terceira aba "Abas" em `App.tsx` (mesmo padrão mount-sempre das outras duas). `TabsView.tsx`
+  novo reaproveita as classes CSS de `SkillsView` (`App.css` ganhou seletores `.tabs-*` irmãos dos
+  `.skills-*` já existentes, em vez de duplicar as regras). Evento `groupChanged` novo (mesmo
+  broadcast de `statusChanged`/`chatMessage`) mantém a lista atualizada quando uma aba fecha sozinha.
+- **Verificação**: `npx tsc --noEmit`/`npm run build` limpos dentro de `extension/` (sem framework de
+  teste no projeto, mesma lacuna estrutural de P67/P68); `dist/manifest.json` conferido com
+  `tabGroups` na lista de permissões. **Não verificado de ponta a ponta** contra um Chrome real —
+  sem browser interativo disponível neste ambiente, mesma lacuna aceita de sempre; fica pro usuário
+  testar manualmente (carregar `extension/dist`, adicionar 2+ abas, pedir pra IA agir numa que não é
+  a ativa).
+
+**Não feito**: Firefox (segunda metade do P69, decisão separada — `chrome.sidePanel`/`chrome.tabGroups`
+não têm equivalente direto lá); a IA abrir/adicionar abas sozinha (fora do modelo de permissão
+escolhido); persistir o grupo entre reinícios do service worker (mesma postura efêmera do resto do
+estado em `index.ts`).
+
+**Fecha o item 1 do P69 — item 2 (Firefox) segue em aberto.**
+
+---
+
 ### 2026-09-22 — Sessão 91
 
 - **Objetivo**: P42 — colisão de nome de tool entre um cliente remoto (celular/extensão) e o `Orchestrator`

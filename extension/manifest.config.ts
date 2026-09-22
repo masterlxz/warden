@@ -12,6 +12,12 @@ import { defineManifest } from "@crxjs/vite-plugin";
 // `chrome.system.network.getNetworkInterfaces()` to learn this device's local subnet, so it can
 // sweep the LAN for a warden-server hub instead of the user typing an IP by hand. Only reads
 // interface addresses, never touches page content.
+// `tabGroups` (P69) — lets the DOM tools act on more than one tab at a time via a dedicated
+// "Warden" tab group (`background/tab_group.ts`), same idea as Claude in Chrome's own tab group.
+// Confirmed with the user before building this: the user adds each tab one at a time from the
+// side panel, and that click is itself the gesture that grants `activeTab` for that tab — this
+// permission only lets the extension *organize* tabs visually, it grants no content access by
+// itself. No broadening of `activeTab`'s reach, no `tabs`/`host_permissions` added.
 export default defineManifest({
   manifest_version: 3,
   name: "Warden",
@@ -24,5 +30,5 @@ export default defineManifest({
     service_worker: "src/background/index.ts",
     type: "module",
   },
-  permissions: ["storage", "scripting", "activeTab", "sidePanel", "system.network"],
+  permissions: ["storage", "scripting", "activeTab", "sidePanel", "system.network", "tabGroups"],
 });

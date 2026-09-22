@@ -16,6 +16,7 @@ import { ServerConnection, type ChatEntry, type ConnectionStatus } from "./conne
 import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, PopupRequest } from "./popup_protocol";
 import { toolSpecs, toolHandlers } from "./tools";
+import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
 
 // Makes clicking the toolbar icon open the docked side panel (manifest's `side_panel`) instead of
 // requiring a `default_popup`. Without this call the icon click has no effect.
@@ -60,6 +61,10 @@ function addChatEntry(entry: ChatEntry): void {
   history.push(entry);
   broadcast({ type: "chatMessage", entry });
 }
+
+// P69 — the Warden tab group can change from `chrome.tabs.onRemoved` firing (a grouped tab
+// closing) with no popup request in flight, so the panel needs its own broadcast to notice.
+setGroupChangeListener(() => broadcast({ type: "groupChanged" }));
 
 async function handleRequest(request: PopupRequest): Promise<unknown> {
   switch (request.type) {
@@ -135,6 +140,24 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         return { ok: true, hubs: await discoverHubs(request.port) };
       } catch (err) {
         return { ok: false, hubs: [], error: err instanceof Error ? err.message : String(err) };
+      }
+
+    case "addTabToGroup":
+      try {
+        return { ok: true, tab: await addActiveTabToGroup() };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+
+    case "removeTabFromGroup":
+      await removeTabFromGroup(request.tabId);
+      return { ok: true };
+
+    case "listGroupTabs":
+      try {
+        return { ok: true, tabs: await listGroupTabs() };
+      } catch (err) {
+        return { ok: false, tabs: [], error: err instanceof Error ? err.message : String(err) };
       }
   }
 }

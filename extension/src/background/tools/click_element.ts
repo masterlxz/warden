@@ -1,15 +1,18 @@
 import type { ToolSpec } from "../../protocol/messages";
-import { runInPage } from "./dom_executor";
+import { parseOptionalTabId, runInPage } from "./dom_executor";
 
 export const clickElementSpec: ToolSpec = {
   name: "browser_click_element",
   description:
-    "Clicks one element in the active browser tab, identified by a CSS selector (as returned by " +
+    "Clicks one element in a browser tab, identified by a CSS selector (as returned by " +
     "browser_read_page). If the selector matches more than one element, only the first is clicked " +
     "— make the selector specific enough to be unambiguous.",
   parameters: {
     type: "object",
-    properties: { selector: { type: "string", description: "CSS selector of the element to click" } },
+    properties: {
+      selector: { type: "string", description: "CSS selector of the element to click" },
+      tabId: { type: "number", description: "Tab id from browser_list_tabs to act on — omit to use whichever tab is currently active/focused." },
+    },
     required: ["selector"],
   },
 };
@@ -36,5 +39,6 @@ export async function clickElement(args: unknown): Promise<ClickElementResult> {
   if (typeof selector !== "string" || !selector) {
     throw new Error("missing required 'selector' argument");
   }
-  return runInPage(clickElementInPage, [selector]);
+  const tabId = parseOptionalTabId(args);
+  return runInPage(clickElementInPage, [selector], tabId);
 }

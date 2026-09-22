@@ -312,7 +312,8 @@ button:hover:not(:disabled) {
 }
 
 .skills-view,
-.skills-editor {
+.skills-editor,
+.tabs-view {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -338,7 +339,9 @@ button:hover:not(:disabled) {
 }
 
 .skills-toolbar,
-.skills-item-header {
+.skills-item-header,
+.tabs-toolbar,
+.tabs-item-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -351,13 +354,15 @@ button:hover:not(:disabled) {
   gap: 0.6rem;
 }
 
-.skills-hint {
+.skills-hint,
+.tabs-hint {
   color: var(--color-text-muted);
   font-size: 0.75rem;
   margin: 0;
 }
 
-.skills-list {
+.skills-list,
+.tabs-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -366,25 +371,29 @@ button:hover:not(:disabled) {
   gap: 0.4rem;
 }
 
-.skills-item {
+.skills-item,
+.tabs-item {
   padding: 0.5rem 0.6rem;
   border-radius: 6px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
 }
 
-.skills-item-name {
+.skills-item-name,
+.tabs-item-name {
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85rem;
 }
 
-.skills-item-description {
+.skills-item-description,
+.tabs-item-url {
   margin: 0.25rem 0 0;
   font-size: 0.8rem;
   color: var(--color-text-muted);
 }
 
-.skills-danger:hover {
+.skills-danger:hover,
+.tabs-danger:hover {
   color: var(--color-danger);
 }

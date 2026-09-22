@@ -1,13 +1,18 @@
 import type { ToolSpec } from "../../protocol/messages";
-import { runInPage } from "./dom_executor";
+import { parseOptionalTabId, runInPage } from "./dom_executor";
 
 export const readPageSpec: ToolSpec = {
   name: "browser_read_page",
   description:
-    "Reads the currently active browser tab: page title, URL, visible text (truncated), and a " +
-    "list of visible interactive elements (links, buttons, inputs, selects, textareas) each with " +
-    "a CSS selector. Use the returned selectors with browser_click_element/browser_extract_text.",
-  parameters: { type: "object", properties: {} },
+    "Reads a browser tab: page title, URL, visible text (truncated), and a list of visible " +
+    "interactive elements (links, buttons, inputs, selects, textareas) each with a CSS selector. " +
+    "Use the returned selectors with browser_click_element/browser_extract_text.",
+  parameters: {
+    type: "object",
+    properties: {
+      tabId: { type: "number", description: "Tab id from browser_list_tabs to read — omit to use whichever tab is currently active/focused." },
+    },
+  },
 };
 
 interface ReadPageElement {
@@ -86,6 +91,7 @@ function readPageInPage(maxTextChars: number, maxElements: number): ReadPageResu
   };
 }
 
-export async function readPage(): Promise<ReadPageResult> {
-  return runInPage(readPageInPage, [MAX_TEXT_CHARS, MAX_ELEMENTS]);
+export async function readPage(args: unknown): Promise<ReadPageResult> {
+  const tabId = parseOptionalTabId(args);
+  return runInPage(readPageInPage, [MAX_TEXT_CHARS, MAX_ELEMENTS], tabId);
 }

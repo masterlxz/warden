@@ -1,16 +1,17 @@
 import type { ToolSpec } from "../../protocol/messages";
-import { runInPage } from "./dom_executor";
+import { parseOptionalTabId, runInPage } from "./dom_executor";
 
 export const extractTextSpec: ToolSpec = {
   name: "browser_extract_text",
   description:
-    "Extracts text from the active browser tab. With 'selector', returns that element's visible " +
-    "text. Without it, returns the current text selection if there is one, otherwise the whole " +
-    "page's visible text (truncated).",
+    "Extracts text from a browser tab. With 'selector', returns that element's visible text. " +
+    "Without it, returns the current text selection if there is one, otherwise the whole page's " +
+    "visible text (truncated).",
   parameters: {
     type: "object",
     properties: {
       selector: { type: "string", description: "Optional CSS selector; omit to use the page's current selection or full text" },
+      tabId: { type: "number", description: "Tab id from browser_list_tabs to act on — omit to use whichever tab is currently active/focused." },
     },
   },
 };
@@ -36,5 +37,6 @@ export async function extractText(args: unknown): Promise<string> {
   if (selector !== undefined && typeof selector !== "string") {
     throw new Error("'selector' argument must be a string when provided");
   }
-  return runInPage(extractTextInPage, [selector ?? null, MAX_TEXT_CHARS]);
+  const tabId = parseOptionalTabId(args);
+  return runInPage(extractTextInPage, [selector ?? null, MAX_TEXT_CHARS], tabId);
 }

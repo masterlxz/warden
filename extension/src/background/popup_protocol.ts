@@ -8,6 +8,7 @@
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
 import type { SkillDto } from "../protocol/messages";
+import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
   host: string;
@@ -24,7 +25,10 @@ export type PopupRequest =
   | { type: "discoverHubs"; port: number }
   | { type: "listSkills" }
   | { type: "saveSkill"; skill: SkillDto; overwrite: boolean }
-  | { type: "deleteSkill"; name: string };
+  | { type: "deleteSkill"; name: string }
+  | { type: "addTabToGroup" }
+  | { type: "removeTabFromGroup"; tabId: number }
+  | { type: "listGroupTabs" };
 
 export interface GetStatusResponse {
   status: ConnectionStatus;
@@ -53,6 +57,22 @@ export interface ListSkillsResponse {
   error?: string;
 }
 
+/** Reply to `{ type: "addTabToGroup" }`. */
+export interface AddTabToGroupResponse {
+  ok: boolean;
+  tab?: GroupTab;
+  error?: string;
+}
+
+/** Reply to `{ type: "listGroupTabs" }` — always `tabs` (empty on failure too), same posture as
+ * `DiscoverHubsResponse`/`ListSkillsResponse`. */
+export interface ListGroupTabsResponse {
+  ok: boolean;
+  tabs: GroupTab[];
+  error?: string;
+}
+
 export type StatusChangedEvent = { type: "statusChanged"; status: ConnectionStatus };
 export type ChatMessageEvent = { type: "chatMessage"; entry: ChatEntry };
-export type BackgroundEvent = StatusChangedEvent | ChatMessageEvent;
+export type GroupChangedEvent = { type: "groupChanged" };
+export type BackgroundEvent = StatusChangedEvent | ChatMessageEvent | GroupChangedEvent;

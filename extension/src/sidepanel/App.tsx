@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import ConnectionForm from "./ConnectionForm";
 import ChatView from "./ChatView";
 import SkillsView from "./SkillsView";
+import TabsView from "./TabsView";
 import type { ChatEntry, ConnectionStatus } from "../background/connection";
 import type { BackgroundEvent, ConnectionSettings, GetStatusResponse, OkResponse } from "../background/popup_protocol";
 
@@ -12,7 +13,7 @@ export default function App() {
   const [connectError, setConnectError] = useState<string | undefined>(undefined);
   const [connecting, setConnecting] = useState(false);
   const [pendingChat, setPendingChat] = useState(false);
-  const [tab, setTab] = useState<"chat" | "skills">("chat");
+  const [tab, setTab] = useState<"chat" | "skills" | "tabs">("chat");
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "getStatus" }).then((res: GetStatusResponse) => {
@@ -71,14 +72,22 @@ export default function App() {
             <button type="button" className={tab === "skills" ? "tab tab--active" : "tab"} onClick={() => setTab("skills")}>
               Skills
             </button>
+            <button type="button" className={tab === "tabs" ? "tab tab--active" : "tab"} onClick={() => setTab("tabs")}>
+              Abas
+            </button>
           </nav>
-          {/* Both stay mounted (Skills just hidden) so switching tabs never scrolls away or loses a half-typed message. */}
+          {/* All three stay mounted (just hidden) so switching tabs never scrolls away or loses a half-typed message. */}
           <div className="tab-panel" hidden={tab !== "chat"}>
             <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />
           </div>
           {tab === "skills" && (
             <div className="tab-panel">
               <SkillsView />
+            </div>
+          )}
+          {tab === "tabs" && (
+            <div className="tab-panel">
+              <TabsView />
             </div>
           )}
         </>
