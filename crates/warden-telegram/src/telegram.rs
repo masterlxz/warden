@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::spend::SpendContext;
 
 const TELEGRAM_MESSAGE_LIMIT: usize = 4096;
 const POLL_TIMEOUT_SECS: u64 = 30;
@@ -237,12 +238,14 @@ async fn handle_update(
         .and_then(|sender| sender.username.clone().or_else(|| sender.first_name.clone()))
         .unwrap_or_else(|| conversation_id.clone());
 
-    let (reply, attachments) = match warden_bootstrap::handle_turn(orchestrator, conversations_dir, &conversation_id, &title_seed, text).await
+    // Spending limits (P4) are counted per chat: a private chat's id is the person's own.
+    let orchestrator = orchestrator.with_spend_context(SpendContext::new("telegram").with_user(conversation_id.clone()));
+    let (reply, attachments) = match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &conversation_id, &title_seed, text).await
     {
         Ok(outcome) => (outcome.content, outcome.attachments),
         Err(err) => {
             eprintln!("error handling message from chat {}: {err:#}", message.chat.id);
-            ("Sorry, something went wrong handling your message.".to_string(), Vec::new())
+            (warden_bootstrap::spend::chat_error_reply(&err), Vec::new())
         }
     };
 

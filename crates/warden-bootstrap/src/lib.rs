@@ -25,13 +25,16 @@ use warden_core::tool::mcp::McpToolProvider;
 use warden_core::skill::SkillStore;
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::skill_tools::{ManageSkillTool, ReadSkillFileTool, UseSkillTool};
+use warden_core::tool::spend_tool::BudgetTool;
 use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod manage_agents;
 pub mod skill_gen;
+pub mod spend;
 pub mod usage;
 pub use manage_agents::ManageAgentsTool;
+pub use spend::{default_spend_ledger_path, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,8 +130,9 @@ pub struct AgentConfig {
 
 /// What an agent created by another agent may use unless the creator asks for more (and the user
 /// approves it): read-only access and document output — no `write_file`, `shell`, `ssh_*`,
-/// `manage_skill`, `delegate_task`, and no MCP tool.
-pub const SAFE_AGENT_TOOLS: [&str; 5] = ["read_file", "use_skill", "read_skill_file", "usage_stats", "generate_document"];
+/// `manage_skill`, `delegate_task`, and no MCP tool. `budget` is read-only too, and an agent that can
+/// see how close it is to its spending limit is one that can decide to stop (P4).
+pub const SAFE_AGENT_TOOLS: [&str; 6] = ["read_file", "use_skill", "read_skill_file", "usage_stats", "budget", "generate_document"];
 
 /// One SSH server the AI may run commands on through the `ssh_exec` tool (P47). Edited from the
 /// desktop Settings screen or the CLI's `/ssh`. Only the *path* to a private key lives here, never
@@ -328,6 +332,16 @@ pub struct FileConfig {
     /// exists until at least one *enabled* host is registered.
     #[serde(default)]
     pub ssh_hosts: Vec<SshHostConfig>,
+    /// Spending limits (P4, TOML `[[limits]]`): how many tokens and/or dollars a sliding window of
+    /// time may cost, per scope (everything, an agent, a channel, one user of a channel). `None`
+    /// (no `[[limits]]` in the file) keeps the built-in safety net (`spend::default_limits`);
+    /// `limits = []` turns every limit off. `WARDEN_SPEND_LIMITS=off` also does, over the file.
+    /// See the `spend` module for the entry format. No Settings-screen UI yet.
+    pub limits: Option<Vec<LimitConfig>>,
+    /// What each model charges per million tokens (TOML `[[prices]]`), so a limit can be in dollars.
+    /// Nothing is built in — a model listed nowhere counts against token limits only.
+    #[serde(default)]
+    pub prices: Vec<warden_core::spend::Price>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -1188,6 +1202,9 @@ pub async fn bootstrap(
     let vault = Arc::new(Vault::new(vault_path));
     seed_default_vault_files(&vault);
 
+    // Read here, before `config` is picked apart below (the Tavily key is moved out of it).
+    let spend_guard = spend::build_spend_guard(&config);
+
     let mut base_tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(vault.clone())),
         Arc::new(WriteFileTool::new(vault.clone())),
@@ -1257,9 +1274,15 @@ pub async fn bootstrap(
     // Reads background jobs' results (P46). Registered unbound: the orchestrator binds it to each turn's
     // job board, and until then it is hidden from the model — sub-agents, which inherit it, never see it.
     base_tools.push(Arc::new(JobsTool::new()));
-    let orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path)
+    // Shows the spending meter (P4). Same story as `jobs`: bound to each turn by the orchestrator, and
+    // hidden from the model whenever the turn has no limits.
+    base_tools.push(Arc::new(BudgetTool::new()));
+    let mut orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path)
         .with_delegation_limit(max_delegated_calls)
         .with_parallel_jobs(max_parallel_jobs as usize);
+    if let Some(guard) = spend_guard {
+        orchestrator = orchestrator.with_spend_guard(guard);
+    }
 
     Ok(orchestrator)
 }
@@ -1632,6 +1655,17 @@ oauth = true
                 agents: vec!["ops".to_string()],
                 require_approval: true,
             }],
+            limits: Some(vec![LimitConfig {
+                id: "ana-hour".to_string(),
+                scope: LimitScope::User,
+                target: Some("telegram:42".to_string()),
+                window_hours: 1,
+                max_tokens: Some(100_000),
+                max_cost_usd: Some(0.5),
+                warn_at: Some(0.7),
+                extend_step: None,
+            }]),
+            prices: vec![warden_core::spend::Price { model: "gpt-4o-mini".to_string(), input_per_mtok: 0.15, output_per_mtok: 0.6 }],
         };
 
         save_config(&path, &config).unwrap();

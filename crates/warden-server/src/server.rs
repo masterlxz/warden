@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
+use warden_core::spend::SpendContext;
 
 use crate::device_registry::{PairingStatus, PairingStore};
 use crate::skills::handle_skill_request;
@@ -233,7 +234,8 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
                 Ok(ClientMessage::Chat { message }) => {
-                    let orchestrator = orchestrator.clone();
+                    // Spending limits (P4) are counted per connected device.
+                    let orchestrator = orchestrator.with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
                     let conversations_dir = conversations_dir.clone();
                     let device_id = device_id.clone();
                     let reply_tx = tx.clone();

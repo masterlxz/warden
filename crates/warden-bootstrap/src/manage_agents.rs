@@ -703,7 +703,7 @@ mod tests {
     /// A tool that knows the real tool names, optionally called by an agent limited to `limit`.
     fn tool_knowing(path: &Path, limit: Option<&[&str]>) -> (Arc<dyn Tool>, Arc<Scripted>) {
         let approver = Arc::new(Scripted { answer: true, asked: Mutex::new(Vec::new()) });
-        let known = names(&["read_file", "write_file", "shell", "use_skill", "read_skill_file", "usage_stats", "generate_document", "delegate_to_agent", "manage_agents"]);
+        let known = names(&["read_file", "write_file", "shell", "use_skill", "read_skill_file", "usage_stats", "budget", "generate_document", "delegate_to_agent", "manage_agents"]);
         let tool = ManageAgentsTool::new(path).with_known_tools(known).with_caller_limit(limit.map(names));
         (tool.with_approver(approver.clone()).unwrap(), approver)
     }
@@ -717,7 +717,7 @@ mod tests {
         let created = &agents_on_disk(&path)[0];
         assert_eq!(created.allowed_tools, Some(names(&SAFE_AGENT_TOOLS)));
         let detail = approver.asked.lock().unwrap()[0].detail.clone();
-        assert!(detail.contains("Tools: read_file, use_skill, read_skill_file, usage_stats, generate_document"), "{detail}");
+        assert!(detail.contains("Tools: read_file, use_skill, read_skill_file, usage_stats, budget, generate_document"), "{detail}");
         assert!(!SAFE_AGENT_TOOLS.iter().any(|t| ["shell", "write_file"].contains(t)));
     }
 

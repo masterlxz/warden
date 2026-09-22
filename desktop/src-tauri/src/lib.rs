@@ -25,6 +25,7 @@ use warden_bootstrap::{
 use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
+use warden_core::spend::SpendContext;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 
 struct AppState {
@@ -213,7 +214,9 @@ async fn send_message(
 
     // Tools that need a human "yes" (SSH hosts with `require_approval`, `manage_agents`) ask through
     // the window; every other channel has no approver and those actions are refused there.
-    let orchestrator = orchestrator.with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
+    let orchestrator = orchestrator
+        .with_spend_context(SpendContext::new("desktop"))
+        .with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult {
@@ -704,6 +707,9 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         delegate_max_depth: existing.delegate_max_depth,
         max_delegated_calls: existing.max_delegated_calls,
         max_parallel_jobs: existing.max_parallel_jobs,
+        // Spending limits and prices (P4): config.toml-only for now, carried forward for the same reason.
+        limits: existing.limits.clone(),
+        prices: existing.prices.clone(),
         api_keys: ApiKeys {
             gemini: None,
             openai: None,
