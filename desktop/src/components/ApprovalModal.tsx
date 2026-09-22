@@ -55,20 +55,26 @@ function ApprovalModal() {
     delete_agent: "delete the agent",
   };
 
+  // A paused turn (P4) is not the AI asking for something: a spending limit ran out and the turn waits
+  // for the user to allow more or stop it.
+  const spendPause = current.action === "extend_limit";
+
   return (
     <div className="settings-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="approval-title">
       <div className="sync-qr-card settings-modal-card approval-card">
         <h2 id="approval-title" className="approval-title">
-          The AI wants to {verb[current.action] ?? current.action} {current.target}
+          {spendPause
+            ? `Spending limit reached: ${current.target}`
+            : `The AI wants to ${verb[current.action] ?? current.action} ${current.target}`}
         </h2>
         <pre className="approval-detail">{current.detail}</pre>
         {queue.length > 1 && <p className="settings-hint">{queue.length - 1} more waiting after this one.</p>}
         <div className="approval-actions">
           <button type="button" className="settings-browse-btn" onClick={() => answer(false)} autoFocus>
-            Deny
+            {spendPause ? "Stop" : "Deny"}
           </button>
           <button type="button" className="settings-save-btn" onClick={() => answer(true)}>
-            Approve
+            {spendPause ? "Allow more" : "Approve"}
           </button>
         </div>
       </div>

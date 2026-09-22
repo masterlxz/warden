@@ -8,6 +8,10 @@ pub enum Command {
     Exit,
     Help,
     Usage,
+    /// `/limits` — where every spending limit stands (P4).
+    Limits,
+    /// `/extend <id>` — lets a limit go one step further for the rest of its window.
+    Extend(String),
     ModelsList,
     ModelsUse(String),
     ModelsReset,
@@ -74,6 +78,8 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("exit", []) | ("quit", []) => Command::Exit,
         ("help", []) => Command::Help,
         ("usage", []) => Command::Usage,
+        ("limits", []) => Command::Limits,
+        ("extend", [id]) => Command::Extend(id.to_string()),
         ("models", []) => Command::ModelsList,
         ("models", ["use", id]) => Command::ModelsUse(id.to_string()),
         ("models", ["reset"]) => Command::ModelsReset,
@@ -142,7 +148,7 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "models", "agents", "skills", "ssh", "sync"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "limits", "extend", "models", "agents", "skills", "ssh", "sync"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
 const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
@@ -244,6 +250,14 @@ mod tests {
     }
 
     #[test]
+    fn limits_and_extend_parse_and_extend_needs_a_limit_id() {
+        assert!(matches!(assert_recognized("/limits"), Command::Limits));
+        assert!(matches!(assert_recognized("/extend default-day"), Command::Extend(id) if id == "default-day"));
+        assert!(matches!(parse_command("/extend"), ParseOutcome::Unrecognized(_)));
+        assert!(matches!(parse_command("/limits now"), ParseOutcome::Unrecognized(_)));
+    }
+
+    #[test]
     fn models_subcommands_parse_their_arguments() {
         assert!(matches!(assert_recognized("/models"), Command::ModelsList));
         assert!(matches!(assert_recognized("/models reset"), Command::ModelsReset));
@@ -329,7 +343,7 @@ mod tests {
     #[test]
     fn current_word_completes_the_top_level_command_name() {
         assert_eq!(candidates_for("/mo"), vec!["models"]);
-        assert_eq!(candidates_for("/e"), vec!["exit"]);
+        assert_eq!(candidates_for("/e"), vec!["exit", "extend"]);
     }
 
     #[test]
@@ -351,7 +365,9 @@ mod tests {
     #[test]
     fn ghost_suggestion_completes_an_unambiguous_top_level_word() {
         assert_eq!(ghost_suggestion("/mo").as_deref(), Some("dels"));
-        assert_eq!(ghost_suggestion("/ex").as_deref(), Some("it"));
+        assert_eq!(ghost_suggestion("/exi").as_deref(), Some("t"));
+        assert_eq!(ghost_suggestion("/ext").as_deref(), Some("end"));
+        assert_eq!(ghost_suggestion("/li").as_deref(), Some("mits"));
     }
 
     #[test]

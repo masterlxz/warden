@@ -8,6 +8,7 @@ use clap::{Parser, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
 use warden_core::model::Message;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::spend::SpendContext;
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -67,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
         PathBuf::from("vault"),
     )
     .await?;
+    // Whatever is spent from here on counts as the terminal's (P4's channel scope), in both modes below.
+    let orchestrator = orchestrator.with_spend_context(SpendContext::new("cli"));
 
     // Readline-style editing needs a real terminal — piped stdin (scripted use, the process-level
     // tests in tests/cli.rs) falls back to the plain loop below, unchanged from before this

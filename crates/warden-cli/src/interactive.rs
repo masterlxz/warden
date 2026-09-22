@@ -67,6 +67,7 @@ use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
+use warden_core::spend::{LimitStatus, SpendGuard};
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::ssh::test_connection;
 use warden_core::tool::{ApprovalRequest, Approver, Tool};
@@ -986,6 +987,10 @@ struct CliSession {
     /// Every tool the running orchestrator has — what an agent's `allowed_tools` is checked against
     /// in the `/agents` wizard, which has no orchestrator of its own.
     tool_names: Vec<String>,
+    /// The spending ledger (P4) `/limits` reads and `/extend` grants against — the very one the
+    /// orchestrator checks each turn, so what these commands show is what a turn will hit. `None`
+    /// when no limit is in force.
+    spend_guard: Option<Arc<SpendGuard>>,
 }
 
 /// Uses `warden_bootstrap::resolve_vault_path` (P61) — needed here because `Orchestrator` doesn't
@@ -1144,6 +1149,8 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/exit, /quit — sair",
         "/help — esta lista",
         "/usage — tokens gastos nesta sessão do terminal",
+        "/limits — situação de cada limite de gasto (tokens e $ por janela de tempo)",
+        "/extend <id> — liberar mais um passo de um limite, até a janela andar",
         "/models — listar os modelos configurados",
         "/models use <id> — usar um modelo pro resto da sessão",
         "/models reset — voltar pro modelo com que o Warden foi iniciado",
@@ -1199,6 +1206,90 @@ async fn cmd_usage(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::
         (format!("{} tokens no total", usage.total_tokens), Style::default()),
     ];
     render_message_card(terminal, "uso", accent_style(), lines)
+}
+
+/// One limit as `/limits` shows it: how much of each ceiling is used, what is left, and when room
+/// starts coming back. Reads out the same numbers `LimitStatus::describe` gives the model.
+fn limit_line(status: &LimitStatus) -> String {
+    let mut parts = Vec::new();
+    if let Some(max) = status.max_tokens {
+        parts.push(format!("{} de {} tokens (restam {})", status.used_tokens, max, status.remaining_tokens.unwrap_or(0)));
+    }
+    if let Some(max) = status.max_cost_usd {
+        parts.push(format!("${:.4} de ${:.2} (restam ${:.4})", status.used_cost_usd, max, status.remaining_cost_usd.unwrap_or(0.0)));
+    }
+    let mut line = format!("{} [{}, últimas {}h] {:.0}% — {}", status.id, status.scope, status.window_hours, status.fraction * 100.0, parts.join("; "));
+    if status.unpriced_calls > 0 && status.max_cost_usd.is_some() {
+        line.push_str(&format!(" · $ subestimado: {} chamadas de modelo sem preço", status.unpriced_calls));
+    }
+    if let Some(min) = status.frees_up_in_minutes {
+        line.push_str(&format!(" · volta a liberar em ~{min} min"));
+    }
+    line
+}
+
+/// `/limits` — every configured spending limit and where it stands (P4). Shows all of them, not only
+/// those that cover this terminal, so a limit on Telegram or an agent is visible from here too.
+async fn cmd_limits(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let Some(guard) = &session.spend_guard else {
+        return render_message_card(
+            terminal,
+            "limites",
+            accent_style(),
+            vec![("nenhum limite de gasto ativo (limits = [] no config.toml ou WARDEN_SPEND_LIMITS=off)".to_string(), Style::default())],
+        );
+    };
+    let mut lines: Vec<(String, Style)> = guard
+        .status(None)
+        .iter()
+        .map(|s| {
+            let style = if s.exceeded {
+                error_style()
+            } else if s.warn {
+                Style::default().fg(Color::Rgb(241, 196, 15))
+            } else {
+                Style::default()
+            };
+            (limit_line(s), style)
+        })
+        .collect();
+    if let Some(error) = guard.last_error() {
+        lines.push((format!("aviso: não consegui gravar o gasto ({error}) — os números podem estar baixos"), error_style()));
+    }
+    lines.push(("/extend <id> libera mais um passo de um limite".to_string(), dim_style()));
+    render_message_card(terminal, "limites", accent_style(), lines)
+}
+
+/// `/extend <id>` — allows one more step on a limit, for the rest of its window (P4). The same thing
+/// answering "sim" to a paused turn does, for when the limit is hit outside a turn that could ask
+/// (a background bot) or a person wants to make room ahead of time.
+async fn cmd_extend(terminal: &mut CliTerminal, session: &CliSession, id: String) -> anyhow::Result<()> {
+    let Some(guard) = &session.spend_guard else {
+        return render_message_card(terminal, "erro", error_style(), vec![("nenhum limite de gasto ativo".to_string(), Style::default())]);
+    };
+    match guard.extend(&id) {
+        Ok(grant) => {
+            let mut added = Vec::new();
+            if grant.tokens > 0 {
+                added.push(format!("+{} tokens", grant.tokens));
+            }
+            if grant.cost_usd > 0.0 {
+                added.push(format!("+${:.2}", grant.cost_usd));
+            }
+            render_message_card(
+                terminal,
+                "limites",
+                accent_style(),
+                vec![(format!("limite '{id}' ampliado: {} até a janela andar", added.join(" e ")), Style::default())],
+            )
+        }
+        Err(err) => render_message_card(
+            terminal,
+            "erro",
+            error_style(),
+            vec![(format!("{err:#} — use /limits pra ver os ids"), Style::default())],
+        ),
+    }
 }
 
 fn provider_display_model(provider: &ProviderConfig) -> String {
@@ -2144,6 +2235,8 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
         Command::Help => cmd_help(terminal).await,
         Command::Usage => cmd_usage(terminal, session).await,
+        Command::Limits => cmd_limits(terminal, session).await,
+        Command::Extend(id) => cmd_extend(terminal, session, id).await,
         Command::ModelsList => cmd_models_list(terminal, session).await,
         Command::ModelsUse(id) => cmd_models_use(terminal, session, id).await,
         Command::ModelsReset => cmd_models_reset(terminal, session).await,
@@ -2208,6 +2301,7 @@ pub async fn run(
         usage_total: Usage::default(),
         turn_count: 0,
         tool_names: orchestrator.tools().iter().map(|t| t.spec().name).collect(),
+        spend_guard: orchestrator.spend_guard().cloned(),
     };
 
     loop {
