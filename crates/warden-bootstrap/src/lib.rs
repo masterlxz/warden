@@ -880,20 +880,6 @@ pub fn resolve_storage_provider(from_env: Option<String>, from_file: Option<Stor
     }
 }
 
-/// The name a tool should register under, given the names already claimed: `tool_name` unchanged
-/// if nothing else has it yet, otherwise `"{server_name}__{tool_name}"` (P46 — two MCP servers, or
-/// an MCP server and a built-in tool, advertising the same name). `__` rather than `.`/`-` because
-/// every function-calling API this project talks to (OpenAI/Gemini/Anthropic) restricts tool names
-/// to `[a-zA-Z0-9_-]`. Pure and rename-only-when-needed on purpose: a tool nobody collides with
-/// keeps the exact name a person may already have written into `allowed_tools`, a skill or a habit.
-fn dedupe_tool_name(existing: &[String], server_name: &str, tool_name: &str) -> String {
-    if existing.iter().any(|n| n == tool_name) {
-        format!("{server_name}__{tool_name}")
-    } else {
-        tool_name.to_string()
-    }
-}
-
 /// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
 /// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
 /// take down the whole orchestrator, same graceful-degradation spirit as a missing
@@ -907,7 +893,8 @@ fn dedupe_tool_name(existing: &[String], server_name: &str, tool_name: &str) -> 
 ///
 /// Each tool's name is deduped against everything already in `base_tools` (built-ins registered
 /// earlier, Tavily, and any `[[mcp_servers]]` entry already processed this call) via
-/// `dedupe_tool_name`; a rename is logged so whoever writes `allowed_tools` knows the name to use.
+/// `warden_core::tool::dedupe_tool_name` (shared with `warden-server`'s own collision point, P42);
+/// a rename is logged so whoever writes `allowed_tools` knows the name to use.
 async fn register_mcp_tools<P: ToolProvider>(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, connect_result: anyhow::Result<P>) {
     match connect_result {
         Ok(provider) => match provider.tools().await {
@@ -915,7 +902,7 @@ async fn register_mcp_tools<P: ToolProvider>(base_tools: &mut Vec<Arc<dyn Tool>>
                 for tool in tools {
                     let original = tool.spec().name;
                     let existing: Vec<String> = base_tools.iter().map(|t| t.spec().name).collect();
-                    let resolved = dedupe_tool_name(&existing, name, &original);
+                    let resolved = warden_core::tool::dedupe_tool_name(&existing, name, &original);
                     if resolved == original {
                         base_tools.push(tool);
                     } else {
@@ -2451,15 +2438,8 @@ oauth = true
         std::fs::remove_dir_all(vault.root()).ok();
     }
 
-    #[test]
-    fn dedupe_tool_name_only_renames_on_a_real_collision() {
-        assert_eq!(dedupe_tool_name(&[], "anchor", "search"), "search");
-        assert_eq!(dedupe_tool_name(&["read_file".to_string(), "shell".to_string()], "anchor", "search"), "search");
-        assert_eq!(dedupe_tool_name(&["search".to_string()], "anchor", "search"), "anchor__search");
-        // Colliding with a name another MCP server already claimed (however it got that name —
-        // dedupe_tool_name doesn't need to know) works the same way as colliding with a built-in.
-        assert_eq!(dedupe_tool_name(&["docs__search".to_string(), "search".to_string()], "anchor", "search"), "anchor__search");
-    }
+    // `dedupe_tool_name` itself moved to `warden_core::tool` (shared with `warden-server`'s own
+    // collision point, P42) — its unit tests live there now.
 
     /// A named `Tool` with no real capability, for the `register_mcp_tools` tests below — same
     /// minimal shape as `Named` in `delegate_to_agent_targets_use_their_own_tool_list_not_the_chiefs`.

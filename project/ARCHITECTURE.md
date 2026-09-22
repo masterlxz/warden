@@ -737,10 +737,19 @@ nomeou as tools do celular `list_files`/`read_file` — os MESMOS nomes que `Rea
 "Duplicate function declaration found: read_file" — duas tools com nome idêntico na mesma lista de
 `function_declarations` não é permitido. Renomeado pra `list_phone_files`/`read_phone_file`
 (`mobile/lib/services/mobile_file_tool.dart`), sem tocar nos nomes do vault (`read_file`/
-`write_file` já são convenção estabelecida em todos os canais). Lição registrada: um nome de tool
-de um cliente remoto pode colidir com uma tool já registrada localmente — não há checagem de
-colisão em `server.rs` hoje (uma tool com nome duplicado simplesmente quebra a chamada de API do
-provider, silenciosamente do lado do Warden), registrado em `PENDING.md`.
+`write_file` já são convenção estabelecida em todos os canais). Lição registrada (P42): um nome de
+tool de um cliente remoto pode colidir com uma tool já registrada localmente — na época, nada
+detectava isso em `server.rs` (uma tool com nome duplicado simplesmente quebrava a chamada de API
+do provider, silenciosamente do lado do Warden). **Resolvido na Sessão 91**, reaproveitando o
+mesmo mecanismo que a Sessão 90 construiu pro caso análogo em MCP (P46): o loop de registro de
+`RemoteTool` por conexão dedupa cada nome de `Hello.tools` contra o que já está no `Orchestrator`
+compartilhado (`warden_core::tool::dedupe_tool_name`, promovida de `warden-bootstrap` pra pública),
+namespaceando pelo `device_id` só quando há colisão de verdade (`{device_id}__{tool}`) via
+`warden_core::tool::rename_tool`. Como `RemoteTool::call` manda o `ToolCallRequest` a partir do seu
+próprio `spec` interno (nunca do que o wrapper reporta pro modelo), o cliente nunca precisa saber
+do nome renomeado — continua recebendo o pedido pelo nome que sempre anunciou. Ver "Colisão de
+nomes de tools entre MCP servers" e a entrada da Sessão 91 pro detalhamento técnico completo (o
+mesmo texto vale pros dois lados, já que é a mesma função/wrapper).
 
 **Pacote Flutter — achado de pesquisa antes de escrever código**: a escolha óbvia (`shared_storage`,
 o wrapper mais conhecido do Storage Access Framework) está **descontinuada** no pub.dev, sem
@@ -1166,21 +1175,27 @@ usuário: um agente **criado por outro agente** sem lista recebe só o conjunto 
   nomeado, então seguem com todas as tools; as tools `ssh_*` já tinham o próprio escopo por host/agente e continuam
   com ele além da lista.
 
-## Colisão de nomes de tools entre MCP servers (P46, Sessão 90)
+## Colisão de nomes de tools — MCP servers (P46) e clientes remotos (P42) (Sessões 90-91)
 
-Até aqui, `register_mcp_tools` (`warden-bootstrap`) registrava cada tool de um `[[mcp_servers]]` com o nome cru que
-o servidor reporta, sem checar nada contra o que já estava registrado (tools nativas, Tavily, ou um `[[mcp_servers]]`
-anterior). O despacho do `Orchestrator` resolve por `tools.iter().find(|t| t.spec().name == tool_call.name)` — o
-**primeiro registrado sempre ganha**; um nome repetido deixava a segunda tool inalcançável pra sempre, sem aviso, e a
-lista de `ToolSpec` mandada ao provider ficava com dois nomes iguais (a maioria das APIs de function-calling rejeita
-ou se confunde com isso).
+Até a Sessão 90, `register_mcp_tools` (`warden-bootstrap`) registrava cada tool de um `[[mcp_servers]]` com o nome
+cru que o servidor reporta, sem checar nada contra o que já estava registrado (tools nativas, Tavily, ou um
+`[[mcp_servers]]` anterior). O despacho do `Orchestrator` resolve por `tools.iter().find(|t| t.spec().name ==
+tool_call.name)` — o **primeiro registrado sempre ganha**; um nome repetido deixava a segunda tool inalcançável pra
+sempre, sem aviso, e a lista de `ToolSpec` mandada ao provider ficava com dois nomes iguais (a maioria das APIs de
+function-calling rejeita ou se confunde com isso). A Sessão 91 achou e fechou o mesmo bug do outro lado: um cliente
+remoto (celular, extensão de navegador) que anuncia em `Hello.tools` um nome que já existe no `Orchestrator`
+compartilhado (P42, achado original na Sessão 52) tinha exatamente o mesmo problema — hoje os dois casos usam o
+mesmo mecanismo, descrito uma vez aqui.
 
 - **Só renomeia quando colide de verdade.** Nunca por via das dúvidas — uma tool sem conflito mantém exatamente o
-  nome de hoje, pra não invalidar `allowed_tools`/skills/hábitos já escritos. `dedupe_tool_name(existing, server,
-  tool)` (pura, `warden-bootstrap/src/lib.rs`) devolve o nome intacto se nada mais o usa, ou
-  `"{server}__{tool}"` na colisão — `__`, não `.`/`-`, porque OpenAI/Gemini/Anthropic restringem nome de função a
-  `[a-zA-Z0-9_-]`. O primeiro a registrar um nome sempre fica com a versão crua; quem colide depois (de outro
-  `[[mcp_servers]]`, ou o mesmo server anunciando um nome que já é de uma tool nativa) é que ganha o prefixo.
+  nome de hoje, pra não invalidar `allowed_tools`/skills/hábitos já escritos. `dedupe_tool_name(existing, namespace,
+  tool)` (pura, **`warden_core::tool`** — pública desde a Sessão 91, antes vivia privada em
+  `warden-bootstrap`, movida pra ser a mesma fonte de verdade dos dois call sites) devolve o nome intacto se nada
+  mais o usa, ou `"{namespace}__{tool}"` na colisão — `__`, não `.`/`-`, porque OpenAI/Gemini/Anthropic restringem
+  nome de função a `[a-zA-Z0-9_-]`. `namespace` é o nome do `[[mcp_servers]]` (P46) ou o `device_id` do cliente
+  conectado (P42, `crates/warden-server/src/server.rs`). O primeiro a registrar um nome sempre fica com a versão
+  crua; quem colide depois (outro `[[mcp_servers]]`, um cliente remoto, ou qualquer um dos dois anunciando um nome
+  que já é de uma tool nativa) é que ganha o prefixo.
 - **`NamespacedTool`/`tool::rename_tool(tool, name)`** (`warden-core/src/tool/mod.rs`): wrapper privado de `Tool`
   que só sobrescreve `spec().name`, delegando `call`/`is_available` direto. As 5 outras "copie este tool, mas..."
   do trait (`scoped_to_agent`/`restricted_to`/`with_budget`/`with_jobs`/`with_approver`) delegam pro tool interno
@@ -1196,6 +1211,18 @@ ou se confunde com isso).
   mecanismo de descoberta, consistente com todo o resto do graceful-degradation de MCP); colisão **dentro** do mesmo
   server (duas tools do próprio `tools/list` com nome igual) é tratada sem pânico pelo mesmo mecanismo, mas é bug do
   server, não um caso pensado especialmente.
+- **Lado cliente remoto (P42, Sessão 91)**: `crates/warden-server/src/server.rs`'s loop que registra um `RemoteTool`
+  por tool anunciada em `Hello.tools` (Fase 7.4) dedupa contra `per_connection.tools()` antes de registrar, com o
+  `device_id` do cliente como `namespace`. Funciona sem mudar nada no protocolo nem nos clientes porque
+  `RemoteTool::call` (`crates/warden-server/src/remote_tool.rs`) manda o `ToolCallRequest` a partir do seu **próprio**
+  `spec` interno, fixado uma vez em `RemoteTool::new` — o wrapper `NamespacedTool` só troca o que `spec()`
+  *reporta* pro modelo/despacho, nunca o que a chamada real manda pro cliente. Também não existe colisão **entre**
+  dois clientes diferentes: cada conexão com `Hello.tools` ganha seu próprio clone do `Orchestrator`
+  (`per_connection`), então a tool de um cliente nunca aparece no `Orchestrator` de outro — a única colisão possível
+  é entre a tool de **um** cliente e o que já está na base compartilhada (vault/shell/SSH/MCP servers), exatamente o
+  caso real que originou o P42 (celular vs. `ReadFileTool`/`WriteFileTool`). Testado com um servidor e uma conexão
+  reais sobre WebSocket (`crates/warden-server/tests/tools.rs`, `spin_up_server_with_base_tool` novo em
+  `tests/support/mod.rs`) — confirma tanto o rename quanto que o cliente nunca vê o nome novo.
 
 ## Teto de custo dos sub-agentes: `TurnBudget` (P46/P60/P18, Sessão 82)
 

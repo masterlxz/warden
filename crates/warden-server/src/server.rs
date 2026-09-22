@@ -217,12 +217,34 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
     // Orchestrator is Arc-backed) with a RemoteTool proxy per advertised spec, so the model can
     // invoke a capability that only exists on *this* device (mobile's file access, to start). A
     // client with nothing to advertise (tools empty) just reuses the shared, server-wide instance.
+    //
+    // P42: a client's advertised name can collide with the shared Orchestrator's own tools (vault,
+    // shell, SSH, MCP servers) — the original real case was the phone's first `list_files`/
+    // `read_file` colliding with the vault's own tools of the same name, which broke the next model
+    // call with a provider-side "duplicate function" error rather than anything clear from Warden.
+    // Deduped the same way `warden-bootstrap::register_mcp_tools` dedupes an MCP server's tools
+    // (P46) — only renamed on a real collision, namespaced by this device's id, via the shared
+    // `warden_core::tool::dedupe_tool_name`/`rename_tool`. `RemoteTool::call` sends the request
+    // using its own internal spec, never what this wrapper reports, so the client is never told
+    // about the rename — it keeps answering to the name it always advertised.
     let orchestrator: Arc<Orchestrator> = if tools.is_empty() {
         orchestrator
     } else {
         let mut per_connection = (*orchestrator).clone();
         for spec in tools {
-            per_connection.register_tool(Arc::new(RemoteTool::new(spec, tool_channel.clone(), REMOTE_TOOL_TIMEOUT)));
+            let original = spec.name.clone();
+            let existing: Vec<String> = per_connection.tools().iter().map(|t| t.spec().name).collect();
+            let resolved = warden_core::tool::dedupe_tool_name(&existing, &device_id, &original);
+            let remote = Arc::new(RemoteTool::new(spec, tool_channel.clone(), REMOTE_TOOL_TIMEOUT));
+            if resolved == original {
+                per_connection.register_tool(remote);
+            } else {
+                eprintln!(
+                    "warden-server: {device_id}'s tool '{original}' collides with an already-registered tool — \
+                     renamed to '{resolved}'\n"
+                );
+                per_connection.register_tool(warden_core::tool::rename_tool(remote, resolved));
+            }
         }
         Arc::new(per_connection)
     };

@@ -11,7 +11,7 @@ use serde_json::Value;
 use warden_core::memory::Vault;
 use warden_core::model::{response_stream, ChatStream, Message, ModelProvider, Response, Role, ToolCall};
 use warden_core::orchestrator::Orchestrator;
-use warden_core::tool::ToolSpec;
+use warden_core::tool::{Tool, ToolSpec};
 use warden_server::Server;
 
 /// A `ModelProvider` test double — no real API key needed, same helper (`response_stream`)
@@ -111,6 +111,34 @@ pub async fn spin_up_server_with_devices_path(provider: MockProvider) -> (std::n
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
     (addr, devices_path)
+}
+
+/// Same as `spin_up_server`, but the shared `Orchestrator` already has `base_tool` registered —
+/// needed by any test that exercises P42 (a connecting client's `Hello.tools` colliding with a
+/// tool the server already has, not with another client's — each connection gets its own clone of
+/// the shared orchestrator, so two different clients never collide with each other).
+pub async fn spin_up_server_with_base_tool(provider: MockProvider, base_tool: Arc<dyn Tool>) -> std::net::SocketAddr {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "warden-server-test-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let vault = Arc::new(Vault::new(temp_dir.join("vault")));
+    let mut orchestrator = Orchestrator::new(Arc::new(provider), vault);
+    orchestrator.register_tool(base_tool);
+
+    let server = Server::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        "test-key",
+        "Test Hub",
+        Arc::new(orchestrator),
+        temp_dir.join("conversations"),
+        temp_dir.join("devices.json"),
+    )
+    .await
+    .unwrap();
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+    addr
 }
 
 /// Same as `spin_up_server`, but runs `serve_until` (not `serve`) so the caller can stop it — the

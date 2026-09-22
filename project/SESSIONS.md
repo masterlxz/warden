@@ -2,7 +2,53 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-22 (Sessão 90)
+> Última atualização: 2026-09-22 (Sessão 91)
+
+---
+
+### 2026-09-22 — Sessão 91
+
+- **Objetivo**: P42 — colisão de nome de tool entre um cliente remoto (celular/extensão) e o `Orchestrator`
+  compartilhado. Plano aprovado antes de codar (Plan mode) — reaproveitar o mecanismo construído na Sessão 90 pro
+  P46 (MCP), em vez de reinventar.
+
+**O que foi feito**:
+
+- **`dedupe_tool_name` promovida de `warden-bootstrap` (privada) pra `warden_core::tool` (pública)**, ao lado de
+  `rename_tool`/`NamespacedTool` — parâmetro renomeado `server_name` → `namespace`, já que agora serve os dois
+  lados de colisão (MCP e cliente remoto). `warden-bootstrap::register_mcp_tools` passou a chamar a versão
+  importada em vez da cópia local, removida; uma única fonte de verdade pra regra "só renomeia quando colide de
+  verdade".
+- **`crates/warden-server/src/server.rs`**: o loop que registra `RemoteTool` por conexão (Fase 7.4) passou a
+  dedupar cada tool de `Hello.tools` contra `per_connection.tools()` antes de registrar, usando o `device_id` do
+  cliente como namespace na colisão; aviso no stderr quando renomeia.
+- **Confirmado no código antes de codar** (parte do plano, não descoberto ao codar): `RemoteTool::call` usa
+  `self.spec.name` — campo **interno**, fixado uma vez em `RemoteTool::new` — pra montar o `ToolCallRequest` que
+  vai pro cliente; `NamespacedTool` só sobrescreve o que `spec()` **reporta** pro modelo/despacho, nunca o que
+  `call()` manda pra baixo. Então o celular/extensão nunca fica sabendo que foi renomeado — continua recebendo o
+  pedido pelo nome que ele mesmo anunciou. Também confirmado: cada conexão ganha seu **próprio** clone do
+  orchestrator, então dois clientes diferentes nunca colidem entre si — só a tool de **um** cliente contra a base
+  compartilhada (vault/shell/SSH/MCP servers), exatamente o caso real que originou o P42 (celular vs.
+  `ReadFileTool`/`WriteFileTool`).
+- **Testes**: `warden-core` ganhou o teste de `dedupe_tool_name` (migrou de `warden-bootstrap`);
+  `crates/warden-server/tests/support/mod.rs` ganhou `spin_up_server_with_base_tool` (mesmo padrão de
+  `spin_up_server_with_devices_path`, com uma tool já registrada na base); dois testes reais novos em
+  `tests/tools.rs` — servidor real, `ServerConnection` real por WebSocket, `MockProvider` chamando a tool pelo
+  nome **renomeado**, confirmando que o `ToolCallRequest` que chega no cliente ainda usa o nome **original**; e um
+  caso sem colisão provando que nada muda (regressão da rota já coberta).
+- **Verificação**: `cargo test -p warden-core -p warden-bootstrap -p warden-server` verdes (17+4+48, incluindo os
+  novos), `cargo clippy -p warden-server --all-targets` limpo; `cargo test --workspace`/`cargo clippy --workspace
+  --all-targets` confirmados ao final da sessão. Nenhum dispositivo real (celular/extensão) necessário — o teste
+  de integração já sobe servidor e conexão reais sobre WebSocket, mesmo padrão que o resto do crate usa.
+- **Achado de método, vale registrar pra próxima vez**: nesta sessão o rustc local (1.98.1) deu ICE várias vezes
+  (o mesmo padrão já visto na Sessão 90) — desta vez com uma variação mais concreta: um `cargo clippy --workspace`
+  quebrou com `index out of bounds` **salvando** o cache incremental do `warden-bootstrap`
+  (`OnDiskCache::serialize`/`encode_query_values`, índice de 67 milhões contra um vetor de 375 — corrupção real, não
+  só timing). `rm -rf target/debug/incremental` (bem mais barato que `cargo clean` completo, que reconstruiria os
+  ~125GB de dependências) resolveu de vez — nenhuma outra falha depois disso. Vale tentar isso primeiro da próxima
+  vez que o rustc local se comportar assim, antes de um clean completo.
+
+**Fecha o P42.**
 
 ---
 

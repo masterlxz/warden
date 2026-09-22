@@ -115,21 +115,43 @@ pub trait ToolProvider: Send + Sync {
     async fn tools(&self) -> anyhow::Result<Vec<Arc<dyn Tool>>>;
 }
 
+/// The name a tool should register under, given the names already claimed: `tool_name` unchanged
+/// if nothing else has it yet, otherwise `"{namespace}__{tool_name}"`. Two unrelated call sites
+/// hit this — `warden-bootstrap::register_mcp_tools` (two MCP servers, or an MCP server and a
+/// built-in tool, advertising the same name; `namespace` is the server's config name) and
+/// `warden-server`'s per-connection tool registration (a remote client's advertised tool colliding
+/// with the shared `Orchestrator`'s own tools, P42; `namespace` is the client's `device_id`) — kept
+/// here, not duplicated in each crate, since it's the same rule either way. `__` rather than `.`/
+/// `-` because every function-calling API this project talks to (OpenAI/Gemini/Anthropic)
+/// restricts tool names to `[a-zA-Z0-9_-]`. Pure and rename-only-when-needed on purpose: a tool
+/// nobody collides with keeps the exact name a person may already have written into
+/// `allowed_tools`, a skill or a habit.
+pub fn dedupe_tool_name(existing: &[String], namespace: &str, tool_name: &str) -> String {
+    if existing.iter().any(|n| n == tool_name) {
+        format!("{namespace}__{tool_name}")
+    } else {
+        tool_name.to_string()
+    }
+}
+
 /// A tool with its `spec().name` overridden — the mechanism behind `rename_tool`, used only to
-/// disambiguate a tool (an MCP server's) whose bare name collides with one already registered
-/// (P46). Every other trait method delegates to `inner`, re-wrapping whatever a "copy of this
-/// tool, but..." method returns so the rename survives `with_allowed_tools`/`with_budget`/etc. —
-/// without that, the copy would silently revert to the original, unprefixed name.
+/// disambiguate a tool (an MCP server's, or a remote client's) whose bare name collides with one
+/// already registered (P46/P42). Every other trait method delegates to `inner`, re-wrapping
+/// whatever a "copy of this tool, but..." method returns so the rename survives
+/// `with_allowed_tools`/`with_budget`/etc. — without that, the copy would silently revert to the
+/// original, unprefixed name.
 struct NamespacedTool {
     inner: Arc<dyn Tool>,
     name: String,
 }
 
 /// Wraps `tool` so `spec().name` reads as `name` instead of whatever `tool` itself reports,
-/// leaving everything else (behavior, parameters, description) untouched. Used by
-/// `warden-bootstrap::register_mcp_tools` to resolve a name collision between two MCP servers (or
-/// an MCP server and a built-in tool) — a tool is only ever wrapped this way when its bare name
-/// would otherwise be unreachable, never as a matter of course.
+/// leaving everything else (behavior, parameters, description, and — crucially — what `call()`
+/// actually sends downstream) untouched. `McpTool::call`/`RemoteTool::call` both build their
+/// outgoing request from their own internal `spec`, never from what this wrapper reports, so
+/// renaming here never desyncs from what an MCP server or a connected client itself expects to be
+/// called. A tool is only ever wrapped this way when its bare name would otherwise be
+/// unreachable, never as a matter of course.
 pub fn rename_tool(tool: Arc<dyn Tool>, name: impl Into<String>) -> Arc<dyn Tool> {
     Arc::new(NamespacedTool { inner: tool, name: name.into() })
 }
@@ -172,6 +194,16 @@ impl Tool for NamespacedTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dedupe_tool_name_only_renames_on_a_real_collision() {
+        assert_eq!(dedupe_tool_name(&[], "anchor", "search"), "search");
+        assert_eq!(dedupe_tool_name(&["read_file".to_string(), "shell".to_string()], "anchor", "search"), "search");
+        assert_eq!(dedupe_tool_name(&["search".to_string()], "anchor", "search"), "anchor__search");
+        // Colliding with a name another namespace already claimed (an MCP server, a remote
+        // client's own advertised name) works the same way as colliding with a built-in.
+        assert_eq!(dedupe_tool_name(&["docs__search".to_string(), "search".to_string()], "anchor", "search"), "anchor__search");
+    }
 
     /// A minimal `Tool` whose "copy of this tool, but..." methods actually produce a new copy
     /// (unlike the trait's `None` defaults) — needed to prove `NamespacedTool` re-wraps them
