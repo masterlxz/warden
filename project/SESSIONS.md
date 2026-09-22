@@ -2,7 +2,44 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-22 (Sessão 89)
+> Última atualização: 2026-09-22 (Sessão 90)
+
+---
+
+### 2026-09-22 — Sessão 90
+
+- **Objetivo**: P46 — último item aberto: colisão de nomes de tools entre MCP servers. Plano aprovado antes de
+  codar (Plan mode).
+
+**O que foi feito**:
+
+- **O bug**: `register_mcp_tools` (`warden-bootstrap`) registrava cada tool de um `[[mcp_servers]]` com o nome cru
+  do servidor, sem checar nada — o despacho do `Orchestrator` resolve por `tools.iter().find(|t| t.spec().name ==
+  ...)`, então duas tools com o mesmo nome (dois servers, ou um server e uma tool nativa) deixavam a segunda
+  inalcançável pra sempre, e a lista mandada ao modelo ficava com dois `ToolSpec` de nome igual.
+- **`dedupe_tool_name`** (pura, `warden-bootstrap`): nome intacto se nada mais o usa; `"{server}__{tool}"` só na
+  colisão de verdade — nunca renomeia por via das dúvidas, pra não invalidar `allowed_tools`/skills já escritos com
+  os nomes de hoje. `__` porque OpenAI/Gemini/Anthropic só aceitam `[a-zA-Z0-9_-]` em nome de função.
+- **`NamespacedTool`/`tool::rename_tool`** (`warden-core`): wrapper de `Tool` que só troca o `name` do `spec()`,
+  delegando e **re-envolvendo** as 5 outras "copie este tool, mas..." do trait — sem isso o nome se perderia assim
+  que `with_allowed_tools`/`with_budget`/etc. rodasse.
+- **`register_mcp_tools` virou genérica sobre `ToolProvider`** (só usava `tools()`, o método do trait) — o que
+  tornou a função testável de verdade com um provider falso, sem precisar de MCP real. Aviso no stderr quando
+  renomeia, mesmo estilo de "MCP server unavailable" já existente.
+- **Verificação**: `cargo test -p warden-core` (258, 3 novos) + `-p warden-bootstrap` (102, 4 novos), `cargo test
+  --workspace`/`cargo clippy --workspace --all-targets` limpos. **Achado de ambiente, não de código**: o rustc
+  local (1.98.1) segfaultou 5 vezes seguidas em pontos aleatórios (`rustc_resolve`, `rustc_ast_lowering`, LLVM
+  codegen — `MCAssembler::layout`, `DenseMapInfo<StringRef>`), sempre num crate de dependência não tocado nesta
+  sessão (`tokio`, `rmcp`); temperatura normal, sem I/O error no disco, sem MCE/EDAC no kernel — causa não
+  identificada, só retry resolveu (6ª tentativa passou limpo).
+- **Não feito**: UI/comando listando o que foi renomeado (o aviso no stderr é o mecanismo por ora); colisão
+  *dentro* do mesmo server (bug do próprio server, tratado sem pânico mas não como caso especial); teste de ponta
+  a ponta com dois MCP servers reais colidindo (os testes usam um `ToolProvider` fake, deliberado — ver
+  `PENDING.md`).
+
+**Ainda aberto no P46**: jobs em segundo plano com modelo real (ninguém viu um modelo de verdade decidir
+paralelizar) e teste com o app Tauri aberto — as duas são lacunas de ambiente, não de escopo. Teto de gasto por
+período/usuário fica no P4, não no P46.
 
 ---
 

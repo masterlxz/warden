@@ -1160,9 +1160,42 @@ usuário: um agente **criado por outro agente** sem lista recebe só o conjunto 
 - **Superfícies**: Settings do desktop ganhou "Restrict tools" + checkboxes (comando novo `list_tool_names`; uma tool
   da lista que sumiu, como a de um MCP fora do ar, aparece como "(not available now)" até ser desmarcada); o wizard do
   CLI ganhou o campo "tools permitidas" (vírgula, em branco = todas) e `/agents` mostra `[tools: N]`.
-- **Limitações aceitas**: a lista é por **nome** — dois MCP servers com uma tool de mesmo nome se confundem;
-  Telegram/WhatsApp/mobile/MCP server não têm agente nomeado, então seguem com todas as tools; as tools `ssh_*` já
-  tinham o próprio escopo por host/agente e continuam com ele além da lista.
+- **Limitações aceitas**: a lista é por **nome** — dois MCP servers com uma tool de mesmo nome não se confundem mais
+  (ver "Colisão de nomes de tools entre MCP servers" abaixo, Sessão 90), mas ainda exige que quem escreve
+  `allowed_tools` saiba o nome renomeado quando existe colisão; Telegram/WhatsApp/mobile/MCP server não têm agente
+  nomeado, então seguem com todas as tools; as tools `ssh_*` já tinham o próprio escopo por host/agente e continuam
+  com ele além da lista.
+
+## Colisão de nomes de tools entre MCP servers (P46, Sessão 90)
+
+Até aqui, `register_mcp_tools` (`warden-bootstrap`) registrava cada tool de um `[[mcp_servers]]` com o nome cru que
+o servidor reporta, sem checar nada contra o que já estava registrado (tools nativas, Tavily, ou um `[[mcp_servers]]`
+anterior). O despacho do `Orchestrator` resolve por `tools.iter().find(|t| t.spec().name == tool_call.name)` — o
+**primeiro registrado sempre ganha**; um nome repetido deixava a segunda tool inalcançável pra sempre, sem aviso, e a
+lista de `ToolSpec` mandada ao provider ficava com dois nomes iguais (a maioria das APIs de function-calling rejeita
+ou se confunde com isso).
+
+- **Só renomeia quando colide de verdade.** Nunca por via das dúvidas — uma tool sem conflito mantém exatamente o
+  nome de hoje, pra não invalidar `allowed_tools`/skills/hábitos já escritos. `dedupe_tool_name(existing, server,
+  tool)` (pura, `warden-bootstrap/src/lib.rs`) devolve o nome intacto se nada mais o usa, ou
+  `"{server}__{tool}"` na colisão — `__`, não `.`/`-`, porque OpenAI/Gemini/Anthropic restringem nome de função a
+  `[a-zA-Z0-9_-]`. O primeiro a registrar um nome sempre fica com a versão crua; quem colide depois (de outro
+  `[[mcp_servers]]`, ou o mesmo server anunciando um nome que já é de uma tool nativa) é que ganha o prefixo.
+- **`NamespacedTool`/`tool::rename_tool(tool, name)`** (`warden-core/src/tool/mod.rs`): wrapper privado de `Tool`
+  que só sobrescreve `spec().name`, delegando `call`/`is_available` direto. As 5 outras "copie este tool, mas..."
+  do trait (`scoped_to_agent`/`restricted_to`/`with_budget`/`with_jobs`/`with_approver`) delegam pro tool interno
+  **e re-envolvem** o resultado com o mesmo nome — sem isso o nome renomeado se perderia assim que
+  `with_allowed_tools`/`with_budget`/etc. produzisse uma cópia nova do tool.
+- **`register_mcp_tools` virou genérica sobre `ToolProvider`** (`async fn register_mcp_tools<P: ToolProvider>(...)`)
+  em vez de amarrada a `McpToolProvider` — só usava `tools()`, o método do trait. Os dois call sites reais (Tavily,
+  o loop de `config.mcp_servers`) continuam passando `McpToolProvider`, inferido; o que essa generalização abre é
+  testar a função de verdade com um `ToolProvider` fake, sem precisar de um processo MCP real. Uma renomeação
+  imprime uma nota no stderr (nome antigo → novo, servidor de origem), mesmo estilo de "MCP server unavailable" já
+  existente — é como quem escreve `allowed_tools` descobre o nome a usar.
+- **Fora de escopo, documentado**: nenhuma UI/comando lista as renomeações feitas (o aviso no stderr no startup é o
+  mecanismo de descoberta, consistente com todo o resto do graceful-degradation de MCP); colisão **dentro** do mesmo
+  server (duas tools do próprio `tools/list` com nome igual) é tratada sem pânico pelo mesmo mecanismo, mas é bug do
+  server, não um caso pensado especialmente.
 
 ## Teto de custo dos sub-agentes: `TurnBudget` (P46/P60/P18, Sessão 82)
 

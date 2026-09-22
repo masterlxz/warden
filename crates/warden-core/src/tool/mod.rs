@@ -114,3 +114,125 @@ pub trait Approver: Send + Sync {
 pub trait ToolProvider: Send + Sync {
     async fn tools(&self) -> anyhow::Result<Vec<Arc<dyn Tool>>>;
 }
+
+/// A tool with its `spec().name` overridden — the mechanism behind `rename_tool`, used only to
+/// disambiguate a tool (an MCP server's) whose bare name collides with one already registered
+/// (P46). Every other trait method delegates to `inner`, re-wrapping whatever a "copy of this
+/// tool, but..." method returns so the rename survives `with_allowed_tools`/`with_budget`/etc. —
+/// without that, the copy would silently revert to the original, unprefixed name.
+struct NamespacedTool {
+    inner: Arc<dyn Tool>,
+    name: String,
+}
+
+/// Wraps `tool` so `spec().name` reads as `name` instead of whatever `tool` itself reports,
+/// leaving everything else (behavior, parameters, description) untouched. Used by
+/// `warden-bootstrap::register_mcp_tools` to resolve a name collision between two MCP servers (or
+/// an MCP server and a built-in tool) — a tool is only ever wrapped this way when its bare name
+/// would otherwise be unreachable, never as a matter of course.
+pub fn rename_tool(tool: Arc<dyn Tool>, name: impl Into<String>) -> Arc<dyn Tool> {
+    Arc::new(NamespacedTool { inner: tool, name: name.into() })
+}
+
+#[async_trait]
+impl Tool for NamespacedTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec { name: self.name.clone(), ..self.inner.spec() }
+    }
+
+    async fn call(&self, args: Value) -> anyhow::Result<Value> {
+        self.inner.call(args).await
+    }
+
+    fn scoped_to_agent(&self, agent: Option<&str>) -> Option<Arc<dyn Tool>> {
+        self.inner.scoped_to_agent(agent).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {
+        self.inner.restricted_to(allowed).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
+        self.inner.with_budget(budget).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
+        self.inner.with_jobs(board).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn is_available(&self) -> bool {
+        self.inner.is_available()
+    }
+
+    fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        self.inner.with_approver(approver).map(|t| rename_tool(t, self.name.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal `Tool` whose "copy of this tool, but..." methods actually produce a new copy
+    /// (unlike the trait's `None` defaults) — needed to prove `NamespacedTool` re-wraps them
+    /// instead of losing the rename on the first such call.
+    struct Probe {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for Probe {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: self.name.to_string(), description: "probe".to_string(), parameters: Value::Null }
+        }
+
+        async fn call(&self, args: Value) -> anyhow::Result<Value> {
+            Ok(args)
+        }
+
+        fn with_budget(&self, _budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
+            Some(Arc::new(Probe { name: self.name }))
+        }
+    }
+
+    #[tokio::test]
+    async fn renamed_tool_reports_the_new_name_but_keeps_calling_through() {
+        let probe = Arc::new(Probe { name: "search" });
+        let renamed = rename_tool(probe, "anchor__search");
+
+        assert_eq!(renamed.spec().name, "anchor__search");
+        assert_eq!(renamed.call(serde_json::json!({"q": 1})).await.unwrap(), serde_json::json!({"q": 1}));
+    }
+
+    #[tokio::test]
+    async fn a_copy_produced_through_with_budget_keeps_the_rename() {
+        let probe = Arc::new(Probe { name: "search" });
+        let renamed = rename_tool(probe, "anchor__search");
+
+        let budget = TurnBudget::for_turn(None, None);
+        let copy = renamed.with_budget(&budget).expect("Probe always produces a copy");
+
+        // The name survived the round trip through the inner tool's own with_budget, not just
+        // the first wrap — this is the behavior a rename would silently lose without re-wrapping.
+        assert_eq!(copy.spec().name, "anchor__search");
+    }
+
+    #[test]
+    fn a_tool_with_no_copy_methods_leaves_them_none_through_the_wrapper() {
+        struct Bare;
+        #[async_trait]
+        impl Tool for Bare {
+            fn spec(&self) -> ToolSpec {
+                ToolSpec { name: "bare".to_string(), description: String::new(), parameters: Value::Null }
+            }
+            async fn call(&self, _args: Value) -> anyhow::Result<Value> {
+                Ok(Value::Null)
+            }
+        }
+        let renamed = rename_tool(Arc::new(Bare), "srv__bare");
+        assert!(renamed.scoped_to_agent(None).is_none());
+        assert!(renamed.restricted_to(&[]).is_none());
+        assert!(renamed.with_jobs(&JobBoard::new(1)).is_none());
+        assert_eq!(renamed.spec().name, "srv__bare");
+    }
+}

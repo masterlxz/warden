@@ -880,16 +880,53 @@ pub fn resolve_storage_provider(from_env: Option<String>, from_file: Option<Stor
     }
 }
 
+/// The name a tool should register under, given the names already claimed: `tool_name` unchanged
+/// if nothing else has it yet, otherwise `"{server_name}__{tool_name}"` (P46 — two MCP servers, or
+/// an MCP server and a built-in tool, advertising the same name). `__` rather than `.`/`-` because
+/// every function-calling API this project talks to (OpenAI/Gemini/Anthropic) restricts tool names
+/// to `[a-zA-Z0-9_-]`. Pure and rename-only-when-needed on purpose: a tool nobody collides with
+/// keeps the exact name a person may already have written into `allowed_tools`, a skill or a habit.
+fn dedupe_tool_name(existing: &[String], server_name: &str, tool_name: &str) -> String {
+    if existing.iter().any(|n| n == tool_name) {
+        format!("{server_name}__{tool_name}")
+    } else {
+        tool_name.to_string()
+    }
+}
+
 /// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
 /// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
 /// take down the whole orchestrator, same graceful-degradation spirit as a missing
 /// `TAVILY_API_KEY`. Shared by the built-in Tavily connection and every user-configured entry in
 /// `config.mcp_servers` (Phase 5.2/P25), regardless of which transport actually produced
 /// `connect_result` — both need the exact same list→extend flow once connected.
-async fn register_mcp_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, connect_result: anyhow::Result<McpToolProvider>) {
+///
+/// Generic over `ToolProvider` rather than tied to `McpToolProvider` specifically (both real call
+/// sites still pass one, inferred) — the only thing used is `tools()`, the trait method, and going
+/// generic is what lets this be tested with a fake provider instead of a real MCP process (P46).
+///
+/// Each tool's name is deduped against everything already in `base_tools` (built-ins registered
+/// earlier, Tavily, and any `[[mcp_servers]]` entry already processed this call) via
+/// `dedupe_tool_name`; a rename is logged so whoever writes `allowed_tools` knows the name to use.
+async fn register_mcp_tools<P: ToolProvider>(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, connect_result: anyhow::Result<P>) {
     match connect_result {
         Ok(provider) => match provider.tools().await {
-            Ok(tools) => base_tools.extend(tools),
+            Ok(tools) => {
+                for tool in tools {
+                    let original = tool.spec().name;
+                    let existing: Vec<String> = base_tools.iter().map(|t| t.spec().name).collect();
+                    let resolved = dedupe_tool_name(&existing, name, &original);
+                    if resolved == original {
+                        base_tools.push(tool);
+                    } else {
+                        eprintln!(
+                            "note: MCP server '{name}' tool '{original}' collides with an already-registered tool — \
+                             renamed to '{resolved}' (use this name in allowed_tools)\n"
+                        );
+                        base_tools.push(warden_core::tool::rename_tool(tool, resolved));
+                    }
+                }
+            }
             Err(err) => eprintln!("note: MCP server '{name}' connected but failed to list tools: {err:#}\n"),
         },
         Err(err) => eprintln!("note: MCP server '{name}' unavailable, skipping: {err:#}\n"),
@@ -2412,5 +2449,66 @@ oauth = true
         assert_eq!(vault.read("_profile.md").unwrap(), "already customized by the user");
 
         std::fs::remove_dir_all(vault.root()).ok();
+    }
+
+    #[test]
+    fn dedupe_tool_name_only_renames_on_a_real_collision() {
+        assert_eq!(dedupe_tool_name(&[], "anchor", "search"), "search");
+        assert_eq!(dedupe_tool_name(&["read_file".to_string(), "shell".to_string()], "anchor", "search"), "search");
+        assert_eq!(dedupe_tool_name(&["search".to_string()], "anchor", "search"), "anchor__search");
+        // Colliding with a name another MCP server already claimed (however it got that name —
+        // dedupe_tool_name doesn't need to know) works the same way as colliding with a built-in.
+        assert_eq!(dedupe_tool_name(&["docs__search".to_string(), "search".to_string()], "anchor", "search"), "anchor__search");
+    }
+
+    /// A named `Tool` with no real capability, for the `register_mcp_tools` tests below — same
+    /// minimal shape as `Named` in `delegate_to_agent_targets_use_their_own_tool_list_not_the_chiefs`.
+    struct StubTool(&'static str);
+    #[async_trait::async_trait]
+    impl Tool for StubTool {
+        fn spec(&self) -> warden_core::tool::ToolSpec {
+            warden_core::tool::ToolSpec { name: self.0.to_string(), description: String::new(), parameters: serde_json::json!({}) }
+        }
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!("ran"))
+        }
+    }
+
+    /// A `ToolProvider` that hands back a fixed list — what makes `register_mcp_tools` testable
+    /// without a real MCP process (P46): it's generic over the trait, not tied to `McpToolProvider`.
+    struct FixedProvider(Vec<Arc<dyn Tool>>);
+    #[async_trait::async_trait]
+    impl ToolProvider for FixedProvider {
+        async fn tools(&self) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn register_mcp_tools_keeps_the_bare_name_when_nothing_collides() {
+        let mut base_tools: Vec<Arc<dyn Tool>> = vec![Arc::new(StubTool("read_file"))];
+        register_mcp_tools(&mut base_tools, "anchor", Ok(FixedProvider(vec![Arc::new(StubTool("search"))]))).await;
+
+        let names: Vec<String> = base_tools.iter().map(|t| t.spec().name).collect();
+        assert_eq!(names, vec!["read_file".to_string(), "search".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn register_mcp_tools_renames_on_collision_and_both_stay_reachable() {
+        let mut base_tools: Vec<Arc<dyn Tool>> = vec![Arc::new(StubTool("search"))];
+        register_mcp_tools(&mut base_tools, "anchor", Ok(FixedProvider(vec![Arc::new(StubTool("search"))]))).await;
+
+        let names: Vec<String> = base_tools.iter().map(|t| t.spec().name).collect();
+        assert_eq!(names, vec!["search".to_string(), "anchor__search".to_string()]);
+        // Not just renamed in the spec — the renamed tool still forwards `call` to the real one.
+        assert_eq!(base_tools[1].call(serde_json::Value::Null).await.unwrap(), serde_json::json!("ran"));
+    }
+
+    #[tokio::test]
+    async fn register_mcp_tools_leaves_base_tools_untouched_on_a_failed_connection() {
+        let mut base_tools: Vec<Arc<dyn Tool>> = vec![Arc::new(StubTool("read_file"))];
+        register_mcp_tools::<FixedProvider>(&mut base_tools, "anchor", Err(anyhow::anyhow!("connection refused"))).await;
+
+        assert_eq!(base_tools.len(), 1);
     }
 }
