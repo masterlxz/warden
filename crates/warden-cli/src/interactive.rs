@@ -67,7 +67,7 @@ use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
-use warden_core::spend::{LimitStatus, SpendGuard};
+use warden_core::spend::{now_millis, LimitStatus, SpendGuard, Spent};
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::ssh::test_connection;
 use warden_core::tool::{ApprovalRequest, Approver, Tool};
@@ -984,6 +984,9 @@ struct CliSession {
     agent_id: Option<String>,
     usage_total: Usage,
     turn_count: usize,
+    /// When this session opened — `/usage` asks the spending ledger for what the `cli` channel
+    /// spent from here on, since that is where each call is priced by the model it ran on.
+    started_at: u64,
     /// Every tool the running orchestrator has — what an agent's `allowed_tools` is checked against
     /// in the `/agents` wizard, which has no orchestrator of its own.
     tool_names: Vec<String>,
@@ -1148,7 +1151,7 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
     let lines = [
         "/exit, /quit — sair",
         "/help — esta lista",
-        "/usage — tokens gastos nesta sessão do terminal",
+        "/usage — tokens e $ gastos nesta sessão do terminal ($ só com [[prices]] cadastrado)",
         "/limits — situação de cada limite de gasto (tokens e $ por janela de tempo)",
         "/extend <id> — liberar mais um passo de um limite, até a janela andar",
         "/models — listar os modelos configurados",
@@ -1191,19 +1194,38 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
     render_message_card(terminal, "ajuda", accent_style(), lines)
 }
 
-/// `/usage` — tokens spent so far in *this* terminal session (`CliSession.usage_total`, reset
-/// every process start, never persisted). Tokens only, no `$` figure: that would need a per-model
-/// price table this project doesn't have yet (see `PENDING.md` P4).
+/// The `$` line of `/usage`. `spent` is `None` when no spending ledger is running (limits are off),
+/// which leaves nothing to price the calls with. Prices are only the ones in `[[prices]]`, so a call
+/// on a model without one is said out loud instead of silently counted as free.
+fn cost_line(spent: Option<&Spent>) -> String {
+    let Some(spent) = spent else {
+        return "$ indisponível: sem limites de gasto ativos o gasto não é registrado".to_string();
+    };
+    let priced = spent.calls - spent.unpriced_calls;
+    match (priced, spent.unpriced_calls) {
+        (0, 0) => "$ 0.0000".to_string(),
+        (0, unpriced) => format!("$ indisponível: {unpriced} chamadas de modelo sem preço (cadastre em [[prices]] no config.toml)"),
+        (_, 0) => format!("${:.4} (pelos preços do config.toml)", spent.cost_usd),
+        (_, unpriced) => format!("${:.4} ou mais — {unpriced} chamadas de modelo sem preço ficaram de fora", spent.cost_usd),
+    }
+}
+
+/// `/usage` — what was spent so far in *this* terminal session. Tokens come from
+/// `CliSession.usage_total` (reset every process start, never persisted); dollars from the spending
+/// ledger, because only there is each call priced by its own model (a sub-agent may run on another).
+/// The ledger is per channel, so a second terminal open at the same time counts here too.
 async fn cmd_usage(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
     if session.turn_count == 0 {
         return render_message_card(terminal, "uso", accent_style(), vec![("nenhuma mensagem enviada ainda nesta sessão".to_string(), Style::default())]);
     }
     let usage = &session.usage_total;
+    let spent = session.spend_guard.as_ref().map(|guard| guard.spent_since("cli", session.started_at));
     let lines = vec![
         (format!("{} mensagens nesta sessão", session.turn_count), Style::default()),
         (format!("{} tokens de prompt", usage.prompt_tokens), Style::default()),
         (format!("{} tokens de resposta", usage.completion_tokens), Style::default()),
         (format!("{} tokens no total", usage.total_tokens), Style::default()),
+        (cost_line(spent.as_ref()), Style::default()),
     ];
     render_message_card(terminal, "uso", accent_style(), lines)
 }
@@ -2300,6 +2322,7 @@ pub async fn run(
         agent_id: None,
         usage_total: Usage::default(),
         turn_count: 0,
+        started_at: now_millis(),
         tool_names: orchestrator.tools().iter().map(|t| t.spec().name).collect(),
         spend_guard: orchestrator.spend_guard().cloned(),
     };
@@ -2387,6 +2410,18 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cost_line_never_passes_an_unpriced_call_off_as_free() {
+        let spent = |calls, unpriced_calls, cost_usd| Spent { calls, unpriced_calls, cost_usd };
+        assert!(cost_line(None).contains("indisponível") && cost_line(None).contains("limites"));
+        assert_eq!(cost_line(Some(&spent(0, 0, 0.0))), "$ 0.0000");
+        assert_eq!(cost_line(Some(&spent(4, 0, 0.12345))), "$0.1235 (pelos preços do config.toml)");
+        let none_priced = cost_line(Some(&spent(3, 3, 0.0)));
+        assert!(none_priced.contains("indisponível") && none_priced.contains("3 chamadas") && none_priced.contains("[[prices]]"));
+        let some_priced = cost_line(Some(&spent(5, 2, 1.5)));
+        assert!(some_priced.starts_with("$1.5000 ou mais") && some_priced.contains("2 chamadas"), "{some_priced}");
+    }
 
     #[test]
     fn agent_tools_input_is_blank_for_all_or_a_checked_deduplicated_list() {

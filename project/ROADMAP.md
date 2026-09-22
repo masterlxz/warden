@@ -154,7 +154,8 @@ o pacote do P46 está completo; falta só validar com modelo real (o teto por pe
 (global, agente, canal, usuário do canal), checado antes de cada chamada de modelo. Ao esgotar, o turno **pausa e
 pergunta** (desktop/CLI) — "sim" libera um passo pelo resto da janela, "não" encerra — e o agente enxerga o medidor
 (tool `budget` + aviso a partir de 80%). Sem `[[limits]]` vale uma rede de segurança padrão (500k/1h e 2M/24h).
-Falta: tela de limites/preços no desktop, criar limite pelo wizard do CLI, validar com modelo real.
+Tela de limites/preços no desktop (Sessão 88) e `$` no `/usage` do CLI (Sessão 87) feitos. Falta: criar limite pelo
+wizard do CLI, validar com modelo real e com o app Tauri aberto.
 
 ### SSH — conectar com VPS e máquinas externas
 

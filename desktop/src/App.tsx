@@ -27,6 +27,10 @@ const emptySettings: Settings = {
   storageProvider: "local",
   remoteNode: null,
   gitSync: null,
+  limits: null,
+  defaultLimits: [],
+  limitsDisabledByEnv: false,
+  prices: [],
 };
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),

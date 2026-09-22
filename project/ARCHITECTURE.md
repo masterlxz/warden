@@ -1324,13 +1324,37 @@ dólares por janela deslizante**, por escopo, checado **antes de cada chamada de
   500k tokens/1h e 2M/24h — folgada pro uso normal, pega loop na primeira hora); `limits = []` ou
   `WARDEN_SPEND_LIMITS=off` desliga tudo. Entrada inválida é **pulada com aviso** e não derruba a inicialização (o app
   é o que deixaria o usuário consertar). `WARDEN_SPEND_LEDGER` troca o arquivo (padrão
-  `<config>/warden/spend_ledger.jsonl`, podado na abertura ao tamanho da janela mais longa). O desktop **preserva**
-  `limits`/`prices` ao salvar Settings (mesmo tratamento de `max_delegated_calls`) — sem UI ainda.
+  `<config>/warden/spend_ledger.jsonl`, podado na abertura ao tamanho da janela mais longa). Desde a Sessão 88 o
+  desktop **edita** `limits`/`prices` na tela de Settings (seção "Spending limits", ver abaixo).
 - **Falha do ledger não trava o app**: leitura ilegível = vazio; escrita que falha fica em `last_error`, mostrada por
   `/limits` e pela tool `budget` ("os números podem estar baixos").
 - **CLI**: `/limits` (todos os limites, não só os do terminal) e `/extend <id>`; o canal `cli` é fixado em `main.rs`
   pros dois modos. `/e`/`/ex` deixaram de completar sozinhos pra `exit` (agora há `/extend`). **Desktop**: só o
-  `ApprovalModal` ("Spending limit reached", botões Stop/Allow more) — a tela de limites/preços fica pra outra sessão.
+  `ApprovalModal` ("Spending limit reached", botões Stop/Allow more) — a tela de limites/preços veio na Sessão 88.
+- **`$` no `/usage` do CLI (Sessão 87)**: `SpendGuard::spent_since(canal, desde)` soma o ledger, cada chamada com o preço
+  do **modelo em que rodou** (um sub-agente pode usar outro; `usage_total × preço do turno` daria um número que parece
+  certo e não é). Sem preço = "indisponível"/"$X ou mais", nunca zero; sem limites ativos não há ledger. Ledger é por
+  canal: dois terminais abertos juntos somam um no outro.
+- **Tela de limites e preços no desktop (Sessão 88)**: seção "Spending limits" em Settings (`SpendingSection.tsx`;
+  backend em `desktop/src-tauri/src/spend_cmds.rs`, mesmo molde do `ssh_cmds.rs`). Decisões:
+  - `limits` é **`null` (nenhum `[[limits]]` → rede de segurança) ≠ `[]` (tudo desligado)** de ponta a ponta — snapshot,
+    payload de save e TS. A tela mostra a rede como cartão ("Customize limits" copia os padrões pra cartões editáveis,
+    "Turn all limits off" grava `[]`, "Restore built-in safety net" volta a `null`). Salvar sem mexer **não** grava os
+    padrões no arquivo (senão mudar o padrão no código nunca mais alcançaria quem só abriu a tela). Os números 500k/2M
+    vêm do backend (`default_limit_configs`), não são repetidos no frontend.
+  - `limits`/`prices` no payload de save **não têm `#[serde(default)]`**: um formulário que esqueça de mandá-los tem que
+    falhar, não virar "sem limites" e trocar em silêncio os limites do usuário pela rede padrão.
+  - No **save** uma entrada inválida é **recusada** (a pessoa está ali e conserta), com as mesmas regras do startup
+    (`LimitConfig::to_limit`); no **startup** segue "pula com aviso". Nome de limite repetido, preço vazio/negativo/
+    `NaN`/repetido são recusados. Um preço `0`/`0` é válido (modelo local grátis).
+  - **Não** se recusa limite de agente que já não existe: o agente pode ter sido apagado pela tool `manage_agents` ou nesta
+    mesma tela, e recusar todo save por causa de sobra seria a armadilha de referência pendurada dos hosts SSH (Sessão 83).
+    O cartão mostra "(no longer exists)".
+  - `WARDEN_SPEND_LIMITS=off` no ambiente vence o arquivo; o snapshot traz `limitsDisabledByEnv` e a tela avisa.
+  - Campos numéricos guardam o **texto digitado** (rascunho) e só sobem o número parseado — senão `0.` vira `0` a cada
+    tecla. `warnAt`/`extendStep` aparecem em % (0,8 ↔ 80) e vão pro backend como fração. Cada limite ganha uma frase em
+    linguagem comum ("The agent "pirate": pauses at $0.5 within any 6 hours.").
+  - `validateSpending` (TS) espelha o backend só pra avisar antes do IPC; o backend continua a autoridade.
 - **Decisões deixadas de fora de propósito**: sem tabela de preço embutida; sem teto por turno (o loop já é parado pela
   janela de 1h); Telegram/WhatsApp contam por **chat** (`chat.id`, não o id do remetente — num grupo, o grupo inteiro);
   a extensão não é permanente (expira com a janela).

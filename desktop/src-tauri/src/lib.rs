@@ -4,6 +4,7 @@ mod qr;
 mod recording;
 mod server_cmds;
 mod skills_cmds;
+mod spend_cmds;
 mod ssh_cmds;
 mod sync_cmds;
 mod vault_cmds;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_live_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
-    default_conversations_dir, default_model_for, list_conversations as read_conversations, load_config, load_config_from_path,
+    default_conversations_dir, default_limit_configs, default_model_for, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, ManageAgentsTool, McpServerConfig,
     Overrides,
@@ -442,6 +443,17 @@ struct SettingsSnapshot {
     git_sync: Option<GitSyncConfigPayload>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
+    /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
+    /// built-in safety net is in force (`default_limits`); `Some([])` = every limit switched off.
+    /// The two are different on purpose, so they are different here too.
+    limits: Option<Vec<spend_cmds::LimitPayload>>,
+    /// The safety net as editable entries, for "customize" to start from — the numbers live in
+    /// `warden_bootstrap::spend`, not in the frontend.
+    default_limits: Vec<spend_cmds::LimitPayload>,
+    /// `WARDEN_SPEND_LIMITS=off` in the environment beats whatever the file says; the screen says so.
+    limits_disabled_by_env: bool,
+    /// What each model charges per million tokens — nothing is built in.
+    prices: Vec<spend_cmds::PricePayload>,
 }
 
 #[derive(Deserialize)]
@@ -459,6 +471,10 @@ struct SettingsFormPayload {
     remote_node: Option<RemoteNodeConfigPayload>,
     git_sync: Option<GitSyncConfigPayload>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
+    // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
+    // read as "no limits configured" and quietly swap the user's own limits for the safety net.
+    limits: Option<Vec<spend_cmds::LimitPayload>>,
+    prices: Vec<spend_cmds::PricePayload>,
 }
 
 /// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
@@ -533,6 +549,10 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         remote_node: config.remote_node.map(RemoteNodeConfigPayload::from),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
+        limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
+        default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
+        limits_disabled_by_env: env_switches_limits_off(std::env::var("WARDEN_SPEND_LIMITS").ok().as_deref()),
+        prices: config.prices.into_iter().map(Into::into).collect(),
     })
 }
 
@@ -627,6 +647,9 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
 
     let ssh_hosts = ssh_cmds::hosts_into_config(payload.ssh_hosts, &agents)?;
 
+    let limits = payload.limits.map(spend_cmds::limits_into_config).transpose()?;
+    let prices = spend_cmds::prices_into_config(payload.prices)?;
+
     let active_provider = non_empty(payload.active_provider);
     if let Some(active_id) = &active_provider {
         if !providers.iter().any(|p| &p.id == active_id) {
@@ -707,9 +730,9 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         delegate_max_depth: existing.delegate_max_depth,
         max_delegated_calls: existing.max_delegated_calls,
         max_parallel_jobs: existing.max_parallel_jobs,
-        // Spending limits and prices (P4): config.toml-only for now, carried forward for the same reason.
-        limits: existing.limits.clone(),
-        prices: existing.prices.clone(),
+        // Spending limits and prices (P4): edited on the Settings screen (`spend_cmds`).
+        limits,
+        prices,
         api_keys: ApiKeys {
             gemini: None,
             openai: None,

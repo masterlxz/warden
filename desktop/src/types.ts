@@ -304,6 +304,30 @@ export interface SkillEntry {
   agents: string[];
 }
 
+export type LimitScope = "global" | "agent" | "channel" | "user";
+
+/** Mirrors `spend_cmds::LimitPayload` (P4) — one spending ceiling: at most `maxTokens` and/or
+ * `maxCostUsd` inside any sliding `windowHours` stretch. `target` is an empty string for `global`;
+ * an agent id, a channel name, or `channel:user` otherwise. `warnAt`/`extendStep` are fractions
+ * (0–1) of the ceiling; `null` = the default (0.8 and 0.25). */
+export interface LimitEntry {
+  id: string;
+  scope: LimitScope;
+  target: string;
+  windowHours: number;
+  maxTokens: number | null;
+  maxCostUsd: number | null;
+  warnAt: number | null;
+  extendStep: number | null;
+}
+
+/** Mirrors `spend_cmds::PricePayload` — dollars per million tokens for the model with exactly this id. */
+export interface PriceEntry {
+  model: string;
+  inputPerMtok: number;
+  outputPerMtok: number;
+}
+
 export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
@@ -335,4 +359,13 @@ export interface Settings {
   /** Connection details for the git sync backend (P63/P71) — `null` until filled in on the "Sync
    * via Git" section. */
   gitSync: GitSyncConfig | null;
+  /** Spending limits (P4). `null` = none written, so the built-in safety net is in force; `[]` =
+   * every limit switched off. Different on purpose. */
+  limits: LimitEntry[] | null;
+  /** The safety net as editable entries, for "Customize" to start from. */
+  defaultLimits: LimitEntry[];
+  /** `WARDEN_SPEND_LIMITS=off` in the environment beats whatever `limits` says. */
+  limitsDisabledByEnv: boolean;
+  /** What each model charges — nothing is built in, so a model with no entry has no `$` figure. */
+  prices: PriceEntry[];
 }

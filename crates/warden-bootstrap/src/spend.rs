@@ -103,6 +103,37 @@ pub fn default_limits() -> Vec<Limit> {
     ]
 }
 
+/// The built-in safety net written as `[[limits]]` entries — what a Settings screen starts from when
+/// someone chooses to customize instead of keeping it, so the numbers live in one place.
+pub fn default_limit_configs() -> Vec<LimitConfig> {
+    default_limits()
+        .into_iter()
+        .map(|limit| {
+            let (scope, target) = match limit.scope {
+                Scope::Global => (LimitScope::Global, None),
+                Scope::Agent(t) => (LimitScope::Agent, Some(t)),
+                Scope::Channel(t) => (LimitScope::Channel, Some(t)),
+                Scope::User(t) => (LimitScope::User, Some(t)),
+            };
+            LimitConfig {
+                id: limit.id,
+                scope,
+                target,
+                window_hours: limit.window_hours,
+                max_tokens: limit.max_tokens,
+                max_cost_usd: limit.max_cost_usd,
+                warn_at: Some(limit.warn_at),
+                extend_step: Some(limit.extend_step),
+            }
+        })
+        .collect()
+}
+
+/// Whether a `WARDEN_SPEND_LIMITS` value switches every limit off (also `0`, `false`, `no`, `none`).
+pub fn env_switches_limits_off(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no" | "none"))
+}
+
 /// The limits in force, and what was wrong with the entries that were left out.
 #[derive(Debug, Default, PartialEq)]
 pub struct ResolvedLimits {
@@ -115,8 +146,7 @@ pub struct ResolvedLimits {
 /// `default_limits` when it has none. A broken entry is skipped with a note instead of stopping
 /// startup, so one typo doesn't lock the user out of the app that would let them fix it.
 pub fn resolve_limits(from_env: Option<String>, from_file: Option<&[LimitConfig]>) -> ResolvedLimits {
-    let off = from_env.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no" | "none"));
-    if off {
+    if env_switches_limits_off(from_env.as_deref()) {
         return ResolvedLimits::default();
     }
     let Some(entries) = from_file else {
@@ -260,6 +290,20 @@ mod tests {
         let net = resolve_limits(None, None);
         assert_eq!(net.limits.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["default-hour", "default-day"]);
         assert!(resolve_limits(None, Some(&[])).limits.is_empty());
+    }
+
+    #[test]
+    fn the_safety_net_as_entries_turns_back_into_the_very_same_limits() {
+        let entries = default_limit_configs();
+        let back: Vec<Limit> = entries.iter().map(|e| e.to_limit().unwrap()).collect();
+        assert_eq!(back, default_limits());
+    }
+
+    #[test]
+    fn the_env_check_agrees_with_what_resolve_limits_does() {
+        assert!(env_switches_limits_off(Some(" Off ")));
+        assert!(!env_switches_limits_off(Some("nonsense")));
+        assert!(!env_switches_limits_off(None));
     }
 
     #[test]

@@ -2,7 +2,67 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-21 (Sessão 86)
+> Última atualização: 2026-09-21 (Sessão 88)
+
+---
+
+### 2026-09-21 — Sessão 88
+
+- **Objetivo**: P4 — tela de limites e preços no desktop (o maior item que faltava depois do `$` no `/usage`).
+
+**O que foi feito**:
+
+- `warden-bootstrap/src/spend.rs`: `default_limit_configs()` (a rede de segurança como entradas editáveis — os números
+  500k/2M ficam num lugar só) e `env_switches_limits_off()` (reaproveitada por `resolve_limits`).
+- `desktop/src-tauri/src/spend_cmds.rs` (novo, molde do `ssh_cmds.rs`): `LimitPayload`/`PricePayload` (camelCase),
+  `limits_into_config`/`prices_into_config`. `lib.rs`: `get_settings` devolve `limits` (`null` ≠ `[]`), `defaultLimits`,
+  `limitsDisabledByEnv`, `prices`; `save_settings` valida e grava (antes só carregava adiante).
+- Frontend: `SpendingSection.tsx` (novo) ligado em `SettingsView.tsx`; `types.ts`, `App.tsx` (default vazio) e `App.css`
+  (`.spend-grid`, `.spend-price-row`, `.settings-warning-banner`).
+- Decisões e motivos em `ARCHITECTURE.md` ("Limites de gasto por janela de tempo"): `null` ≠ `[]`; salvar sem mexer
+  não materializa os padrões; sem `serde(default)` nos campos novos do payload; save recusa e startup pula; limite de
+  agente apagado não bloqueia o save.
+- **Verificação**: `cargo test --workspace` **588 passam, 0 falham, 2 ignorados** (eram 578), `cargo clippy --workspace
+  --all-targets` sem avisos, `npm run build` verde. **Playwright** (Brave headless via `executablePath`, contra o dev
+  server do Vite com o `invoke` do Tauri mockado): **39 checagens** — estados (rede/customizada/tudo desligado/env),
+  edição, validação sem chamar o IPC, `0.5` digitado tecla a tecla mantém o ponto, % ↔ fração, payload de save conferido
+  campo a campo, config existente sobrevive a um save sem mexer, claro e escuro, 720px sem overflow; screenshots do
+  elemento revisados a olho nos dois temas.
+- **Não feito**: app Tauri **real** (nem esta tela nem o modal de pausa foram vistos numa janela nativa); a tela só
+  **configura**, não mostra o consumo atual de cada limite; wizard do CLI pra criar limite; modelo real reagindo ao
+  medidor.
+- **Achados de método**: (1) `pkill -f "vite --port 1420"` num comando Bash mata o próprio shell (o padrão aparece na linha
+  de comando dele) — exit 144; (2) `page.screenshot(fullPage)` num app com painel rolável só captura a área visível, e
+  `locator.screenshot` corta elementos mais altos que a janela — subir a altura da viewport resolve; (3) **disco**: com
+  `debug = "line-tables-only"` o `target/` do workspace inteiro (testes + clippy, desktop incluso) ficou em **20 GB**,
+  contra 53 GB antes — ainda grande, o que pesa são os ~450 MB por executável de teste/bin; `cargo sweep` de tempos em
+  tempos.
+- Trocada com `sed` uma linha de re-export em `warden-bootstrap/src/lib.rs` (contra o combinado de editar código só por
+  Edit/Write); o `git diff` mostra a mudança e o resto foi feito por Edit.
+
+### 2026-09-21 — Sessão 87
+
+- **Objetivo**: seguir o P4 pelo item mais barato — `$` no `/usage` do CLI. Antes disso, o disco: `/home` estava em
+  96% (7,3 GB livres) e o `target/` do workspace tinha **53 GB**.
+
+**O que foi feito**:
+
+- **Disco**: `target/debug` = 38 GB em `deps/` (8.234 arquivos, vários hashes velhos do mesmo crate; cada binário de
+  teste/bin ~450 MB de debug info) + 12 GB de `incremental/`. Apagado o `incremental/`, adicionado
+  `[profile.dev] debug = "line-tables-only"` no `Cargo.toml` da raiz (backtrace segue com arquivo:linha; só se perde
+  inspeção de variáveis em debugger) e feito `cargo clean` (47,5 GB), com aval do usuário, porque o perfil novo
+  recompila tudo de qualquer jeito. `/home` foi a 67% (60 GB livres). O `target/` recompilado core+CLI+deps ficou em
+  **5,9 GB**. Vale rever o tamanho depois de compilar o workspace inteiro (`desktop`, `mobile-bridge`).
+- `warden-core/src/spend.rs`: `Spent` e `SpendGuard::spent_since(channel, since_ms)` — soma do ledger, cada chamada
+  com o preço do modelo em que rodou. CLI (`interactive.rs`): `CliSession.started_at`, `cost_line` e `/usage` com a
+  linha de `$`; ajuda do `/usage` atualizada.
+- **Decisão**: `$` vem do ledger, não de `usage_total × preço do modelo do turno` — sub-agentes podem rodar em outro
+  modelo e um único preço por turno daria um número que parece certo e não é. Preço faltando aparece como
+  "indisponível"/"ou mais", nunca como zero.
+- **Verificação**: `cargo test -p warden-core -p warden-cli` verde (core 255, CLI 40, +2 testes novos), `cargo clippy
+  -p warden-core -p warden-cli --all-targets` sem avisos.
+- **Não feito**: ver o card do `/usage` num pty com o binário real (só os testes unitários cobrem a formatação e a
+  soma; o desenho do card não mudou, só ganhou uma linha); tela de limites/preços no desktop; wizard do CLI.
 
 ---
 

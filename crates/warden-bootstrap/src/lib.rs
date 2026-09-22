@@ -34,7 +34,7 @@ pub mod skill_gen;
 pub mod spend;
 pub mod usage;
 pub use manage_agents::ManageAgentsTool;
-pub use spend::{default_spend_ledger_path, LimitConfig, LimitScope};
+pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]

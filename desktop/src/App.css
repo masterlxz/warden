@@ -1112,6 +1112,35 @@ body {
   font-size: 0.9em;
 }
 
+.settings-warning-banner {
+  padding: 0.6em 0.9em;
+  border-radius: 8px;
+  border: 1px solid #d97706;
+  background-color: color-mix(in srgb, #d97706 14%, transparent);
+  color: var(--color-text);
+  font-size: 0.9em;
+}
+
+/* Spending limits (P4): a card's fields flow into as many columns as fit, one per ceiling. */
+.spend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.spend-net-list {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+/* A model price: the id takes the room, the two prices and the delete button stay compact. */
+.spend-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.5rem 0.75rem;
+  align-items: end;
+}
+
 .settings-success-banner {
   padding: 0.6em 0.9em;
   border-radius: 8px;

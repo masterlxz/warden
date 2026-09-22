@@ -400,6 +400,15 @@ pub fn meter_notice(warnings: &[LimitStatus]) -> Option<String> {
     ))
 }
 
+/// Model calls booked in the ledger over some stretch of time (`SpendGuard::spent_since`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Spent {
+    pub calls: u64,
+    /// Dollars for the calls that had a price; the calls without one are not in here.
+    pub cost_usd: f64,
+    pub unpriced_calls: u64,
+}
+
 pub struct SpendGuard {
     store: Arc<dyn SpendStore>,
     limits: Vec<Limit>,
@@ -472,6 +481,25 @@ impl SpendGuard {
             cost_usd: self.prices.cost(model, usage),
         };
         self.note(self.store.append(&Entry::Spend(event)));
+    }
+
+    /// What one channel has spent since `since_ms`, from the ledger — each call priced with the
+    /// model it actually ran on, so a sub-agent on another model is not billed at the root's rate.
+    /// Only reaches back as far as the ledger keeps (the longest limit window).
+    pub fn spent_since(&self, channel: &str, since_ms: u64) -> Spent {
+        let mut spent = Spent::default();
+        for entry in self.store.entries_since(since_ms) {
+            let Entry::Spend(event) = entry else { continue };
+            if event.channel != channel {
+                continue;
+            }
+            spent.calls += 1;
+            match event.cost_usd {
+                Some(cost) => spent.cost_usd += cost,
+                None => spent.unpriced_calls += 1,
+            }
+        }
+        spent
     }
 
     /// What one extension of `limit_id` would add, as `(tokens, dollars)` — `0` for a ceiling the
@@ -577,6 +605,31 @@ mod tests {
         let cost = table.cost("m", &usage(1_000_000, 100_000)).unwrap();
         assert!((cost - 4.5).abs() < 1e-9, "{cost}");
         assert_eq!(table.cost("other", &usage(10, 10)), None);
+    }
+
+    #[test]
+    fn spent_since_prices_each_call_by_its_own_model_and_only_counts_one_channel_from_then_on() {
+        let prices = vec![
+            Price { model: "cheap".into(), input_per_mtok: 1.0, output_per_mtok: 2.0 },
+            Price { model: "dear".into(), input_per_mtok: 10.0, output_per_mtok: 20.0 },
+        ];
+        let (guard, now) = guard(vec![Limit::new("day", Scope::Global, 24).with_max_tokens(1_000_000)], prices);
+        let before = now.load(Ordering::SeqCst);
+        guard.record(&cli(), "cheap", &usage(1_000_000, 0));
+        now.fetch_add(1000, Ordering::SeqCst);
+        let session_start = now.load(Ordering::SeqCst);
+        guard.record(&cli(), "cheap", &usage(1_000_000, 500_000));
+        guard.record(&cli(), "dear", &usage(100_000, 0));
+        guard.record(&cli(), "unpriced", &usage(10, 10));
+        guard.record(&SpendContext::new("telegram"), "dear", &usage(1_000_000, 0));
+
+        let spent = guard.spent_since("cli", session_start);
+        assert_eq!((spent.calls, spent.unpriced_calls), (3, 1));
+        assert!((spent.cost_usd - (2.0 + 1.0)).abs() < 1e-9, "cheap 1M in + 0.5M out = $2, dear 0.1M in = $1, got {}", spent.cost_usd);
+
+        let everything = guard.spent_since("cli", before);
+        assert_eq!(everything.calls, 4, "the call before the session started only shows up when asked for");
+        assert_eq!(guard.spent_since("whatsapp", before), Spent::default());
     }
 
     #[test]

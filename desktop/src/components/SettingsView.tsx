@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
 import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, SshHostEntry, StorageProviderKind } from "../types";
+import SpendingSection, { validateSpending } from "./SpendingSection";
 
 const emptySettings: Settings = {
   providers: [],
@@ -20,6 +21,10 @@ const emptySettings: Settings = {
   storageProvider: "local",
   remoteNode: null,
   gitSync: null,
+  limits: null,
+  defaultLimits: [],
+  limitsDisabledByEnv: false,
+  prices: [],
 };
 
 /** The four `StorageProviderKind` options (P61), in display order — the copy here is the
@@ -1131,6 +1136,12 @@ function SettingsView() {
       return;
     }
 
+    const spendingError = validateSpending(form.limits, form.prices);
+    if (spendingError) {
+      setError(spendingError);
+      return;
+    }
+
     // Mirrors save_settings's own all-or-nothing check — catches it before the IPC round-trip.
     const remoteNodeFilled = form.remoteNode
       ? [form.remoteNode.serverUrl, form.remoteNode.deviceId, form.remoteNode.deviceName, form.remoteNode.authKey, form.remoteNode.targetDeviceId].filter(
@@ -1174,6 +1185,9 @@ function SettingsView() {
           storage_provider: form.storageProvider,
           remote_node: remoteNodeFilled === 5 ? form.remoteNode : null,
           git_sync: gitSyncFilled === 2 ? form.gitSync : null,
+          // `null` means "no limits written" (the safety net applies), `[]` means "all off" — sent as is.
+          limits: form.limits,
+          prices: form.prices,
         },
       });
       const refreshed = await invoke<Settings>("get_settings");
@@ -1245,6 +1259,17 @@ function SettingsView() {
             ))}
           </div>
         </section>
+
+        <SpendingSection
+          limits={form.limits}
+          defaultLimits={form.defaultLimits}
+          disabledByEnv={form.limitsDisabledByEnv}
+          prices={form.prices}
+          agents={form.agents}
+          modelSuggestions={[...new Set([...form.providers.map((p) => p.model), ...Object.values(form.defaultModels)].filter((m) => m.trim() !== ""))]}
+          onLimitsChange={(limits) => setForm((f) => ({ ...f, limits }))}
+          onPricesChange={(prices) => setForm((f) => ({ ...f, prices }))}
+        />
 
         <section className="settings-section">
           <div className="settings-section-header">
