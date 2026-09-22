@@ -5,6 +5,7 @@ pub mod model;
 pub mod orchestrator;
 pub mod skill;
 pub mod speech;
+pub mod spend;
 pub mod storage;
 pub mod tool;
 pub mod transcribe;

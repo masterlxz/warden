@@ -204,6 +204,10 @@ fn to_anthropic_message(message: Message) -> AnthropicMessage {
 
 #[async_trait]
 impl ModelProvider for AnthropicProvider {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system = None;
         let mut anthropic_messages = Vec::new();

@@ -231,6 +231,10 @@ fn map_stream_chunk(data: &str, call_index: &mut usize) -> anyhow::Result<Vec<St
 
 #[async_trait]
 impl ModelProvider for GeminiProvider {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system_instruction = None;
         let mut contents = Vec::new();

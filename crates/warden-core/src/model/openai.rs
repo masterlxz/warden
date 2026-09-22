@@ -259,6 +259,10 @@ fn to_chat_message(message: Message) -> ChatMessage {
 
 #[async_trait]
 impl ModelProvider for OpenAiProvider {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let request = ChatRequest {
             model: self.model.clone(),

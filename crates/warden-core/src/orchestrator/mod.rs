@@ -5,11 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::budget::TurnBudget;
+use crate::budget::{SpendTurn, TurnBudget};
 use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
-use crate::tool::{Tool, ToolProvider};
+use crate::spend::{SpendContext, SpendGuard};
+use crate::tool::{Approver, Tool, ToolProvider};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
 /// giving up, so a model stuck requesting tools can't loop forever.
@@ -64,6 +65,14 @@ pub struct Orchestrator {
     /// How many background jobs (P46) one turn may run at once, or `None` for no background jobs.
     /// Set once at startup (`with_parallel_jobs`); each turn's root gets a fresh `JobBoard`.
     job_limit: Option<usize>,
+    /// The ledger the time-window spending limits (P4) are checked against and booked to, or `None`
+    /// for no limits. Set once at startup (`with_spend_guard`); each turn wraps it in a `SpendTurn`
+    /// that travels with the turn's `TurnBudget`, which is how sub-agents are covered too.
+    spend: Option<Arc<SpendGuard>>,
+    /// Who the turn spends as — its channel and the person on it. The agent comes from `agent_id`.
+    spend_ctx: SpendContext,
+    /// Who to ask when a limit runs out mid-turn. `None` on a channel that can't ask.
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl Orchestrator {
@@ -78,6 +87,9 @@ impl Orchestrator {
             budget: None,
             charged: false,
             job_limit: None,
+            spend: None,
+            spend_ctx: SpendContext::default(),
+            approver: None,
         }
     }
 
@@ -235,7 +247,28 @@ impl Orchestrator {
                 *tool = asking;
             }
         }
+        // A turn that runs out of spending room asks through the same approver (P4).
+        clone.approver = Some(approver);
         clone
+    }
+
+    /// Returns a copy whose turns are held to `guard`'s spending limits (P4): checked before every
+    /// model call — sub-agents' included — and booked after it, so a loop is stopped in the middle
+    /// of the turn rather than after it. Same cheap-clone reasoning as `with_model`.
+    pub fn with_spend_guard(&self, guard: Arc<SpendGuard>) -> Self {
+        Self { spend: Some(guard), ..self.clone() }
+    }
+
+    /// The spending ledger this orchestrator is held to, if any — for a channel that shows the
+    /// limits (`/limits`) or lets a person allow more (`/extend`) outside a turn.
+    pub fn spend_guard(&self) -> Option<&Arc<SpendGuard>> {
+        self.spend.as_ref()
+    }
+
+    /// Returns a copy that spends as `ctx` (its channel and user; the agent is `with_agent`'s).
+    /// Every channel sets this once per turn, next to `with_agent`.
+    pub fn with_spend_context(&self, ctx: SpendContext) -> Self {
+        Self { spend_ctx: ctx, ..self.clone() }
     }
 
     /// Returns a copy of this orchestrator that writes oversized MCP media (P64/P66) to `root`
@@ -319,9 +352,13 @@ impl Orchestrator {
         // A turn that starts here (not one a parent orchestrator started for a sub-agent, which
         // already carries its parent's budget) gets its own budget, so the limit applies whichever
         // channel called and starts from zero every turn.
-        let mut turn = match (&self.budget, self.delegation_limit) {
-            (None, Some(limit)) => self.with_turn_budget(TurnBudget::new(limit)),
-            _ => self.clone(),
+        let mut turn = if self.budget.is_none() && (self.delegation_limit.is_some() || self.spend.is_some()) {
+            let spend = self.spend.clone().map(|guard| {
+                SpendTurn::new(guard, self.spend_ctx.clone().with_agent(self.agent_id.clone()), self.approver.clone())
+            });
+            self.with_turn_budget(TurnBudget::for_turn(self.delegation_limit, spend))
+        } else {
+            self.clone()
         };
         // Background jobs belong to the turn's root only: a sub-agent's tools stay unbound, so it
         // can't start jobs that would outlive its own short turn. Held until the turn ends (or its
@@ -408,18 +445,35 @@ impl Orchestrator {
         // Only sub-agents spend from the turn's budget (see `TurnBudget`).
         let sub_agent_budget = self.budget.as_ref().filter(|_| self.charged);
 
+        // The turn's spending limits (P4), shared by the root and every sub-agent.
+        let spend = self.budget.as_ref().and_then(|b| b.spend());
+
         for _ in 0..MAX_TOOL_ITERATIONS {
+            // Before anything is spent: may pause to ask for more room, or end the turn. Checked on
+            // every call rather than once per turn, so a loop can't burn past a limit meanwhile.
+            let meter = match spend {
+                Some(spend) => spend.gate().await?,
+                None => None,
+            };
             if let Some(budget) = sub_agent_budget {
                 budget.charge()?;
             }
             // Recomputed every iteration: a tool's spec can change mid-turn (`delegate_to_agent`
             // lists the agents `manage_agents` created a moment ago).
             let tool_specs = self.tools.iter().filter(|t| t.is_available()).map(|t| t.spec()).collect::<Vec<_>>();
-            let stream = self.model.chat_stream(messages.clone(), tool_specs).await?;
+            // The meter is for this call only — it goes stale as soon as more is spent.
+            let mut call_messages = messages.clone();
+            if let Some(notice) = meter {
+                call_messages.push(Message::system(notice));
+            }
+            let stream = self.model.chat_stream(call_messages, tool_specs).await?;
             let response = crate::model::drain_chat_stream(stream, &mut on_event).await?;
 
             if let Some(budget) = sub_agent_budget {
                 budget.record(response.usage.as_ref());
+            }
+            if let (Some(spend), Some(u)) = (spend, response.usage.as_ref()) {
+                spend.record(self.model.model_id(), u);
             }
             if let Some(u) = response.usage {
                 usage.prompt_tokens += u.prompt_tokens;
@@ -1677,5 +1731,195 @@ mod tests {
 
         assert!(result.attachments.is_empty());
         assert!(result.generated_files.is_empty());
+    }
+
+    mod spend_limits {
+        use std::sync::Mutex;
+
+        use super::*;
+        use crate::budget::SpendLimitReached;
+        use crate::spend::{Limit, MemoryStore, Price, PriceTable, Scope};
+        use crate::tool::{ApprovalRequest, Approver};
+
+        /// Keeps calling `noop` (2 tokens a call, model id `priced`) and remembers, for every call,
+        /// the system notice it was handed last — `None` when the call had no meter.
+        struct Looper {
+            calls: AtomicUsize,
+            notices: Mutex<Vec<Option<String>>>,
+        }
+
+        impl Looper {
+            fn new() -> Arc<Self> {
+                Arc::new(Self { calls: AtomicUsize::new(0), notices: Mutex::new(Vec::new()) })
+            }
+        }
+
+        #[async_trait]
+        impl ModelProvider for Looper {
+            fn model_id(&self) -> &str {
+                "priced"
+            }
+
+            async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let notice = messages.last().filter(|m| m.role == Role::System && m.content.contains("Spending meter"));
+                self.notices.lock().unwrap().push(notice.map(|m| m.content.clone()));
+                Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "c".into(), name: "noop".into(), arguments: json!({}), thought_signature: None }],
+                    usage: Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+                }))
+            }
+        }
+
+        struct Says {
+            yes: bool,
+            asked: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Approver for Says {
+            async fn approve(&self, request: ApprovalRequest) -> bool {
+                assert_eq!(request.action, "extend_limit");
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                self.yes
+            }
+        }
+
+        fn guard(limits: Vec<Limit>, prices: Vec<Price>) -> Arc<SpendGuard> {
+            Arc::new(SpendGuard::new(Arc::new(MemoryStore::default()), limits, PriceTable::new(prices)))
+        }
+
+        fn looping_root(model: Arc<Looper>, guard: &Arc<SpendGuard>) -> Orchestrator {
+            let mut root = Orchestrator::new(model, temp_vault());
+            root.register_tool(Arc::new(NamedTool("noop")));
+            root.with_spend_guard(guard.clone()).with_spend_context(SpendContext::new("cli"))
+        }
+
+        fn day(max_tokens: u64) -> Limit {
+            Limit::new("day", Scope::Global, 24).with_max_tokens(max_tokens)
+        }
+
+        #[tokio::test]
+        async fn a_looping_turn_is_stopped_in_the_middle_by_the_limit() {
+            let model = Looper::new();
+            let guard = guard(vec![day(10)], vec![]);
+
+            let err = looping_root(model.clone(), &guard).handle_message(&[], "go").await.unwrap_err();
+
+            let reached = err.downcast_ref::<SpendLimitReached>().expect("a typed error, not a string");
+            assert_eq!((reached.0.used_tokens, reached.0.id.as_str()), (10, "day"));
+            // 2 tokens a call against a 10-token limit: five calls fit, the sixth never reaches the model.
+            assert_eq!(model.calls.load(Ordering::SeqCst), 5);
+            assert_eq!(guard.status(None)[0].used_tokens, 10, "every call was booked as it happened");
+        }
+
+        #[tokio::test]
+        async fn the_model_is_told_where_it_stands_only_once_a_limit_is_close() {
+            let model = Looper::new();
+            let guard = guard(vec![day(10)], vec![]);
+
+            let _ = looping_root(model.clone(), &guard).handle_message(&[], "go").await;
+
+            let notices = model.notices.lock().unwrap();
+            assert!(notices[..4].iter().all(Option::is_none), "0, 2, 4 and 6 of 10 tokens: nothing to say yet");
+            let warned = notices[4].as_deref().expect("8 of 10 is past the 80% mark");
+            assert!(warned.contains("8 of 10 tokens (2 left)"), "{warned}");
+        }
+
+        #[tokio::test]
+        async fn a_yes_lets_the_paused_turn_carry_on_a_step_at_a_time() {
+            let model = Looper::new();
+            let mut limit = day(10);
+            limit.extend_step = 0.2;
+            let guard = guard(vec![limit], vec![]);
+            let says = Arc::new(Says { yes: true, asked: AtomicUsize::new(0) });
+
+            let err = looping_root(model.clone(), &guard).with_approver(says.clone()).handle_message(&[], "go").await.unwrap_err();
+
+            // Five calls use the 10 tokens; each further call needs a fresh 2-token step (calls 6, 7
+            // and 8), so it is asked three times, and it is the iteration cap that ends the turn.
+            assert!(err.to_string().contains("exceeded max tool-call iterations"), "{err:#}");
+            assert_eq!(model.calls.load(Ordering::SeqCst), MAX_TOOL_ITERATIONS);
+            assert_eq!(says.asked.load(Ordering::SeqCst), 3);
+            assert_eq!(guard.status(None)[0].max_tokens, Some(16));
+        }
+
+        #[tokio::test]
+        async fn a_no_ends_the_turn_and_the_next_one_is_still_held() {
+            let model = Looper::new();
+            let guard = guard(vec![day(10)], vec![]);
+            let says = Arc::new(Says { yes: false, asked: AtomicUsize::new(0) });
+            let root = looping_root(model.clone(), &guard).with_approver(says.clone());
+
+            assert!(root.handle_message(&[], "go").await.unwrap_err().downcast_ref::<SpendLimitReached>().is_some());
+            // "Another conversation" is the same window: still no room, so it asks again and stops again.
+            assert!(root.handle_message(&[], "again").await.unwrap_err().downcast_ref::<SpendLimitReached>().is_some());
+            assert_eq!(model.calls.load(Ordering::SeqCst), 5, "the second turn never reached the model");
+            assert_eq!(says.asked.load(Ordering::SeqCst), 2);
+        }
+
+        #[tokio::test]
+        async fn dollars_are_priced_by_the_models_id() {
+            let model = Looper::new();
+            let price = Price { model: "priced".into(), input_per_mtok: 500_000.0, output_per_mtok: 500_000.0 };
+            // 2 tokens cost $1 a call, so a $3 limit allows three calls.
+            let guard = guard(vec![Limit::new("money", Scope::Global, 24).with_max_cost_usd(3.0)], vec![price]);
+
+            let err = looping_root(model.clone(), &guard).handle_message(&[], "go").await.unwrap_err();
+
+            assert!(err.downcast_ref::<SpendLimitReached>().is_some(), "{err:#}");
+            assert_eq!(model.calls.load(Ordering::SeqCst), 3);
+        }
+
+        #[tokio::test]
+        async fn sub_agents_spend_from_the_same_limits_and_the_whole_turn_stops() {
+            let model = Arc::new(Delegator { calls: AtomicUsize::new(0) });
+            let guard = guard(vec![day(8)], vec![]);
+            let root = root_with_burning_sub_agent(model.clone(), 100)
+                .with_spend_guard(guard.clone())
+                .with_spend_context(SpendContext::new("cli"));
+
+            let err = root.handle_message(&[], "go").await.unwrap_err();
+
+            assert!(err.downcast_ref::<SpendLimitReached>().is_some(), "{err:#}");
+            // Root delegates (2 tokens) and the sub-agent burns 6 more: the fourth sub-agent call
+            // is refused, its refusal reaches the root as a tool error, and the root's own next
+            // call is refused too — the turn ends instead of the root chatting on for free.
+            assert_eq!(model.calls.load(Ordering::SeqCst), 4);
+            assert_eq!(guard.status(None)[0].used_tokens, 8);
+        }
+
+        #[tokio::test]
+        async fn an_agent_limit_holds_that_agent_and_leaves_the_others_alone() {
+            let guard = guard(vec![Limit::new("chief-day", Scope::Agent("chief".into()), 24).with_max_tokens(4)], vec![]);
+            let model = Looper::new();
+            let root = looping_root(model.clone(), &guard);
+
+            assert!(root.with_agent(Some("chief".into())).handle_message(&[], "go").await.is_err());
+            assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+
+            // Another agent isn't covered, so it runs until its own iteration cap.
+            let other = root.with_agent(Some("poet".into())).handle_message(&[], "go").await.unwrap_err();
+            assert!(other.to_string().contains("exceeded max tool-call iterations"), "{other:#}");
+        }
+
+        #[tokio::test]
+        async fn the_budget_tool_reaches_the_model_only_when_there_are_limits() {
+            use crate::tool::spend_tool::BudgetTool;
+            let offered = |root: &Orchestrator| {
+                let (specs, _) = (root.tools.iter().filter(|t| t.is_available()).map(|t| t.spec().name).collect::<Vec<_>>(), ());
+                specs
+            };
+            let mut root = Orchestrator::new(Looper::new(), temp_vault());
+            root.register_tool(Arc::new(BudgetTool::new()));
+            assert!(offered(&root).is_empty(), "unbound, it is hidden");
+
+            let guard = guard(vec![day(1000)], vec![]);
+            let turn = root.with_spend_guard(guard).with_spend_context(SpendContext::new("cli"));
+            let budget = TurnBudget::for_turn(None, Some(SpendTurn::new(turn.spend.clone().unwrap(), SpendContext::new("cli"), None)));
+            let bound = turn.with_turn_budget(budget);
+            assert_eq!(offered(&bound), vec!["budget".to_string()]);
+        }
     }
 }

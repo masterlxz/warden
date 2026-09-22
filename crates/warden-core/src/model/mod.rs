@@ -261,6 +261,13 @@ pub fn response_stream(response: Response) -> ChatStream {
 /// exactly as a connection failure would have looked before.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
+    /// The model id this provider sends (`gpt-4o`, ...), which is what a price is looked up by
+    /// (`spend::PriceTable`). Empty for a provider that doesn't say — its calls still count against
+    /// token limits, just not dollar ones.
+    fn model_id(&self) -> &str {
+        ""
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream>;
 
     async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {

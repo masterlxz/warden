@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod mcp_oauth;
 pub mod shell;
 pub mod skill_tools;
+pub mod spend_tool;
 pub mod ssh;
 
 /// `Serialize`/`Deserialize` let this be reused directly as the wire shape for a client-advertised
@@ -53,7 +54,8 @@ pub trait Tool: Send + Sync {
 
     /// A copy of this tool whose nested orchestrators (sub-agents) are charged to `budget`, or
     /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
-    /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`.
+    /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`. A tool that only needs
+    /// to read the turn's spending limits (`budget`) binds to it the same way.
     fn with_budget(&self, _budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
         None
     }
