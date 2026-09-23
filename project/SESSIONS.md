@@ -41,6 +41,35 @@ mensagem); paginação ("carregar mais antigas") além do corte fixo de 100.
 
 ---
 
+### 2026-09-23 — Sessão 93 (continuação)
+
+- **Objetivo**: P69 item 2 — extensão de navegador no Firefox, escolhido pelo usuário.
+
+**O que foi feito**:
+
+- Pesquisa de compatibilidade antes de codar (MDN/browser-compat-data): Firefox não tem service
+  worker em MV3 (usa `background.scripts`, event page), não tem `sidePanel` (tem `sidebar_action`),
+  não tem `system.network`; tem `tabGroups` desde o 139 e `tabs.group` desde o 138, e expõe tudo
+  via `chrome.*` com promises.
+- **Build**: `manifest.config.ts` → `manifestFor(target)`; `vite.config.ts` lê `--mode firefox`,
+  passa `browser: "firefox"` pro crxjs, sai em `dist-firefox/` e inclui o HTML do painel como input
+  explícito (crxjs não conhece `sidebar_action`). Script `build:firefox` novo; `dist-firefox/` no
+  `.gitignore`.
+- **Runtime**: `extension/src/background/platform.ts` (`setUpPanelOpening`,
+  `supportsHubDiscovery`) + declaração de tipo de `chrome.sidebarAction`
+  (`src/types/firefox-sidebar-action.d.ts`). `index.ts` e `ConnectionForm.tsx` passam a usá-los.
+- **Verificação**: `tsc`, `npm run build` e `npm run build:firefox` limpos; manifests gerados
+  conferidos; `web-ext lint` sobre `dist-firefox/` com 0 erros (avisos esperados, ver P69 em
+  `PENDING.md`) — isso fez subir o mínimo de 139 pra 140 (`data_collection_permissions`). **Não
+  testado num Firefox real** (não instalado aqui).
+
+**Próximo passo**: o usuário carregar `dist-firefox/` num Firefox 140+ (`about:debugging`) e
+confirmar conexão, chat e "+ Adicionar esta aba" + uma tool de DOM. Frentes abertas: P36, P54.
+
+**Fecha o P69** (item 2; item 1 já fechado na Sessão 92).
+
+---
+
 ### 2026-09-22 — Sessão 92
 
 - **Objetivo**: P75 — sync seletivo dentro do vault. Plano aprovado antes de codar (Plan mode) —

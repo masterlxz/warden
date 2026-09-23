@@ -17,12 +17,11 @@ import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, PopupRequest } from "./popup_protocol";
 import { toolSpecs, toolHandlers } from "./tools";
 import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
+import { setUpPanelOpening, supportsHubDiscovery } from "./platform";
 
-// Makes clicking the toolbar icon open the docked side panel (manifest's `side_panel`) instead of
-// requiring a `default_popup`. Without this call the icon click has no effect.
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => console.error("Falha ao configurar o painel lateral:", error));
+// Makes clicking the toolbar icon open the chat panel (Chrome's side panel, Firefox's sidebar)
+// instead of requiring a `default_popup`. Without this call the icon click has no effect.
+setUpPanelOpening();
 
 const STORAGE_KEY_DEVICE_ID = "deviceId";
 const STORAGE_KEY_SETTINGS = "connectionSettings";
@@ -136,6 +135,9 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       }
 
     case "discoverHubs":
+      if (!supportsHubDiscovery()) {
+        return { ok: false, hubs: [], error: "LAN discovery isn't available in this browser — type the hub's address instead" };
+      }
       try {
         return { ok: true, hubs: await discoverHubs(request.port) };
       } catch (err) {

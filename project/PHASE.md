@@ -433,8 +433,10 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
 - [x] 8.1 — Setup da extensão (Manifest V3, popup, background script) *(Sessão 68, continuação) —
   `extension/` novo (raiz do repo, irmão de `desktop`/`mobile`), Vite + React 19 + TS (mesma stack
   de `desktop/`) mais `@crxjs/vite-plugin` (empacota Manifest V3 a partir do Vite — puro Vite não
-  gera manifest/service worker compatíveis). Chrome-only nesta fatia (Firefox fica pra 8.7/8.8,
-  mesma postura "uma plataforma primeiro" que a 7.1 do mobile teve com Android antes de iOS)*
+  gera manifest/service worker compatíveis). Chrome-only nesta fatia (mesma postura "uma
+  plataforma primeiro" que a 7.1 do mobile teve com Android antes de iOS). **Firefox veio na
+  Sessão 93** (P69 item 2): mesmo código, segundo build (`npm run build:firefox` → `dist-firefox/`,
+  Firefox 140+), ver `ARCHITECTURE.md`*
 - [x] 8.2 — Canal de chat (popup com conversa) *(Sessão 68, continuação) — cliente WS em
   TypeScript (`extension/src/background/connection.ts`), porta 1:1 de
   `mobile/lib/services/server_connection.dart` (Fase 7.2/7.3): handshake com timeout, heartbeat

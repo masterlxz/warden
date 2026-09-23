@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { DiscoveredHub } from "../background/discovery";
 import type { ConnectionSettings, DiscoverHubsResponse } from "../background/popup_protocol";
+import { supportsHubDiscovery } from "../background/platform";
 
 const DEFAULT_PORT = 7420;
 
@@ -49,9 +50,12 @@ export default function ConnectionForm({ savedSettings, errorMessage, busy, onCo
 
   return (
     <form className="connection-form" onSubmit={handleSubmit}>
-      <button type="button" onClick={handleDiscover} disabled={searching}>
-        {searching ? "Procurando…" : "Procurar hubs na rede"}
-      </button>
+      {/* P69 item 2 — Firefox can't learn the local subnet (no `system.network`), so no sweep there. */}
+      {supportsHubDiscovery() && (
+        <button type="button" onClick={handleDiscover} disabled={searching}>
+          {searching ? "Procurando…" : "Procurar hubs na rede"}
+        </button>
+      )}
       {searchError && <p className="error-banner">{searchError}</p>}
       {hubs && hubs.length === 0 && <p className="hub-empty">Nenhum hub respondeu na rede local.</p>}
       {hubs && hubs.length > 0 && (
