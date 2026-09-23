@@ -29,6 +29,7 @@ void main() {
     required String deviceId,
     required String deviceName,
     required String authKey,
+    String? deviceToken,
     Duration handshakeTimeout = ServerConnection.defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},

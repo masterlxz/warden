@@ -154,7 +154,7 @@ mod tests {
     // against the TS side.
     #[test]
     fn paired_device_info_serializes_as_camel_case() {
-        let device = PairedDevice { device_name: "Desktop A".to_string(), status: PairingStatus::Approved, first_seen_ms: 1, last_seen_ms: 2 };
+        let device = PairedDevice { device_name: "Desktop A".to_string(), status: PairingStatus::Approved, first_seen_ms: 1, last_seen_ms: 2, token_hash: None };
         let info = to_info("dev-a".to_string(), device);
         assert_eq!(
             serde_json::to_string(&info).unwrap(),

@@ -19,12 +19,18 @@ final class HelloMessage extends ClientMessage {
     required this.deviceId,
     required this.deviceName,
     required this.authKey,
+    this.deviceToken,
     this.tools = const [],
   });
 
   final String deviceId;
   final String deviceName;
+
+  /// The hub's pairing key (P36) — only needed until this device holds a [deviceToken] for it.
   final String authKey;
+
+  /// The per-device token this hub issued in an earlier `HelloAck` (P36), if any.
+  final String? deviceToken;
 
   /// Local tools this client can run on request (Fase 7.4), e.g.
   /// `MobileFileTool.listFilesSpec`/`readFileSpec` — each a `{name, description, parameters}`
@@ -39,6 +45,7 @@ final class HelloMessage extends ClientMessage {
         'deviceId': deviceId,
         'deviceName': deviceName,
         'authKey': authKey,
+        if (deviceToken != null) 'deviceToken': deviceToken,
         'tools': tools,
       };
 }
@@ -170,7 +177,7 @@ sealed class ServerMessage {
 
   static ServerMessage fromJson(Map<String, dynamic> json) {
     return switch (json['type']) {
-      'helloAck' => HelloAckMessage(json['serverName'] as String),
+      'helloAck' => HelloAckMessage(json['serverName'] as String, deviceToken: json['deviceToken'] as String?),
       'authError' => AuthErrorMessage(json['reason'] as String),
       'pong' => PongMessage(json['nonce'] as int),
       'chatResponse' => ChatResponseMessage(
@@ -199,9 +206,13 @@ sealed class ServerMessage {
 }
 
 final class HelloAckMessage extends ServerMessage {
-  const HelloAckMessage(this.serverName);
+  const HelloAckMessage(this.serverName, {this.deviceToken});
 
   final String serverName;
+
+  /// A newly issued device token (P36) — present when this Hello paired with the pairing key.
+  /// Replaces whatever token this device held for the hub, which no longer works.
+  final String? deviceToken;
 }
 
 final class AuthErrorMessage extends ServerMessage {

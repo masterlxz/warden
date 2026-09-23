@@ -51,7 +51,14 @@ pub enum ClientMessage {
     Hello {
         device_id: String,
         device_name: String,
+        /// The hub's shared *pairing* key (P36) — only needed to pair (no `device_token` yet, or
+        /// the one held was rejected). May be empty when `device_token` is set.
+        #[serde(default)]
         auth_key: String,
+        /// The per-device token this hub issued in an earlier `HelloAck` (P36). Keeps working
+        /// after the operator rotates the pairing key; stops working once the device is revoked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_token: Option<String>,
         /// Local tools this client can execute on request (Fase 7.4) — e.g. mobile's
         /// `list_files`/`read_file`. `#[serde(default)]` so a client that predates this (or
         /// simply has none configured, like the desktop-as-client) doesn't need to send anything;
@@ -136,6 +143,12 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     HelloAck {
         server_name: String,
+        /// A newly issued per-device token (P36), present whenever this `Hello` paired with the
+        /// pairing key instead of an existing token. The client must store it (keyed by hub and
+        /// `device_id`) and send it as `Hello.device_token` from then on — it replaces any token
+        /// it held before, which no longer works.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_token: Option<String>,
     },
     AuthError {
         reason: String,
@@ -228,6 +241,7 @@ mod tests {
             device_id: "dev-1".into(),
             device_name: "Test Device".into(),
             auth_key: "secret".into(),
+            device_token: None,
             tools: Vec::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -236,6 +250,24 @@ mod tests {
             r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[]}"#
         );
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn client_hello_with_only_a_device_token_parses() {
+        let json = r#"{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","deviceToken":"tok"}"#;
+        let msg = serde_json::from_str::<ClientMessage>(json).unwrap();
+        assert!(matches!(msg, ClientMessage::Hello { auth_key, device_token: Some(t), .. } if auth_key.is_empty() && t == "tok"));
+    }
+
+    #[test]
+    fn server_hello_ack_carries_an_issued_token_only_when_there_is_one() {
+        let without = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: None };
+        assert_eq!(serde_json::to_string(&without).unwrap(), r#"{"type":"helloAck","serverName":"Hub"}"#);
+
+        let with = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: Some("tok".into()) };
+        let json = serde_json::to_string(&with).unwrap();
+        assert_eq!(json, r#"{"type":"helloAck","serverName":"Hub","deviceToken":"tok"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), with);
     }
 
     #[test]
@@ -253,6 +285,7 @@ mod tests {
             device_id: "dev-1".into(),
             device_name: "Test Device".into(),
             auth_key: "secret".into(),
+            device_token: None,
             tools: vec![ToolSpec {
                 name: "list_files".into(),
                 description: "List files".into(),

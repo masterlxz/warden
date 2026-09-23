@@ -53,6 +53,20 @@ class ConnectionSettingsStore {
     await prefs.setString(_keyDeviceName, settings.deviceName);
   }
 
+  // P36 — one token per hub (this app has a single device id), so a phone paired with two hubs
+  // keeps both.
+  static String _deviceTokenKey(String host, int port) => 'connection.deviceToken.$host:$port';
+
+  Future<String?> deviceTokenFor(String host, int port) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_deviceTokenKey(host, port));
+  }
+
+  Future<void> saveDeviceToken(String host, int port, String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_deviceTokenKey(host, port), token);
+  }
+
   Future<String> getOrCreateDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString(_keyDeviceId);

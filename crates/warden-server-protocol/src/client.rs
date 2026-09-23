@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -37,6 +40,39 @@ impl ServerConnection {
         auth_key: &str,
         tools: Vec<ToolSpec>,
     ) -> anyhow::Result<Self> {
+        Ok(Self::handshake(url, device_id, device_name, auth_key, None, tools).await?.0)
+    }
+
+    /// Same as `connect_with_tools`, but presents the device token `tokens` holds for this
+    /// `url`/`device_id` (P36) and stores whatever new one the hub issues — what a long-lived
+    /// client (`warden-node`, `RemoteNodeProvider`) uses so it keeps its pairing (and `Approved`
+    /// status) across reconnects and pairing-key rotations.
+    pub async fn connect_with_token_store(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        auth_key: &str,
+        tools: Vec<ToolSpec>,
+        tokens: &DeviceTokenStore,
+    ) -> anyhow::Result<Self> {
+        let stored = tokens.get(url, device_id)?;
+        let (conn, issued) = Self::handshake(url, device_id, device_name, auth_key, stored, tools).await?;
+        if let Some(token) = issued {
+            tokens.set(url, device_id, &token)?;
+        }
+        Ok(conn)
+    }
+
+    /// Hello/HelloAck with an optional device token — returns the connection plus the token the
+    /// hub issued, if it issued one.
+    pub async fn handshake(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        auth_key: &str,
+        device_token: Option<String>,
+        tools: Vec<ToolSpec>,
+    ) -> anyhow::Result<(Self, Option<String>)> {
         let (ws, _response) = tokio_tungstenite::connect_async(url).await?;
         let mut conn = Self { ws };
 
@@ -44,12 +80,13 @@ impl ServerConnection {
             device_id: device_id.to_string(),
             device_name: device_name.to_string(),
             auth_key: auth_key.to_string(),
+            device_token,
             tools,
         })
         .await?;
 
         match conn.recv().await? {
-            Some(ServerMessage::HelloAck { .. }) => Ok(conn),
+            Some(ServerMessage::HelloAck { device_token, .. }) => Ok((conn, device_token)),
             Some(ServerMessage::AuthError { reason }) => {
                 anyhow::bail!("authentication rejected: {reason}")
             }
@@ -81,5 +118,68 @@ impl ServerConnection {
 
     pub async fn ping(&mut self, nonce: u64) -> anyhow::Result<()> {
         self.send(&ClientMessage::Ping { nonce }).await
+    }
+}
+
+/// Client-side device tokens (P36), one JSON file mapping `"<hub url>|<device_id>"` to the token
+/// that hub issued. Same stateless read-mutate-write posture as the hub's `PairingStore` — written
+/// at most once per pairing, so there's nothing worth caching.
+pub struct DeviceTokenStore {
+    path: PathBuf,
+}
+
+impl DeviceTokenStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    fn key(url: &str, device_id: &str) -> String {
+        format!("{url}|{device_id}")
+    }
+
+    fn load(&self) -> anyhow::Result<HashMap<String, String>> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(contents) => Ok(serde_json::from_str(&contents)?),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub fn get(&self, url: &str, device_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.load()?.remove(&Self::key(url, device_id)))
+    }
+
+    pub fn set(&self, url: &str, device_id: &str, token: &str) -> anyhow::Result<()> {
+        let mut tokens = self.load()?;
+        tokens.insert(Self::key(url, device_id), token.to_string());
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&self.path, serde_json::to_string_pretty(&tokens)?)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceTokenStore;
+
+    #[test]
+    fn tokens_are_kept_per_hub_and_device_and_survive_a_fresh_store() {
+        let path = std::env::temp_dir().join(format!(
+            "warden-device-tokens-test-{}.json",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = DeviceTokenStore::new(&path);
+        assert_eq!(store.get("ws://a:7420", "dev-1").unwrap(), None);
+
+        store.set("ws://a:7420", "dev-1", "tok-a").unwrap();
+        store.set("ws://b:7420", "dev-1", "tok-b").unwrap();
+        store.set("ws://a:7420", "dev-1", "tok-a2").unwrap();
+
+        let reloaded = DeviceTokenStore::new(&path);
+        assert_eq!(reloaded.get("ws://a:7420", "dev-1").unwrap().as_deref(), Some("tok-a2"));
+        assert_eq!(reloaded.get("ws://b:7420", "dev-1").unwrap().as_deref(), Some("tok-b"));
+        assert_eq!(reloaded.get("ws://a:7420", "dev-2").unwrap(), None);
     }
 }

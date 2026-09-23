@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
@@ -14,7 +15,7 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
 use warden_core::spend::SpendContext;
 
-use crate::device_registry::{PairingStatus, PairingStore};
+use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::history::handle_history_request;
 use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
@@ -47,7 +48,11 @@ pub struct Server {
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
+    revocation_check_interval: Duration,
 }
+
+/// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
+pub const DEFAULT_REVOCATION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 impl Server {
     pub async fn bind(
@@ -67,7 +72,15 @@ impl Server {
             conversations_dir: Arc::new(conversations_dir),
             devices: Arc::new(Mutex::new(HashMap::new())),
             devices_path: Arc::new(devices_path),
+            revocation_check_interval: DEFAULT_REVOCATION_CHECK_INTERVAL,
         })
+    }
+
+    /// Overrides `DEFAULT_REVOCATION_CHECK_INTERVAL` — tests use a short one so a revocation shows
+    /// up without waiting seconds.
+    pub fn with_revocation_check_interval(mut self, interval: Duration) -> Self {
+        self.revocation_check_interval = interval;
+        self
     }
 
     /// Actual bound address — useful when `bind` was called with port 0 (OS-assigned), e.g. in tests.
@@ -95,6 +108,7 @@ impl Server {
             conversations_dir: self.conversations_dir,
             devices: self.devices,
             devices_path: self.devices_path,
+            revocation_check_interval: self.revocation_check_interval,
         };
         tokio::pin!(shutdown);
         loop {
@@ -124,10 +138,11 @@ struct ConnectionContext {
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
+    revocation_check_interval: Duration,
 }
 
 async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
-    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path } = ctx;
+    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path, revocation_check_interval } = ctx;
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut stream) = ws.split();
 
@@ -144,8 +159,9 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
             device_id,
             device_name,
             auth_key: provided,
+            device_token,
             tools,
-        }) => (device_id, device_name, provided, tools),
+        }) => (device_id, device_name, provided, device_token, tools),
         // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
@@ -163,32 +179,30 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key, tools) = hello;
+    let (device_id, device_name, provided_key, device_token, tools) = hello;
 
-    if provided_key.as_str() != auth_key.as_ref() {
-        send(&mut sink, &ServerMessage::AuthError {
-            reason: "invalid auth key".into(),
-        })
-        .await?;
-        sink.send(Message::Close(Some(CloseFrame {
-            code: CloseCode::Policy,
-            reason: "invalid auth key".into(),
-        })))
-        .await?;
-        return Ok(());
-    }
+    // P36: the shared key only pairs; a paired device authenticates with its own token. The
+    // pairing status itself (Pending/Approved) stays silent here — a `Pending` device still gets a
+    // normal `HelloAck` and can chat; only `CallDeviceTool` checks for `Approved` (Fase 9.3).
+    let pairing_key_ok = !provided_key.is_empty() && provided_key.as_str() == auth_key.as_ref();
+    let store = PairingStore::new(devices_path.as_ref().clone());
+    let issued_token = match store.authenticate(&device_id, &device_name, device_token.as_deref(), pairing_key_ok) {
+        Ok(Ok(outcome)) => outcome.issued_token,
+        Ok(Err(rejection)) => {
+            eprintln!("warden-server: rejected Hello from '{device_id}' at {peer}: {rejection}");
+            return reject(&mut sink, &rejection.to_string()).await;
+        }
+        Err(err) => {
+            eprintln!("warden-server: failed to read the pairing registry for '{device_id}': {err:#}");
+            return reject(&mut sink, "server could not check this device's pairing").await;
+        }
+    };
 
     eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}");
 
-    // Fase 9.3: record this device in the persistent pairing registry — silent from the client's
-    // perspective (still gets a normal `HelloAck` below even as `Pending`), only surfaced via
-    // `warden-server devices list`/`approve`. Only `CallDeviceTool` actually checks the status.
-    if let Err(err) = PairingStore::new(devices_path.as_ref().clone()).record_seen(&device_id, &device_name) {
-        eprintln!("warden-server: failed to record '{device_id}' in the pairing registry: {err:#}");
-    }
-
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: server_name.to_string(),
+        device_token: issued_token,
     })
     .await?;
 
@@ -203,6 +217,12 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if send(&mut sink, &msg).await.is_err() {
+                break;
+            }
+            // P36: an `AuthError` after the handshake only ever means "revoked" — close right
+            // behind it instead of leaving the socket open until every sender is gone.
+            if let ServerMessage::AuthError { reason } = msg {
+                let _ = sink.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: reason.into() }))).await;
                 break;
             }
         }
@@ -250,7 +270,24 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
         Arc::new(per_connection)
     };
 
-    while let Some(frame) = stream.next().await {
+    // P36: `revoke` must also end a connection that's already open — it happens in another
+    // process (`warden-server devices revoke`, the desktop's Workspace screen), so the only signal
+    // is the registry file itself, re-checked on a timer.
+    let mut revocation_check = tokio::time::interval(revocation_check_interval);
+    revocation_check.tick().await;
+    loop {
+        let frame = tokio::select! {
+            frame = stream.next() => frame,
+            _ = revocation_check.tick() => {
+                if matches!(store.status(&device_id), Ok(Some(PairingStatus::Revoked))) {
+                    eprintln!("warden-server: {device_id} was revoked, closing its connection");
+                    let _ = tx.send(ServerMessage::AuthError { reason: AuthRejection::Revoked.to_string() });
+                    break;
+                }
+                continue;
+            }
+        };
+        let Some(frame) = frame else { break };
         match frame? {
             Message::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
                 Ok(ClientMessage::Ping { nonce }) => {
@@ -349,7 +386,10 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
     }
 
     devices.lock().unwrap().remove(&device_id);
-    drop(tx);
+    // `tool_channel` and this connection's own `Orchestrator` (its `RemoteTool`s) hold `tx` clones
+    // too — dropped here so the writer task actually ends once in-flight `Chat` tasks finish,
+    // instead of waiting on a sender that lives as long as this function.
+    drop((tx, tool_channel, orchestrator));
     writer_task.await.ok();
 
     Ok(())
@@ -378,6 +418,13 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
             Err(format!("device '{target_id}' is not approved for routing yet — ask the operator to run `warden-server devices approve {target_id}`"))
         }
     }
+}
+
+/// Turns a `Hello` down: `AuthError` with `reason`, then a policy close.
+async fn reject(sink: &mut WsSink, reason: &str) -> anyhow::Result<()> {
+    send(sink, &ServerMessage::AuthError { reason: reason.to_string() }).await?;
+    sink.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: reason.to_string().into() }))).await?;
+    Ok(())
 }
 
 async fn send(sink: &mut WsSink, msg: &ServerMessage) -> anyhow::Result<()> {

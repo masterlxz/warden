@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use warden_core::storage::StorageProvider;
 
-use crate::client::ServerConnection;
+use crate::client::{DeviceTokenStore, ServerConnection};
 use crate::protocol::{ClientMessage, ServerMessage};
 
 /// Same reasoning as `remote_tool::DEFAULT_TIMEOUT` — a vault read/write/list/delete on another
@@ -49,8 +49,8 @@ struct RemoteNodeClient {
 }
 
 impl RemoteNodeClient {
-    async fn connect(url: &str, device_id: &str, device_name: &str, auth_key: &str, target_device_id: String) -> anyhow::Result<Self> {
-        let conn = ServerConnection::connect(url, device_id, device_name, auth_key).await?;
+    async fn connect(url: &str, device_id: &str, device_name: &str, auth_key: &str, target_device_id: String, tokens: &DeviceTokenStore) -> anyhow::Result<Self> {
+        let conn = ServerConnection::connect_with_token_store(url, device_id, device_name, auth_key, Vec::new(), tokens).await?;
         let (tx, rx) = mpsc::unbounded_channel::<ClientMessage>();
         let pending: PendingCalls = Arc::new(Mutex::new(HashMap::new()));
 
@@ -130,17 +130,18 @@ pub struct RemoteNodeProvider {
 }
 
 impl RemoteNodeProvider {
-    /// Connects to the `warden-server` at `url` as `device_id`/`device_name` (auth'd with
-    /// `auth_key`), ready to route calls to `target_device_id` — the other connected device whose
-    /// vault this provider fronts.
+    /// Connects to the `warden-server` at `url` as `device_id`/`device_name` (auth'd with the
+    /// device token `tokens` holds, or by pairing with `auth_key` — P36), ready to route calls to
+    /// `target_device_id` — the other connected device whose vault this provider fronts.
     pub async fn connect(
         url: &str,
         device_id: &str,
         device_name: &str,
         auth_key: &str,
         target_device_id: impl Into<String>,
+        tokens: &DeviceTokenStore,
     ) -> anyhow::Result<Self> {
-        let client = RemoteNodeClient::connect(url, device_id, device_name, auth_key, target_device_id.into()).await?;
+        let client = RemoteNodeClient::connect(url, device_id, device_name, auth_key, target_device_id.into(), tokens).await?;
         Ok(Self { client })
     }
 }

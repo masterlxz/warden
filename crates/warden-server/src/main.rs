@@ -48,8 +48,9 @@ enum DevicesAction {
     List,
     /// Approve a device for routing — it must have connected at least once already.
     Approve { device_id: String },
-    /// Revoke a previously approved device — blocks its next routing attempt, doesn't force-close
-    /// an already-open connection.
+    /// Revoke a device — its token stops working (so does re-pairing under the same id), and a
+    /// running `serve` closes its open connection within a few seconds. To also keep it from
+    /// pairing again under a *new* id, rotate the pairing key (`--auth-key`) and restart.
     Revoke { device_id: String },
 }
 
@@ -66,8 +67,10 @@ struct ServeArgs {
     #[arg(long, default_value = "0.0.0.0:7420")]
     listen: SocketAddr,
 
-    /// Shared secret clients must present in their Hello message. Falls back to
-    /// WARDEN_SERVER_AUTH_KEY if not passed (env wins if both are set).
+    /// Pairing key — what a new client presents in its first Hello to get its own device token
+    /// (P36). Devices already holding a token keep working if this changes, so rotating it only
+    /// affects new pairings. Falls back to WARDEN_SERVER_AUTH_KEY if not passed (env wins if both
+    /// are set).
     #[arg(long)]
     auth_key: Option<String>,
 
@@ -124,7 +127,7 @@ fn run_devices_command(action: DevicesAction) -> anyhow::Result<()> {
         }
         DevicesAction::Revoke { device_id } => {
             store.revoke(&device_id)?;
-            println!("device '{device_id}' revoked — its next routing attempt (as caller or target) will fail");
+            println!("device '{device_id}' revoked — its token no longer works and a running server closes its connection shortly");
         }
     }
     Ok(())

@@ -36,7 +36,9 @@ export interface SkillDto {
 }
 
 export type ClientMessage =
-  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; tools: ToolSpec[] }
+  /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
+   * `deviceToken` from an earlier `helloAck`. */
+  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[] }
   | { type: "ping"; nonce: number }
   | { type: "chat"; message: string }
   | { type: "toolCallResult"; callId: number; result: unknown }
@@ -55,7 +57,9 @@ export function encode(message: ClientMessage): string {
 }
 
 export type ServerMessage =
-  | { type: "helloAck"; serverName: string }
+  /** `deviceToken` is present when this Hello paired with the pairing key (P36) — it replaces
+   * whatever token this device held for the hub. */
+  | { type: "helloAck"; serverName: string; deviceToken?: string }
   | { type: "authError"; reason: string }
   | { type: "pong"; nonce: number }
   | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[] }

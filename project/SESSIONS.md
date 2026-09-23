@@ -2,7 +2,46 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-23 (Sessão 93)
+> Última atualização: 2026-09-23 (Sessão 94)
+
+---
+
+### 2026-09-23 — Sessão 94
+
+- **Objetivo**: P36 — escolhido pelo usuário. Antes de codar, lendo o código, apareceu que o
+  problema era maior que "chave sem rotação": revogar um device não impedia `Hello`/chat, e o
+  `device_id` é escolhido pelo cliente. Proposta em duas fatias (token por device; depois TLS),
+  usuário escolheu a fatia 1 primeiro.
+
+**O que foi feito**:
+
+- **Protocolo**: `Hello.deviceToken?` e `HelloAck.deviceToken?` (opcionais; `authKey` virou
+  `#[serde(default)]`).
+- **Hub** (`device_registry.rs`): `PairingStore::authenticate` substitui `record_seen` — regras e
+  motivo em `ARCHITECTURE.md` ("Auth do hub"). `PairedDevice.token_hash` (SHA-256, `sha2` novo no
+  `warden-server`). `server.rs`: `Hello` passa pelo `authenticate`; cada conexão relê o registro a
+  cada 5s e fecha com `AuthError{"device revoked"}` (`Server::with_revocation_check_interval` pra
+  testes). CLI `devices revoke` e `--auth-key` com texto atualizado.
+- **Bug antigo corrigido**: a task de conexão nunca terminava (clones de `tx` em `tool_channel`/no
+  `Orchestrator` da conexão prendiam o `writer_task.await`) — o socket não fechava do lado do
+  servidor. Achado no teste com binário real (node revogado continuava vivo).
+- **Clientes**: Rust — `DeviceTokenStore` + `ServerConnection::{handshake, connect_with_token_store}`,
+  usados por `warden-node` (chave agora opcional quando já há token) e `RemoteNodeProvider`
+  (`default_client_device_tokens_path()` no bootstrap). Mobile — token por `host:port` no
+  `ConnectionSettingsStore`, `ServerConnection.issuedDeviceToken`, auth key opcional quando já
+  pareado, `AuthError` no meio da sessão vira "authentication rejected: device revoked" em vez de
+  "closed unexpectedly". Extensão — mesma coisa (`deviceTokens` no `chrome.storage.local`).
+- **Verificação**: `cargo test --workspace` (647 passando; novos: 8 no registro, 2 no protocolo,
+  1 no `DeviceTokenStore`, 2 de integração com socket real em `handshake.rs`), `cargo clippy
+  --workspace --all-targets` limpo, `flutter analyze` + `flutter test` (74, 4 novos), extensão
+  `tsc` + `build` + `build:firefox` limpos. **Teste com binários reais** (`XDG_CONFIG_HOME`
+  temporário): parear `warden-node` → token salvo, só hash no `devices.json`; reiniciar o hub com
+  outra chave → node reconecta sem chave, continua `approved`; `devices revoke` com o node
+  conectado → node derrubado, reconexão recusada ("device revoked"); device novo com a chave
+  antiga → recusado. **Sem teste do mobile/extensão num aparelho/navegador real.**
+
+**Próximo passo**: P36 fatia 2 (TLS) — precisa de decisão sobre a extensão (cert autoassinado
+não dá pra fixar no navegador). Ou outra frente (P54 etc.).
 
 ---
 

@@ -668,6 +668,13 @@ pub fn default_server_devices_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("devices.json"))
 }
 
+/// The *client* side of P36's device tokens — what this machine was issued by each hub it pairs
+/// with as a Rust client (`warden-node`, a `[remote_node]` storage provider). Separate from
+/// `devices.json`, which is the hub's own registry of the devices pairing with *it*.
+pub fn default_client_device_tokens_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("device_tokens.json"))
+}
+
 /// What the desktop's Workspace screen embeds in the QR code a new client scans (Fase 9.7) — the
 /// two fields a `RemoteNodeConfig`/mobile `ConnectionScreen` would otherwise need typed by hand:
 /// which hub to connect to, and its shared secret. Deliberately its own tiny JSON file, not a
@@ -992,6 +999,7 @@ pub async fn build_storage_provider(
         StorageProviderKind::RemoteNode => {
             let cfg = remote_node
                 .ok_or_else(|| anyhow::anyhow!("storage_provider 'remote_node' requires a [remote_node] config section"))?;
+            let tokens_path = default_client_device_tokens_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
             Arc::new(
                 warden_server_protocol::RemoteNodeProvider::connect(
                     &cfg.server_url,
@@ -999,6 +1007,7 @@ pub async fn build_storage_provider(
                     &cfg.device_name,
                     &cfg.auth_key,
                     cfg.target_device_id.clone(),
+                    &warden_server_protocol::DeviceTokenStore::new(tokens_path),
                 )
                 .await?,
             )

@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use warden_core::memory::Vault;
 use warden_core::storage::{LocalFSProvider, StorageProvider};
 use warden_core::tool::ToolSpec;
-use warden_server_protocol::{ClientMessage, ServerConnection, ServerMessage};
+use warden_server_protocol::{ClientMessage, DeviceTokenStore, ServerConnection, ServerMessage};
 
 /// The 4 tools this node advertises in `Hello` — schemas match exactly what `RemoteNodeProvider`
 /// sends (see its own doc comment for the wire contract).
@@ -45,10 +45,10 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// Connects to `url` advertising this node's 4 vault tools — the Hello/HelloAck handshake is
-/// `ServerConnection::connect_with_tools`'s job, unchanged from Fase 7.4's own use of it.
-pub async fn connect(url: &str, device_id: &str, device_name: &str, auth_key: &str) -> anyhow::Result<ServerConnection> {
-    ServerConnection::connect_with_tools(url, device_id, device_name, auth_key, tool_specs()).await
+/// Connects to `url` advertising this node's 4 vault tools — the Hello/HelloAck handshake (and
+/// keeping the device token in `tokens`, P36) is `ServerConnection::connect_with_token_store`'s job.
+pub async fn connect(url: &str, device_id: &str, device_name: &str, auth_key: &str, tokens: &DeviceTokenStore) -> anyhow::Result<ServerConnection> {
+    ServerConnection::connect_with_token_store(url, device_id, device_name, auth_key, tool_specs(), tokens).await
 }
 
 /// Serves `ToolCallRequest`s against `vault` until the connection closes (cleanly or on error) —

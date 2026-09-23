@@ -46,6 +46,7 @@ export interface ConnectOptions {
   deviceId: string;
   deviceName: string;
   authKey: string;
+  deviceToken?: string;
   handshakeTimeoutMs?: number;
   toolSpecs?: ToolSpec[];
   toolHandlers?: Record<string, ToolHandler>;
@@ -69,6 +70,9 @@ export class ServerConnection {
   private nextNonce = 0;
   private pendingPingNonce: number | null = null;
   private goodbyeSent = false;
+  /** P36 — set when the hub turns this connection away mid-session (the device was revoked), so
+   * the close that follows reports why instead of "closed unexpectedly". */
+  private rejectedReason: string | null = null;
   private nextRequestId = 0;
   private readonly pendingSkillRequests = new Map<number, PendingSkillRequest>();
   private currentStatus: ConnectionStatus;
@@ -77,6 +81,9 @@ export class ServerConnection {
   private constructor(
     socket: WebSocket,
     public readonly serverName: string,
+    /** The device token the hub issued in this connection's `helloAck` (P36), if it issued one —
+     * the caller must persist it and pass it as `deviceToken` from then on. */
+    public readonly issuedDeviceToken: string | undefined,
     toolHandlers: Record<string, ToolHandler>,
   ) {
     this.socket = socket;
@@ -91,7 +98,11 @@ export class ServerConnection {
     socket.addEventListener("close", () => {
       this.stopHeartbeat();
       this.failPendingSkillRequests(new Error("connection closed"));
-      this.setStatus(this.goodbyeSent ? { kind: "disconnected" } : { kind: "failure", message: "Connection closed unexpectedly" });
+      this.setStatus(
+        this.goodbyeSent
+          ? { kind: "disconnected" }
+          : { kind: "failure", message: this.rejectedReason !== null ? `authentication rejected: ${this.rejectedReason}` : "Connection closed unexpectedly" },
+      );
     });
   }
 
@@ -144,7 +155,7 @@ export class ServerConnection {
         finish(() => {
           switch (reply.type) {
             case "helloAck":
-              resolve(new ServerConnection(socket, reply.serverName, options.toolHandlers ?? {}));
+              resolve(new ServerConnection(socket, reply.serverName, reply.deviceToken, options.toolHandlers ?? {}));
               break;
             case "authError":
               socket.close();
@@ -164,6 +175,7 @@ export class ServerConnection {
             deviceId: options.deviceId,
             deviceName: options.deviceName,
             authKey: options.authKey,
+            ...(options.deviceToken !== undefined && { deviceToken: options.deviceToken }),
             tools: options.toolSpecs ?? [],
           }),
         );
@@ -217,8 +229,10 @@ export class ServerConnection {
       case "skillError":
         this.settleSkillRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
-      case "helloAck":
       case "authError":
+        this.rejectedReason = message.reason;
+        break;
+      case "helloAck":
         // Only ever valid as the first frame, already consumed by `handshake`.
         break;
     }

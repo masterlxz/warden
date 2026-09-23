@@ -91,13 +91,14 @@ typedef ServerConnector = Future<ServerConnection> Function({
   required String deviceId,
   required String deviceName,
   required String authKey,
+  String? deviceToken,
   Duration handshakeTimeout,
   List<Map<String, dynamic>> toolSpecs,
   Map<String, ToolHandler> toolHandlers,
 });
 
 class ServerConnection {
-  ServerConnection._(this._channel, this._subscription, this.serverName, this._toolHandlers) {
+  ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
     _subscription
@@ -110,10 +111,13 @@ class ServerConnection {
       ..onDone(() {
         _heartbeatTimer?.cancel();
         _failPendingHistory('Connection closed before the history arrived');
+        final rejected = _rejectedReason;
         _setStatus(
           _goodbyeSent
               ? const Disconnected() // clean, user-initiated — not an error
-              : const ConnectionFailure('Connection closed unexpectedly'),
+              : rejected != null
+                  ? ConnectionFailure('authentication rejected: $rejected')
+                  : const ConnectionFailure('Connection closed unexpectedly'),
         );
       });
   }
@@ -121,6 +125,10 @@ class ServerConnection {
   final StreamChannel<dynamic> _channel;
   final StreamSubscription<dynamic> _subscription;
   final String serverName;
+
+  /// The device token the hub issued in this connection's `HelloAck` (P36), if it issued one —
+  /// the caller must persist it and pass it as `deviceToken` from then on.
+  final String? issuedDeviceToken;
   final Map<String, ToolHandler> _toolHandlers;
 
   final _statusController = StreamController<ConnectionStatus>.broadcast();
@@ -142,6 +150,10 @@ class ServerConnection {
   int? _pendingPingNonce;
   bool _goodbyeSent = false;
 
+  // P36 — set when the hub turns this connection away mid-session (the device was revoked), so
+  // the close that follows reports why instead of "closed unexpectedly".
+  String? _rejectedReason;
+
   static const defaultHandshakeTimeout = Duration(seconds: 10);
 
   // Mobile carrier NATs commonly drop idle TCP connections silently within
@@ -156,6 +168,7 @@ class ServerConnection {
     required String deviceId,
     required String deviceName,
     required String authKey,
+    String? deviceToken,
     Duration handshakeTimeout = defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
@@ -166,6 +179,7 @@ class ServerConnection {
       deviceId: deviceId,
       deviceName: deviceName,
       authKey: authKey,
+      deviceToken: deviceToken,
       handshakeTimeout: handshakeTimeout,
       toolSpecs: toolSpecs,
       toolHandlers: toolHandlers,
@@ -178,6 +192,7 @@ class ServerConnection {
     required String deviceId,
     required String deviceName,
     required String authKey,
+    String? deviceToken,
     Duration handshakeTimeout = defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
@@ -187,6 +202,7 @@ class ServerConnection {
         deviceId: deviceId,
         deviceName: deviceName,
         authKey: authKey,
+        deviceToken: deviceToken,
         handshakeTimeout: handshakeTimeout,
         toolSpecs: toolSpecs,
         toolHandlers: toolHandlers,
@@ -197,6 +213,7 @@ class ServerConnection {
     required String deviceId,
     required String deviceName,
     required String authKey,
+    required String? deviceToken,
     required Duration handshakeTimeout,
     required List<Map<String, dynamic>> toolSpecs,
     required Map<String, ToolHandler> toolHandlers,
@@ -237,14 +254,15 @@ class ServerConnection {
       deviceId: deviceId,
       deviceName: deviceName,
       authKey: authKey,
+      deviceToken: deviceToken,
       tools: toolSpecs,
     ).encode());
 
     try {
       final reply = await firstFrame.future;
       switch (reply) {
-        case HelloAckMessage(:final serverName):
-          return ServerConnection._(channel, subscription, serverName, toolHandlers);
+        case HelloAckMessage(:final serverName, deviceToken: final issued):
+          return ServerConnection._(channel, subscription, serverName, issued, toolHandlers);
         case AuthErrorMessage(:final reason):
           await subscription.cancel();
           throw HandshakeException('authentication rejected: $reason');
@@ -294,8 +312,9 @@ class ServerConnection {
         _pendingHistory.remove(requestId)?.complete(messages);
       case HistoryErrorMessage(:final requestId, :final message):
         _pendingHistory.remove(requestId)?.completeError(HistoryException(message));
+      case AuthErrorMessage(:final reason):
+        _rejectedReason = reason;
       case HelloAckMessage():
-      case AuthErrorMessage():
         // Only ever valid as the first frame, already consumed by _handshake.
         break;
     }

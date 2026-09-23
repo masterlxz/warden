@@ -97,6 +97,12 @@ pub async fn spin_up_server(provider: MockProvider) -> std::net::SocketAddr {
 /// pairing registry — needed by any test that exercises `CallDeviceTool` (Fase 9.3 requires the
 /// caller and target to be `Approved` there first, see `warden_server::PairingStore`).
 pub async fn spin_up_server_with_devices_path(provider: MockProvider) -> (std::net::SocketAddr, std::path::PathBuf) {
+    spin_up_server_with_revocation_check(provider, warden_server::server::DEFAULT_REVOCATION_CHECK_INTERVAL).await
+}
+
+/// Same as `spin_up_server_with_devices_path`, with the open-connection revocation check (P36)
+/// running every `interval` — short in tests so a revocation shows up without waiting seconds.
+pub async fn spin_up_server_with_revocation_check(provider: MockProvider, interval: Duration) -> (std::net::SocketAddr, std::path::PathBuf) {
     let temp_dir = std::env::temp_dir().join(format!(
         "warden-server-test-{}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
@@ -107,7 +113,8 @@ pub async fn spin_up_server_with_devices_path(provider: MockProvider) -> (std::n
 
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), temp_dir.join("conversations"), devices_path.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .with_revocation_check_interval(interval);
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
     (addr, devices_path)
@@ -167,6 +174,15 @@ pub async fn spin_up_server_with_shutdown(provider: MockProvider) -> (std::net::
         let _ = shutdown_rx.await;
     }));
     (addr, shutdown_tx)
+}
+
+/// A fresh, empty client-side `DeviceTokenStore` (P36) — for the clients that keep their token
+/// (`RemoteNodeProvider`, `vault_node::connect`).
+pub fn temp_token_store() -> warden_server::DeviceTokenStore {
+    warden_server::DeviceTokenStore::new(std::env::temp_dir().join(format!(
+        "warden-server-test-tokens-{}.json",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    )))
 }
 
 /// Connects `device_id` (registering it as `Pending` in the pairing registry via a real `Hello`),

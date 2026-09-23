@@ -2,7 +2,7 @@ mod support;
 
 use base64::Engine;
 use serde_json::json;
-use support::{spin_up_server_with_devices_path, MockProvider};
+use support::{spin_up_server_with_devices_path, temp_token_store, MockProvider};
 use warden_core::storage::StorageProvider;
 use warden_server::{ClientMessage, PairingStore, RemoteNodeProvider, ServerConnection, ServerMessage};
 
@@ -17,7 +17,7 @@ async fn connect_target_and_provider(addr: std::net::SocketAddr, devices_path: &
     let target = ServerConnection::connect(&format!("ws://{addr}"), "dev-target", "Target Device", "test-key").await.unwrap();
     PairingStore::new(devices_path.to_path_buf()).approve("dev-target").unwrap();
 
-    let provider = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-target").await.unwrap();
+    let provider = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-target", &temp_token_store()).await.unwrap();
     PairingStore::new(devices_path.to_path_buf()).approve("dev-caller").unwrap();
 
     (target, provider)
@@ -174,7 +174,7 @@ async fn an_unapproved_caller_gets_a_clear_error_instead_of_reaching_the_target(
     PairingStore::new(devices_path.clone()).approve("dev-target").unwrap();
 
     // "dev-caller" connects but is never approved.
-    let provider = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-target").await.unwrap();
+    let provider = RemoteNodeProvider::connect(&format!("ws://{addr}"), "dev-caller", "Caller Device", "test-key", "dev-target", &temp_token_store()).await.unwrap();
 
     let err = provider.read("notes/a.md").await.unwrap_err();
     assert!(err.to_string().contains("not approved"), "error was: {err}");

@@ -25,6 +25,7 @@ setUpPanelOpening();
 
 const STORAGE_KEY_DEVICE_ID = "deviceId";
 const STORAGE_KEY_SETTINGS = "connectionSettings";
+const STORAGE_KEY_DEVICE_TOKENS = "deviceTokens";
 
 let connection: ServerConnection | null = null;
 let history: ChatEntry[] = [];
@@ -37,6 +38,17 @@ async function getOrCreateDeviceId(): Promise<string> {
   const generated = crypto.randomUUID();
   await chrome.storage.local.set({ [STORAGE_KEY_DEVICE_ID]: generated });
   return generated;
+}
+
+/** P36 — device tokens per hub (`host:port`), since this extension has a single device id. Kept
+ * apart from `connectionSettings` so they never travel to the panel with `getStatus`. */
+async function getDeviceTokens(): Promise<Record<string, string>> {
+  const stored = await chrome.storage.local.get(STORAGE_KEY_DEVICE_TOKENS);
+  return (stored[STORAGE_KEY_DEVICE_TOKENS] as Record<string, string> | undefined) ?? {};
+}
+
+async function saveDeviceToken(hub: string, token: string): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEY_DEVICE_TOKENS]: { ...(await getDeviceTokens()), [hub]: token } });
 }
 
 async function getSavedSettings(): Promise<Partial<ConnectionSettings>> {
@@ -73,6 +85,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
     case "connect": {
       connection?.goodbye();
       const deviceId = await getOrCreateDeviceId();
+      const hub = `${request.host}:${request.port}`;
       setStatus({ kind: "connecting" });
       let next: ServerConnection;
       try {
@@ -82,6 +95,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
           deviceId,
           deviceName: request.deviceName,
           authKey: request.authKey,
+          deviceToken: (await getDeviceTokens())[hub],
           toolSpecs,
           toolHandlers,
         });
@@ -90,6 +104,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         setStatus({ kind: "failure", message });
         return { ok: false, error: message };
       }
+      if (next.issuedDeviceToken !== undefined) await saveDeviceToken(hub, next.issuedDeviceToken);
       connection = next;
       history = [];
       connection.onStatusChange(setStatus);

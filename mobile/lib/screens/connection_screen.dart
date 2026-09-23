@@ -84,7 +84,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     final authKey = _authKeyController.text;
     final deviceName = _deviceNameController.text.trim();
 
-    if (host.isEmpty || port == null || authKey.isEmpty || deviceName.isEmpty) {
+    if (host.isEmpty || port == null || deviceName.isEmpty) {
+      setState(() => _status = const ConnectionFailure('Fill in host, port, auth key and device name'));
+      return;
+    }
+    // P36 — once paired, the device token is enough; the auth key only matters for pairing.
+    final deviceToken = await _settingsStore.deviceTokenFor(host, port);
+    if (authKey.isEmpty && deviceToken == null) {
       setState(() => _status = const ConnectionFailure('Fill in host, port, auth key and device name'));
       return;
     }
@@ -100,11 +106,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         deviceId: deviceId,
         deviceName: deviceName,
         authKey: authKey,
+        deviceToken: deviceToken,
         // Opt-in, same spirit as the desktop's `enable_shell`: only advertise (and answer) the
         // file tools once the user has picked a root folder for them to operate in.
         toolSpecs: hasRootFolder ? const [MobileFileTool.listFilesSpec, MobileFileTool.readFileSpec] : const [],
         toolHandlers: hasRootFolder ? {'list_phone_files': _fileTool.listFiles, 'read_phone_file': _fileTool.readFile} : const {},
       );
+      final issuedToken = connection.issuedDeviceToken;
+      if (issuedToken != null) {
+        await _settingsStore.saveDeviceToken(host, port, issuedToken);
+      }
       await _settingsStore.save(ConnectionSettings(
         host: host,
         port: port,

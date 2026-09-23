@@ -338,4 +338,44 @@ void main() {
 
     await expectLater(history, throwsA(isA<HistoryException>()));
   });
+
+  test('a device token issued in HelloAck is exposed to the caller (P36)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server","deviceToken":"tok"}');
+
+    expect((await future).issuedDeviceToken, 'tok');
+  });
+
+  test('being revoked mid-session reports the reason, not "closed unexpectedly" (P36)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: '',
+      deviceToken: 'tok',
+    );
+    expect(await fromClient.next as String, contains('"deviceToken":"tok"'));
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+    expect(conn.issuedDeviceToken, isNull);
+
+    final failed = conn.statusStream.firstWhere((s) => s is ConnectionFailure);
+    controller.local.sink.add('{"type":"authError","reason":"device revoked"}');
+    await controller.local.sink.close();
+    await failed;
+
+    expect((conn.status as ConnectionFailure).message, 'authentication rejected: device revoked');
+  });
 }

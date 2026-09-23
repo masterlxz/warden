@@ -14,6 +14,14 @@ void main() {
       );
     });
 
+    test('Hello with a device token (P36)', () {
+      const msg = HelloMessage(deviceId: 'dev-1', deviceName: 'Test Device', authKey: '', deviceToken: 'tok');
+      expect(
+        msg.encode(),
+        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"","deviceToken":"tok","tools":[]}',
+      );
+    });
+
     test('Hello with advertised tools', () {
       const msg = HelloMessage(
         deviceId: 'dev-1',
@@ -66,6 +74,12 @@ void main() {
       final msg = ServerMessage.decode('{"type":"helloAck","serverName":"warden-server"}');
       expect(msg, isA<HelloAckMessage>());
       expect((msg as HelloAckMessage).serverName, 'warden-server');
+      expect(msg.deviceToken, isNull);
+    });
+
+    test('HelloAck with an issued device token (P36)', () {
+      final msg = ServerMessage.decode('{"type":"helloAck","serverName":"warden-server","deviceToken":"tok"}');
+      expect((msg as HelloAckMessage).deviceToken, 'tok');
     });
 
     test('AuthError', () {
