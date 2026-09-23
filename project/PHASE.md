@@ -390,8 +390,9 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   passou a hospedar um `Orchestrator` real (reabrindo a decisão da 9.2 de não ter um) e responde
   `Chat` com o modelo de verdade, uma conversa por `device_id` (mesmo padrão do Telegram/
   WhatsApp). Novo `ChatScreen` no Flutter, verificado de ponta a ponta contra um `warden-server`
-  real com Gemini de verdade. Sem fetch de histórico ao reconectar ainda (`PENDING.md` P40) — só a
-  UI de chat em si, layout mobile mais completo (seletor de agente/provider, etc.) fica pra depois*
+  real com Gemini de verdade. Fetch de histórico ao reconectar veio depois, na Sessão 93
+  (`RequestHistory`/`History`, `PENDING.md` P40) — layout mobile mais completo (seletor de
+  agente/provider, etc.) fica pra depois*
 - [x] 7.4 — Execução de tools local *(Sessão 52) — acesso a arquivos do celular, só leitura
   (`list_phone_files`/`read_phone_file`), pasta raiz persistida via SAF (Android). "Shell" saiu do
   escopo (não existe num celular sem root). Mecanismo real: `warden-server` ganhou um roteamento

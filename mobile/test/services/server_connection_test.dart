@@ -265,4 +265,77 @@ void main() {
     expect(sentError, contains('"type":"toolCallError","callId":9'));
     expect(sentError, contains('file not found'));
   });
+
+  test('fetchHistory sends RequestHistory and resolves with the matching History reply (P40)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final history = conn.fetchHistory(limit: 100);
+    expect(await fromClient.next as String, '{"type":"requestHistory","requestId":0,"limit":100}');
+
+    controller.local.sink.add('{"type":"history","requestId":0,"messages":['
+        '{"role":"user","content":"hi","createdAt":1,"attachments":[]},'
+        '{"role":"assistant","content":"hello","createdAt":2,"attachments":[{"mimeType":"image/png","data":"aGk="}]}]}');
+
+    final entries = await history;
+    expect(entries.map((e) => e.fromUser), [true, false]);
+    expect(entries.map((e) => e.content), ['hi', 'hello']);
+    expect(entries.last.attachments.single.mimeType, 'image/png');
+  });
+
+  test('a HistoryError reply fails fetchHistory with the server message (P40)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final history = conn.fetchHistory();
+    await fromClient.next; // RequestHistory
+    controller.local.sink.add('{"type":"historyError","requestId":0,"message":"failed to parse"}');
+
+    await expectLater(
+      history,
+      throwsA(isA<HistoryException>().having((e) => e.message, 'message', 'failed to parse')),
+    );
+    expect(conn.status, isA<Connected>());
+  });
+
+  test('a connection that drops fails a pending fetchHistory instead of hanging (P40)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final history = conn.fetchHistory();
+    await fromClient.next; // RequestHistory
+    await controller.local.sink.close();
+
+    await expectLater(history, throwsA(isA<HistoryException>()));
+  });
 }

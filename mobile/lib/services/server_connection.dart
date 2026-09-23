@@ -46,6 +46,15 @@ class HandshakeException implements Exception {
   String toString() => 'HandshakeException: $message';
 }
 
+class HistoryException implements Exception {
+  HistoryException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'HistoryException: $message';
+}
+
 /// Dart mirror of `crates/warden-server/src/client.rs`'s `ServerConnection`.
 ///
 /// Written against `StreamChannel<dynamic>` rather than `WebSocketChannel`
@@ -95,10 +104,12 @@ class ServerConnection {
       ..onData((dynamic frame) => _onMessage(ServerMessage.decode(frame as String)))
       ..onError((Object err) {
         _heartbeatTimer?.cancel();
+        _failPendingHistory(err.toString());
         _setStatus(ConnectionFailure(err.toString()));
       })
       ..onDone(() {
         _heartbeatTimer?.cancel();
+        _failPendingHistory('Connection closed before the history arrived');
         _setStatus(
           _goodbyeSent
               ? const Disconnected() // clean, user-initiated — not an error
@@ -121,6 +132,10 @@ class ServerConnection {
   // internal to the handshake/heartbeat machinery above.
   final _chatController = StreamController<ServerMessage>.broadcast();
   Stream<ServerMessage> get chatStream => _chatController.stream;
+
+  // P40 — in-flight `fetchHistory` calls, keyed by the `requestId` the reply echoes back.
+  final _pendingHistory = <int, Completer<List<HistoryEntry>>>{};
+  int _nextHistoryRequestId = 0;
 
   Timer? _heartbeatTimer;
   int _nextNonce = 0;
@@ -237,7 +252,9 @@ class ServerConnection {
               GoodbyeServerMessage() ||
               ChatResponseMessage() ||
               ChatErrorMessage() ||
-              ToolCallRequestMessage():
+              ToolCallRequestMessage() ||
+              HistoryServerMessage() ||
+              HistoryErrorMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
       }
@@ -273,6 +290,10 @@ class ServerConnection {
         // Fire-and-forget: each call runs independently, so a slow one (e.g. reading a large
         // file) never blocks this connection's heartbeat/chat handling in the meantime.
         unawaited(_handleToolCallRequest(callId, tool, arguments));
+      case HistoryServerMessage(:final requestId, :final messages):
+        _pendingHistory.remove(requestId)?.complete(messages);
+      case HistoryErrorMessage(:final requestId, :final message):
+        _pendingHistory.remove(requestId)?.completeError(HistoryException(message));
       case HelloAckMessage():
       case AuthErrorMessage():
         // Only ever valid as the first frame, already consumed by _handshake.
@@ -298,6 +319,28 @@ class ServerConnection {
   /// [ChatResponseMessage] or a [ChatErrorMessage].
   void sendChat(String message) {
     _channel.sink.add(ChatMessage(message).encode());
+  }
+
+  /// P40 — fetches this device's conversation as persisted by the server (the same one [sendChat]
+  /// turns are appended to), oldest first, keeping only the last [limit] messages. Throws a
+  /// [HistoryException] if the server couldn't read it, didn't answer within [timeout], or the
+  /// connection dropped before the reply arrived.
+  Future<List<HistoryEntry>> fetchHistory({int? limit, Duration timeout = const Duration(seconds: 15)}) {
+    final requestId = _nextHistoryRequestId++;
+    final completer = Completer<List<HistoryEntry>>();
+    _pendingHistory[requestId] = completer;
+    _channel.sink.add(RequestHistoryMessage(requestId, limit: limit).encode());
+    return completer.future.timeout(timeout, onTimeout: () {
+      _pendingHistory.remove(requestId);
+      throw HistoryException('No history reply within ${timeout.inSeconds}s');
+    });
+  }
+
+  void _failPendingHistory(String reason) {
+    for (final completer in _pendingHistory.values) {
+      completer.completeError(HistoryException(reason));
+    }
+    _pendingHistory.clear();
   }
 
   void _startHeartbeat() {

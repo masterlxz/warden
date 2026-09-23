@@ -31,6 +31,7 @@
 //! store is a thin, stateless-between-calls wrapper over a JSON file instead of anything cached.
 
 pub mod device_registry;
+pub mod history;
 pub mod remote_tool;
 pub mod server;
 pub mod skills;

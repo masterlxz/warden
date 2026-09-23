@@ -15,6 +15,7 @@ use warden_core::skill::SkillStore;
 use warden_core::spend::SpendContext;
 
 use crate::device_registry::{PairingStatus, PairingStore};
+use crate::history::handle_history_request;
 use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use warden_server_protocol::{ClientMessage, ServerMessage};
@@ -320,6 +321,12 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
                     if let Some(reply) = handle_skill_request(&store, message) {
                         let _ = tx.send(reply);
                     }
+                }
+                Ok(ClientMessage::RequestHistory { request_id, limit }) => {
+                    // P40 — one small file read, answered inline like the skills requests. Inline
+                    // also means a `Chat` sent right after this request can never land in the
+                    // reply: that turn is only saved once its (spawned) model call finishes.
+                    let _ = tx.send(handle_history_request(&conversations_dir, &device_id, request_id, limit));
                 }
                 Ok(ClientMessage::Goodbye { reason }) => {
                     eprintln!("warden-server: {device_id} said goodbye ({reason:?})");

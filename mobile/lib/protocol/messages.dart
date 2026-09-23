@@ -94,6 +94,19 @@ final class ToolCallErrorMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'toolCallError', 'callId': callId, 'message': message};
 }
 
+/// Asks for this device's persisted conversation (P40) — answered by a [HistoryServerMessage] or
+/// [HistoryErrorMessage] carrying the same `requestId`. `limit` keeps only the most recent
+/// messages; null asks for all of them.
+final class RequestHistoryMessage extends ClientMessage {
+  const RequestHistoryMessage(this.requestId, {this.limit});
+
+  final int requestId;
+  final int? limit;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'requestHistory', 'requestId': requestId, 'limit': limit};
+}
+
 /// Token usage for one chat turn, when the provider reported it. Mirrors
 /// `warden_core::model::Usage`.
 class Usage {
@@ -131,6 +144,26 @@ class Attachment {
   }
 }
 
+/// One persisted message in a [HistoryServerMessage] (P40). Mirrors
+/// `warden_server_protocol::protocol::HistoryMessage`.
+class HistoryEntry {
+  const HistoryEntry({required this.fromUser, required this.content, this.attachments = const []});
+
+  /// `role` on the wire is only ever `user` or `assistant`.
+  final bool fromUser;
+  final String content;
+  final List<Attachment> attachments;
+
+  static HistoryEntry fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return HistoryEntry(
+      fromUser: map['role'] == 'user',
+      content: map['content'] as String,
+      attachments: (map['attachments'] as List<dynamic>?)?.map(Attachment.fromJson).toList() ?? const [],
+    );
+  }
+}
+
 /// Messages sent from a warden-server to this client.
 sealed class ServerMessage {
   const ServerMessage();
@@ -151,6 +184,11 @@ sealed class ServerMessage {
           json['tool'] as String,
           json['arguments'] as Map<String, dynamic>,
         ),
+      'history' => HistoryServerMessage(
+          json['requestId'] as int,
+          (json['messages'] as List<dynamic>).map(HistoryEntry.fromJson).toList(),
+        ),
+      'historyError' => HistoryErrorMessage(json['requestId'] as int, json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
       final other => throw FormatException('Unknown ServerMessage type: $other'),
     };
@@ -203,6 +241,22 @@ final class ToolCallRequestMessage extends ServerMessage {
   final int callId;
   final String tool;
   final Map<String, dynamic> arguments;
+}
+
+/// Reply to a [RequestHistoryMessage] (P40), oldest message first.
+final class HistoryServerMessage extends ServerMessage {
+  const HistoryServerMessage(this.requestId, this.messages);
+
+  final int requestId;
+  final List<HistoryEntry> messages;
+}
+
+/// The server couldn't read this device's conversation (P40).
+final class HistoryErrorMessage extends ServerMessage {
+  const HistoryErrorMessage(this.requestId, this.message);
+
+  final int requestId;
+  final String message;
 }
 
 final class GoodbyeServerMessage extends ServerMessage {

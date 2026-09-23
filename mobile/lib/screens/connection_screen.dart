@@ -120,7 +120,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       _transcript?.dispose();
       setState(() {
         _connection = connection;
-        _transcript = ChatTranscript(chatStream: connection.chatStream, sendChat: connection.sendChat);
+        _transcript = ChatTranscript(
+          chatStream: connection.chatStream,
+          sendChat: connection.sendChat,
+          // P40 — the last 100 messages are plenty to pick a phone conversation back up, and keep
+          // the reply small even when older turns carry base64 image attachments.
+          fetchHistory: () => connection.fetchHistory(limit: 100),
+        );
         _status = connection.status;
       });
 

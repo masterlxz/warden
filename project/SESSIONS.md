@@ -2,7 +2,42 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-22 (Sessão 92)
+> Última atualização: 2026-09-23 (Sessão 93)
+
+---
+
+### 2026-09-23 — Sessão 93
+
+- **Objetivo**: P40 — chat mobile buscar o histórico persistido no `warden-server` ao
+  (re)conectar. Escolhido pelo usuário entre as frentes abertas (Sessão 92 não tinha deixado
+  próximo passo definido).
+
+**O que foi feito**:
+
+- **Protocolo** (`warden-server-protocol/src/protocol.rs`): `ClientMessage::RequestHistory
+  {requestId, limit?}` e `ServerMessage::History{requestId, messages}`/`HistoryError{requestId,
+  message}`, mais o DTO `HistoryMessage{role, content, createdAt, attachments}` + `HistoryRole`.
+  Par request/response no padrão das skills (P72) em vez de empurrar o histórico no `HelloAck` —
+  decisão registrada em `ARCHITECTURE.md`.
+- **Servidor**: `crates/warden-server/src/history.rs::handle_history_request` (função pura sobre o
+  diretório de conversas, lê o mesmo arquivo que `handle_turn` grava), chamado inline no loop do
+  `server.rs`. Sem conversa = `History` vazio; arquivo ilegível = `HistoryError`.
+- **Mobile**: `messages.dart` (novas mensagens + `HistoryEntry`), `ServerConnection.fetchHistory`
+  (Future por `requestId`, timeout 15s, pendentes falham se a conexão cai — `HistoryException`),
+  `ChatTranscript` com `fetchHistory` opcional (histórico entra antes do que já foi enviado; falha
+  vira uma entrada de erro), `ConnectionScreen` pede os últimos 100.
+- **Limpeza de doc**: linha do P18 no `PENDING.md` estava como aberta apesar de fechada na Sessão
+  82 — marcada como resolvida.
+- **Verificação**: `cargo test --workspace` (636 passando; novos: 2 no protocolo, 4 em
+  `history.rs`, 1 de integração em `tests/chat.rs` com socket real — conversa, reconecta, recebe o
+  histórico; outro device recebe vazio), `cargo clippy --workspace --all-targets` limpo, `flutter
+  test` (70, 6 novos) e `flutter analyze` limpos. **Sem teste no app Android real** (emulador +
+  servidor real) — fica pro usuário confirmar visualmente.
+
+**Não feito**: extensão de navegador continua com histórico só em memória (poderia usar a mesma
+mensagem); paginação ("carregar mais antigas") além do corte fixo de 100.
+
+**Fecha o P40.**
 
 ---
 

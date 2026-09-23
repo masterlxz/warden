@@ -74,4 +74,56 @@ void main() {
 
     expect(notifications, 2);
   });
+
+  group('history (P40)', () {
+    test('starts with the persisted conversation, before anything sent meanwhile', () async {
+      final history = Completer<List<HistoryEntry>>();
+      final withHistory = ChatTranscript(
+        chatStream: replies.stream,
+        sendChat: sent.add,
+        fetchHistory: () => history.future,
+      );
+      addTearDown(withHistory.dispose);
+
+      withHistory.send('new question');
+      history.complete(const [
+        HistoryEntry(fromUser: true, content: 'old question'),
+        HistoryEntry(fromUser: false, content: 'old answer'),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(withHistory.entries.map((e) => e.text), ['old question', 'old answer', 'new question']);
+      expect(withHistory.entries.map((e) => e.role), [EntryRole.user, EntryRole.assistant, EntryRole.user]);
+      expect(withHistory.waitingForReply, isTrue);
+    });
+
+    test('a failed fetch shows one error entry and keeps the chat usable', () async {
+      final withHistory = ChatTranscript(
+        chatStream: replies.stream,
+        sendChat: sent.add,
+        fetchHistory: () async => throw Exception('connection dropped'),
+      );
+      addTearDown(withHistory.dispose);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(withHistory.entries.single.role, EntryRole.error);
+      expect(withHistory.entries.single.text, contains('connection dropped'));
+      expect(withHistory.send('still works'), isTrue);
+    });
+
+    test('a reply that lands after dispose is ignored', () async {
+      final history = Completer<List<HistoryEntry>>();
+      final withHistory = ChatTranscript(
+        chatStream: replies.stream,
+        sendChat: sent.add,
+        fetchHistory: () => history.future,
+      );
+      withHistory.dispose();
+
+      history.complete(const [HistoryEntry(fromUser: true, content: 'late')]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(withHistory.entries, isEmpty);
+    });
+  });
 }

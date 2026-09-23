@@ -19,10 +19,9 @@ import 'attachment_kind.dart';
 
 /// Fase 7.3: the real chat UI, built on top of the connection 7.2 proved works. The transcript is
 /// kept in memory by the [ChatTranscript] the caller passes in (P41: it outlives this screen, so
-/// leaving with the back button and resuming keeps the conversation) — the protocol has no "fetch
-/// history" message yet, so reopening the app (or reconnecting) starts with an empty transcript even
-/// though `warden-server` persisted the conversation on disk. Deliberate, narrow scope (P40); not a
-/// silent gap.
+/// leaving with the back button and resuming keeps the conversation), which since P40 also starts
+/// with the conversation `warden-server` persisted for this device, so reopening the app (or
+/// reconnecting) picks up where it left off.
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.connection, required this.transcript});
 

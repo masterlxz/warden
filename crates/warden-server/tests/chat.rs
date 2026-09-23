@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use support::{spin_up_server, MockProvider};
 use warden_server::{ClientMessage, ServerConnection, ServerMessage};
+use warden_server_protocol::protocol::HistoryRole;
 
 #[tokio::test]
 async fn chat_message_gets_answered_by_the_hosted_orchestrator() {
@@ -37,6 +38,34 @@ async fn a_failing_model_call_comes_back_as_a_chat_error_not_a_dropped_connectio
     // The connection itself must still be usable after an error.
     conn.ping(7).await.unwrap();
     assert!(matches!(conn.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 7 })));
+}
+
+/// P40: a device that reconnects gets back the turns it already had, from the same file `Chat`
+/// writes to — and only its own conversation, not another device's.
+#[tokio::test]
+async fn a_reconnecting_device_can_fetch_its_conversation_history() {
+    let addr = spin_up_server(MockProvider::replying("ahoy")).await;
+    let url = format!("ws://{addr}");
+
+    let mut first = ServerConnection::connect(&url, "dev-1", "Test Device", "test-key").await.unwrap();
+    first.send(&ClientMessage::Chat { message: "hello".to_string() }).await.unwrap();
+    assert!(matches!(first.recv().await.unwrap(), Some(ServerMessage::ChatResponse { .. })));
+    drop(first);
+
+    let mut again = ServerConnection::connect(&url, "dev-1", "Test Device", "test-key").await.unwrap();
+    again.send(&ClientMessage::RequestHistory { request_id: 1, limit: None }).await.unwrap();
+    match again.recv().await.unwrap() {
+        Some(ServerMessage::History { request_id, messages }) => {
+            assert_eq!(request_id, 1);
+            let turns: Vec<_> = messages.iter().map(|m| (m.role, m.content.as_str())).collect();
+            assert_eq!(turns, vec![(HistoryRole::User, "hello"), (HistoryRole::Assistant, "ahoy")]);
+        }
+        other => panic!("expected History, got {other:?}"),
+    }
+
+    let mut other_device = ServerConnection::connect(&url, "dev-2", "Other Device", "test-key").await.unwrap();
+    other_device.send(&ClientMessage::RequestHistory { request_id: 2, limit: None }).await.unwrap();
+    assert_eq!(other_device.recv().await.unwrap(), Some(ServerMessage::History { request_id: 2, messages: Vec::new() }));
 }
 
 /// Regression test for the reader/writer-task split in `server.rs`: a slow `Chat` call used to

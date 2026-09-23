@@ -23,6 +23,27 @@ impl From<Skill> for SkillDto {
     }
 }
 
+/// Who said a message in a `History` reply (P40) — the same two roles the persisted conversation
+/// ever holds (`warden_bootstrap::ChatRole`, which this crate can't depend on without a cycle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryRole {
+    User,
+    Assistant,
+}
+
+/// One persisted message of this device's conversation, as sent back by `History` (P40). Only
+/// what a chat transcript renders — usage/generated file paths stay on the server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMessage {
+    pub role: HistoryRole,
+    pub content: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+}
+
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -89,6 +110,15 @@ pub enum ClientMessage {
     DeleteSkill {
         request_id: u64,
         name: String,
+    },
+    /// Asks for this device's persisted conversation (P40) — the one `Chat` turns are appended to,
+    /// keyed by `Hello.device_id`, so a client that reconnects (or was restarted) can show what was
+    /// already said. Answered by `History`/`HistoryError` with the same `request_id`. `limit` keeps
+    /// only the most recent messages; `None` returns all of them.
+    RequestHistory {
+        request_id: u64,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -163,6 +193,18 @@ pub enum ServerMessage {
     /// A `ListSkills`/`SaveSkill`/`DeleteSkill` failed (invalid skill, name taken, no such skill) —
     /// the raw error text, same posture as `ChatError`.
     SkillError {
+        request_id: u64,
+        message: String,
+    },
+    /// Reply to `ClientMessage::RequestHistory`, oldest message first. Empty when this device never
+    /// chatted before.
+    History {
+        request_id: u64,
+        messages: Vec<HistoryMessage>,
+    },
+    /// The conversation file exists but couldn't be read/parsed — the raw error text, same posture
+    /// as `SkillError`.
+    HistoryError {
         request_id: u64,
         message: String,
     },
@@ -361,6 +403,36 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         assert_eq!(json, r#"{"type":"skillError","requestId":3,"message":"no skill named 'x'"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), err);
+    }
+
+    #[test]
+    fn history_messages_round_trip_through_json() {
+        let request = ClientMessage::RequestHistory { request_id: 1, limit: Some(50) };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(json, r#"{"type":"requestHistory","requestId":1,"limit":50}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), request);
+
+        let reply = ServerMessage::History {
+            request_id: 1,
+            messages: vec![HistoryMessage { role: HistoryRole::User, content: "hi".into(), created_at: 7, attachments: Vec::new() }],
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"history","requestId":1,"messages":[{"role":"user","content":"hi","createdAt":7,"attachments":[]}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
+
+        let err = ServerMessage::HistoryError { request_id: 1, message: "boom".into() };
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(json, r#"{"type":"historyError","requestId":1,"message":"boom"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), err);
+    }
+
+    #[test]
+    fn request_history_without_a_limit_field_means_everything() {
+        let msg = serde_json::from_str::<ClientMessage>(r#"{"type":"requestHistory","requestId":2}"#).unwrap();
+        assert_eq!(msg, ClientMessage::RequestHistory { request_id: 2, limit: None });
     }
 
     #[test]
