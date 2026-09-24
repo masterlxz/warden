@@ -317,6 +317,23 @@ Três frentes, não uma só:
 
 Ver P11 e P15 em `PENDING.md`.
 
+### Mais integrações MCP — mídia e redes sociais
+
+> Trazido pelo usuário em 2026-09-23, só pra registro — sem escopo técnico nem prioridade
+> ainda, ver `PENDING.md` P76.
+
+- **Genérico**: o usuário quer mais integrações MCP prontas no Warden, no geral. Hoje os presets
+  "quick add" do desktop são só Filesystem, Google Workspace, Notion, GitHub e Slack.
+- **Ênfase — geração de imagem, vídeo e áudio**: o Warden já sabe exibir/tocar mídia gerada por
+  MCP em todo canal (ver "Geração de arquivos como entregável" abaixo, P64 frente 2), mas nenhum
+  server gerador de mídia foi ligado de verdade. Integrar alguns daria uso real ao pipeline e
+  fecharia a lacuna de teste de ponta a ponta do P66.
+- **Ênfase — redes sociais**: servers MCP pra **gerenciar** redes sociais pelo agente — publicar
+  e agendar posts, responder comentários/DMs, acompanhar métricas.
+- Em aberto: quais servers usar (prontos do mercado vs. próprios), custo/API key de cada serviço,
+  OAuth por rede (client OAuth HTTP já existe, P26), e aprovação explícita antes de publicar
+  qualquer coisa (efeito externo e público — mesmo espírito da aprovação do SSH, P47).
+
 ### "Warden API" — chave de API própria, auto-hospedada, opcional
 
 Ideia central: uma chave de API do **Warden**, não do provedor de IA por trás.
@@ -350,20 +367,28 @@ espírito das Skills do próprio Claude. Ainda não definido:
 **Resolvido na Sessão 73** (P16): skills no vault (`skills/<nome>.md`), sob demanda, criáveis
 pela conversa, à mão ou por prompt na tela Skills do desktop. O que ficou de fora: P72.
 
-### Ecossistema descentralizado (Practice Valuation/Anchor + TruthID)
+### Ecossistema descentralizado (Anchor, Lume, TruthID)
 
 O Warden não é um projeto isolado — faz parte de um ecossistema open-source
 descentralizado que o usuário está construindo, junto com:
 
 - **TruthID** — identidade/autenticação (já citado na Fase 10 como dependência)
-- **Practice Valuation** (em processo de rebrand pra **Anchor**) — outro
-  produto do usuário
+- **Anchor** (ex-Practice Valuation) — outro produto do usuário
+- **Lume** — outro produto do usuário
 - **Warden** — este projeto
 
-Visão de longo prazo: os três conversam entre si via MCP — o Warden como hub
-que integra com os outros produtos do próprio usuário, usando a mesma tela de
-integrações MCP (P11) que serve pra integrações de terceiros. Depende desses
-outros projetos terem um lado MCP pronto pra integrar. Ver P13.
+Visão de longo prazo: o Warden como hub que integra via MCP com os outros
+produtos do próprio usuário (Anchor, Lume…), usando a mesma tela de integrações
+MCP (P11) que serve pra integrações de terceiros. Depende desses outros projetos
+terem um lado MCP pronto pra integrar. Ver P13.
+
+**Atualizado 2026-09-23** (decisões do usuário):
+- **TruthID fica de fora da integração MCP** — pouca utilidade e considerado
+  perigoso. Os usos não-MCP do TruthID continuam (pagador Arweave do sync, login
+  da Fase 10).
+- **Warden é a única interface conversacional do ecossistema** — o Anchor teve o
+  próprio AI chat panel removido por isso. Os outros produtos expõem capacidades
+  (via MCP); a conversa acontece no Warden.
 
 ### Memória vetorial (RAG)
 

@@ -22,13 +22,21 @@ O Warden não é um projeto isolado — é parte de um ecossistema open-source
 descentralizado que o usuário está construindo:
 
 - **TruthID** — identidade/autenticação descentralizada (integração planejada, Fase 10)
-- **Practice Valuation** (em rebrand pra **Anchor**) — outro produto do usuário
+- **Anchor** (ex-Practice Valuation) — outro produto do usuário
+- **Lume** — outro produto do usuário
 - **Warden** — este projeto
 
-Visão de longo prazo: os três integrados via MCP, com o Warden funcionando
-tanto como hub que consome os outros produtos do usuário quanto como
-plataforma que terceiros podem integrar com os deles (ver `ROADMAP.md` e
-P11/P13 em `PENDING.md`).
+**Warden é a única interface conversacional do ecossistema** (decisão do usuário,
+2026-09-23). O Anchor chegou a ter um AI chat panel próprio, que foi removido
+justamente por isso — conversar com os produtos do ecossistema é papel do Warden.
+
+Visão de longo prazo: o Warden integrado via MCP com os outros produtos (Anchor,
+Lume…), funcionando tanto como hub que consome os outros produtos do usuário
+quanto como plataforma que terceiros podem integrar com os deles (ver
+`ROADMAP.md` e P11/P13 em `PENDING.md`). **Exceção: o TruthID fica de fora da
+integração MCP** — o usuário não vê muita utilidade e considera perigoso expor
+identidade/autenticação como tools pro agente. Isso não afeta os usos não-MCP do
+TruthID (pagador Arweave do sync, login da Fase 10).
 
 ---
 

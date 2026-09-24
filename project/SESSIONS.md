@@ -2,7 +2,30 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-23 (Sessão 94)
+> Última atualização: 2026-09-23 (Sessão 95)
+
+---
+
+### 2026-09-23 — Sessão 95
+
+- **Objetivo**: incorporar ao `project/` o arquivo `warden.md` (decisões recentes do usuário
+  sobre o ecossistema) e apagá-lo da raiz.
+
+**O que foi feito**:
+
+- Registradas as decisões: integração MCP com Anchor e Lume (Lume é produto novo no
+  ecossistema); **TruthID fora da integração MCP** (pouca utilidade, considerado perigoso);
+  **Warden é a única interface conversacional do ecossistema** (Anchor removeu o próprio AI
+  chat panel por isso).
+- Atualizados `CONTEXT.md` (seção Ecossistema), `ROADMAP.md` (Ecossistema descentralizado),
+  `PENDING.md` (P13) e `ARCHITECTURE.md` (linha nova no registro de decisões).
+- `warden.md` removido da raiz. Sem código alterado.
+- O `anchor.md` citado no arquivo pertence ao projeto Anchor (ainda não existe lá) — vai passar
+  pelo mesmo processo de incorporação no repo dele, nada a fazer aqui.
+- Ideia nova registrada (P76 + `ROADMAP.md`): mais integrações MCP prontas no geral, com ênfase
+  em geração de imagem/vídeo/áudio e em gestão de redes sociais.
+
+**Próximo passo**: sem mudança — P13 segue bloqueado do lado do Anchor/Lume exporem um server MCP.
 
 ---
 
