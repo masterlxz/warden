@@ -334,6 +334,52 @@ Ver P11 e P15 em `PENDING.md`.
   OAuth por rede (client OAuth HTTP já existe, P26), e aprovação explícita antes de publicar
   qualquer coisa (efeito externo e público — mesmo espírito da aprovação do SSH, P47).
 
+### Notebooks (estilo NotebookLM)
+
+> Trazido pelo usuário em 2026-09-23, só pra registro — o formato exato ainda vai ser estudado,
+> ver `PENDING.md` P77.
+
+- Além de conversas simples, o usuário quer poder **criar notebooks**, na linha do NotebookLM
+  do Google: um espaço de trabalho em volta de um tema, não um chat solto.
+- O que isso vai ser exatamente fica pra estudar depois. Referência do NotebookLM pra debate:
+  fontes anexadas ao notebook (PDFs, links, notas), respostas ancoradas nessas fontes com
+  citação, notas salvas, e artefatos gerados a partir das fontes (resumo, guia de estudo, FAQ,
+  resumo em áudio).
+- Encaixes prováveis com o que já existe: vault markdown como lugar natural das fontes/notas,
+  "Memória vetorial (RAG)" abaixo pra busca nas fontes, `generate_document` (P64) pros artefatos
+  e mídia via MCP (P76) pro resumo em áudio.
+
+### Interface web auto-hospedada no próprio hub
+
+> Trazido pelo usuário em 2026-09-23, só pra registro — ver `PENDING.md` P78.
+
+- Quando o app Warden estiver configurado como servidor (hub embutido no desktop, Fase 9.8, ou o
+  `warden-server` avulso), abrir `http://<ip>:<porta>` no navegador — pela LAN ou pela internet,
+  se o usuário expuser — mostra **uma interface web completa do Warden daquele usuário**. Mesmo
+  espírito do Jellyfin: o servidor que você hospeda já vem com a própria interface web.
+- Separado do **app web pago** que virá depois (tier pago, P50 — o Warden hospeda pro usuário).
+  Os dois apps web devem ser **semelhantes**; este aqui é a versão **auto-hospedada**.
+- Pontos pra debater: mesma porta do WebSocket do hub ou porta própria; reaproveitar o frontend
+  React do desktop (trocar o IPC do Tauri pelo protocolo do hub) vs. frontend novo; autenticação
+  no navegador (token por device do P36 vs. login próprio vs. TruthID da Fase 10); HTTPS quando
+  exposto na internet (fatia 2 do P36).
+
+### Roteador de APIs de IA — construir, embutir ou recomendar
+
+> Trazido pelo usuário em 2026-09-23 pra debater — ver `PENDING.md` P79.
+
+Como o Warden deve lidar com o roteamento entre provedores/contas de IA (fallback,
+multi-conta, OAuth de assinatura, tradução de formato). Três caminhos em debate:
+
+1. **Construir um roteador próprio** dentro do Warden.
+2. **Embutir um existente** mantido por outra pessoa (ex.: 9Router, open source), integrado
+   nativamente no Warden com a cara do Warden.
+3. **Deixar pro usuário**: recomendar que ele instale um 9Router (ou similar) por fora e aponte o
+   Warden pra ele. Já funciona hoje sem código, via provedor `openai_compatible`, já que o
+   9Router expõe um endpoint OpenAI-compatible.
+
+Relaciona com a seção "9Router" acima (P51).
+
 ### "Warden API" — chave de API própria, auto-hospedada, opcional
 
 Ideia central: uma chave de API do **Warden**, não do provedor de IA por trás.

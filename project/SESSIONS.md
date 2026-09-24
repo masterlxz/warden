@@ -24,6 +24,14 @@
   pelo mesmo processo de incorporação no repo dele, nada a fazer aqui.
 - Ideia nova registrada (P76 + `ROADMAP.md`): mais integrações MCP prontas no geral, com ênfase
   em geração de imagem/vídeo/áudio e em gestão de redes sociais.
+- Esclarecido pelo usuário: "TruthID fora do MCP" significa só que o agente não acessa o TruthID
+  via tools MCP — login (Fase 10) e a parte descentralizada (Arweave) continuam com ele. Os docs
+  já diziam isso, nada mudou.
+- Mais três ideias registradas (`ROADMAP.md` + `PENDING.md`): **P77** notebooks estilo
+  NotebookLM (formato a estudar); **P78** interface web auto-hospedada servida pelo hub (irmã do
+  app web pago do P50); **P79** debate do roteador de APIs (construir vs. embutir um existente
+  tipo 9Router vs. recomendar instalar). P51 ganhou um esclarecimento: 9Router é um projeto de
+  terceiros, não um nome nosso.
 
 **Próximo passo**: sem mudança — P13 segue bloqueado do lado do Anchor/Lume exporem um server MCP.
 
