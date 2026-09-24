@@ -181,6 +181,7 @@ mod tests {
             host: "192.168.1.10".parse().unwrap(),
             port: 7420,
             server_name: "Fabio's Desktop".to_string(),
+            secure_url: None,
         });
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),

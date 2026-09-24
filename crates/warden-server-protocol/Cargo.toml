@@ -8,9 +8,12 @@ anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 futures-util = "0.3"
+# `ring` picked explicitly — see `src/tls.rs` for why the provider is never left to rustls.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-tokio-tungstenite = "0.30"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+webpki-roots = "1"
 warden-core = { path = "../warden-core" }
 warden-truthid = { path = "../warden-truthid" }

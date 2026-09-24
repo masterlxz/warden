@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use rustls::ClientConfig;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::Error as WsError;
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use warden_core::tool::ToolSpec;
 
 use crate::protocol::{ClientMessage, ServerMessage};
@@ -64,7 +68,8 @@ impl ServerConnection {
     }
 
     /// Hello/HelloAck with an optional device token — returns the connection plus the token the
-    /// hub issued, if it issued one.
+    /// hub issued, if it issued one. A `wss://` URL is verified against the public web roots
+    /// (`tls::default_client_config`).
     pub async fn handshake(
         url: &str,
         device_id: &str,
@@ -73,7 +78,30 @@ impl ServerConnection {
         device_token: Option<String>,
         tools: Vec<ToolSpec>,
     ) -> anyhow::Result<(Self, Option<String>)> {
-        let (ws, _response) = tokio_tungstenite::connect_async(url).await?;
+        Self::handshake_with_tls(url, device_id, device_name, auth_key, device_token, tools, crate::tls::default_client_config()).await
+    }
+
+    /// Same as `handshake`, verifying a `wss://` hub with `tls` instead of the default roots —
+    /// what tests use to trust a throwaway CA. Ignored for `ws://`.
+    pub async fn handshake_with_tls(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        auth_key: &str,
+        device_token: Option<String>,
+        tools: Vec<ToolSpec>,
+        tls: Arc<ClientConfig>,
+    ) -> anyhow::Result<(Self, Option<String>)> {
+        let (ws, _response) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(Connector::Rustls(tls)))
+            .await
+            .map_err(|err| match err {
+                // P36: what a TLS-only hub answers a plain `ws://` Hello with — say what to do
+                // instead of surfacing a bare "HTTP error: 426".
+                WsError::Http(response) if response.status() == StatusCode::UPGRADE_REQUIRED => {
+                    anyhow::anyhow!("this hub only accepts encrypted connections — connect with wss:// to a name its certificate covers")
+                }
+                other => other.into(),
+            })?;
         let mut conn = Self { ws };
 
         conn.send(&ClientMessage::Hello {

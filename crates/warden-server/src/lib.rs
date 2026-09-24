@@ -35,9 +35,11 @@ pub mod history;
 pub mod remote_tool;
 pub mod server;
 pub mod skills;
+pub mod tls;
 pub mod vault_node;
 
 pub use device_registry::{AuthRejection, HelloOutcome, PairedDevice, PairingStatus, PairingStore};
 pub use remote_tool::{RemoteTool, RemoteToolChannel};
 pub use server::{resolve_server_name, Server};
+pub use tls::HubTls;
 pub use warden_server_protocol::{discover_hubs, discover_hubs_on, ClientMessage, DeviceTokenStore, DiscoveredHub, RemoteNodeProvider, ServerConnection, ServerMessage};

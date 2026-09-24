@@ -2,7 +2,46 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-23 (Sessão 95)
+> Última atualização: 2026-09-24 (Sessão 96)
+
+---
+
+### 2026-09-24 — Sessão 96
+
+- **Objetivo**: P36 fatia 2 (TLS no hub), escolhido pelo usuário. Decisões antes de codar, todas
+  do usuário: certs do **Tailscale** (`tailscale cert`) em vez de autoassinado + fingerprint;
+  com TLS ligado, **mesma porta com `ws://` só pro Discover**; escopo desta sessão = **servidor +
+  clientes Rust** (desktop/mobile/extensão ficam pra fatia 3).
+
+**O que foi feito**:
+
+- **Protocolo** (`warden-server-protocol`): `DiscoverAck.secureUrl?` (opcional);
+  `DiscoveredHub.secure_url`; novo `tls.rs` (`DISCOVER_PATH = "/discover"`,
+  `default_client_config()` com `webpki-roots` e provider `ring` explícito,
+  `client_config_with_roots`); `ServerConnection::handshake_with_tls` (o `handshake` delega com o
+  config padrão) e `426` vira "this hub only accepts encrypted connections…"; a sondagem de
+  descoberta agora usa `ws://host:port/discover`.
+- **Hub** (`warden-server`): novo `tls.rs` — `HubTls::from_pem_files`, `ReloadingCertResolver`
+  (relê os PEM quando o mtime muda), helpers `tailscale_dns_name`/`fetch_tailscale_cert`/
+  `tailscale_cert_renewal`. `Server::with_tls`; `route_connection` olha o 1º byte (`0x16`) e manda
+  pra TLS ou pra `serve_plain_discover` (upgrade só em `/discover`, senão `426`);
+  `handle_connection`/`send`/`reject` genéricos no transporte. CLI: `serve --tailscale-cert` ou
+  `--tls-cert/--tls-key/--tls-host`; log de subida diz se é TLS-only ou `ws://` sem criptografia.
+  Texto do `warden-node --help` atualizado.
+- **Verificação**: `cargo test --workspace` (655 passando; novos: 5 de integração em
+  `tests/tls.rs` com CA de teste `rcgen` — Hello+Chat por `wss://`, cert não confiável recusado com
+  as raízes padrão, `ws://` recusado antes do upgrade, discovery acha o hub e o `secureUrl`
+  funciona, troca dos arquivos de cert vale sem restart —, 2 do parser do `tailscale status`,
+  1 no protocolo), `cargo clippy --workspace --all-targets` limpo. **Binários reais** com cert do
+  `openssl`: log "TLS only, clients connect to wss://localhost:7499"; `curl` de upgrade em `/` →
+  `426`, em `/discover` → `101`; `openssl s_client` → TLSv1.3, verificação ok; `warden-node` por
+  `ws://` → mensagem clara, por `wss://` com cert fora das raízes → erro de certificado; nenhum
+  `devices.json` criado (nenhum `Hello` processado). `--tailscale-cert` sem Tailscale instalado →
+  "is Tailscale installed and on PATH?". **Sem teste numa tailnet real** (sem `tailscale` aqui).
+
+**Próximo passo**: P36 fatia 3 — hub embutido no desktop (opção TLS/Tailscale nas Configurações),
+QR com `wss://`, mobile e extensão com URL `wss://` (e a descoberta da extensão passar a usar
+`/discover` + `secureUrl`). E o usuário testar `--tailscale-cert` numa tailnet de verdade.
 
 ---
 

@@ -21,6 +21,7 @@ use tokio_tungstenite::tungstenite::Message;
 use warden_truthid::lan::candidate_hosts;
 
 use crate::protocol::{ClientMessage, ServerMessage};
+use crate::tls::DISCOVER_PATH;
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const CONCURRENCY: usize = 50;
@@ -30,6 +31,8 @@ pub struct DiscoveredHub {
     pub host: Ipv4Addr,
     pub port: u16,
     pub server_name: String,
+    /// The `wss://` URL to connect to instead of `ws://host:port`, when the hub requires TLS (P36).
+    pub secure_url: Option<String>,
 }
 
 /// Sweeps every local network for a hub listening on `port`. A single pass (~1-2s) — no
@@ -56,7 +59,8 @@ pub async fn discover_hubs_on(hosts: Vec<Ipv4Addr>, port: u16) -> anyhow::Result
 /// "this wasn't a hub" outcome (nothing listening, timed out, malformed/unexpected reply) — none
 /// of those should abort the sweep, since a different host on the LAN might still answer.
 async fn probe_one(host: Ipv4Addr, port: u16) -> Option<DiscoveredHub> {
-    let url = format!("ws://{host}:{port}");
+    // A TLS-only hub (P36) answers plain `ws://` only on this path; others ignore the path.
+    let url = format!("ws://{host}:{port}{DISCOVER_PATH}");
     let (mut ws, _) = tokio::time::timeout(PROBE_TIMEOUT, tokio_tungstenite::connect_async(&url)).await.ok()?.ok()?;
 
     ws.send(Message::Text(serde_json::to_string(&ClientMessage::Discover).ok()?.into())).await.ok()?;
@@ -65,7 +69,7 @@ async fn probe_one(host: Ipv4Addr, port: u16) -> Option<DiscoveredHub> {
         return None;
     };
     match serde_json::from_str::<ServerMessage>(&text).ok()? {
-        ServerMessage::DiscoverAck { server_name } => Some(DiscoveredHub { host, port, server_name }),
+        ServerMessage::DiscoverAck { server_name, secure_url } => Some(DiscoveredHub { host, port, server_name, secure_url }),
         _ => None,
     }
 }

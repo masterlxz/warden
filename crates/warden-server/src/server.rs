@@ -6,8 +6,11 @@ use std::time::Duration;
 
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
@@ -19,9 +22,22 @@ use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::history::handle_history_request;
 use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::tls::HubTls;
+use warden_server_protocol::tls::DISCOVER_PATH;
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
-type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
+/// A connection's transport — plain TCP, or TCP under TLS (P36) — past the point where it matters.
+trait Transport: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> Transport for S {}
+
+type WsSink<S> = SplitSink<WebSocketStream<S>, Message>;
+
+/// First byte of every TLS connection (a handshake record carrying the ClientHello); a plain
+/// WebSocket upgrade starts with the `G` of `GET`. Lets one port serve both (P36).
+const TLS_HANDSHAKE_RECORD: u8 = 0x16;
+
+/// How long a new connection gets to send its first byte and finish the TLS handshake.
+const TLS_ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Every currently-connected device's `RemoteToolChannel`, keyed by `device_id` — populated on a
 /// successful `Hello` (Fase 9.3), regardless of whether that device advertised any `Hello.tools`
@@ -49,6 +65,7 @@ pub struct Server {
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
     revocation_check_interval: Duration,
+    tls: Option<HubTls>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -73,7 +90,17 @@ impl Server {
             devices: Arc::new(Mutex::new(HashMap::new())),
             devices_path: Arc::new(devices_path),
             revocation_check_interval: DEFAULT_REVOCATION_CHECK_INTERVAL,
+            tls: None,
         })
+    }
+
+    /// Makes this hub TLS-only (P36): `Hello` and everything after it only over `wss://`. The same
+    /// port still answers a plain `ws://` upgrade on `DISCOVER_PATH`, and only with `DiscoverAck`
+    /// (pointing at the `wss://` URL) — any other plain upgrade gets `426 Upgrade Required` before
+    /// the client can send a `Hello`, so a misconfigured client never puts its key on the wire.
+    pub fn with_tls(mut self, tls: HubTls) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Overrides `DEFAULT_REVOCATION_CHECK_INTERVAL` — tests use a short one so a revocation shows
@@ -101,6 +128,10 @@ impl Server {
     /// actually releases the port instead of leaking a task that accepts forever.
     pub async fn serve_until(self, shutdown: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
         let listener = self.listener;
+        let secure_url = match &self.tls {
+            Some(tls) => tls.secure_url(listener.local_addr()?.port()).map(Arc::from),
+            None => None,
+        };
         let ctx = ConnectionContext {
             auth_key: self.auth_key,
             server_name: self.server_name,
@@ -109,15 +140,18 @@ impl Server {
             devices: self.devices,
             devices_path: self.devices_path,
             revocation_check_interval: self.revocation_check_interval,
+            secure_url,
         };
+        let tls = self.tls;
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 accepted = listener.accept() => {
                     let (stream, peer) = accepted?;
                     let ctx = ctx.clone();
+                    let tls = tls.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = handle_connection(stream, peer, ctx).await {
+                        if let Err(err) = route_connection(stream, peer, tls, ctx).await {
                             eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
                         }
                     });
@@ -139,11 +173,64 @@ struct ConnectionContext {
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
     revocation_check_interval: Duration,
+    /// `DiscoverAck.secure_url` — set only on a TLS hub that knows its public name.
+    secure_url: Option<Arc<str>>,
 }
 
-async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
-    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path, revocation_check_interval } = ctx;
-    let ws = tokio_tungstenite::accept_async(stream).await?;
+/// Picks the transport for a fresh TCP connection. Without TLS, everything is plain `ws://` as
+/// before. With TLS, the first byte decides (see `TLS_HANDSHAKE_RECORD`): a TLS handshake goes on
+/// to the full protocol, a plain upgrade only gets `serve_plain_discover`.
+async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTls>, ctx: ConnectionContext) -> anyhow::Result<()> {
+    let Some(tls) = tls else {
+        let ws = tokio_tungstenite::accept_async(stream).await?;
+        return handle_connection(ws, peer, ctx).await;
+    };
+
+    let mut first = [0u8; 1];
+    let read = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, stream.peek(&mut first)).await??;
+    if read == 1 && first[0] == TLS_HANDSHAKE_RECORD {
+        let stream = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, tls.acceptor.accept(stream)).await??;
+        let ws = tokio_tungstenite::accept_async(stream).await?;
+        handle_connection(ws, peer, ctx).await
+    } else {
+        serve_plain_discover(stream, ctx).await
+    }
+}
+
+/// A plain `ws://` connection to a TLS-only hub: upgraded only on `DISCOVER_PATH` (refused with
+/// `426 Upgrade Required` anywhere else, so no `Hello` can follow), and answers a single
+/// `Discover` with where to connect instead.
+async fn serve_plain_discover(stream: TcpStream, ctx: ConnectionContext) -> anyhow::Result<()> {
+    // The error type is tungstenite's `Callback` signature, not ours to shrink.
+    #[allow(clippy::result_large_err)]
+    let only_discover = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+        if request.uri().path() == DISCOVER_PATH {
+            return Ok(response);
+        }
+        let mut refusal = ErrorResponse::new(Some("this hub only accepts encrypted connections (wss://)".to_string()));
+        *refusal.status_mut() = StatusCode::UPGRADE_REQUIRED;
+        Err(refusal)
+    };
+    let Ok(ws) = tokio_tungstenite::accept_hdr_async(stream, only_discover).await else {
+        return Ok(());
+    };
+    let (mut sink, mut stream) = ws.split();
+    if let Some(Ok(Message::Text(text))) = stream.next().await {
+        if let Ok(ClientMessage::Discover) = serde_json::from_str::<ClientMessage>(&text) {
+            send(&mut sink, &discover_ack(&ctx)).await?;
+        }
+    }
+    sink.send(Message::Close(None)).await?;
+    Ok(())
+}
+
+fn discover_ack(ctx: &ConnectionContext) -> ServerMessage {
+    ServerMessage::DiscoverAck { server_name: ctx.server_name.to_string(), secure_url: ctx.secure_url.as_deref().map(str::to_string) }
+}
+
+async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
+    let discover_reply = discover_ack(&ctx);
+    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path, revocation_check_interval, secure_url: _ } = ctx;
     let (mut sink, mut stream) = ws.split();
 
     let Some(first) = stream.next().await else {
@@ -166,7 +253,7 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, ctx: ConnectionC
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
         Ok(ClientMessage::Discover) => {
-            send(&mut sink, &ServerMessage::DiscoverAck { server_name: server_name.to_string() }).await?;
+            send(&mut sink, &discover_reply).await?;
             sink.send(Message::Close(None)).await?;
             return Ok(());
         }
@@ -421,13 +508,13 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
 }
 
 /// Turns a `Hello` down: `AuthError` with `reason`, then a policy close.
-async fn reject(sink: &mut WsSink, reason: &str) -> anyhow::Result<()> {
+async fn reject<S: Transport>(sink: &mut WsSink<S>, reason: &str) -> anyhow::Result<()> {
     send(sink, &ServerMessage::AuthError { reason: reason.to_string() }).await?;
     sink.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: reason.to_string().into() }))).await?;
     Ok(())
 }
 
-async fn send(sink: &mut WsSink, msg: &ServerMessage) -> anyhow::Result<()> {
+async fn send<S: Transport>(sink: &mut WsSink<S>, msg: &ServerMessage) -> anyhow::Result<()> {
     let json = serde_json::to_string(msg)?;
     sink.send(Message::Text(json.into())).await?;
     Ok(())

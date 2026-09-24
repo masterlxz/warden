@@ -11,12 +11,13 @@ use warden_server::{vault_node, DeviceTokenStore};
 /// `vault_delete` against this machine's own vault, so another Warden install can select
 /// `storage_provider = "remote_node"` and point `[remote_node]` at this node's `device_id`.
 ///
-/// Runs over whatever `--server-url` points at — same "no TLS of its own, relies on the transport
-/// underneath" posture as `warden-server` itself.
+/// Encrypted when `--server-url` is `wss://` (a hub started with `--tailscale-cert` or
+/// `--tls-cert`), verified against the public web roots; plain `ws://` otherwise.
 #[derive(Parser, Debug)]
 #[command(name = "warden-node", version, about)]
 struct Cli {
-    /// The `warden-server` hub to connect through, e.g. `ws://100.x.x.x:7420`.
+    /// The `warden-server` hub to connect through, e.g. `wss://hub.tail1234.ts.net:7420` (TLS hub)
+    /// or `ws://192.168.x.x:7420`.
     #[arg(long)]
     server_url: String,
 

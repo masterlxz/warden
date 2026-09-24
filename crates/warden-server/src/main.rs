@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
-use warden_server::{resolve_server_name, PairingStore, Server};
+use warden_server::{resolve_server_name, tls, HubTls, PairingStore, Server};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -55,17 +55,33 @@ enum DevicesAction {
 }
 
 /// Warden's server-side WebSocket endpoint (Fase 9/7.3): hosts a real `Orchestrator` (same
-/// `bootstrap()` every other channel uses) and answers chat over `ws://`.
-///
-/// Runs over plain `ws://` — no TLS of its own. Fase 9.1 (redefined, Sessão 69) is LAN discovery,
-/// not a Tailscale integration; encryption in transit is only ever whatever tunnel the operator
-/// chooses to run this inside of (Tailscale or otherwise), entirely outside this codebase. See
-/// P36 in `PENDING.md`.
+/// `bootstrap()` every other channel uses) and answers chat over `ws://`, or only over `wss://`
+/// once a certificate is configured (P36 — `--tailscale-cert`, or `--tls-cert`/`--tls-key`).
 #[derive(Parser, Debug)]
 struct ServeArgs {
     /// Address to listen on.
     #[arg(long, default_value = "0.0.0.0:7420")]
     listen: SocketAddr,
+
+    /// Serve only wss://, with a certificate for this machine's Tailscale MagicDNS name, fetched
+    /// via `tailscale cert` at startup and renewed daily (no restart needed). Needs HTTPS
+    /// certificates enabled for the tailnet; clients then connect to wss://<name>.<tailnet>.ts.net.
+    #[arg(long, conflicts_with_all = ["tls_cert", "tls_key"])]
+    tailscale_cert: bool,
+
+    /// Serve only wss://, with this PEM certificate chain (leaf first). Re-read whenever the file
+    /// changes, so renewing it needs no restart. Requires --tls-key.
+    #[arg(long, requires = "tls_key")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key for --tls-cert.
+    #[arg(long, requires = "tls_cert")]
+    tls_key: Option<PathBuf>,
+
+    /// Host name --tls-cert is valid for, advertised to LAN discovery so clients know which
+    /// wss:// URL to use. Optional; --tailscale-cert fills it in by itself.
+    #[arg(long, requires = "tls_cert")]
+    tls_host: Option<String>,
 
     /// Pairing key — what a new client presents in its first Hello to get its own device token
     /// (P36). Devices already holding a token keep working if this changes, so rotating it only
@@ -153,11 +169,40 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let conversations_dir = warden_bootstrap::default_server_conversations_dir()
         .context("could not determine the OS config directory for conversations")?;
 
+    let tls = resolve_tls(&args).await?;
+
     let server_name = resolve_server_name(args.server_name.clone());
-    let server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
+    let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
     let addr = server.local_addr()?;
-    eprintln!("warden-server: listening on {addr} as '{server_name}'");
+    match tls {
+        Some(tls) => {
+            match tls.secure_url(addr.port()) {
+                Some(url) => eprintln!("warden-server: listening on {addr} as '{server_name}' — TLS only, clients connect to {url}"),
+                None => eprintln!("warden-server: listening on {addr} as '{server_name}' — TLS only"),
+            }
+            server = server.with_tls(tls);
+        }
+        None => eprintln!("warden-server: listening on {addr} as '{server_name}' — plain ws://, not encrypted (see --tailscale-cert)"),
+    }
     server.serve().await
+}
+
+/// `--tailscale-cert` fetches the cert first (and spawns its daily renewal); `--tls-cert`/
+/// `--tls-key` just load what's there. `None` = plain `ws://`, as before P36's second slice.
+async fn resolve_tls(args: &ServeArgs) -> anyhow::Result<Option<HubTls>> {
+    if args.tailscale_cert {
+        let name = tls::tailscale_dns_name().await?;
+        let dir = dirs::config_dir().context("could not determine the OS config directory for the TLS certificate")?.join("warden").join("tls");
+        let (cert_path, key_path) = (dir.join(format!("{name}.crt")), dir.join(format!("{name}.key")));
+        tls::fetch_tailscale_cert(&name, &cert_path, &key_path).await?;
+        let hub_tls = HubTls::from_pem_files(&cert_path, &key_path, Some(name.clone()))?;
+        tokio::spawn(tls::tailscale_cert_renewal(name, cert_path, key_path));
+        return Ok(Some(hub_tls));
+    }
+    match (&args.tls_cert, &args.tls_key) {
+        (Some(cert), Some(key)) => Ok(Some(HubTls::from_pem_files(cert, key, args.tls_host.clone())?)),
+        _ => Ok(None),
+    }
 }
 
 #[tokio::main]

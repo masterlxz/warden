@@ -225,6 +225,11 @@ pub enum ServerMessage {
     /// "which machine is this" and let them pick it, never a secret.
     DiscoverAck {
         server_name: String,
+        /// Set when this hub only accepts encrypted connections (P36): the `wss://` URL (a name
+        /// its certificate is valid for, e.g. the Tailscale MagicDNS one) a client must use for
+        /// `Hello` — a plain `ws://` Hello is refused before the upgrade even completes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secure_url: Option<String>,
     },
     Goodbye {
         reason: Option<String>,
@@ -478,9 +483,17 @@ mod tests {
 
     #[test]
     fn server_discover_ack_round_trips_through_json() {
-        let msg = ServerMessage::DiscoverAck { server_name: "Fabio's Desktop".into() };
+        let msg = ServerMessage::DiscoverAck { server_name: "Fabio's Desktop".into(), secure_url: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"type":"discoverAck","serverName":"Fabio's Desktop"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn server_discover_ack_carries_the_secure_url_only_when_there_is_one() {
+        let msg = ServerMessage::DiscoverAck { server_name: "hub".into(), secure_url: Some("wss://hub.tail1234.ts.net:7420".into()) };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"type":"discoverAck","serverName":"hub","secureUrl":"wss://hub.tail1234.ts.net:7420"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
     }
 

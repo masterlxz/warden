@@ -148,6 +148,31 @@ pub async fn spin_up_server_with_base_tool(provider: MockProvider, base_tool: Ar
     addr
 }
 
+/// Same as `spin_up_server`, but TLS-only (P36) with `tls`. Returns the bound address.
+pub async fn spin_up_tls_server(provider: MockProvider, tls: warden_server::HubTls) -> std::net::SocketAddr {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "warden-server-test-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let vault = Arc::new(Vault::new(temp_dir.join("vault")));
+    let orchestrator = Orchestrator::new(Arc::new(provider), vault);
+
+    let server = Server::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        "test-key",
+        "Test Hub",
+        Arc::new(orchestrator),
+        temp_dir.join("conversations"),
+        temp_dir.join("devices.json"),
+    )
+    .await
+    .unwrap()
+    .with_tls(tls);
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+    addr
+}
+
 /// Same as `spin_up_server`, but runs `serve_until` (not `serve`) so the caller can stop it — the
 /// returned `oneshot::Sender` is what a graceful-shutdown test fires.
 pub async fn spin_up_server_with_shutdown(provider: MockProvider) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>) {

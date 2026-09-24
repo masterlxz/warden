@@ -11,6 +11,7 @@ pub mod client;
 pub mod discovery;
 pub mod protocol;
 pub mod remote_node;
+pub mod tls;
 
 pub use client::{DeviceTokenStore, ServerConnection};
 pub use discovery::{discover_hubs, discover_hubs_on, DiscoveredHub};
