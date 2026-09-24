@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
-use warden_server::{resolve_server_name, tls, HubTls, PairingStore, Server};
+use warden_server::{resolve_server_name, HubTls, PairingStore, Server};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -191,12 +191,9 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
 /// `--tls-key` just load what's there. `None` = plain `ws://`, as before P36's second slice.
 async fn resolve_tls(args: &ServeArgs) -> anyhow::Result<Option<HubTls>> {
     if args.tailscale_cert {
-        let name = tls::tailscale_dns_name().await?;
-        let dir = dirs::config_dir().context("could not determine the OS config directory for the TLS certificate")?.join("warden").join("tls");
-        let (cert_path, key_path) = (dir.join(format!("{name}.crt")), dir.join(format!("{name}.key")));
-        tls::fetch_tailscale_cert(&name, &cert_path, &key_path).await?;
-        let hub_tls = HubTls::from_pem_files(&cert_path, &key_path, Some(name.clone()))?;
-        tokio::spawn(tls::tailscale_cert_renewal(name, cert_path, key_path));
+        let dir = warden_bootstrap::default_tls_dir().context("could not determine the OS config directory for the TLS certificate")?;
+        let (hub_tls, cert) = HubTls::from_tailscale(&dir).await?;
+        tokio::spawn(cert.renewal());
         return Ok(Some(hub_tls));
     }
     match (&args.tls_cert, &args.tls_key) {

@@ -128,7 +128,7 @@ function RemoteNodeForm({ value, onChange }: { value: RemoteNodeConfig | null; o
         <input
           className="settings-input"
           type="text"
-          placeholder="ws://100.x.x.x:7420"
+          placeholder="wss://hub.tailXXXX.ts.net:7420 or ws://192.168.x.x:7420"
           value={current.serverUrl}
           onChange={(e) => set("serverUrl", e.currentTarget.value)}
         />

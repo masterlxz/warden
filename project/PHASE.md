@@ -513,8 +513,8 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   P67/P68/P70. Seguem em aberto só (2) build Android real e (3) verificação manual da extensão
 - [x] 9.2 — Protocolo servidor↔cliente — WebSocket + JSON próprio (handshake + heartbeat só;
   roteamento de tool pra 9.4/9.5), ver `ARCHITECTURE.md` e `PENDING.md`. `wss://` opcional desde a
-  Sessão 96 (P36 fatia 2 — `--tailscale-cert`/`--tls-cert`, servidor + clientes Rust; desktop,
-  mobile e extensão na fatia 3)
+  Sessão 96 (P36 fatias 2 e 3 — `--tailscale-cert`/`--tls-cert` no servidor, clientes Rust, hub
+  embutido do desktop, mobile e extensão)
 - [x] 9.3 — Registrar cliente no servidor (pareamento) *(Sessão 60, continuação)* — registro
   **persistente** em JSON (`crates/warden-server/src/device_registry.rs`, `PairingStore`),
   substituindo o registro efêmero em memória (Sessão 59). Escopo confirmado com o usuário: a

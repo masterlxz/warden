@@ -121,11 +121,13 @@ pub struct DiscoveredHubPayload {
     host: String,
     port: u16,
     server_name: String,
+    /// The `wss://` URL to pair with instead of `ws://host:port` — TLS-only hubs (P36).
+    secure_url: Option<String>,
 }
 
 impl From<DiscoveredHub> for DiscoveredHubPayload {
     fn from(hub: DiscoveredHub) -> Self {
-        DiscoveredHubPayload { host: hub.host.to_string(), port: hub.port, server_name: hub.server_name }
+        DiscoveredHubPayload { host: hub.host.to_string(), port: hub.port, server_name: hub.server_name, secure_url: hub.secure_url }
     }
 }
 
@@ -181,11 +183,11 @@ mod tests {
             host: "192.168.1.10".parse().unwrap(),
             port: 7420,
             server_name: "Fabio's Desktop".to_string(),
-            secure_url: None,
+            secure_url: Some("wss://desktop.tail1234.ts.net:7420".to_string()),
         });
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
-            r#"{"host":"192.168.1.10","port":7420,"serverName":"Fabio's Desktop"}"#
+            r#"{"host":"192.168.1.10","port":7420,"serverName":"Fabio's Desktop","secureUrl":"wss://desktop.tail1234.ts.net:7420"}"#
         );
     }
 }

@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { ApiKeyField } from "./SettingsView";
 import type { DiscoveredHub, EmbeddedServerConfig, EmbeddedServerStatus, HubPairingConfig, PairedDevice } from "../types";
 
+const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secureUrl: null };
+
 const dateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
 function formatSeen(ms: number): string {
@@ -20,9 +22,9 @@ function StatusBadge({ status }: { status: PairedDevice["status"] }) {
  * real choices. The port/name inputs lock while running, same reasoning `HubPairingQrSection`
  * doesn't need since it never has a "live" state to protect. */
 function EmbeddedServerSection() {
-  const [config, setConfig] = useState<EmbeddedServerConfig>({ port: 7420, authKey: "", serverName: null });
+  const [config, setConfig] = useState<EmbeddedServerConfig>({ port: 7420, authKey: "", serverName: null, tailscaleCert: false });
   const [serverNameInput, setServerNameInput] = useState("");
-  const [status, setStatus] = useState<EmbeddedServerStatus>({ running: false, boundAddr: null, serverName: null });
+  const [status, setStatus] = useState<EmbeddedServerStatus>(STOPPED_STATUS);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -34,7 +36,7 @@ function EmbeddedServerSection() {
           setServerNameInput(saved.serverName ?? "");
         } else {
           const authKey = await invoke<string>("generate_embedded_server_auth_key");
-          setConfig({ port: 7420, authKey, serverName: null });
+          setConfig({ port: 7420, authKey, serverName: null, tailscaleCert: false });
         }
       })
       .catch((err) => setError(String(err)));
@@ -54,7 +56,12 @@ function EmbeddedServerSection() {
     try {
       // Always save first — `start_embedded_server` reads the config straight from disk, so a
       // field edited here but never saved would otherwise start the server with stale settings.
-      await invoke("save_embedded_server_config", { port: config.port, authKey: config.authKey, serverName: serverNameInput.trim() || null });
+      await invoke("save_embedded_server_config", {
+        port: config.port,
+        authKey: config.authKey,
+        serverName: serverNameInput.trim() || null,
+        tailscaleCert: config.tailscaleCert,
+      });
       const next = await invoke<EmbeddedServerStatus>("start_embedded_server");
       setStatus(next);
     } catch (err) {
@@ -69,7 +76,7 @@ function EmbeddedServerSection() {
     setBusy(true);
     try {
       await invoke("stop_embedded_server");
-      setStatus({ running: false, boundAddr: null, serverName: null });
+      setStatus(STOPPED_STATUS);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -92,6 +99,14 @@ function EmbeddedServerSection() {
         {status.running ? (
           <>
             Rodando como <strong>{status.serverName}</strong> em <code>{status.boundAddr}</code>
+            {status.secureUrl ? (
+              <>
+                {" "}
+                — só HTTPS, conecte em <code>{status.secureUrl}</code>
+              </>
+            ) : (
+              " — sem criptografia (ws://)"
+            )}
           </>
         ) : (
           "Parado."
@@ -118,6 +133,22 @@ function EmbeddedServerSection() {
           disabled={status.running}
           onChange={(e) => setServerNameInput(e.currentTarget.value)}
         />
+      </label>
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={config.tailscaleCert}
+            disabled={status.running}
+            onChange={(e) => setConfig((c) => ({ ...c, tailscaleCert: e.currentTarget.checked }))}
+          />
+          <span className="settings-label">HTTPS via Tailscale</span>
+        </span>
+        <span className="settings-hint">
+          Criptografa a conexão com o certificado do Tailscale deste computador (<code>tailscale cert</code>), renovado sozinho. Os
+          dispositivos passam a conectar pelo nome <code>*.ts.net</code>, só de dentro da tailnet. Precisa de MagicDNS e certificados
+          HTTPS ligados no painel do Tailscale e, sem root, <code>sudo tailscale set --operator=$USER</code>.
+        </span>
       </label>
       <ApiKeyField label="Auth key" value={config.authKey} onChange={(authKey) => setConfig((c) => ({ ...c, authKey }))} />
       {!status.running && (
@@ -149,11 +180,16 @@ function HubPairingQrSection() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [discoveryPort, setDiscoveryPort] = useState("7420");
+  // P36 — the embedded hub's own wss:// URL, offered as a one-click Server URL when it's on.
+  const [embeddedSecureUrl, setEmbeddedSecureUrl] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<HubPairingConfig | null>("get_hub_pairing_config")
       .then((saved) => saved && setConfig(saved))
       .catch((err) => setError(String(err)));
+    invoke<EmbeddedServerStatus>("embedded_server_status")
+      .then((status) => setEmbeddedSecureUrl(status.secureUrl))
+      .catch(() => {});
   }, []);
 
   async function handleGenerate() {
@@ -222,13 +258,11 @@ function HubPairingQrSection() {
               type="button"
               key={`${hub.host}:${hub.port}`}
               className="workspace-device-row workspace-device-row--clickable"
-              onClick={() => setConfig((c) => ({ ...c, serverUrl: `ws://${hub.host}:${hub.port}` }))}
+              onClick={() => setConfig((c) => ({ ...c, serverUrl: hub.secureUrl ?? `ws://${hub.host}:${hub.port}` }))}
             >
               <div className="workspace-device-info">
                 <span className="workspace-device-name">{hub.serverName}</span>
-                <span className="workspace-device-meta">
-                  {hub.host}:{hub.port}
-                </span>
+                <span className="workspace-device-meta">{hub.secureUrl ?? `${hub.host}:${hub.port}`}</span>
               </div>
             </button>
           ))}
@@ -240,11 +274,16 @@ function HubPairingQrSection() {
         <input
           className="settings-input"
           type="text"
-          placeholder="ws://192.168.x.x:7420"
+          placeholder="wss://hub.tailXXXX.ts.net:7420 ou ws://192.168.x.x:7420"
           value={config.serverUrl}
           onChange={(e) => setConfig((c) => ({ ...c, serverUrl: e.currentTarget.value }))}
         />
       </label>
+      {embeddedSecureUrl && config.serverUrl !== embeddedSecureUrl && (
+        <button type="button" className="settings-browse-btn" onClick={() => setConfig((c) => ({ ...c, serverUrl: embeddedSecureUrl }))}>
+          Usar o hub deste app ({embeddedSecureUrl})
+        </button>
+      )}
       <label className="settings-field">
         <span className="settings-label">Auth key</span>
         <input

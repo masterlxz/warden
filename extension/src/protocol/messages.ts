@@ -70,7 +70,8 @@ export type ServerMessage =
   | { type: "skillError"; requestId: number; message: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
-  | { type: "discoverAck"; serverName: string }
+  /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
+  | { type: "discoverAck"; serverName: string; secureUrl?: string }
   | { type: "goodbye"; reason: string | null };
 
 /**

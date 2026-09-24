@@ -15,6 +15,8 @@ pub struct DiscoveredHubDto {
     pub host: String,
     pub port: u16,
     pub server_name: String,
+    /// Set when the hub only accepts `wss://` (P36) — where to connect instead of `ws://host:port`.
+    pub secure_url: Option<String>,
 }
 
 /// Sweeps the local network for `warden-server` hubs listening on `port` — same mechanism as
@@ -22,6 +24,10 @@ pub struct DiscoveredHubDto {
 /// the `ConnectionScreen` still asks for that by hand, same security boundary as the desktop.
 pub fn bridge_discover_hubs(port: u16) -> Result<Vec<DiscoveredHubDto>, String> {
     rt().block_on(warden_server_protocol::discover_hubs(port))
-        .map(|hubs| hubs.into_iter().map(|h| DiscoveredHubDto { host: h.host.to_string(), port: h.port, server_name: h.server_name }).collect())
+        .map(|hubs| {
+            hubs.into_iter()
+                .map(|h| DiscoveredHubDto { host: h.host.to_string(), port: h.port, server_name: h.server_name, secure_url: h.secure_url })
+                .collect()
+        })
         .map_err(|e| format!("{e:#}"))
 }

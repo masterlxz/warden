@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::oneshot;
 use warden_bootstrap::{
-    default_config_path, default_server_conversations_dir, default_server_devices_path, generate_auth_key, load_config_from_path, save_config,
+    default_config_path, default_server_conversations_dir, default_server_devices_path, default_tls_dir, generate_auth_key, load_config_from_path, save_config,
     EmbeddedServerConfig,
 };
 
@@ -30,6 +30,19 @@ pub struct EmbeddedServerHandle {
     shutdown_tx: oneshot::Sender<()>,
     pub(crate) bound_addr: SocketAddr,
     server_name: String,
+    /// `wss://` URL clients should use — `Some` only when started with the Tailscale cert (P36).
+    secure_url: Option<String>,
+    /// The daily `tailscale cert` renewal loop, aborted on stop so it doesn't outlive the hub.
+    cert_renewal: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl EmbeddedServerHandle {
+    fn stop(self) {
+        let _ = self.shutdown_tx.send(());
+        if let Some(renewal) = self.cert_renewal {
+            renewal.abort();
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -38,11 +51,12 @@ pub struct EmbeddedServerConfigPayload {
     port: u16,
     auth_key: String,
     server_name: Option<String>,
+    tailscale_cert: bool,
 }
 
 impl From<EmbeddedServerConfig> for EmbeddedServerConfigPayload {
     fn from(c: EmbeddedServerConfig) -> Self {
-        Self { port: c.port, auth_key: c.auth_key, server_name: c.server_name }
+        Self { port: c.port, auth_key: c.auth_key, server_name: c.server_name, tailscale_cert: c.tailscale_cert }
     }
 }
 
@@ -52,15 +66,21 @@ pub struct EmbeddedServerStatusPayload {
     running: bool,
     bound_addr: Option<String>,
     server_name: Option<String>,
+    secure_url: Option<String>,
 }
 
 impl EmbeddedServerStatusPayload {
     fn stopped() -> Self {
-        Self { running: false, bound_addr: None, server_name: None }
+        Self { running: false, bound_addr: None, server_name: None, secure_url: None }
     }
 
     fn running(handle: &EmbeddedServerHandle) -> Self {
-        Self { running: true, bound_addr: Some(handle.bound_addr.to_string()), server_name: Some(handle.server_name.clone()) }
+        Self {
+            running: true,
+            bound_addr: Some(handle.bound_addr.to_string()),
+            server_name: Some(handle.server_name.clone()),
+            secure_url: handle.secure_url.clone(),
+        }
     }
 }
 
@@ -85,7 +105,7 @@ pub fn generate_embedded_server_auth_key() -> String {
 }
 
 #[tauri::command]
-pub fn save_embedded_server_config(port: u16, auth_key: String, server_name: Option<String>) -> Result<(), String> {
+pub fn save_embedded_server_config(port: u16, auth_key: String, server_name: Option<String>, tailscale_cert: bool) -> Result<(), String> {
     let auth_key = auth_key.trim().to_string();
     if auth_key.is_empty() {
         return Err("Auth key não pode ficar em branco".to_string());
@@ -96,7 +116,8 @@ pub fn save_embedded_server_config(port: u16, auth_key: String, server_name: Opt
     let path = config_path()?;
     let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
     let enabled = config.embedded_server.as_ref().is_some_and(|c| c.enabled);
-    config.embedded_server = Some(EmbeddedServerConfig { enabled, port, auth_key, server_name: server_name.filter(|n| !n.trim().is_empty()) });
+    config.embedded_server =
+        Some(EmbeddedServerConfig { enabled, port, auth_key, server_name: server_name.filter(|n| !n.trim().is_empty()), tailscale_cert });
     save_config(&path, &config).map_err(|e| format!("{e:#}"))
 }
 
@@ -119,7 +140,7 @@ pub async fn start_embedded_server(state: State<'_, AppState>) -> Result<Embedde
 #[tauri::command]
 pub fn stop_embedded_server(state: State<'_, AppState>) -> Result<(), String> {
     if let Some(handle) = state.embedded_server.lock().unwrap().take() {
-        let _ = handle.shutdown_tx.send(());
+        handle.stop();
     }
 
     let path = config_path()?;
@@ -149,13 +170,30 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     let server_name = warden_server::resolve_server_name(config.server_name.clone());
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
 
-    let server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path).await?;
+    // P36: fetched before binding, so a Tailscale problem (not installed, HTTPS certs off) fails
+    // the start with its own message instead of leaving a half-configured hub running.
+    let tailscale = if config.tailscale_cert {
+        let dir = default_tls_dir().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
+        Some(warden_server::HubTls::from_tailscale(&dir).await?)
+    } else {
+        None
+    };
+
+    let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path).await?;
     let bound_addr = server.local_addr()?;
+    let (secure_url, cert_renewal) = match tailscale {
+        Some((tls, cert)) => {
+            let secure_url = tls.secure_url(bound_addr.port());
+            server = server.with_tls(tls);
+            (secure_url, Some(tokio::spawn(cert.renewal())))
+        }
+        None => (None, None),
+    };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     tokio::spawn(server.serve_until(async {
         let _ = shutdown_rx.await;
     }));
-    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name })
+    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, cert_renewal })
 }
 
 #[cfg(test)]
@@ -205,7 +243,7 @@ mod tests {
         };
 
         let server_config =
-            EmbeddedServerConfig { enabled: true, port: 0, auth_key: "test-auth-key".to_string(), server_name: Some("Test Desktop".to_string()) };
+            EmbeddedServerConfig { enabled: true, port: 0, auth_key: "test-auth-key".to_string(), server_name: Some("Test Desktop".to_string()), tailscale_cert: false };
 
         let handle = start_embedded_server_inner(&state, &server_config).await.unwrap();
         // `bound_addr` reflects the `0.0.0.0` bind host `local_addr()` reports — not a connectable
@@ -221,23 +259,30 @@ mod tests {
         let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], port).await.unwrap();
         assert_eq!(hubs.len(), 1);
         assert_eq!(hubs[0].server_name, "Test Desktop");
+        assert_eq!(hubs[0].secure_url, None);
+        assert_eq!(handle.secure_url, None);
 
-        let _ = handle.shutdown_tx.send(());
+        handle.stop();
     }
 
     // Locks in the exact camelCase JSON shape `desktop/src/types.ts` expects.
     #[test]
     fn embedded_server_config_payload_serializes_as_camel_case() {
-        let payload =
-            EmbeddedServerConfigPayload::from(EmbeddedServerConfig { enabled: true, port: 7420, auth_key: "secret".to_string(), server_name: None });
-        assert_eq!(serde_json::to_string(&payload).unwrap(), r#"{"port":7420,"authKey":"secret","serverName":null}"#);
+        let payload = EmbeddedServerConfigPayload::from(EmbeddedServerConfig {
+            enabled: true,
+            port: 7420,
+            auth_key: "secret".to_string(),
+            server_name: None,
+            tailscale_cert: true,
+        });
+        assert_eq!(serde_json::to_string(&payload).unwrap(), r#"{"port":7420,"authKey":"secret","serverName":null,"tailscaleCert":true}"#);
     }
 
     #[test]
     fn stopped_status_serializes_as_camel_case() {
         assert_eq!(
             serde_json::to_string(&EmbeddedServerStatusPayload::stopped()).unwrap(),
-            r#"{"running":false,"boundAddr":null,"serverName":null}"#
+            r#"{"running":false,"boundAddr":null,"serverName":null,"secureUrl":null}"#
         );
     }
 }

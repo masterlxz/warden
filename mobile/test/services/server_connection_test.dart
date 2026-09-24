@@ -14,6 +14,11 @@ import 'package:stream_channel/stream_channel.dart';
 // be); `controller.local` plays the role of the network peer (warden-server)
 // that each test drives directly.
 void main() {
+  test('hubUri picks wss:// only for a TLS hub (P36)', () {
+    expect(hubUri('192.168.1.10', 7420, secure: false).toString(), 'ws://192.168.1.10:7420');
+    expect(hubUri('hub.tail1234.ts.net', 7420, secure: true).toString(), 'wss://hub.tail1234.ts.net:7420');
+  });
+
   test('successful handshake reaches Connected with the server name', () async {
     final controller = StreamChannelController<dynamic>();
     final fromClient = StreamQueue<dynamic>(controller.local.stream);

@@ -5,15 +5,18 @@ import 'dart:convert';
 /// `ConnectionScreen` would otherwise need typed by hand except the device name, which stays
 /// client-chosen.
 class HubPairingPayload {
-  const HubPairingPayload({required this.host, required this.port, required this.authKey});
+  const HubPairingPayload({required this.host, required this.port, required this.authKey, this.useTls = false});
 
   final String host;
   final int port;
   final String authKey;
+
+  /// `serverUrl` was `wss://` — a TLS-only hub (P36).
+  final bool useTls;
 }
 
 /// Decodes a scanned QR's raw text into a [HubPairingPayload], or `null` if it isn't one (not
-/// JSON, missing a field, or `serverUrl` isn't a `ws://host:port` URI) — pulled out as a pure
+/// JSON, missing a field, or `serverUrl` isn't a `ws://`/`wss://` `host:port` URI) — pulled out as a pure
 /// function so it's testable without a camera or platform channel, same split as
 /// `chat_notifications.dart`'s `shouldNotifyFor`/`notificationContentFor`.
 HubPairingPayload? parseHubPairingQr(String raw) {
@@ -31,6 +34,7 @@ HubPairingPayload? parseHubPairingQr(String raw) {
 
   final uri = Uri.tryParse(serverUrl);
   if (uri == null || uri.host.isEmpty || !uri.hasPort) return null;
+  if (uri.scheme != 'ws' && uri.scheme != 'wss') return null;
 
-  return HubPairingPayload(host: uri.host, port: uri.port, authKey: authKey);
+  return HubPairingPayload(host: uri.host, port: uri.port, authKey: authKey, useTls: uri.scheme == 'wss');
 }

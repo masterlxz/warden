@@ -236,6 +236,10 @@ pub struct EmbeddedServerConfig {
     /// resolution already uses (`resolve_server_name` in `crates/warden-server/src/main.rs`) —
     /// this struct doesn't duplicate that logic, the desktop command that starts the server does.
     pub server_name: Option<String>,
+    /// Serve only `wss://`, with this machine's Tailscale certificate (P36) — same as
+    /// `warden-server serve --tailscale-cert`. Absent in older files = off.
+    #[serde(default)]
+    pub tailscale_cert: bool,
 }
 
 /// 32 random bytes from the OS CSPRNG, hex-encoded (64 hex chars) — used for `EmbeddedServerConfig
@@ -666,6 +670,12 @@ pub fn default_server_conversations_dir() -> Option<PathBuf> {
 /// (same posture that function already has).
 pub fn default_server_devices_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("devices.json"))
+}
+
+/// Where a hub keeps the TLS certificate it fetches with `tailscale cert` (P36) — shared by
+/// `warden-server serve --tailscale-cert` and the desktop's embedded hub.
+pub fn default_tls_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("tls"))
 }
 
 /// The *client* side of P36's device tokens — what this machine was issued by each hub it pairs
@@ -1677,6 +1687,7 @@ oauth = true
                 port: 7420,
                 auth_key: "embedded-secret".to_string(),
                 server_name: Some("Fabio's Desktop".to_string()),
+                tailscale_cert: true,
             }),
             ssh_hosts: vec![SshHostConfig {
                 id: "vps".to_string(),

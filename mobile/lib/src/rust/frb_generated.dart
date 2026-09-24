@@ -695,12 +695,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DiscoveredHubDto dco_decode_discovered_hub_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return DiscoveredHubDto(
       host: dco_decode_String(arr[0]),
       port: dco_decode_u_16(arr[1]),
       serverName: dco_decode_String(arr[2]),
+      secureUrl: dco_decode_opt_String(arr[3]),
     );
   }
 
@@ -886,10 +887,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_host = sse_decode_String(deserializer);
     var var_port = sse_decode_u_16(deserializer);
     var var_serverName = sse_decode_String(deserializer);
+    var var_secureUrl = sse_decode_opt_String(deserializer);
     return DiscoveredHubDto(
       host: var_host,
       port: var_port,
       serverName: var_serverName,
+      secureUrl: var_secureUrl,
     );
   }
 
@@ -1133,6 +1136,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.host, serializer);
     sse_encode_u_16(self.port, serializer);
     sse_encode_String(self.serverName, serializer);
+    sse_encode_opt_String(self.secureUrl, serializer);
   }
 
   @protected

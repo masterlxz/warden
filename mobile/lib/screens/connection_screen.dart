@@ -34,6 +34,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   final _portController = TextEditingController(text: '${ConnectionSettingsStore.defaultPort}');
   final _authKeyController = TextEditingController();
   final _deviceNameController = TextEditingController();
+  bool _useTls = false;
 
   final _settingsStore = ConnectionSettingsStore();
   final _fileTool = MobileFileTool();
@@ -58,6 +59,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         _portController.text = '${saved.port}';
         _authKeyController.text = saved.authKey;
         _deviceNameController.text = saved.deviceName;
+        _useTls = saved.useTls;
       });
       return;
     }
@@ -83,6 +85,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     final port = int.tryParse(_portController.text.trim());
     final authKey = _authKeyController.text;
     final deviceName = _deviceNameController.text.trim();
+    final useTls = _useTls;
 
     if (host.isEmpty || port == null || deviceName.isEmpty) {
       setState(() => _status = const ConnectionFailure('Fill in host, port, auth key and device name'));
@@ -103,6 +106,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       final connection = await widget.connector(
         host: host,
         port: port,
+        secure: useTls,
         deviceId: deviceId,
         deviceName: deviceName,
         authKey: authKey,
@@ -121,6 +125,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         port: port,
         authKey: authKey,
         deviceName: deviceName,
+        useTls: useTls,
       ));
 
       await _statusSubscription?.cancel();
@@ -167,9 +172,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       ),
     );
     if (result == null || !mounted) return;
+    // P36 — a TLS-only hub is reached by the name its certificate covers, not the LAN IP the sweep
+    // found it at, so its advertised wss:// URL wins.
+    final secureUri = result.secureUrl == null ? null : Uri.tryParse(result.secureUrl!);
     setState(() {
-      _hostController.text = result.host;
-      _portController.text = '${result.port}';
+      _hostController.text = secureUri?.host ?? result.host;
+      _portController.text = '${secureUri?.port ?? result.port}';
+      _useTls = secureUri != null;
     });
   }
 
@@ -182,6 +191,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       _hostController.text = payload.host;
       _portController.text = '${payload.port}';
       _authKeyController.text = payload.authKey;
+      _useTls = payload.useTls;
     });
   }
 
@@ -269,6 +279,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Port'),
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Use TLS (wss://)'),
+              subtitle: const Text('For a hub serving HTTPS — use the name its certificate covers, e.g. hub.tailXXXX.ts.net'),
+              value: _useTls,
+              onChanged: _isConnected || _isBusy ? null : (value) => setState(() => _useTls = value),
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: _authKeyController,
@@ -343,7 +360,7 @@ class _DiscoveredHubsSheet extends StatelessWidget {
                 for (final hub in hubs)
                   ListTile(
                     title: Text(hub.serverName),
-                    subtitle: Text('${hub.host}:${hub.port}'),
+                    subtitle: Text(hub.secureUrl ?? '${hub.host}:${hub.port}'),
                     onTap: () => Navigator.of(context).pop(hub),
                   ),
               ],

@@ -589,10 +589,12 @@ impl SseDecode for crate::api::discovery::DiscoveredHubDto {
         let mut var_host = <String>::sse_decode(deserializer);
         let mut var_port = <u16>::sse_decode(deserializer);
         let mut var_serverName = <String>::sse_decode(deserializer);
+        let mut var_secureUrl = <Option<String>>::sse_decode(deserializer);
         return crate::api::discovery::DiscoveredHubDto {
             host: var_host,
             port: var_port,
             server_name: var_serverName,
+            secure_url: var_secureUrl,
         };
     }
 }
@@ -862,6 +864,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::discovery::DiscoveredHubDto {
             self.host.into_into_dart().into_dart(),
             self.port.into_into_dart().into_dart(),
             self.server_name.into_into_dart().into_dart(),
+            self.secure_url.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1011,6 +1014,7 @@ impl SseEncode for crate::api::discovery::DiscoveredHubDto {
         <String>::sse_encode(self.host, serializer);
         <u16>::sse_encode(self.port, serializer);
         <String>::sse_encode(self.server_name, serializer);
+        <Option<String>>::sse_encode(self.secure_url, serializer);
     }
 }
 

@@ -48,8 +48,34 @@ impl HubTls {
         Ok(Self { acceptor: TlsAcceptor::from(Arc::new(config)), public_host })
     }
 
+    /// This machine's Tailscale cert (fetched now via `tailscale cert` into `cert_dir`), advertising
+    /// its MagicDNS name. Returns that name too, plus the two file paths — what
+    /// `tailscale_cert_renewal` needs to keep renewing them.
+    pub async fn from_tailscale(cert_dir: &Path) -> anyhow::Result<(Self, TailscaleCert)> {
+        let domain = tailscale_dns_name().await?;
+        let cert = TailscaleCert { cert_path: cert_dir.join(format!("{domain}.crt")), key_path: cert_dir.join(format!("{domain}.key")), domain };
+        fetch_tailscale_cert(&cert.domain, &cert.cert_path, &cert.key_path).await?;
+        let tls = Self::from_pem_files(&cert.cert_path, &cert.key_path, Some(cert.domain.clone()))?;
+        Ok((tls, cert))
+    }
+
     pub fn secure_url(&self, port: u16) -> Option<String> {
         self.public_host.as_ref().map(|host| format!("wss://{host}:{port}"))
+    }
+}
+
+/// Where `HubTls::from_tailscale` put the cert, and for which name.
+#[derive(Debug, Clone)]
+pub struct TailscaleCert {
+    pub domain: String,
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+}
+
+impl TailscaleCert {
+    /// `tailscale_cert_renewal` for this cert.
+    pub fn renewal(self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        tailscale_cert_renewal(self.domain, self.cert_path, self.key_path)
     }
 }
 

@@ -41,5 +41,5 @@ pub mod vault_node;
 pub use device_registry::{AuthRejection, HelloOutcome, PairedDevice, PairingStatus, PairingStore};
 pub use remote_tool::{RemoteTool, RemoteToolChannel};
 pub use server::{resolve_server_name, Server};
-pub use tls::HubTls;
+pub use tls::{HubTls, TailscaleCert};
 pub use warden_server_protocol::{discover_hubs, discover_hubs_on, ClientMessage, DeviceTokenStore, DiscoveredHub, RemoteNodeProvider, ServerConnection, ServerMessage};

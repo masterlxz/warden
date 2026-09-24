@@ -83,11 +83,16 @@ class HistoryException implements Exception {
 /// throw (any exception) to send a `ToolCallErrorMessage` back instead.
 typedef ToolHandler = Future<Object?> Function(Map<String, dynamic> args);
 
+/// The hub's WebSocket URL — `wss://` for a TLS-only hub (P36), where `host` is the name its
+/// certificate covers (e.g. `hub.tail1234.ts.net`), not an IP.
+Uri hubUri(String host, int port, {required bool secure}) => Uri(scheme: secure ? 'wss' : 'ws', host: host, port: port);
+
 /// Signature of `ServerConnection.connect`, so callers can be handed a different way to open a
 /// connection (see `ConnectionScreen.connector`).
 typedef ServerConnector = Future<ServerConnection> Function({
   required String host,
   required int port,
+  bool secure,
   required String deviceId,
   required String deviceName,
   required String authKey,
@@ -165,6 +170,7 @@ class ServerConnection {
   static Future<ServerConnection> connect({
     required String host,
     required int port,
+    bool secure = false,
     required String deviceId,
     required String deviceName,
     required String authKey,
@@ -173,7 +179,7 @@ class ServerConnection {
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
   }) {
-    final channel = WebSocketChannel.connect(Uri.parse('ws://$host:$port'));
+    final channel = WebSocketChannel.connect(hubUri(host, port, secure: secure));
     return _handshake(
       channel,
       deviceId: deviceId,

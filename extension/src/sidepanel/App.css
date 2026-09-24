@@ -70,6 +70,12 @@ h1 {
   color: var(--color-text-muted);
 }
 
+.connection-form label.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 input {
   padding: 0.4rem 0.5rem;
   border-radius: 6px;

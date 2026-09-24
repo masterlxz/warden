@@ -9,6 +9,19 @@ void main() {
       expect(result!.host, '192.168.1.10');
       expect(result.port, 7420);
       expect(result.authKey, 'secret');
+      expect(result.useTls, isFalse);
+    });
+
+    test('a wss:// serverUrl (TLS-only hub, P36) turns TLS on', () {
+      final result = parseHubPairingQr('{"serverUrl":"wss://hub.tail1234.ts.net:7420","authKey":"secret"}');
+      expect(result, isNotNull);
+      expect(result!.host, 'hub.tail1234.ts.net');
+      expect(result.port, 7420);
+      expect(result.useTls, isTrue);
+    });
+
+    test('a serverUrl with a non-WebSocket scheme returns null', () {
+      expect(parseHubPairingQr('{"serverUrl":"https://hub.tail1234.ts.net:7420","authKey":"secret"}'), isNull);
     });
 
     test('garbage that is not JSON returns null', () {

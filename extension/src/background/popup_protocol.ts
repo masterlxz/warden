@@ -15,6 +15,8 @@ export interface ConnectionSettings {
   port: number;
   deviceName: string;
   authKey: string;
+  /** P36 — connect over wss:// (a TLS-only hub, host = the name its certificate covers). */
+  secure: boolean;
 }
 
 export type PopupRequest =

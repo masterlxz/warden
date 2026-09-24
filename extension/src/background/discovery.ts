@@ -12,7 +12,13 @@ export interface DiscoveredHub {
   host: string;
   port: number;
   serverName: string;
+  /** Set when the hub only accepts wss:// (P36) — where to connect instead of ws://host:port. */
+  secureUrl?: string;
 }
+
+/** A TLS-only hub (P36) answers plain ws:// only on this path; others ignore the path. Same
+ * constant as `warden_server_protocol::tls::DISCOVER_PATH`. */
+const DISCOVER_PATH = "/discover";
 
 const PROBE_TIMEOUT_MS = 800;
 const CONCURRENCY = 50; // same value as the Rust sweep
@@ -49,7 +55,7 @@ async function candidateHosts(): Promise<string[]> {
 function probeOne(host: string, port: number): Promise<DiscoveredHub | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const socket = new WebSocket(`ws://${host}:${port}`);
+    const socket = new WebSocket(`ws://${host}:${port}${DISCOVER_PATH}`);
 
     const finish = (result: DiscoveredHub | null) => {
       if (settled) return;
@@ -70,7 +76,7 @@ function probeOne(host: string, port: number): Promise<DiscoveredHub | null> {
         finish(null);
         return;
       }
-      finish(reply.type === "discoverAck" ? { host, port, serverName: reply.serverName } : null);
+      finish(reply.type === "discoverAck" ? { host, port, serverName: reply.serverName, secureUrl: reply.secureUrl } : null);
     });
     socket.addEventListener("error", () => finish(null));
     socket.addEventListener("close", () => finish(null));

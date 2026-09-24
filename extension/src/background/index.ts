@@ -92,6 +92,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         next = await ServerConnection.connect({
           host: request.host,
           port: request.port,
+          secure: request.secure,
           deviceId,
           deviceName: request.deviceName,
           authKey: request.authKey,
@@ -111,7 +112,13 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       connection.onChatMessage(addChatEntry);
       setStatus(connection.status);
       await chrome.storage.local.set({
-        [STORAGE_KEY_SETTINGS]: { host: request.host, port: request.port, deviceName: request.deviceName, authKey: request.authKey },
+        [STORAGE_KEY_SETTINGS]: {
+          host: request.host,
+          port: request.port,
+          deviceName: request.deviceName,
+          authKey: request.authKey,
+          secure: request.secure,
+        } satisfies ConnectionSettings,
       });
       return { ok: true };
     }

@@ -6,6 +6,42 @@
 
 ---
 
+### 2026-09-24 — Sessão 96 (continuação)
+
+- **Objetivo**: P36 fatia 3, depois de um plano aprovado pelo usuário: TLS no hub embutido do
+  desktop, QR, mobile e extensão.
+
+**O que foi feito**:
+
+- **Rust**: `HubTls::from_tailscale(dir)` + `TailscaleCert::renewal()` (extraídos do `main.rs`, agora
+  servem CLI e desktop); `warden_bootstrap::default_tls_dir()`; `EmbeddedServerConfig.tailscale_cert`
+  (`#[serde(default)]`).
+- **Desktop**: `server_cmds.rs` — o cert é buscado antes do bind (falha do Tailscale impede a
+  subida com mensagem própria), `EmbeddedServerHandle::stop()` aborta a renovação, status e config
+  com `secureUrl`/`tailscaleCert`; `DiscoveredHubPayload.secureUrl`. `WorkspaceView.tsx`: checkbox
+  "HTTPS via Tailscale" com os pré-requisitos, status "só HTTPS, conecte em wss://…", hub
+  descoberto preenche o `secureUrl`, botão "Usar o hub deste app".
+- **Extensão**: `ConnectionSettings.secure` persistido, `wss://` no connect, descoberta em
+  `/discover` com `secureUrl`, checkbox "Usar TLS (wss://)", clicar num hub TLS preenche host/porta/TLS
+  a partir do `secureUrl`.
+- **Mobile**: `DiscoveredHubDto.secure_url` + bindings regenerados (`flutter_rust_bridge_codegen`),
+  `hubUri()`, `ServerConnection.connect(secure:)`, `ConnectionSettings.useTls`, QR aceita `wss://`
+  (e recusa esquemas que não sejam WebSocket), switch "Use TLS (wss://)", descoberta preenche a partir
+  do `secureUrl`.
+- **Verificação**: `cargo test --workspace` (655, testes do desktop atualizados pros campos novos),
+  `cargo clippy` limpo; `flutter analyze` limpo e `flutter test` 79 (5 novos: QR `wss://` e esquema
+  inválido, `hubUri`, round-trip do `useTls` e compatibilidade com settings antigos); desktop e
+  extensão com `tsc` + build (Chrome e Firefox) limpos. **Sem teste manual**: sem tailnet, sem
+  janela do Tauri, sem aparelho nem navegador reais nesta sessão. Não foi escrito o teste de
+  `from_tailscale` previsto no plano, porque o resultado dependeria de a máquina ter ou não o
+  `tailscale` instalado.
+
+**Próximo passo**: o usuário testar numa tailnet real (hub embutido com o toggle ligado → mobile e
+extensão por `wss://<nome>.ts.net`). O `.so` nativo do Android precisa ser recompilado
+(`cargo-ndk`) pra descoberta em `/discover` valer no app. Com isso, o código do P36 está completo.
+
+---
+
 ### 2026-09-24 — Sessão 96
 
 - **Objetivo**: P36 fatia 2 (TLS no hub), escolhido pelo usuário. Decisões antes de codar, todas

@@ -26,6 +26,7 @@ void main() {
   Future<ServerConnection> fakeConnector({
     required String host,
     required int port,
+    bool secure = false,
     required String deviceId,
     required String deviceName,
     required String authKey,

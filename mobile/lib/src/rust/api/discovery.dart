@@ -21,14 +21,19 @@ class DiscoveredHubDto {
   final int port;
   final String serverName;
 
+  /// Set when the hub only accepts `wss://` (P36) — where to connect instead of `ws://host:port`.
+  final String? secureUrl;
+
   const DiscoveredHubDto({
     required this.host,
     required this.port,
     required this.serverName,
+    this.secureUrl,
   });
 
   @override
-  int get hashCode => host.hashCode ^ port.hashCode ^ serverName.hashCode;
+  int get hashCode =>
+      host.hashCode ^ port.hashCode ^ serverName.hashCode ^ secureUrl.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -37,5 +42,6 @@ class DiscoveredHubDto {
           runtimeType == other.runtimeType &&
           host == other.host &&
           port == other.port &&
-          serverName == other.serverName;
+          serverName == other.serverName &&
+          secureUrl == other.secureUrl;
 }

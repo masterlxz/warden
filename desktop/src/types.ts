@@ -239,6 +239,8 @@ export interface DiscoveredHub {
   host: string;
   port: number;
   serverName: string;
+  /** Set when the hub only accepts wss:// (P36) — the URL to pair with instead of ws://host:port. */
+  secureUrl: string | null;
 }
 
 /** Mirrors `warden_bootstrap::EmbeddedServerConfig` (via
@@ -250,6 +252,8 @@ export interface EmbeddedServerConfig {
   port: number;
   authKey: string;
   serverName: string | null;
+  /** P36 — serve only wss://, with this machine's Tailscale certificate. */
+  tailscaleCert: boolean;
 }
 
 /** Mirrors `server_cmds::EmbeddedServerStatusPayload` — whether the embedded server is currently
@@ -258,6 +262,8 @@ export interface EmbeddedServerStatus {
   running: boolean;
   boundAddr: string | null;
   serverName: string | null;
+  /** The wss:// URL clients must use — set only when running with the Tailscale certificate. */
+  secureUrl: string | null;
 }
 
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's

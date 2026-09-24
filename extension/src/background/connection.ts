@@ -43,6 +43,8 @@ type ChatListener = (entry: ChatEntry) => void;
 export interface ConnectOptions {
   host: string;
   port: number;
+  /** wss:// instead of ws:// (P36). */
+  secure?: boolean;
   deviceId: string;
   deviceName: string;
   authKey: string;
@@ -121,7 +123,8 @@ export class ServerConnection {
   }
 
   static connect(options: ConnectOptions): Promise<ServerConnection> {
-    const socket = new WebSocket(`ws://${options.host}:${options.port}`);
+    const scheme = options.secure ? "wss" : "ws";
+    const socket = new WebSocket(`${scheme}://${options.host}:${options.port}`);
     return ServerConnection.handshake(socket, options);
   }
 

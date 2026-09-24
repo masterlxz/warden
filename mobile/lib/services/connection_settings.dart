@@ -15,12 +15,16 @@ class ConnectionSettings {
     required this.port,
     required this.authKey,
     required this.deviceName,
+    this.useTls = false,
   });
 
   final String host;
   final int port;
   final String authKey;
   final String deviceName;
+
+  /// P36 — connect over `wss://` (a TLS-only hub; `host` is then the name its certificate covers).
+  final bool useTls;
 }
 
 class ConnectionSettingsStore {
@@ -28,6 +32,7 @@ class ConnectionSettingsStore {
   static const _keyPort = 'connection.port';
   static const _keyAuthKey = 'connection.authKey';
   static const _keyDeviceName = 'connection.deviceName';
+  static const _keyUseTls = 'connection.useTls';
   static const _keyDeviceId = 'connection.deviceId';
 
   static const defaultPort = 7420;
@@ -42,6 +47,7 @@ class ConnectionSettingsStore {
       port: prefs.getInt(_keyPort) ?? defaultPort,
       authKey: authKey,
       deviceName: prefs.getString(_keyDeviceName) ?? defaultDeviceName(),
+      useTls: prefs.getBool(_keyUseTls) ?? false,
     );
   }
 
@@ -51,6 +57,7 @@ class ConnectionSettingsStore {
     await prefs.setInt(_keyPort, settings.port);
     await prefs.setString(_keyAuthKey, settings.authKey);
     await prefs.setString(_keyDeviceName, settings.deviceName);
+    await prefs.setBool(_keyUseTls, settings.useTls);
   }
 
   // P36 — one token per hub (this app has a single device id), so a phone paired with two hubs
