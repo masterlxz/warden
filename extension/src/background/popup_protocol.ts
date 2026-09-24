@@ -77,4 +77,7 @@ export interface ListGroupTabsResponse {
 export type StatusChangedEvent = { type: "statusChanged"; status: ConnectionStatus };
 export type ChatMessageEvent = { type: "chatMessage"; entry: ChatEntry };
 export type GroupChangedEvent = { type: "groupChanged" };
-export type BackgroundEvent = StatusChangedEvent | ChatMessageEvent | GroupChangedEvent;
+/** P40 — the hub's persisted conversation arrived after connecting; `history` is the whole
+ * transcript now (older messages first), replacing what the panel had. */
+export type HistoryLoadedEvent = { type: "historyLoaded"; history: ChatEntry[] };
+export type BackgroundEvent = StatusChangedEvent | ChatMessageEvent | GroupChangedEvent | HistoryLoadedEvent;

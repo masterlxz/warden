@@ -2,7 +2,34 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-24 (Sessão 96)
+> Última atualização: 2026-09-24 (Sessão 97)
+
+---
+
+### 2026-09-24 — Sessão 97
+
+- **Objetivo**: histórico da conversa na extensão ao conectar (sobra do P40/Sessão 93), escolhido
+  pelo usuário.
+
+**O que foi feito**:
+
+- `protocol/messages.ts`: `requestHistory`, `history`/`historyError`, `HistoryMessage` (anexos
+  com default `[]` no decode, igual ao `chatResponse`).
+- `background/connection.ts`: o mapa `pendingSkillRequests` virou `pendingRequests` genérico
+  (resolve com a resposta inteira, `*Error` rejeita; timeout único de 15s, antes 10s pras skills);
+  `fetchHistory(limit)` novo.
+- `background/index.ts`: `loadHistory` roda depois do `connect` responder (não atrasa o painel),
+  põe o histórico antes do que já foi dito nesta conexão, descarta se a conexão mudou no meio, e
+  falha vira uma entrada de erro no chat (igual ao mobile). Evento `historyLoaded` e o `App.tsx`
+  trocando a transcrição inteira. Doc do topo do service worker atualizada.
+- **Verificação**: `tsc` + `build` + `build:firefox` limpos. O `connection.ts` real (bundle com
+  esbuild) rodado em Node contra um `warden-server` real com uma conversa gravada no disco: histórico
+  completo, `limit: 2` devolvendo as 2 últimas, `listSkills` ainda funcionando depois da refatoração,
+  outro device recebendo vazio, e arquivo de conversa corrompido virando rejeição com a mensagem do
+  hub. **Sem teste num navegador real.**
+
+**Próximo passo**: sem pendência nova. Frentes abertas: P78 (web UI servida pelo hub), P54, P60,
+debates P79/P77.
 
 ---
 

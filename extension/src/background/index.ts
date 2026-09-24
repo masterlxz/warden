@@ -4,9 +4,10 @@
  * independently) so the connection survives the panel opening/closing repeatedly while the user
  * chats.
  *
- * `history` is in-memory only, not persisted to `chrome.storage` — if this service worker gets
- * evicted, the connection dies right along with it (same underlying WebSocket), so losing the
- * transcript at the same moment isn't a separate failure mode to guard against. No automatic
+ * `history` is in-memory only, not persisted to `chrome.storage` — the hub already keeps this
+ * device's conversation (P40), so every connect reloads it from there (`loadHistory`); a service
+ * worker that gets evicted loses the connection and the transcript together, and the next connect
+ * brings the transcript back. No automatic
  * reconnect either: a fresh service worker reports `disconnected`, and the panel shows the
  * connection form again — same accepted gap `server_connection.dart` (Fase 7.2) drew, see its doc
  * comment.
@@ -73,6 +74,24 @@ function addChatEntry(entry: ChatEntry): void {
   broadcast({ type: "chatMessage", entry });
 }
 
+/** How many past messages to show on connect — same cut as the mobile app (P40). */
+const HISTORY_LIMIT = 100;
+
+/** P40 — puts the hub's persisted conversation in front of whatever was already said on this
+ * connection (a message sent before the reply lands stays after it, where it belongs). Runs after
+ * `connect` returns, so a slow history never delays the panel showing the chat. */
+async function loadHistory(from: ServerConnection): Promise<void> {
+  let loaded: ChatEntry[];
+  try {
+    loaded = (await from.fetchHistory(HISTORY_LIMIT)).map((m) => ({ role: m.role, content: m.content }));
+  } catch (err) {
+    loaded = [{ role: "error", content: `Could not load earlier messages: ${err instanceof Error ? err.message : String(err)}` }];
+  }
+  if (connection !== from) return; // disconnected or reconnected elsewhere meanwhile
+  history = [...loaded, ...history];
+  broadcast({ type: "historyLoaded", history });
+}
+
 // P69 — the Warden tab group can change from `chrome.tabs.onRemoved` firing (a grouped tab
 // closing) with no popup request in flight, so the panel needs its own broadcast to notice.
 setGroupChangeListener(() => broadcast({ type: "groupChanged" }));
@@ -120,6 +139,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
           secure: request.secure,
         } satisfies ConnectionSettings,
       });
+      void loadHistory(next);
       return { ok: true };
     }
 

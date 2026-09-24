@@ -10,7 +10,7 @@
  * automatic reconnect on a dropped/failed connection.
  */
 
-import { encode, decode, type ClientMessage, type ServerMessage, type SkillDto, type ToolSpec } from "../protocol/messages";
+import { encode, decode, type ClientMessage, type HistoryMessage, type ServerMessage, type SkillDto, type ToolSpec } from "../protocol/messages";
 
 /** A local tool this client can run when the server asks (Fase 8.3-8.6) — `args` is whatever
  * JSON value the model passed as the tool call's arguments. Return the JSON-encodable result, or
@@ -56,10 +56,12 @@ export interface ConnectOptions {
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
-const SKILL_REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 15_000;
 
-interface PendingSkillRequest {
-  resolve: (value: SkillDto[] | undefined) => void;
+/** One in-flight request/reply pair (skills P72, history P40), keyed by `requestId`. `resolve`
+ * gets the matching success reply; an `*Error` reply rejects instead. */
+interface PendingRequest {
+  resolve: (reply: ServerMessage) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 }
@@ -76,7 +78,7 @@ export class ServerConnection {
    * the close that follows reports why instead of "closed unexpectedly". */
   private rejectedReason: string | null = null;
   private nextRequestId = 0;
-  private readonly pendingSkillRequests = new Map<number, PendingSkillRequest>();
+  private readonly pendingRequests = new Map<number, PendingRequest>();
   private currentStatus: ConnectionStatus;
   private readonly toolHandlers: Record<string, ToolHandler>;
 
@@ -99,7 +101,7 @@ export class ServerConnection {
     });
     socket.addEventListener("close", () => {
       this.stopHeartbeat();
-      this.failPendingSkillRequests(new Error("connection closed"));
+      this.failPendingRequests(new Error("connection closed"));
       this.setStatus(
         this.goodbyeSent
           ? { kind: "disconnected" }
@@ -224,13 +226,13 @@ export class ServerConnection {
         void this.handleToolCallRequest(message.callId, message.tool, message.arguments);
         break;
       case "skillList":
-        this.settleSkillRequest(message.requestId, (pending) => pending.resolve(message.skills));
-        break;
       case "skillOk":
-        this.settleSkillRequest(message.requestId, (pending) => pending.resolve(undefined));
+      case "history":
+        this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
       case "skillError":
-        this.settleSkillRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
+      case "historyError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
       case "authError":
         this.rejectedReason = message.reason;
@@ -262,45 +264,53 @@ export class ServerConnection {
 
   /** Skills management (P72) — each call is one request/reply pair correlated by `requestId`
    * (the same idea as a ping's nonce, but several can be in flight, so it's a map). */
-  listSkills(): Promise<SkillDto[]> {
-    return this.skillRequest((requestId) => ({ type: "listSkills", requestId })).then((skills) => skills ?? []);
+  async listSkills(): Promise<SkillDto[]> {
+    const reply = await this.request((requestId) => ({ type: "listSkills", requestId }));
+    return reply.type === "skillList" ? reply.skills : [];
   }
 
   async saveSkill(skill: SkillDto, overwrite: boolean): Promise<void> {
-    await this.skillRequest((requestId) => ({ type: "saveSkill", requestId, skill, overwrite }));
+    await this.request((requestId) => ({ type: "saveSkill", requestId, skill, overwrite }));
   }
 
   async deleteSkill(name: string): Promise<void> {
-    await this.skillRequest((requestId) => ({ type: "deleteSkill", requestId, name }));
+    await this.request((requestId) => ({ type: "deleteSkill", requestId, name }));
   }
 
-  private skillRequest(build: (requestId: number) => ClientMessage): Promise<SkillDto[] | undefined> {
+  /** P40 — this device's persisted conversation on the hub, oldest first (the most recent `limit`
+   * messages). Empty when there's no conversation yet. */
+  async fetchHistory(limit: number): Promise<HistoryMessage[]> {
+    const reply = await this.request((requestId) => ({ type: "requestHistory", requestId, limit }));
+    return reply.type === "history" ? reply.messages : [];
+  }
+
+  private request(build: (requestId: number) => ClientMessage): Promise<ServerMessage> {
     return new Promise((resolve, reject) => {
       const requestId = this.nextRequestId++;
       const timeoutId = setTimeout(() => {
-        this.pendingSkillRequests.delete(requestId);
+        this.pendingRequests.delete(requestId);
         reject(new Error("no response from the server"));
-      }, SKILL_REQUEST_TIMEOUT_MS);
-      this.pendingSkillRequests.set(requestId, { resolve, reject, timeoutId });
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
       try {
         this.socket.send(encode(build(requestId)));
       } catch (err) {
-        this.settleSkillRequest(requestId, (pending) => pending.reject(err instanceof Error ? err : new Error(String(err))));
+        this.settleRequest(requestId, (pending) => pending.reject(err instanceof Error ? err : new Error(String(err))));
       }
     });
   }
 
-  private settleSkillRequest(requestId: number, settle: (pending: PendingSkillRequest) => void): void {
-    const pending = this.pendingSkillRequests.get(requestId);
+  private settleRequest(requestId: number, settle: (pending: PendingRequest) => void): void {
+    const pending = this.pendingRequests.get(requestId);
     if (!pending) return; // timed out already, or an unsolicited reply
-    this.pendingSkillRequests.delete(requestId);
+    this.pendingRequests.delete(requestId);
     clearTimeout(pending.timeoutId);
     settle(pending);
   }
 
-  private failPendingSkillRequests(error: Error): void {
-    for (const requestId of [...this.pendingSkillRequests.keys()]) {
-      this.settleSkillRequest(requestId, (pending) => pending.reject(error));
+  private failPendingRequests(error: Error): void {
+    for (const requestId of [...this.pendingRequests.keys()]) {
+      this.settleRequest(requestId, (pending) => pending.reject(error));
     }
   }
 

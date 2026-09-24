@@ -30,6 +30,8 @@ export default function App() {
         // The background echoes the user's own outgoing message back too (see
         // `background/index.ts`'s `sendChat` case) — only a real reply clears "waiting".
         if (event.entry.role !== "user") setPendingChat(false);
+      } else if (event.type === "historyLoaded") {
+        setHistory(event.history);
       }
     }
     chrome.runtime.onMessage.addListener(onEvent);
