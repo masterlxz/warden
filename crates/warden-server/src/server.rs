@@ -23,6 +23,7 @@ use crate::history::handle_history_request;
 use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::tls::HubTls;
+use crate::web_ui::{self, Rewind, WebAssets};
 use warden_server_protocol::tls::DISCOVER_PATH;
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
@@ -66,6 +67,7 @@ pub struct Server {
     devices_path: Arc<PathBuf>,
     revocation_check_interval: Duration,
     tls: Option<HubTls>,
+    web_ui: Option<Arc<dyn WebAssets>>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -91,6 +93,7 @@ impl Server {
             devices_path: Arc::new(devices_path),
             revocation_check_interval: DEFAULT_REVOCATION_CHECK_INTERVAL,
             tls: None,
+            web_ui: None,
         })
     }
 
@@ -100,6 +103,13 @@ impl Server {
     /// the client can send a `Hello`, so a misconfigured client never puts its key on the wire.
     pub fn with_tls(mut self, tls: HubTls) -> Self {
         self.tls = Some(tls);
+        self
+    }
+
+    /// Also serves a web interface (P78) on this same port: a plain HTTP request (anything without
+    /// `Upgrade: websocket`) gets a file from `assets`. Without this, the hub stays WebSocket-only.
+    pub fn with_web_ui(mut self, assets: Arc<dyn WebAssets>) -> Self {
+        self.web_ui = Some(assets);
         self
     }
 
@@ -143,6 +153,7 @@ impl Server {
             secure_url,
         };
         let tls = self.tls;
+        let web_ui = self.web_ui;
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -150,8 +161,9 @@ impl Server {
                     let (stream, peer) = accepted?;
                     let ctx = ctx.clone();
                     let tls = tls.clone();
+                    let web_ui = web_ui.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = route_connection(stream, peer, tls, ctx).await {
+                        if let Err(err) = route_connection(stream, peer, tls, web_ui, ctx).await {
                             eprintln!("warden-server: connection from {peer} ended with error: {err:#}");
                         }
                     });
@@ -179,28 +191,60 @@ struct ConnectionContext {
 
 /// Picks the transport for a fresh TCP connection. Without TLS, everything is plain `ws://` as
 /// before. With TLS, the first byte decides (see `TLS_HANDSHAKE_RECORD`): a TLS handshake goes on
-/// to the full protocol, a plain upgrade only gets `serve_plain_discover`.
-async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTls>, ctx: ConnectionContext) -> anyhow::Result<()> {
+/// to the full protocol, a plain upgrade only gets `serve_plain_discover`. With a web UI (P78), a
+/// request that isn't a WebSocket upgrade gets a page instead (see `serve_web_or_ws`).
+async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTls>, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
     let Some(tls) = tls else {
-        let ws = tokio_tungstenite::accept_async(stream).await?;
-        return handle_connection(ws, peer, ctx).await;
+        return serve_web_or_ws(stream, peer, web_ui, ctx).await;
     };
 
     let mut first = [0u8; 1];
     let read = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, stream.peek(&mut first)).await??;
     if read == 1 && first[0] == TLS_HANDSHAKE_RECORD {
         let stream = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, tls.acceptor.accept(stream)).await??;
+        return serve_web_or_ws(stream, peer, web_ui, ctx).await;
+    }
+    if web_ui.is_none() {
+        return serve_plain_discover(stream, ctx).await;
+    }
+    // Plain bytes to a TLS hub with a web UI: a browser typing `http://` gets sent to `https://`,
+    // while a discovery probe (a WebSocket upgrade) still goes where it always did.
+    let mut stream = stream;
+    let Some(head) = tokio::time::timeout(web_ui::HEAD_TIMEOUT, web_ui::read_request_head(&mut stream)).await?? else {
+        return Ok(());
+    };
+    if head.is_websocket_upgrade {
+        serve_plain_discover(Rewind::new(head.raw, stream), ctx).await
+    } else {
+        web_ui::redirect_to_https(&mut stream, &head, ctx.secure_url.as_deref()).await?;
+        Ok(())
+    }
+}
+
+/// The full protocol over `stream` — preceded, when this hub has a web UI, by a look at the request
+/// head: a WebSocket upgrade continues as before (its bytes handed back via `Rewind`), anything else
+/// is answered as a page request and the connection ends there.
+async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
+    let Some(assets) = web_ui else {
         let ws = tokio_tungstenite::accept_async(stream).await?;
+        return handle_connection(ws, peer, ctx).await;
+    };
+    let Some(head) = tokio::time::timeout(web_ui::HEAD_TIMEOUT, web_ui::read_request_head(&mut stream)).await?? else {
+        return Ok(());
+    };
+    if head.is_websocket_upgrade {
+        let ws = tokio_tungstenite::accept_async(Rewind::new(head.raw, stream)).await?;
         handle_connection(ws, peer, ctx).await
     } else {
-        serve_plain_discover(stream, ctx).await
+        web_ui::serve(&mut stream, &head, assets.as_ref()).await?;
+        Ok(())
     }
 }
 
 /// A plain `ws://` connection to a TLS-only hub: upgraded only on `DISCOVER_PATH` (refused with
 /// `426 Upgrade Required` anywhere else, so no `Hello` can follow), and answers a single
 /// `Discover` with where to connect instead.
-async fn serve_plain_discover(stream: TcpStream, ctx: ConnectionContext) -> anyhow::Result<()> {
+async fn serve_plain_discover<S: Transport>(stream: S, ctx: ConnectionContext) -> anyhow::Result<()> {
     // The error type is tungstenite's `Callback` signature, not ours to shrink.
     #[allow(clippy::result_large_err)]
     let only_discover = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {

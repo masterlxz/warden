@@ -67,11 +67,14 @@ pub struct EmbeddedServerStatusPayload {
     bound_addr: Option<String>,
     server_name: Option<String>,
     secure_url: Option<String>,
+    /// Where to open the hub's web interface (P78) from this machine — `None` when this build has
+    /// no web UI compiled in (`web/` never built).
+    web_url: Option<String>,
 }
 
 impl EmbeddedServerStatusPayload {
     fn stopped() -> Self {
-        Self { running: false, bound_addr: None, server_name: None, secure_url: None }
+        Self { running: false, bound_addr: None, server_name: None, secure_url: None, web_url: None }
     }
 
     fn running(handle: &EmbeddedServerHandle) -> Self {
@@ -80,8 +83,17 @@ impl EmbeddedServerStatusPayload {
             bound_addr: Some(handle.bound_addr.to_string()),
             server_name: Some(handle.server_name.clone()),
             secure_url: handle.secure_url.clone(),
+            web_url: web_ui_built().then(|| match &handle.secure_url {
+                Some(url) => url.replacen("wss://", "https://", 1),
+                None => format!("http://localhost:{}", handle.bound_addr.port()),
+            }),
         }
     }
+}
+
+fn web_ui_built() -> bool {
+    use warden_server::WebAssets;
+    warden_server::EmbeddedWebUi.get("index.html").is_some()
 }
 
 fn config_path() -> Result<std::path::PathBuf, String> {
@@ -179,7 +191,9 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
         None
     };
 
-    let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path).await?;
+    let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path)
+        .await?
+        .with_web_ui(Arc::new(warden_server::EmbeddedWebUi));
     let bound_addr = server.local_addr()?;
     let (secure_url, cert_renewal) = match tailscale {
         Some((tls, cert)) => {
@@ -282,7 +296,7 @@ mod tests {
     fn stopped_status_serializes_as_camel_case() {
         assert_eq!(
             serde_json::to_string(&EmbeddedServerStatusPayload::stopped()).unwrap(),
-            r#"{"running":false,"boundAddr":null,"serverName":null,"secureUrl":null}"#
+            r#"{"running":false,"boundAddr":null,"serverName":null,"secureUrl":null,"webUrl":null}"#
         );
     }
 }

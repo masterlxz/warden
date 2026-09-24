@@ -2,7 +2,52 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-24 (Sessão 97)
+> Última atualização: 2026-09-24 (Sessão 98)
+
+---
+
+### 2026-09-24 — Sessão 98
+
+- **Objetivo**: P78 fatia 1, a interface web servida pelo próprio hub, escolhida pelo usuário entre as frentes
+  abertas. O debate foi fechado com o usuário antes de codar: frontend novo em `web/`, só o que o protocolo já
+  tem, e o navegador como device. O plano foi aprovado em Plan mode.
+
+**O que foi feito**:
+
+- **Hub** (`crates/warden-server`):
+  - `src/web_ui.rs` novo: trait `WebAssets`, `EmbeddedWebUi` (`rust-embed`, `allow_missing`), `StaticWebUi`,
+    leitura do cabeçalho HTTP, `Rewind`, servidor estático só `GET`/`HEAD` com fallback de SPA, e o
+    redirect `308` para `https://`.
+  - `server.rs`: `route_connection` separa página de upgrade WS nos dois transportes, e `Server::with_web_ui`.
+  - `main.rs`: web UI ligada por padrão, `--no-web-ui` para desligar, e o endereço da página no log.
+  - `build.rs` novo, para o cargo recompilar quando o `web/dist` muda.
+- **Desktop**: o hub embutido serve a mesma página. `EmbeddedServerStatusPayload.webUrl` e um link
+  "Interface web" na tela Workspace.
+- **`web/`** (projeto novo, React 19 + Vite):
+  - Conexão e protocolo adaptados da extensão.
+  - Identidade do navegador (`deviceId`, nome e token) no `localStorage`.
+  - Tela de login com a chave de pareamento.
+  - Chat com markdown, anexos (imagem/áudio/arquivo) e histórico carregado ao conectar.
+  - Tela de skills.
+  - Reconexão com backoff, logout, paleta do desktop com modo escuro, layout de celular.
+- **Verificação**:
+  - `cargo test --workspace`: 671 testes, 16 novos (9 em `tests/web_ui.rs`, 4 em `tests/tls.rs` e 3 unitários).
+    `cargo clippy --workspace --all-targets` limpo, e `cargo test -p warden-server` também passa sem o `web/dist`.
+  - `web`: `tsc` + `build` limpos. Desktop: `tsc` limpo e os testes do `server_cmds` passando.
+  - Ponta a ponta: `warden-server` real, com config isolada via `XDG_CONFIG_HOME`.
+    - `curl` na página, numa rota de SPA, num asset e num 404.
+    - O `web/src/hub/connection.ts` real (bundle com esbuild) rodando no Node: parear com a chave → token,
+      chat (com chave de API falsa, `chatError` real do Gemini), salvar/listar/apagar skill, reconectar só com
+      o token, histórico, e rejeição de chave errada e de token desconhecido.
+  - **Sem teste num navegador de verdade**, sem janela do Tauri e sem Tailscale real.
+- **Achados**:
+  - O cargo não recompilava o hub quando o `web/dist` aparecia; corrigido com o `build.rs`.
+  - Um turno que falha não é gravado na conversa. É comportamento antigo do `handle_turn`, vale para todos os
+    clientes, e está registrado no `ARCHITECTURE.md`.
+
+**Próximo passo**: o usuário abrir `http://<hub>:7420` num navegador (depois de `npm install && npm run build`
+em `web/` e recompilar o hub/desktop) e testar login, chat e skills. Depois vêm as próximas fatias do P78
+(vault, configurações, uso/gasto, várias conversas), cada uma estendendo o protocolo.
 
 ---
 

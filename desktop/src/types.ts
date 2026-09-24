@@ -264,6 +264,8 @@ export interface EmbeddedServerStatus {
   serverName: string | null;
   /** The wss:// URL clients must use — set only when running with the Tailscale certificate. */
   secureUrl: string | null;
+  /** Where to open the hub's web interface (P78) — null when this build has none compiled in. */
+  webUrl: string | null;
 }
 
 /** Mirrors `warden_sync::SyncStatus` (via `sync_cmds::SyncStatusPayload`) — the "Sync" nav view's

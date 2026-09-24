@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApiKeyField } from "./SettingsView";
 import type { DiscoveredHub, EmbeddedServerConfig, EmbeddedServerStatus, HubPairingConfig, PairedDevice } from "../types";
 
-const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secureUrl: null };
+const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secureUrl: null, webUrl: null };
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
@@ -106,6 +107,22 @@ function EmbeddedServerSection() {
               </>
             ) : (
               " — sem criptografia (ws://)"
+            )}
+            {status.webUrl && (
+              <>
+                <br />
+                Interface web:{" "}
+                <a
+                  href={status.webUrl}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void openUrl(status.webUrl!);
+                  }}
+                >
+                  {status.webUrl}
+                </a>
+                {!status.secureUrl && " (de outro aparelho da rede, troque localhost pelo IP desta máquina)"}
+              </>
             )}
           </>
         ) : (

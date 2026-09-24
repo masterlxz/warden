@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
-use support::{spin_up_tls_server, MockProvider};
+use support::{http_get, raw_http, spin_up_server_with_web_ui, spin_up_tls_server, test_web_ui, MockProvider};
 use warden_server::{discover_hubs_on, HubTls, ServerConnection, ServerMessage};
 use warden_server_protocol::tls::client_config_with_roots;
 
@@ -123,4 +123,65 @@ async fn replacing_the_cert_files_takes_effect_without_a_restart() {
     new_ca.write_to(&dir);
     hello(&url, new_ca.client_config()).await.expect("the renewed cert is served on the next handshake");
     assert!(hello(&url, old_ca.client_config()).await.is_err(), "the old cert is no longer served");
+}
+
+// P78 — a TLS hub that also serves the web UI.
+
+#[tokio::test]
+async fn https_serves_the_web_ui_and_wss_still_chats_on_the_same_port() {
+    let ca = TestCa::new();
+    let (cert, key) = ca.write_to(&temp_dir());
+    let tls = HubTls::from_pem_files(cert, key, None).unwrap();
+    let addr = spin_up_server_with_web_ui(MockProvider::replying("hi over tls"), test_web_ui(), Some(tls)).await;
+
+    let connector = tokio_rustls::TlsConnector::from(ca.client_config());
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let stream = connector.connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), tcp).await.unwrap();
+    let response = raw_http(stream, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await;
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n") && response.contains("Warden test UI"), "{response}");
+
+    let mut conn = hello(&format!("wss://localhost:{}", addr.port()), ca.client_config()).await.unwrap();
+    conn.send(&warden_server::ClientMessage::Chat { message: "hello".into() }).await.unwrap();
+    match conn.recv().await.unwrap() {
+        Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "hi over tls"),
+        other => panic!("expected ChatResponse, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn plain_http_to_a_tls_hub_is_redirected_to_https() {
+    let ca = TestCa::new();
+    let (cert, key) = ca.write_to(&temp_dir());
+    let tls = HubTls::from_pem_files(cert, key, Some("localhost".to_string())).unwrap();
+    let addr = spin_up_server_with_web_ui(MockProvider::replying("unused"), test_web_ui(), Some(tls)).await;
+
+    let response = http_get(addr, "GET", "/skills?x=1").await;
+    assert!(response.starts_with("HTTP/1.1 308 Permanent Redirect\r\n"), "{response}");
+    assert!(response.contains(&format!("Location: https://localhost:{}/skills?x=1\r\n", addr.port())), "{response}");
+    assert!(!response.contains("Warden test UI"), "no page over plain http: {response}");
+}
+
+#[tokio::test]
+async fn plain_http_to_a_tls_hub_without_a_public_name_needs_tls() {
+    let ca = TestCa::new();
+    let (cert, key) = ca.write_to(&temp_dir());
+    let addr = spin_up_server_with_web_ui(MockProvider::replying("unused"), test_web_ui(), Some(HubTls::from_pem_files(cert, key, None).unwrap())).await;
+
+    let response = http_get(addr, "GET", "/").await;
+    assert!(response.starts_with("HTTP/1.1 426 Upgrade Required\r\n"), "{response}");
+}
+
+#[tokio::test]
+async fn with_a_web_ui_plain_discovery_still_works_and_plain_hello_is_still_refused() {
+    let ca = TestCa::new();
+    let (cert, key) = ca.write_to(&temp_dir());
+    let tls = HubTls::from_pem_files(cert, key, Some("localhost".to_string())).unwrap();
+    let addr = spin_up_server_with_web_ui(MockProvider::replying("unused"), test_web_ui(), Some(tls)).await;
+
+    let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], addr.port()).await.unwrap();
+    assert_eq!(hubs.len(), 1);
+    assert_eq!(hubs[0].secure_url.as_deref(), Some(format!("wss://localhost:{}", addr.port()).as_str()));
+
+    let err = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.err().expect("plain ws:// must be refused");
+    assert!(err.to_string().contains("only accepts encrypted connections"), "unexpected error: {err:#}");
 }

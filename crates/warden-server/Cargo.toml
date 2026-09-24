@@ -18,7 +18,11 @@ base64.workspace = true
 clap = { version = "4", features = ["derive"] }
 dirs.workspace = true
 futures-util = "0.3"
+# Request-head parsing for the web UI (P78) — already in the tree via tungstenite.
+httparse = "1"
 # `ring` picked explicitly, same reason as warden-server-protocol's `src/tls.rs`.
+# `web/dist` compiled into the binary (P78); `allow_missing` so a checkout without an npm build still compiles.
+rust-embed = "8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true

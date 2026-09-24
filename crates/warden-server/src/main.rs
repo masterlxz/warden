@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
-use warden_server::{resolve_server_name, HubTls, PairingStore, Server};
+use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum Provider {
@@ -82,6 +82,11 @@ struct ServeArgs {
     /// wss:// URL to use. Optional; --tailscale-cert fills it in by itself.
     #[arg(long, requires = "tls_cert")]
     tls_host: Option<String>,
+
+    /// Don't serve the web interface (P78). By default, opening this hub's address in a browser
+    /// (http://, or https:// with TLS) shows the Warden web UI, which pairs as one more device.
+    #[arg(long)]
+    no_web_ui: bool,
 
     /// Pairing key — what a new client presents in its first Hello to get its own device token
     /// (P36). Devices already holding a token keep working if this changes, so rotating it only
@@ -174,6 +179,11 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let server_name = resolve_server_name(args.server_name.clone());
     let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
     let addr = server.local_addr()?;
+    let page_url = match tls.as_ref().and_then(|tls| tls.secure_url(addr.port())) {
+        Some(url) => url.replacen("wss://", "https://", 1),
+        None if tls.is_some() => format!("https://<this hub's TLS name>:{}", addr.port()),
+        None => format!("http://{addr}"),
+    };
     match tls {
         Some(tls) => {
             match tls.secure_url(addr.port()) {
@@ -183,6 +193,14 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
             server = server.with_tls(tls);
         }
         None => eprintln!("warden-server: listening on {addr} as '{server_name}' — plain ws://, not encrypted (see --tailscale-cert)"),
+    }
+    if !args.no_web_ui {
+        if EmbeddedWebUi.get("index.html").is_some() {
+            eprintln!("warden-server: web interface at {page_url}");
+        } else {
+            eprintln!("warden-server: this build has no web interface (run `npm run build` in web/ and rebuild) — pages answer 503");
+        }
+        server = server.with_web_ui(Arc::new(EmbeddedWebUi));
     }
     server.serve().await
 }

@@ -218,3 +218,55 @@ pub async fn connect_and_approve(addr: std::net::SocketAddr, devices_path: &std:
     warden_server::PairingStore::new(devices_path.to_path_buf()).approve(device_id).unwrap();
     conn
 }
+
+/// A small in-memory web UI (P78): `index.html` plus one hashed asset, as `web/dist` would have.
+pub fn test_web_ui() -> Arc<dyn warden_server::WebAssets> {
+    let mut files = std::collections::HashMap::new();
+    files.insert("index.html".to_string(), b"<!doctype html><title>Warden test UI</title>".to_vec());
+    files.insert("assets/app-1a2b.js".to_string(), b"console.log('warden')".to_vec());
+    Arc::new(warden_server::StaticWebUi(files))
+}
+
+/// Same as `spin_up_server` (or `spin_up_tls_server`, given `tls`), also serving `web_ui` (P78).
+pub async fn spin_up_server_with_web_ui(provider: MockProvider, web_ui: Arc<dyn warden_server::WebAssets>, tls: Option<warden_server::HubTls>) -> std::net::SocketAddr {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "warden-server-test-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let vault = Arc::new(Vault::new(temp_dir.join("vault")));
+    let orchestrator = Orchestrator::new(Arc::new(provider), vault);
+
+    let mut server = Server::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        "test-key",
+        "Test Hub",
+        Arc::new(orchestrator),
+        temp_dir.join("conversations"),
+        temp_dir.join("devices.json"),
+    )
+    .await
+    .unwrap()
+    .with_web_ui(web_ui);
+    if let Some(tls) = tls {
+        server = server.with_tls(tls);
+    }
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+    addr
+}
+
+/// Sends `request` (a raw HTTP/1.1 request) over `stream` and reads until the hub closes — the web
+/// UI answers one request per connection.
+pub async fn raw_http<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut stream: S, request: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response).await;
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+/// `raw_http` over a plain TCP connection to `addr`.
+pub async fn http_get(addr: std::net::SocketAddr, method: &str, path: &str) -> String {
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    raw_http(stream, &format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\n\r\n")).await
+}

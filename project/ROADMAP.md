@@ -352,6 +352,8 @@ Ver P11 e P15 em `PENDING.md`.
 ### Interface web auto-hospedada no próprio hub
 
 > Trazido pelo usuário em 2026-09-23, só pra registro — ver `PENDING.md` P78.
+> **Fatia 1 feita na Sessão 98**: `web/` servido pelo hub na mesma porta, login como device, chat com
+> histórico e skills. As próximas fatias (vault, configurações, uso/gasto, várias conversas) estendem o protocolo.
 
 - Quando o app Warden estiver configurado como servidor (hub embutido no desktop, Fase 9.8, ou o
   `warden-server` avulso), abrir `http://<ip>:<porta>` no navegador — pela LAN ou pela internet,

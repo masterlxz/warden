@@ -1576,3 +1576,37 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   disponível neste ambiente) — mesma lacuna aceita de sempre pra esse canal.
 - **Fora de escopo, documentado**: tabelas do GFM (degradam pra texto escapado); chunking "esperto" que preserva
   entidades através de múltiplas mensagens; spoilers (`||texto||`, sem equivalente em CommonMark).
+
+## Interface web servida pelo próprio hub (P78 fatia 1, Sessão 98)
+
+- **Decisões do usuário** (debate da Sessão 98): frontend **novo** em `web/` (React 19 + Vite + TS), não o React
+  do desktop; a fatia 1 só usa o que o protocolo do hub já tem (chat com histórico e skills); o navegador se
+  autentica **como mais um device** — chave de pareamento uma vez, depois o token por device do P36 guardado no
+  `localStorage`, revogável pela lista de devices que já existe. Nenhuma autenticação nova no servidor.
+- **Mesma porta do WebSocket.** Página e WS ficam na mesma origem (`ws(s)://location.host`): sem CORS, sem
+  conteúdo misto, e o TLS do Tailscale (P36) cobre os dois. `route_connection` (`server.rs`) agora lê o cabeçalho
+  HTTP antes do tungstenite (`web_ui::read_request_head`, `httparse`, limite de 8 KiB e 10s); com
+  `Upgrade: websocket` segue o fluxo de antes, devolvendo os bytes já lidos via `web_ui::Rewind`, e sem upgrade
+  responde um arquivo e fecha. Num hub só-TLS, HTTP puro recebe `308` para o `https://` quando o hub conhece o
+  próprio nome (`secure_url`), senão `426`; a descoberta por `ws://` (upgrade em `DISCOVER_PATH`) continua igual.
+- **Servidor HTTP escrito à mão, só leitura**: `GET`/`HEAD` (o resto recebe `405`), fallback de SPA (caminho sem
+  extensão cai no `index.html`), recusa de `..`/`.`/segmento vazio/`\` (o `rust-embed` em debug lê do disco),
+  `Cache-Control` imutável em `assets/*` (nomes com hash do Vite) e `no-cache` no resto, `nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Connection: close`. Um framework HTTP inteiro seria
+  desproporcional para servir arquivos estáticos numa porta que já é do tungstenite.
+- **Assets embutidos no binário** (`web_ui::EmbeddedWebUi`, `rust-embed` com `allow_missing`): um checkout sem
+  `npm run build` compila e passa nos testes, e a página vira um `503` explicando o que fazer. Um `build.rs` no
+  `warden-server` avisa o cargo quando o `web/dist` muda (ou, enquanto ele não existe, quando `web/` muda),
+  porque o `rust-embed` sozinho não percebe arquivos novos. Sem isso, `npm run build` seguido de `cargo build`
+  não embutia a página (achado ao testar). O desktop embute o mesmo `web/dist`, sem mexer nos recursos do Tauri.
+- **Opt-in no `Server`** (`with_web_ui(Arc<dyn WebAssets>)`, no padrão do `with_tls`): sem ele o hub continua só
+  WebSocket, então os testes antigos não mudaram. O `warden-server` liga por padrão (`--no-web-ui` desliga) e o
+  hub embutido do desktop liga sempre, com o endereço no status (`webUrl`) e um link na tela Workspace.
+- **Cliente**: `web/src/hub/messages.ts` é cópia do `extension/src/protocol/messages.ts` (manter em sincronia,
+  como o espelho em Dart do mobile), e `web/src/hub/connection.ts` é uma adaptação do `connection.ts` da
+  extensão: URL inteira em vez de host/porta, nenhuma tool local, anexos nas entradas do chat, `HandshakeError`
+  com `authRejected`. A reconexão com backoff (1s até 30s) fica no `App.tsx`. O `deviceId` usa
+  `crypto.getRandomValues`, porque o `randomUUID` só existe em origem segura e um hub de LAN costuma ser `http://`.
+- **Limite herdado, não da web**: um turno que falha (ex.: chave de API inválida) não é gravado na conversa
+  (`handle_turn` sai no `?` antes do `save_conversation`), então esse `chatError` some do histórico ao
+  recarregar a página, igual acontece no mobile e na extensão.
