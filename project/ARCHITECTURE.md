@@ -1676,3 +1676,32 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   `audio_filename_for_mime_type` saiu do desktop para o `warden_core::transcribe` e passou a ignorar
   parâmetros como `;codecs=opus`. **O navegador só libera o microfone em HTTPS ou `localhost`**: num hub de LAN
   em `http://`, o botão aparece desabilitado com a explicação, e a voz depende do TLS do Tailscale (P36).
+
+## Vault na web, com edição também no desktop (P78, Sessão 100)
+
+- **Decisões do usuário**: ler e editar (criar, editar e apagar notas), com busca, sem a pasta `skills/` na
+  árvore (ela tem tela própria), e o mesmo editor levado ao desktop, que até aqui era só leitura (P52).
+- **Uma implementação, dois clientes**: as regras moram no `warden_core::memory::notes` (`browse_files`,
+  `read_note`, `save_note`, `delete_note`). O hub (`vault.rs`, mensagens `ListVaultFiles`/`ReadVaultNote`/
+  `SaveVaultNote`/`DeleteVaultNote`/`SearchVault`) e os comandos Tauri (`vault_cmds.rs`) são só invólucros finos.
+- **Versão por conteúdo, não por mtime**: a versão de uma nota é o SHA-256 dos bytes. Salvar manda a versão
+  aberta; se a nota mudou (a IA escreveu, o sync puxou, outra tela salvou), a resposta é um conflito
+  (`VaultError { conflict: true }` / `NoteConflict`), e a tela oferece "recarregar" ou "sobrescrever". Criar
+  (sem versão) recusa um caminho já ocupado. Por conteúdo, reescrever o mesmo texto não gera conflito falso. A
+  checagem e a escrita ficam sob um `Mutex` do `Vault`, e a escrita é atômica (arquivo temporário oculto +
+  `rename`). A IA escreve pelo `WriteFileTool` sem passar por essa trava: a janela de corrida que sobra é de
+  milissegundos e não perde dado de forma silenciosa.
+- **Caminhos vindos de fora**: o editor recusa caminho absoluto, `..`, qualquer componente começando com `.`
+  (`.warden/`, `.syncignore`), a pasta `skills/` da raiz e qualquer caminho que, resolvido, saia do vault por um
+  symlink. Notas até 1 MiB; binário não abre ("not a text file").
+- **Correções de segurança que já existiam, achadas no caminho**:
+  - `Vault::read`/`write`/`delete` faziam `root.join(path)` sem conferir nada. As tools da IA, o
+    `LocalFSProvider` (que atende o `vault_read`/`vault_write` de outro nó, P61) e o `apply_bundle` do sync
+    podiam escapar do vault com `../`. Agora passam por `Vault::path_of`, que recusa caminho absoluto e `..`.
+  - As listagens (`list_all_files`, `list_files`, e com elas a busca e o sync) seguiam symlinks. Um link para
+    fora punha arquivos externos na busca e no sync, e um link para uma pasta acima entrava em recursão até o
+    limite do sistema; isso foi visto de verdade no teste ponta a ponta. **Agora symlinks não são seguidos nas
+    listagens.** Quem usa symlink para montar pastas dentro do vault (comum no Obsidian) deixa de vê-las no
+    Warden.
+- **`sha2` deixou de ser opcional no `warden-core`**: a versão das notas precisa dele sem a busca semântica. É
+  Rust puro e compila no Android.

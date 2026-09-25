@@ -2,7 +2,58 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-24 (Sessão 99, continuação)
+> Última atualização: 2026-09-25 (Sessão 100)
+
+---
+
+### 2026-09-25 — Sessão 100
+
+- **Objetivo**: o hub foi recompilado e subido para o usuário testar os anexos (Sessão 99), mas ele adiou os
+  testes (registrados no P80) e escolheu a próxima fatia do P78: **o vault na web**. Decisões dele: ler e
+  editar (criar, editar, apagar), com busca, `skills/` fora da árvore e o editor levado também ao desktop.
+
+**O que foi feito**:
+
+- **Núcleo** (`warden-core`): `memory/notes.rs` com `browse_files`, `read_note`, `save_note` e `delete_note`,
+  versão por SHA-256 do conteúdo (`content_version`), `NoteConflict`, escrita atômica e as regras de caminho
+  (sem absoluto, `..`, dotfiles, `skills/` ou symlink para fora). `Vault::path_of` passou a proteger `read`,
+  `write` e `delete`, e com eles as tools da IA, o `LocalFSProvider` e o `apply_bundle` do `warden-sync`. As
+  listagens não seguem mais symlinks. O `sha2` deixou de ser opcional.
+- **Protocolo**: `ListVaultFiles`, `ReadVaultNote`, `SaveVaultNote`, `DeleteVaultNote` e `SearchVault`, com as
+  respostas `VaultFileList`, `VaultNote`, `VaultSaved`, `VaultOk`, `VaultSearchResults` e
+  `VaultError { conflict }`, mais o `VaultSearchHit`.
+- **Hub**: `vault.rs` (handler puro, como o `skills.rs`), chamado no `server.rs` via `spawn_blocking`, porque
+  listar e buscar percorrem o vault inteiro.
+- **Web**: aba "Vault" (`VaultView.tsx`) com memória fixa, árvore com pastas recolhíveis, busca, nota em
+  markdown, editor, nova nota (`.md` automático), apagar com confirmação, aviso de conflito com
+  "Recarregar"/"Sobrescrever", confirmação ao sair com mudanças não salvas e, no celular, lista e nota uma de
+  cada vez. `VaultConflictError` e os métodos novos em `connection.ts`.
+- **Desktop**: `vault_cmds.rs` reescrito sobre as mesmas funções do core (`read_vault_note`, `save_vault_note`,
+  `delete_vault_note`, `search_vault`; o `read_vault_file` saiu), com erro tipado `{ message, conflict }`. A
+  `VaultView.tsx` ganhou o mesmo editor e busca, em inglês como o resto do desktop.
+- **Verificação**:
+  - `cargo test --workspace`: 714 passando (eram 698). Os novos cobrem notas (versão, conflito, criar por cima,
+    caminhos, symlink, binário, tamanho, arquivo temporário), contenção do `Vault`, listagens sem symlink,
+    protocolo e o handler do hub. `cargo clippy` limpo no workspace e no desktop.
+  - Web e desktop: `tsc` e `build` limpos.
+  - Ponta a ponta: um `warden-server` real e isolado (config, devices e vault no scratchpad, porta 7421), com o
+    `connection.ts` real no Node. Foram 20 cenários: listar, ler, buscar (sem pegar a skill), editar,
+    conflito ao editar e ao apagar depois de uma escrita "da IA", sobrescrever, criar em pasta nova, criar por
+    cima, apagar, editar `_profile.md`, e recusar `../`, symlink, `skills/`, `.warden/`, `/etc/passwd`,
+    escrita pelo symlink e nota de mais de 1 MiB.
+  - **Sem navegador real** (P80).
+- **Achados**:
+  - `Vault::read`/`write`/`delete` não conferiam o caminho: um `../` saía do vault pelas tools da IA, pelo
+    `vault_read`/`vault_write` de outro nó e pelo sync. Corrigido.
+  - As listagens seguiam symlinks. O primeiro teste ponta a ponta, com um symlink para a pasta que contém o
+    vault, devolveu uma lista recursiva até o limite do sistema, com arquivos de fora do vault. Corrigido.
+    Symlinks dentro do vault agora ficam invisíveis ao Warden.
+  - Trocar de aba na web desmonta a `VaultView`, então um rascunho não salvo se perde sem aviso ao ir para Chat
+    ou Skills. O aviso só aparece ao trocar de nota.
+
+**Próximo passo**: o hub do usuário (porta 7420, chave de pareamento nova, ver o log da sessão) já roda o
+binário novo. Falta testar no navegador os anexos e o vault (P80) e o editor do desktop. As fatias que sobram
+do P78 são configurações/provedores e uso/gasto.
 
 ---
 

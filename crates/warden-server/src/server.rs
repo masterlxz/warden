@@ -22,6 +22,7 @@ use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Tra
 use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::skills::handle_skill_request;
+use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::tls::HubTls;
 use crate::web_ui::{self, Rewind, WebAssets};
@@ -548,6 +549,23 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
                         let _ = reply_tx.send(handle_transcribe(transcriber.as_deref(), request_id, audio).await);
+                    });
+                }
+                Ok(
+                    message @ (ClientMessage::ListVaultFiles { .. }
+                    | ClientMessage::ReadVaultNote { .. }
+                    | ClientMessage::SaveVaultNote { .. }
+                    | ClientMessage::DeleteVaultNote { .. }
+                    | ClientMessage::SearchVault { .. }),
+                ) => {
+                    // P78 — listing and searching walk the whole vault, so this runs on the
+                    // blocking pool instead of holding up this connection's reader loop.
+                    let vault = orchestrator.vault().clone();
+                    let reply_tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Some(reply) = handle_vault_request(&vault, message) {
+                            let _ = reply_tx.send(reply);
+                        }
                     });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {

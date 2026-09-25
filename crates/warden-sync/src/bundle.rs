@@ -121,7 +121,7 @@ pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> a
             continue;
         }
         let bytes = BASE64.decode(encoded.as_bytes())?;
-        let path = vault.root().join(relative);
+        let path = vault.path_of(relative)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -139,7 +139,7 @@ pub fn apply_bundle(bundle: &SyncBundle, vault: &Vault, config_path: &Path) -> a
             files_ignored += 1;
             continue;
         }
-        if vault.root().join(relative).exists() {
+        if vault.path_of(relative)?.exists() {
             vault.delete(relative)?;
             files_deleted += 1;
         }

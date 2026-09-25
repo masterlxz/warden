@@ -1,12 +1,14 @@
+mod notes;
 #[cfg(feature = "semantic-search")]
 mod semantic;
+
+pub use notes::{content_version, NoteConflict, NoteFile, MAX_NOTE_BYTES};
 
 #[cfg(feature = "semantic-search")]
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 #[cfg(feature = "semantic-search")]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-#[cfg(feature = "semantic-search")]
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 /// Markdown vault on local disk (Obsidian-compatible). IPFS mirroring lands in Phase 4.
@@ -24,6 +26,9 @@ pub struct Vault {
     /// against two turns (e.g. two channels sharing one `warden-server` vault) racing each other.
     #[cfg(feature = "semantic-search")]
     index_lock: Mutex<()>,
+    /// Makes `save_note`/`delete_note`'s version check and write one step (P78), so two editors
+    /// saving the same note at once can't both pass the check.
+    note_lock: Mutex<()>,
 }
 
 /// One matching line from `Vault::search`, with enough location info to cite it.
@@ -55,6 +60,7 @@ impl Vault {
             embedder: Mutex::new(None),
             #[cfg(feature = "semantic-search")]
             index_lock: Mutex::new(()),
+            note_lock: Mutex::new(()),
         }
     }
 
@@ -62,12 +68,24 @@ impl Vault {
         &self.root
     }
 
+    /// Where `relative_path` lives on disk, refusing anything that would land outside the vault: an
+    /// absolute path, or one with a `..` component. The paths reaching `read`/`write`/`delete` come
+    /// from the model's tools, from another node (P61) and from a sync bundle, so none of them can
+    /// be trusted to stay inside on their own.
+    pub fn path_of(&self, relative_path: &str) -> anyhow::Result<PathBuf> {
+        let relative = Path::new(relative_path);
+        if relative_path.is_empty() || !relative.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+            anyhow::bail!("'{relative_path}' is not a path inside the vault");
+        }
+        Ok(self.root.join(relative))
+    }
+
     pub fn read(&self, relative_path: &str) -> anyhow::Result<String> {
-        Ok(std::fs::read_to_string(self.root.join(relative_path))?)
+        Ok(std::fs::read_to_string(self.path_of(relative_path)?)?)
     }
 
     pub fn write(&self, relative_path: &str, content: &str) -> anyhow::Result<()> {
-        let path = self.root.join(relative_path);
+        let path = self.path_of(relative_path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -78,7 +96,7 @@ impl Vault {
     /// this, the only deletion path (`warden-sync`'s bundle-apply, P37) reached past `Vault`
     /// straight into `std::fs::remove_file`; that call site now goes through here instead.
     pub fn delete(&self, relative_path: &str) -> anyhow::Result<()> {
-        Ok(std::fs::remove_file(self.root.join(relative_path))?)
+        Ok(std::fs::remove_file(self.path_of(relative_path)?)?)
     }
 
     /// All markdown files in the vault, relative to its root.
@@ -260,6 +278,9 @@ fn collect_markdown_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> an
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        if entry.file_type()?.is_symlink() {
+            continue; // see `collect_all_files`
+        }
         if path.is_dir() {
             if path == root.join(SKILLS_DIR) {
                 continue;
@@ -288,7 +309,10 @@ fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> anyhow:
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if is_dotfile(&path) {
+        // Symlinks are never followed: one pointing out of the vault would put outside files in
+        // search results and sync, and one pointing at an ancestor would recurse until the OS
+        // path limit.
+        if is_dotfile(&path) || entry.file_type()?.is_symlink() {
             continue;
         }
         if path.is_dir() {
@@ -325,6 +349,44 @@ mod tests {
         vault.write("notes/todo.md", "buy milk").unwrap();
         vault.delete("notes/todo.md").unwrap();
         assert!(vault.read("notes/todo.md").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listings_and_search_do_not_follow_symlinks() {
+        let vault = temp_vault();
+        let outside = vault.root().parent().unwrap().join(format!("{}-linked", vault.root().file_name().unwrap().to_string_lossy()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.md"), "outside dentist").unwrap();
+        std::os::unix::fs::symlink(&outside, vault.root().join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.md"), vault.root().join("file-link.md")).unwrap();
+        // A link to the vault's own parent would loop forever if followed.
+        std::os::unix::fs::symlink(vault.root().parent().unwrap(), vault.root().join("loop")).unwrap();
+        vault.write("a.md", "inside dentist").unwrap();
+
+        assert_eq!(vault.list_all_files().unwrap(), vec![PathBuf::from("a.md")]);
+        assert_eq!(vault.list_files().unwrap(), vec![PathBuf::from("a.md")]);
+        let hits = vault.search("dentist", 10).unwrap();
+        assert_eq!(hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), vec!["a.md"]);
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn read_write_and_delete_refuse_paths_outside_the_vault() {
+        let vault = temp_vault();
+        let outside = vault.root().parent().unwrap().join(format!("{}-outside.md", vault.root().file_name().unwrap().to_string_lossy()));
+        std::fs::write(&outside, "secret").unwrap();
+        let escaping = format!("../{}", outside.file_name().unwrap().to_string_lossy());
+
+        for bad in [escaping.as_str(), outside.to_str().unwrap(), "notes/../../x.md", ""] {
+            assert!(vault.read(bad).is_err(), "{bad}");
+            assert!(vault.write(bad, "x").is_err(), "{bad}");
+            assert!(vault.delete(bad).is_err(), "{bad}");
+        }
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
+        vault.write("./notes/ok.md", "fine").unwrap();
+        assert_eq!(vault.read("notes/ok.md").unwrap(), "fine");
+        std::fs::remove_file(outside).unwrap();
     }
 
     #[test]

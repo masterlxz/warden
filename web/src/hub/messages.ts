@@ -52,6 +52,13 @@ export interface HistoryMessage {
   attachments: Attachment[];
 }
 
+/** Mirrors `warden_server_protocol::protocol::VaultSearchHit` (P78). `lineNumber` is 1-based. */
+export interface VaultSearchHit {
+  path: string;
+  lineNumber: number;
+  line: string;
+}
+
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
    * `deviceToken` from an earlier `helloAck`. */
@@ -76,6 +83,13 @@ export type ClientMessage =
   /** P78 — voice input: the hub transcribes the recording (Whisper) and answers with
    * `transcription`/`transcriptionError`. */
   | { type: "transcribe"; requestId: number; audio: Attachment }
+  /** P78 — the hub's vault. A save without `expectedVersion` creates the note; with it, the hub
+   * refuses (`vaultError` with `conflict: true`) if the note changed since that version was read. */
+  | { type: "listVaultFiles"; requestId: number }
+  | { type: "readVaultNote"; requestId: number; path: string }
+  | { type: "saveVaultNote"; requestId: number; path: string; content: string; expectedVersion?: string }
+  | { type: "deleteVaultNote"; requestId: number; path: string; expectedVersion: string }
+  | { type: "searchVault"; requestId: number; query: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -105,6 +119,12 @@ export type ServerMessage =
   | { type: "conversationError"; requestId: number; message: string }
   | { type: "transcription"; requestId: number; text: string }
   | { type: "transcriptionError"; requestId: number; message: string }
+  | { type: "vaultFileList"; requestId: number; files: string[] }
+  | { type: "vaultNote"; requestId: number; path: string; content: string; version: string }
+  | { type: "vaultSaved"; requestId: number; version: string }
+  | { type: "vaultOk"; requestId: number }
+  | { type: "vaultSearchResults"; requestId: number; hits: VaultSearchHit[] }
+  | { type: "vaultError"; requestId: number; message: string; conflict: boolean }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -141,7 +161,16 @@ export function decode(text: string): ServerMessage {
     case "conversationError":
     case "transcription":
     case "transcriptionError":
+    case "vaultFileList":
+    case "vaultNote":
+    case "vaultSaved":
+    case "vaultOk":
+    case "vaultSearchResults":
       return json as ServerMessage;
+    case "vaultError": {
+      const raw = json as { requestId: number; message: string; conflict?: boolean };
+      return { type: "vaultError", requestId: raw.requestId, message: raw.message, conflict: raw.conflict ?? false };
+    }
     case "history": {
       const raw = json as { requestId: number; messages: Array<Omit<HistoryMessage, "attachments"> & { attachments?: Attachment[] }> };
       return {

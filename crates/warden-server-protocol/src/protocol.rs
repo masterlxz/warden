@@ -55,6 +55,15 @@ pub struct ConversationSummary {
     pub updated_at: i64,
 }
 
+/// One line matching a `SearchVault` query (P78) — `warden_core::memory::SearchHit` on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultSearchHit {
+    pub path: String,
+    pub line_number: usize,
+    pub line: String,
+}
+
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -172,6 +181,37 @@ pub enum ClientMessage {
     Transcribe {
         request_id: u64,
         audio: Attachment,
+    },
+    /// The vault this hub hosts, as a person browses it (P78) — every file except the fixed ones at
+    /// the root, `skills/` and dotfiles (`Vault::browse_files`). Answered by `VaultFileList`.
+    ListVaultFiles {
+        request_id: u64,
+    },
+    /// Opens one note, answered by `VaultNote` with the version to send back when saving it.
+    ReadVaultNote {
+        request_id: u64,
+        path: String,
+    },
+    /// Saves a note. `expected_version: None` creates it (refused if the path is taken); `Some` is
+    /// an edit of the version that was opened, refused with `VaultError { conflict: true }` if the
+    /// note changed since. Answered by `VaultSaved`.
+    SaveVaultNote {
+        request_id: u64,
+        path: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_version: Option<String>,
+    },
+    /// Deletes a note unless it changed since `expected_version`. Answered by `VaultOk`.
+    DeleteVaultNote {
+        request_id: u64,
+        path: String,
+        expected_version: String,
+    },
+    /// Word search over the vault's notes (`Vault::search`), answered by `VaultSearchResults`.
+    SearchVault {
+        request_id: u64,
+        query: String,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -305,6 +345,40 @@ pub enum ServerMessage {
     TranscriptionError {
         request_id: u64,
         message: String,
+    },
+    /// Reply to `ClientMessage::ListVaultFiles` — relative paths with `/` separators, sorted.
+    VaultFileList {
+        request_id: u64,
+        files: Vec<String>,
+    },
+    /// Reply to `ClientMessage::ReadVaultNote`.
+    VaultNote {
+        request_id: u64,
+        path: String,
+        content: String,
+        version: String,
+    },
+    /// Reply to a successful `SaveVaultNote`, with the note's new version.
+    VaultSaved {
+        request_id: u64,
+        version: String,
+    },
+    /// Reply to a successful `DeleteVaultNote`.
+    VaultOk {
+        request_id: u64,
+    },
+    /// Reply to `ClientMessage::SearchVault`.
+    VaultSearchResults {
+        request_id: u64,
+        hits: Vec<VaultSearchHit>,
+    },
+    /// A vault request failed. `conflict` is set when the note changed, appeared or was deleted
+    /// since it was opened — the client should offer to reload rather than just show the text.
+    VaultError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        conflict: bool,
     },
     /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
     /// "which machine is this" and let them pick it, never a secret.
@@ -624,6 +698,58 @@ mod tests {
             (
                 ServerMessage::ConversationError { request_id: 3, message: "boom".into() },
                 r#"{"type":"conversationError","requestId":3,"message":"boom"}"#,
+            ),
+        ];
+        for (msg, expected) in replies {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn vault_messages_round_trip_through_json() {
+        let requests: Vec<(ClientMessage, &str)> = vec![
+            (ClientMessage::ListVaultFiles { request_id: 1 }, r#"{"type":"listVaultFiles","requestId":1}"#),
+            (ClientMessage::ReadVaultNote { request_id: 2, path: "a.md".into() }, r#"{"type":"readVaultNote","requestId":2,"path":"a.md"}"#),
+            (
+                ClientMessage::SaveVaultNote { request_id: 3, path: "a.md".into(), content: "x".into(), expected_version: None },
+                r#"{"type":"saveVaultNote","requestId":3,"path":"a.md","content":"x"}"#,
+            ),
+            (
+                ClientMessage::SaveVaultNote { request_id: 3, path: "a.md".into(), content: "x".into(), expected_version: Some("v1".into()) },
+                r#"{"type":"saveVaultNote","requestId":3,"path":"a.md","content":"x","expectedVersion":"v1"}"#,
+            ),
+            (
+                ClientMessage::DeleteVaultNote { request_id: 4, path: "a.md".into(), expected_version: "v1".into() },
+                r#"{"type":"deleteVaultNote","requestId":4,"path":"a.md","expectedVersion":"v1"}"#,
+            ),
+            (ClientMessage::SearchVault { request_id: 5, query: "milk".into() }, r#"{"type":"searchVault","requestId":5,"query":"milk"}"#),
+        ];
+        for (msg, expected) in requests {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+        }
+
+        let replies: Vec<(ServerMessage, &str)> = vec![
+            (ServerMessage::VaultFileList { request_id: 1, files: vec!["a.md".into()] }, r#"{"type":"vaultFileList","requestId":1,"files":["a.md"]}"#),
+            (
+                ServerMessage::VaultNote { request_id: 2, path: "a.md".into(), content: "x".into(), version: "v1".into() },
+                r#"{"type":"vaultNote","requestId":2,"path":"a.md","content":"x","version":"v1"}"#,
+            ),
+            (ServerMessage::VaultSaved { request_id: 3, version: "v2".into() }, r#"{"type":"vaultSaved","requestId":3,"version":"v2"}"#),
+            (ServerMessage::VaultOk { request_id: 4 }, r#"{"type":"vaultOk","requestId":4}"#),
+            (
+                ServerMessage::VaultSearchResults {
+                    request_id: 5,
+                    hits: vec![VaultSearchHit { path: "a.md".into(), line_number: 3, line: "buy milk".into() }],
+                },
+                r#"{"type":"vaultSearchResults","requestId":5,"hits":[{"path":"a.md","lineNumber":3,"line":"buy milk"}]}"#,
+            ),
+            (
+                ServerMessage::VaultError { request_id: 6, message: "changed".into(), conflict: true },
+                r#"{"type":"vaultError","requestId":6,"message":"changed","conflict":true}"#,
             ),
         ];
         for (msg, expected) in replies {

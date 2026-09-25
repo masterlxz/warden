@@ -189,11 +189,11 @@ impl LocalFSProvider {
 #[async_trait]
 impl StorageProvider for LocalFSProvider {
     async fn read(&self, relative_path: &str) -> anyhow::Result<Vec<u8>> {
-        Ok(std::fs::read(self.vault.root().join(relative_path))?)
+        Ok(std::fs::read(self.vault.path_of(relative_path)?)?)
     }
 
     async fn write(&self, relative_path: &str, content: &[u8]) -> anyhow::Result<()> {
-        let path = self.vault.root().join(relative_path);
+        let path = self.vault.path_of(relative_path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

@@ -37,6 +37,7 @@ pub mod remote_tool;
 pub mod server;
 pub mod skills;
 pub mod tls;
+pub mod vault;
 pub mod vault_node;
 pub mod web_ui;
 

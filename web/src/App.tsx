@@ -4,6 +4,7 @@ import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import LoginView from "./components/LoginView";
 import SkillsView from "./components/SkillsView";
+import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import type { Attachment, ConversationSummary } from "./hub/messages";
@@ -21,7 +22,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "skills";
+type View = "chat" | "vault" | "skills";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -333,6 +334,9 @@ export default function App() {
           <button type="button" className={view === "chat" ? "tab tab--active" : "tab"} onClick={() => setView("chat")}>
             Chat
           </button>
+          <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
+            Vault
+          </button>
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
@@ -375,6 +379,8 @@ export default function App() {
               />
             </div>
           </div>
+        ) : view === "vault" ? (
+          <VaultView conn={conn} />
         ) : (
           <SkillsView conn={conn} />
         )}

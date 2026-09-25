@@ -16,6 +16,7 @@ import {
   type HistoryMessage,
   type ServerMessage,
   type SkillDto,
+  type VaultSearchHit,
 } from "./messages";
 
 export type ConnectionStatus =
@@ -32,6 +33,15 @@ export class HandshakeError extends Error {
   ) {
     super(message);
   }
+}
+
+/** A vault save/delete the hub refused because the note changed since it was opened (P78). */
+export class VaultConflictError extends Error {}
+
+/** A note as opened for editing — `version` goes back with the save. */
+export interface VaultNote {
+  content: string;
+  version: string;
 }
 
 /** One line of the transcript. `error` entries come from `chatError` or a failed request. */
@@ -245,7 +255,17 @@ export class ServerConnection {
       case "conversationList":
       case "conversationOk":
       case "transcription":
+      case "vaultFileList":
+      case "vaultNote":
+      case "vaultSaved":
+      case "vaultOk":
+      case "vaultSearchResults":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "vaultError":
+        this.settleRequest(message.requestId, (pending) =>
+          pending.reject(message.conflict ? new VaultConflictError(message.message) : new Error(message.message)),
+        );
         break;
       case "skillError":
       case "historyError":
@@ -301,6 +321,41 @@ export class ServerConnection {
 
   async deleteSkill(name: string): Promise<void> {
     await this.request((requestId) => ({ type: "deleteSkill", requestId, name }));
+  }
+
+  /** Every file in the hub's vault a person can browse (not the fixed files, `skills/` or dotfiles). */
+  async listVaultFiles(): Promise<string[]> {
+    const reply = await this.request((requestId) => ({ type: "listVaultFiles", requestId }));
+    return reply.type === "vaultFileList" ? reply.files : [];
+  }
+
+  async readVaultNote(path: string): Promise<VaultNote> {
+    const reply = await this.request((requestId) => ({ type: "readVaultNote", requestId, path }));
+    if (reply.type !== "vaultNote") throw new Error("resposta inesperada do hub");
+    return { content: reply.content, version: reply.version };
+  }
+
+  /** Saves a note and returns its new version. Without `expectedVersion` it creates the note.
+   * Rejects with `VaultConflictError` if the note changed since `expectedVersion`. */
+  async saveVaultNote(path: string, content: string, expectedVersion?: string): Promise<string> {
+    const reply = await this.request((requestId) => ({
+      type: "saveVaultNote",
+      requestId,
+      path,
+      content,
+      ...(expectedVersion !== undefined && { expectedVersion }),
+    }));
+    if (reply.type !== "vaultSaved") throw new Error("resposta inesperada do hub");
+    return reply.version;
+  }
+
+  async deleteVaultNote(path: string, expectedVersion: string): Promise<void> {
+    await this.request((requestId) => ({ type: "deleteVaultNote", requestId, path, expectedVersion }));
+  }
+
+  async searchVault(query: string): Promise<VaultSearchHit[]> {
+    const reply = await this.request((requestId) => ({ type: "searchVault", requestId, query }));
+    return reply.type === "vaultSearchResults" ? reply.hits : [];
   }
 
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A

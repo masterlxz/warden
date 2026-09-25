@@ -962,7 +962,112 @@ body {
   border-left: 1px solid var(--color-border);
 }
 
+/* Editing (P78): search, new-note button, a header with the note's actions, and the editor. */
+.vault-search {
+  width: 100%;
+  margin-bottom: 0.4rem;
+}
+
+.vault-new-btn {
+  margin-bottom: 0.4rem;
+}
+
+.vault-nav-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.vault-link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.vault-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.vault-hit-path {
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+}
+
+.vault-hit-line {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vault-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.vault-content-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.vault-content-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.vault-content-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.vault-content-message {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.vault-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.vault-editor-textarea {
+  flex: 1;
+  min-height: 12rem;
+  resize: none;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.vault-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
 .vault-placeholder {
+  flex: 1;
   height: 100%;
   display: flex;
   align-items: center;
