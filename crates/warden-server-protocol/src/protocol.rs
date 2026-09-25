@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use warden_core::model::{Attachment, Usage};
 use warden_core::skill::Skill;
+use warden_core::spend::{LimitStatus, SpendBreakdown, SpendBucket, SpendGuard};
 use warden_core::tool::ToolSpec;
 
 /// A skill (P16) on the wire — what the browser extension's Skills screen lists and edits over
@@ -62,6 +63,141 @@ pub struct VaultSearchHit {
     pub path: String,
     pub line_number: usize,
     pub line: String,
+}
+
+/// One device's share of a `UsageReport` (P78). `name` comes from the hub's device registry; `None`
+/// for a device it no longer knows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceUsage {
+    pub device_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub conversation_count: usize,
+    pub message_count: usize,
+    pub usage: Usage,
+}
+
+/// Model calls on one day of a `UsageReport`, `date` being `YYYY-MM-DD` in the viewer's time zone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsageDto {
+    pub date: String,
+    pub calls: usize,
+    pub tokens: u64,
+}
+
+/// Where one spending limit (P4) stands — `warden_core::spend::LimitStatus` on the wire, plus what
+/// one `ExtendLimit` would add (`extend_tokens`/`extend_cost_usd`, 0 for a ceiling it doesn't have).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitStatusDto {
+    pub id: String,
+    pub scope: String,
+    pub window_hours: u32,
+    pub used_tokens: u64,
+    pub max_tokens: Option<u64>,
+    pub used_cost_usd: f64,
+    pub max_cost_usd: Option<f64>,
+    /// The closer ceiling's share used; 1 or more is exhausted.
+    pub fraction: f64,
+    pub warn: bool,
+    pub exceeded: bool,
+    pub unpriced_calls: u64,
+    pub frees_up_in_minutes: Option<u64>,
+    pub extend_tokens: u64,
+    pub extend_cost_usd: f64,
+}
+
+impl LimitStatusDto {
+    /// `extension` is `SpendGuard::extension_size` for this limit.
+    pub fn new(status: LimitStatus, (extend_tokens, extend_cost_usd): (u64, f64)) -> Self {
+        Self {
+            id: status.id,
+            scope: status.scope,
+            window_hours: status.window_hours,
+            used_tokens: status.used_tokens,
+            max_tokens: status.max_tokens,
+            used_cost_usd: status.used_cost_usd,
+            max_cost_usd: status.max_cost_usd,
+            fraction: status.fraction,
+            warn: status.warn,
+            exceeded: status.exceeded,
+            unpriced_calls: status.unpriced_calls,
+            frees_up_in_minutes: status.frees_up_in_minutes,
+            extend_tokens,
+            extend_cost_usd,
+        }
+    }
+
+    /// Every configured limit, as `guard` sees it now.
+    pub fn all(guard: &SpendGuard) -> Vec<Self> {
+        guard
+            .status(None)
+            .into_iter()
+            .map(|status| {
+                let extension = guard.extension_size(&status.id).unwrap_or_default();
+                Self::new(status, extension)
+            })
+            .collect()
+    }
+}
+
+impl From<SpendBucket> for SpendBucketDto {
+    fn from(b: SpendBucket) -> Self {
+        Self { key: b.key, calls: b.calls, tokens: b.tokens, cost_usd: b.cost_usd, unpriced_calls: b.unpriced_calls }
+    }
+}
+
+impl From<SpendBreakdown> for RecentSpendDto {
+    fn from(b: SpendBreakdown) -> Self {
+        Self {
+            window_hours: b.window_hours,
+            by_model: b.by_model.into_iter().map(Into::into).collect(),
+            by_channel: b.by_channel.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// One model or channel in the ledger's recent spending (`warden_core::spend::SpendBucket`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendBucketDto {
+    pub key: String,
+    pub calls: u64,
+    pub tokens: u64,
+    pub cost_usd: f64,
+    pub unpriced_calls: u64,
+}
+
+/// The ledger's recent spending, which is where dollars and models live: it only reaches back
+/// `window_hours` (the longest limit), and covers every channel on the hub's machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentSpendDto {
+    pub window_hours: u32,
+    pub by_model: Vec<SpendBucketDto>,
+    pub by_channel: Vec<SpendBucketDto>,
+}
+
+/// Reply body of `RequestUsage` (P78): tokens from every conversation the hub keeps (all devices,
+/// all time), and the spending limits and recent dollars from the P4 ledger.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReportDto {
+    pub total: Usage,
+    pub conversation_count: usize,
+    pub message_count: usize,
+    pub by_device: Vec<DeviceUsage>,
+    pub daily: Vec<DailyUsageDto>,
+    /// False when the hub runs with spending limits switched off — `limits` and `recent` are empty.
+    pub limits_enabled: bool,
+    pub limits: Vec<LimitStatusDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent: Option<RecentSpendDto>,
+    /// Why the ledger couldn't be written the last time it failed — the numbers may be short.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_error: Option<String>,
 }
 
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
@@ -213,6 +349,21 @@ pub enum ClientMessage {
         request_id: u64,
         query: String,
     },
+    /// Token and spending usage across the whole hub (P78), answered by `UsageReport`.
+    /// `tz_offset_minutes` is the viewer's offset from UTC (UTC−3 is `-180`), so the daily series
+    /// splits days at the viewer's midnight.
+    RequestUsage {
+        request_id: u64,
+        #[serde(default)]
+        tz_offset_minutes: i32,
+    },
+    /// Lets one spending limit go one `extend_step` further for the rest of its window — what the
+    /// desktop's pause dialog does, for a client that has no way to be asked mid-turn. Answered by
+    /// `LimitExtended` with the limit's new standing.
+    ExtendLimit {
+        request_id: u64,
+        limit_id: String,
+    },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
     /// point is finding a hub *before* knowing its credential. Answered by `DiscoverAck` and the
@@ -271,6 +422,10 @@ pub enum ServerMessage {
         /// Same as `ChatResponse.conversation_id`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<String>,
+        /// Set when the turn stopped on a spending limit (P4) with no room left: that limit's id, so
+        /// the client can offer to `ExtendLimit` it and send again.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spend_limit_id: Option<String>,
     },
     /// Asks a connected client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
     /// `call_id` is scoped to this connection (a simple counter, mirrors `Ping`'s `nonce`) — the
@@ -379,6 +534,21 @@ pub enum ServerMessage {
         message: String,
         #[serde(default)]
         conflict: bool,
+    },
+    /// Reply to `ClientMessage::RequestUsage`.
+    UsageReport {
+        request_id: u64,
+        report: UsageReportDto,
+    },
+    /// Reply to a successful `ClientMessage::ExtendLimit`.
+    LimitExtended {
+        request_id: u64,
+        limit: LimitStatusDto,
+    },
+    /// A `RequestUsage`/`ExtendLimit` failed (unreadable conversations, no such limit, limits off).
+    UsageError {
+        request_id: u64,
+        message: String,
     },
     /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
     /// "which machine is this" and let them pick it, never a secret.
@@ -757,6 +927,84 @@ mod tests {
             assert_eq!(json, expected);
             assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
         }
+    }
+
+    #[test]
+    fn usage_messages_round_trip_through_json() {
+        let request = ClientMessage::RequestUsage { request_id: 1, tz_offset_minutes: -180 };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(json, r#"{"type":"requestUsage","requestId":1,"tzOffsetMinutes":-180}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), request);
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(r#"{"type":"requestUsage","requestId":1}"#).unwrap(),
+            ClientMessage::RequestUsage { request_id: 1, tz_offset_minutes: 0 }
+        );
+
+        let extend = ClientMessage::ExtendLimit { request_id: 2, limit_id: "day".into() };
+        let json = serde_json::to_string(&extend).unwrap();
+        assert_eq!(json, r#"{"type":"extendLimit","requestId":2,"limitId":"day"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), extend);
+
+        let limit = LimitStatusDto {
+            id: "day".into(),
+            scope: "global".into(),
+            window_hours: 24,
+            used_tokens: 10,
+            max_tokens: Some(8),
+            used_cost_usd: 0.5,
+            max_cost_usd: None,
+            fraction: 1.25,
+            warn: true,
+            exceeded: true,
+            unpriced_calls: 1,
+            frees_up_in_minutes: Some(30),
+            extend_tokens: 2,
+            extend_cost_usd: 0.0,
+        };
+        let report = ServerMessage::UsageReport {
+            request_id: 1,
+            report: UsageReportDto {
+                total: Usage { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+                conversation_count: 1,
+                message_count: 1,
+                by_device: vec![DeviceUsage {
+                    device_id: "web-1".into(),
+                    name: Some("Browser".into()),
+                    conversation_count: 1,
+                    message_count: 1,
+                    usage: Usage { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+                }],
+                daily: vec![DailyUsageDto { date: "2026-09-25".into(), calls: 1, tokens: 10 }],
+                limits_enabled: true,
+                limits: vec![limit.clone()],
+                recent: Some(RecentSpendDto {
+                    window_hours: 24,
+                    by_model: vec![SpendBucketDto { key: "m".into(), calls: 1, tokens: 10, cost_usd: 0.5, unpriced_calls: 0 }],
+                    by_channel: Vec::new(),
+                }),
+                ledger_error: None,
+            },
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.starts_with(r#"{"type":"usageReport","requestId":1,"report":{"total":{"#), "{json}");
+        assert!(json.contains(r#""byDevice":[{"deviceId":"web-1","name":"Browser","conversationCount":1"#), "{json}");
+        assert!(json.contains(r#""extendTokens":2"#) && json.contains(r#""limitsEnabled":true"#), "{json}");
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), report);
+
+        for (msg, expected) in [
+            (ServerMessage::UsageError { request_id: 3, message: "boom".into() }, r#"{"type":"usageError","requestId":3,"message":"boom"}"#),
+            (
+                ServerMessage::ChatError { message: "limit".into(), conversation_id: Some("c1".into()), spend_limit_id: Some("day".into()) },
+                r#"{"type":"chatError","message":"limit","conversationId":"c1","spendLimitId":"day"}"#,
+            ),
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+        }
+        let extended = ServerMessage::LimitExtended { request_id: 2, limit };
+        let json = serde_json::to_string(&extended).unwrap();
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), extended);
     }
 
     #[test]

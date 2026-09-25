@@ -90,6 +90,53 @@ pub fn aggregate_usage(conversations: &[Conversation]) -> UsageSummary {
     summary
 }
 
+/// Tokens spent on one calendar day, in `daily_usage`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsage {
+    /// `YYYY-MM-DD` in the viewer's time zone.
+    pub date: String,
+    pub calls: usize,
+    pub tokens: u64,
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+/// The last `days` days (today included, oldest first, empty days as zero) of model calls across
+/// `conversations`, bucketed by each message's `created_at` shifted by `tz_offset_minutes` — the
+/// viewer's offset from UTC (UTC−3 is `-180`), so a day starts at the viewer's midnight.
+pub fn daily_usage(conversations: &[Conversation], days: u32, tz_offset_minutes: i32, now_ms: i64) -> Vec<DailyUsage> {
+    let offset_ms = tz_offset_minutes as i64 * 60_000;
+    let today = (now_ms + offset_ms).div_euclid(DAY_MS);
+    let first = today - days as i64 + 1;
+    let mut out: Vec<DailyUsage> = (first..=today).map(|day| DailyUsage { date: format_day(day), ..Default::default() }).collect();
+
+    for message in conversations.iter().flat_map(|c| &c.messages) {
+        let Some(usage) = &message.usage else { continue };
+        let day = (message.created_at + offset_ms).div_euclid(DAY_MS);
+        if let Some(bucket) = (day >= first && day <= today).then(|| &mut out[(day - first) as usize]) {
+            bucket.calls += 1;
+            bucket.tokens += usage.total_tokens as u64;
+        }
+    }
+    out
+}
+
+/// Days since 1970-01-01 as `YYYY-MM-DD` (proleptic Gregorian) — Howard Hinnant's `civil_from_days`,
+/// so a date needs no calendar crate.
+fn format_day(days: i64) -> String {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// The `Tool` the model itself can call to answer a question like "how many tokens have I used?"
 /// — reads every persisted conversation fresh on each call (no caching), the same "never stale"
 /// tradeoff `resolve_turn_context` makes elsewhere in this crate, since a dashboard/tool answering
@@ -142,6 +189,44 @@ mod tests {
             agent_id: agent_id.map(str::to_string),
             provider_id: provider_id.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn format_day_matches_known_dates() {
+        assert_eq!(format_day(0), "1970-01-01");
+        assert_eq!(format_day(-1), "1969-12-31");
+        assert_eq!(format_day(11_016), "2000-02-29");
+        assert_eq!(format_day(20_721), "2026-09-25");
+    }
+
+    #[test]
+    fn daily_usage_buckets_by_the_viewers_day_and_fills_empty_days() {
+        let at = |created_at: i64, tokens: u32| crate::ConversationMessage {
+            created_at,
+            ..message(Some(Usage { prompt_tokens: tokens, completion_tokens: 0, total_tokens: tokens }))
+        };
+        let day = 20_721 * DAY_MS; // 2026-09-25T00:00Z
+        let now = day + 12 * 3_600_000; // noon UTC
+        let conversations = vec![conversation(None, None, vec![
+            at(day + 3_600_000, 10),          // 01:00Z: the 25th in UTC, still the 24th at UTC-3
+            at(day - 2 * DAY_MS + 6 * 3_600_000, 5), // the 23rd in both zones
+            at(day - 10 * DAY_MS, 99),         // outside a 3-day range
+            crate::ConversationMessage { created_at: day, ..message(None) }, // no usage, not a call
+        ])];
+
+        let utc = daily_usage(&conversations, 3, 0, now);
+        assert_eq!(utc.iter().map(|d| (d.date.as_str(), d.calls, d.tokens)).collect::<Vec<_>>(), vec![
+            ("2026-09-23", 1, 5),
+            ("2026-09-24", 0, 0),
+            ("2026-09-25", 1, 10),
+        ]);
+
+        let brasilia = daily_usage(&conversations, 3, -180, now);
+        assert_eq!(brasilia.iter().map(|d| (d.date.as_str(), d.tokens)).collect::<Vec<_>>(), vec![
+            ("2026-09-23", 5),
+            ("2026-09-24", 10),
+            ("2026-09-25", 0),
+        ]);
     }
 
     #[test]

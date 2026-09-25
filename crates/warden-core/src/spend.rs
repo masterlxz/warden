@@ -409,6 +409,38 @@ pub struct Spent {
     pub unpriced_calls: u64,
 }
 
+/// What one model or one channel spent, in `SpendBreakdown`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SpendBucket {
+    pub key: String,
+    pub calls: u64,
+    pub tokens: u64,
+    /// Dollars for the calls that had a price.
+    pub cost_usd: f64,
+    pub unpriced_calls: u64,
+}
+
+impl SpendBucket {
+    fn add(&mut self, event: &SpendEvent) {
+        self.calls += 1;
+        self.tokens += event.tokens;
+        match event.cost_usd {
+            Some(cost) => self.cost_usd += cost,
+            None => self.unpriced_calls += 1,
+        }
+    }
+}
+
+/// Everything the ledger still holds, split by model and by channel (P78's usage screen). Buckets
+/// are sorted by tokens, largest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SpendBreakdown {
+    /// How far back this reaches: the ledger only keeps the longest limit window.
+    pub window_hours: u32,
+    pub by_model: Vec<SpendBucket>,
+    pub by_channel: Vec<SpendBucket>,
+}
+
 pub struct SpendGuard {
     store: Arc<dyn SpendStore>,
     limits: Vec<Limit>,
@@ -500,6 +532,32 @@ impl SpendGuard {
             }
         }
         spent
+    }
+
+    /// Every call the ledger still holds (the longest limit window), by model and by channel.
+    pub fn breakdown(&self) -> SpendBreakdown {
+        let window_hours = self.longest_window_hours();
+        let since = (self.clock)().saturating_sub(window_hours as u64 * HOUR_MS);
+        let mut by_model: Vec<SpendBucket> = Vec::new();
+        let mut by_channel: Vec<SpendBucket> = Vec::new();
+        let bucket = |buckets: &mut Vec<SpendBucket>, key: &str, event: &SpendEvent| {
+            match buckets.iter_mut().find(|b| b.key == key) {
+                Some(b) => b.add(event),
+                None => {
+                    let mut b = SpendBucket { key: key.to_string(), ..Default::default() };
+                    b.add(event);
+                    buckets.push(b);
+                }
+            }
+        };
+        for entry in self.store.entries_since(since) {
+            let Entry::Spend(event) = entry else { continue };
+            bucket(&mut by_model, &event.model, &event);
+            bucket(&mut by_channel, &event.channel, &event);
+        }
+        by_model.sort_by_key(|b| std::cmp::Reverse(b.tokens));
+        by_channel.sort_by_key(|b| std::cmp::Reverse(b.tokens));
+        SpendBreakdown { window_hours, by_model, by_channel }
     }
 
     /// What one extension of `limit_id` would add, as `(tokens, dollars)` — `0` for a ceiling the
@@ -605,6 +663,26 @@ mod tests {
         let cost = table.cost("m", &usage(1_000_000, 100_000)).unwrap();
         assert!((cost - 4.5).abs() < 1e-9, "{cost}");
         assert_eq!(table.cost("other", &usage(10, 10)), None);
+    }
+
+    #[test]
+    fn breakdown_splits_the_ledger_window_by_model_and_channel() {
+        let prices = vec![Price { model: "cheap".into(), input_per_mtok: 1.0, output_per_mtok: 2.0 }];
+        let (guard, now) = guard(vec![Limit::new("day", Scope::Global, 24).with_max_tokens(10_000_000)], prices);
+        guard.record(&cli(), "cheap", &usage(1_000_000, 0)); // leaves the window below
+        now.fetch_add(25 * HOUR_MS, Ordering::SeqCst);
+        guard.record(&cli(), "cheap", &usage(1_000_000, 500_000));
+        guard.record(&SpendContext::new("server").with_user("phone"), "cheap", &usage(10, 0));
+        guard.record(&SpendContext::new("server"), "unpriced", &usage(5_000_000, 0));
+
+        let b = guard.breakdown();
+        assert_eq!(b.window_hours, 24);
+        assert_eq!(b.by_model.iter().map(|m| (m.key.as_str(), m.calls, m.tokens, m.unpriced_calls)).collect::<Vec<_>>(), vec![
+            ("unpriced", 1, 5_000_000, 1),
+            ("cheap", 2, 1_500_010, 0),
+        ]);
+        assert!((b.by_model[1].cost_usd - 2.00001).abs() < 1e-9, "{}", b.by_model[1].cost_usd);
+        assert_eq!(b.by_channel.iter().map(|c| (c.key.as_str(), c.calls)).collect::<Vec<_>>(), vec![("server", 2), ("cli", 1)]);
     }
 
     #[test]

@@ -14,7 +14,9 @@ import {
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
+  type LimitStatus,
   type ServerMessage,
+  type UsageReport,
   type SkillDto,
   type VaultSearchHit,
 } from "./messages";
@@ -49,6 +51,8 @@ export interface ChatEntry {
   role: "user" | "assistant" | "error";
   content: string;
   attachments: Attachment[];
+  /** On an `error` entry: the spending limit the turn stopped on (P4), which can be extended. */
+  spendLimitId?: string;
 }
 
 export function historyToEntries(messages: HistoryMessage[]): ChatEntry[] {
@@ -243,7 +247,9 @@ export class ServerConnection {
         }
         break;
       case "chatError":
-        for (const listener of this.chatListeners) listener({ role: "error", content: message.message, attachments: [] }, message.conversationId);
+        for (const listener of this.chatListeners) {
+          listener({ role: "error", content: message.message, attachments: [], spendLimitId: message.spendLimitId }, message.conversationId);
+        }
         break;
       case "toolCallRequest":
         // Never advertised any tools, so the hub shouldn't ask — answer anyway so it isn't left waiting.
@@ -260,7 +266,12 @@ export class ServerConnection {
       case "vaultSaved":
       case "vaultOk":
       case "vaultSearchResults":
+      case "usageReport":
+      case "limitExtended":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "usageError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
       case "vaultError":
         this.settleRequest(message.requestId, (pending) =>
@@ -356,6 +367,22 @@ export class ServerConnection {
   async searchVault(query: string): Promise<VaultSearchHit[]> {
     const reply = await this.request((requestId) => ({ type: "searchVault", requestId, query }));
     return reply.type === "vaultSearchResults" ? reply.hits : [];
+  }
+
+  /** Tokens across every device on the hub, plus spending limits and recent dollars (P78). */
+  async requestUsage(): Promise<UsageReport> {
+    // `getTimezoneOffset` is minutes *behind* UTC (180 at UTC−3); the hub wants the offset itself.
+    const tzOffsetMinutes = -new Date().getTimezoneOffset();
+    const reply = await this.request((requestId) => ({ type: "requestUsage", requestId, tzOffsetMinutes }));
+    if (reply.type !== "usageReport") throw new Error("resposta inesperada do hub");
+    return reply.report;
+  }
+
+  /** Lets a spending limit go one step further for the rest of its window; returns where it stands. */
+  async extendLimit(limitId: string): Promise<LimitStatus> {
+    const reply = await this.request((requestId) => ({ type: "extendLimit", requestId, limitId }));
+    if (reply.type !== "limitExtended") throw new Error("resposta inesperada do hub");
+    return reply.limit;
   }
 
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A

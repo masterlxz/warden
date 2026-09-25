@@ -12,6 +12,9 @@
   --color-danger: #dc2626;
   --color-danger-soft: rgba(220, 38, 38, 0.08);
   --color-ok: #16a34a;
+  /* Status "warning" — a fill only (meters), never text: text next to it stays in text tokens. */
+  --color-warn: #fab219;
+  --color-warn-soft: rgba(250, 178, 25, 0.18);
   color-scheme: light;
 
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
@@ -40,6 +43,8 @@
     --color-danger: #f87171;
     --color-danger-soft: rgba(248, 113, 113, 0.1);
     --color-ok: #4ade80;
+    --color-warn: #fab219;
+    --color-warn-soft: rgba(250, 178, 25, 0.16);
     color-scheme: dark;
   }
 }
@@ -786,6 +791,334 @@ button:focus-visible {
 
 .skills-editor textarea {
   resize: vertical;
+}
+
+/* Usage (P78) */
+
+.usage-view {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 1rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+.usage-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.usage-tile-value {
+  font-size: 1.5rem;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.usage-tile-label {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.usage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.usage-heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* Daily columns: at most 24px wide, 2px surface gap, 4px rounded top, square at the baseline. */
+.usage-daily {
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.usage-daily-plot {
+  position: relative;
+  padding-top: 1.2rem;
+}
+
+.usage-daily-axis {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.usage-daily-columns {
+  height: 140px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.usage-daily-slot {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  outline-offset: 0;
+}
+
+.usage-daily-bar {
+  width: 100%;
+  max-width: 24px;
+  background: var(--color-accent);
+  border-radius: 4px 4px 0 0;
+}
+
+.usage-daily-slot:hover .usage-daily-bar,
+.usage-daily-slot:focus-visible .usage-daily-bar {
+  background: var(--color-accent-dark);
+}
+
+.usage-daily-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 0.35rem 0.55rem;
+  border-radius: 8px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  font-size: 0.8rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.usage-daily-tip strong {
+  display: block;
+}
+
+.usage-daily-slot:first-child .usage-daily-tip {
+  left: 0;
+  transform: none;
+}
+
+.usage-daily-slot:last-child .usage-daily-tip {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.usage-daily-slot:hover .usage-daily-tip,
+.usage-daily-slot:focus-visible .usage-daily-tip {
+  display: block;
+}
+
+.usage-daily-dates {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.usage-table-toggle {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.usage-table-toggle summary {
+  cursor: pointer;
+  color: var(--color-accent);
+}
+
+.usage-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table caption {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.4rem 0;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+  text-align: right;
+}
+
+.usage-table th:first-child,
+.usage-table td:first-child {
+  width: 40%;
+  text-align: left;
+}
+
+.usage-table th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.usage-table-key {
+  overflow-wrap: anywhere;
+}
+
+.usage-limits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.usage-limit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.usage-limit-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.usage-limit-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.usage-limit-scope {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+/* Meter: the fill carries severity (accent → warning → danger); the track is a lighter step. */
+.usage-meter {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--color-accent-soft);
+  overflow: hidden;
+}
+
+.usage-meter-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--color-accent);
+}
+
+.usage-limit--warn .usage-meter {
+  background: var(--color-warn-soft);
+}
+
+.usage-limit--warn .usage-meter-fill {
+  background: var(--color-warn);
+}
+
+.usage-limit--exceeded .usage-meter {
+  background: var(--color-danger-soft);
+}
+
+.usage-limit--exceeded .usage-meter-fill {
+  background: var(--color-danger);
+}
+
+.usage-limit-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-limit-extend {
+  align-self: flex-start;
+  padding-left: 0;
+  font-weight: 600;
+}
+
+.usage-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.usage-bar-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 12rem) 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.usage-bar-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-bar-track {
+  height: 12px;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  min-width: 2px;
+  background: var(--color-accent);
+  border-radius: 0 4px 4px 0;
+}
+
+.usage-bar-value {
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+}
+
+.bubble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bubble--error .bubble-actions .link-button {
+  padding-left: 0;
+  font-weight: 600;
 }
 
 /* Vault (P78) — files on the left, the note on the right; on phones, one at a time */

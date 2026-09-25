@@ -1705,3 +1705,30 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
     Warden.
 - **`sha2` deixou de ser opcional no `warden-core`**: a versão das notas precisa dele sem a busca semântica. É
   Rust puro e compila no Android.
+
+## Uso e gasto na web, com limites também no desktop (P78, Sessão 100, continuação)
+
+- **Decisões do usuário**: a tela mostra **o hub inteiro** (todos os devices, limites globais e o ledger de
+  todos os canais da máquina), a web **pode liberar** um limite esgotado, e entram o gráfico por dia, o gasto
+  recente por modelo/canal e o painel de limites na tela Usage do desktop.
+- **Duas fontes, cada uma com o que tem**: os **tokens** vêm das conversas do hub (todas as pastas de device,
+  mais o arquivo antigo de quem não reconectou desde o P78), com histórico completo e data por mensagem. O
+  "por agente/provedor" do desktop não serve aqui, porque as conversas do hub gravam `agent_id`/`provider_id`
+  vazios. Então o recorte é **por device** (nome vindo do `PairingStore`) e **por dia**, no fuso de quem vê
+  (`RequestUsage.tzOffsetMinutes`). **Dólar e modelo** só existem no ledger do P4, que guarda apenas a janela do
+  limite mais longo e é compartilhado com todos os canais. Daí `SpendGuard::breakdown()` (por modelo e por canal)
+  e a tela deixando claro que o "gasto recente" é dessa janela.
+- **Protocolo**: `RequestUsage` → `UsageReport` (`UsageReportDto`), `ExtendLimit` → `LimitExtended`, e
+  `UsageError`. O `ChatError` ganhou `spendLimitId`: quando o turno para num limite (`SpendLimitReached`), a
+  bolha de erro do chat oferece "Liberar mais" direto. A liberação **não reenvia** a mensagem sozinha. É o
+  equivalente, para um cliente que não pode ser perguntado no meio do turno, ao que o `Approver` faz no desktop.
+- **Qualquer device pareado pode liberar**: o hub é de uma pessoa só e todo device pareado é dela; liberar é o
+  mesmo `SpendGuard::extend` (um `extend_step`, só até o fim da janela) que o desktop e a CLI já fazem.
+- **`LimitStatusDto::all(guard)`** mora no crate do protocolo e é usado pelo hub e pelo desktop (que passou a
+  depender de `warden-server-protocol` direto), então as duas telas recebem o mesmo formato.
+- **Datas sem crate de calendário**: `daily_usage` formata `YYYY-MM-DD` com o `civil_from_days` do Howard
+  Hinnant, em vez de trazer `chrono` só para isso.
+- **Visual** (skill `dataviz`): uma série só no gráfico diário, sem legenda; colunas de até 24 px com ponta
+  arredondada e 2 px de espaço; tooltip por coluna no hover/foco e tabela alternativa. Nos medidores, o
+  preenchimento muda de destaque para aviso (`#fab219`, só como preenchimento) e depois para perigo, sempre com
+  ícone e rótulo.

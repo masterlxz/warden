@@ -22,6 +22,7 @@ use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Tra
 use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::skills::handle_skill_request;
+use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::tls::HubTls;
@@ -354,6 +355,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
 
     eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}");
 
+    // Every device's conversations, for `RequestUsage`'s hub-wide totals.
+    let conversations_root = conversations_dir.clone();
     // P78: this device's own conversations directory — resolved (and its pre-P78 conversation
     // migrated into it) once here, before any of its requests can touch it.
     let conversations_dir = match device_conversations_dir(&conversations_dir, &device_id) {
@@ -463,7 +466,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let conversation_id = match checked {
                         Ok(id) => id,
                         Err(message) => {
-                            let _ = tx.send(ServerMessage::ChatError { message, conversation_id });
+                            let _ = tx.send(ServerMessage::ChatError { message, conversation_id, spend_limit_id: None });
                             continue;
                         }
                     };
@@ -488,7 +491,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                                 attachments: outcome.attachments,
                                 conversation_id: Some(conversation_id),
                             },
-                            Err(err) => ServerMessage::ChatError { message: format!("{err:#}"), conversation_id: Some(conversation_id) },
+                            Err(err) => ServerMessage::ChatError {
+                                message: format!("{err:#}"),
+                                conversation_id: Some(conversation_id),
+                                spend_limit_id: spend_limit_id(&err),
+                            },
                         };
                         let _ = reply_tx.send(reply);
                     });
@@ -566,6 +573,23 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         if let Some(reply) = handle_vault_request(&vault, message) {
                             let _ = reply_tx.send(reply);
                         }
+                    });
+                }
+                Ok(ClientMessage::RequestUsage { request_id, tz_offset_minutes }) => {
+                    // P78 — reads every device's conversations, so off the reader loop.
+                    let root = conversations_root.clone();
+                    let pairing = PairingStore::new(devices_path.as_ref().clone());
+                    let guard = orchestrator.spend_guard().cloned();
+                    let reply_tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = reply_tx.send(handle_usage_request(&root, &pairing, guard.as_deref(), request_id, tz_offset_minutes));
+                    });
+                }
+                Ok(ClientMessage::ExtendLimit { request_id, limit_id }) => {
+                    let guard = orchestrator.spend_guard().cloned();
+                    let reply_tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = reply_tx.send(handle_extend_limit(guard.as_deref(), request_id, &limit_id));
                     });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {

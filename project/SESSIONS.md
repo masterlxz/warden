@@ -2,7 +2,48 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-25 (Sessão 100)
+> Última atualização: 2026-09-25 (Sessão 100, continuação)
+
+---
+
+### 2026-09-25 — Sessão 100 (continuação)
+
+- **Objetivo**: a fatia "uso e gasto" do P78, escolhida pelo usuário, com plano aprovado em Plan mode.
+  Decisões dele: o hub inteiro (não só o device), liberar um limite pela web, gráfico por dia, gasto recente
+  por modelo/canal e o painel de limites também no desktop.
+
+**O que foi feito**:
+
+- **Núcleo**: `SpendGuard::breakdown()` (`warden-core/src/spend.rs`), com `SpendBucket`/`SpendBreakdown` por
+  modelo e canal sobre a janela do ledger. `daily_usage` e `format_day` (`civil_from_days`) no
+  `warden-bootstrap/src/usage.rs`. A mensagem do `SpendLimitReached` agora cita a aba Uso da web.
+- **Protocolo**: `RequestUsage` → `UsageReport`, `ExtendLimit` → `LimitExtended`, `UsageError`, os DTOs
+  (`UsageReportDto`, `DeviceUsage`, `DailyUsageDto`, `LimitStatusDto` com `all(guard)`, `SpendBucketDto`,
+  `RecentSpendDto`), e `ChatError.spendLimitId`.
+- **Hub**: `src/usage.rs` (relatório com todas as pastas de device mais os arquivos antigos, nomes do
+  `PairingStore`, limites e gasto recente do guard; `handle_extend_limit`; `spend_limit_id`), ligado no
+  `server.rs` via `spawn_blocking`.
+- **Web**: aba "Uso" (`UsageView.tsx`) com blocos de totais, gráfico de colunas por dia com tooltip e tabela,
+  medidores de limite com "Liberar", barras por device e tabelas por modelo/canal. A bolha de erro do chat
+  ganhou "Liberar mais" (`ExtendLimitAction`), e o token `--color-warn` foi criado.
+- **Desktop**: `spend_status` e `extend_spend_limit` (`spend_cmds.rs`), seção "Spending limits" na
+  `UsageView.tsx` (aparece também sem conversas), e o texto que dizia não haver custo em dólar foi corrigido.
+- **Verificação**:
+  - `cargo test --workspace`: 722 passando (eram 714); desktop com 27; clippy limpo nos dois. Os dois testes de
+    descoberta TLS falharam em 2 de 3 rodadas completas e passam sempre isolados (P81, não é desta mudança).
+  - Web e desktop: `tsc` e `build` limpos.
+  - Ponta a ponta com o `connection.ts` real contra um hub isolado (config com `[[limits]]`/`[[prices]]`,
+    ledger semeado acima do limite, conversas de dois devices e um arquivo antigo): 12 cenários. Entre eles, o
+    chat barrado **antes** de chamar o modelo com `spendLimitId`, três liberações até caber, o turno seguinte
+    chegando ao Gemini, e limite inexistente dando erro.
+  - **Primeira vez da web num navegador real**: um Brave headless dirigido por CDP (sem instalar nada) fez
+    login e abriu Uso (claro, escuro, celular, hover), Vault e Chat, sem erro no console. As capturas foram
+    conferidas; isso rendeu o ajuste de largura das tabelas.
+- **Achados**: há um Brave em `/opt/brave-bin/brave` (fora do PATH), o que torna possível testar a web num
+  navegador daqui. No celular, o nome do hub no cabeçalho vira "w…" com as quatro abas.
+
+**Próximo passo**: a última fatia do P78, configurações/provedores (a mais sensível: chaves de API pela rede,
+recarregar o orquestrador do hub). Seguem abertos o P80 (clique de verdade no navegador) e o P81.
 
 ---
 

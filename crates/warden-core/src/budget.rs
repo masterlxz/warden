@@ -87,7 +87,7 @@ impl std::fmt::Display for SpendLimitReached {
         write!(
             f,
             "spending limit reached — {}. The turn was stopped before calling the model again. \
-             Allow more from the desktop or the CLI, or raise the limit in config.toml.",
+             Allow more from the desktop, the CLI or the web UI's Usage tab, or raise the limit in config.toml.",
             self.0.describe()
         )
     }

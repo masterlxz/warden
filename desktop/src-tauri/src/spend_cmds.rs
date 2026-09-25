@@ -7,12 +7,18 @@
 //! deliberately does not check is whether an agent a limit names still exists — an agent can be
 //! deleted (by the agent-manager tool, or on this very screen) and the limit left behind is harmless;
 //! refusing every later save over it would be the dangling-reference trap the SSH hosts had.
+//!
+//! Also the Usage screen's limits panel (P78): `spend_status` and `extend_spend_limit`.
 
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
 use warden_bootstrap::{LimitConfig, LimitScope};
 use warden_core::spend::Price;
+use warden_server_protocol::protocol::LimitStatusDto;
+
+use crate::AppState;
 
 /// One `[[limits]]` entry as the form edits it. `target` is an empty string for a global limit — the
 /// "not set is an empty string" convention every other payload here uses. `warn_at`/`extend_step` are
@@ -113,6 +119,37 @@ pub fn prices_into_config(payloads: Vec<PricePayload>) -> Result<Vec<Price>, Str
         prices.push(Price { model, input_per_mtok: payload.input_per_mtok, output_per_mtok: payload.output_per_mtok });
     }
     Ok(prices)
+}
+
+/// Where the spending limits stand, for the Usage screen (P78) — the same `LimitStatusDto` the web
+/// UI gets from the hub, read from this app's own guard. `limits_enabled: false` means the app runs
+/// with `WARDEN_SPEND_LIMITS=off` (no guard at all).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendStatusPayload {
+    limits_enabled: bool,
+    limits: Vec<LimitStatusDto>,
+    ledger_error: Option<String>,
+}
+
+#[tauri::command]
+pub fn spend_status(state: State<'_, AppState>) -> Result<SpendStatusPayload, String> {
+    let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
+    let guard = orchestrator.spend_guard();
+    Ok(SpendStatusPayload {
+        limits_enabled: guard.is_some(),
+        limits: guard.map(|g| LimitStatusDto::all(g)).unwrap_or_default(),
+        ledger_error: guard.and_then(|g| g.last_error()),
+    })
+}
+
+/// "Allow more" from the Usage screen: one `extend_step` for the rest of that limit's window — the
+/// same grant the pause dialog makes mid-turn, for a limit that ran out between turns.
+#[tauri::command]
+pub fn extend_spend_limit(state: State<'_, AppState>, limit_id: String) -> Result<(), String> {
+    let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
+    let guard = orchestrator.spend_guard().ok_or_else(|| "spending limits are switched off".to_string())?;
+    guard.extend(&limit_id).map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(test)]

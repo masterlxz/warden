@@ -948,6 +948,8 @@ pub fn run() {
             git_sync_cmds::git_sync_push,
             git_sync_cmds::git_sync_pull,
             vault_cmds::list_vault_files,
+            spend_cmds::spend_status,
+            spend_cmds::extend_spend_limit,
             vault_cmds::read_vault_note,
             vault_cmds::save_vault_note,
             vault_cmds::delete_vault_note,

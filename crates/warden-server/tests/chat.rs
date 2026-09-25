@@ -112,9 +112,10 @@ async fn a_device_keeps_several_conversations_apart() {
 
     conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: Some("../escape".into()), attachments: Vec::new() }).await.unwrap();
     match conn.recv().await.unwrap() {
-        Some(ServerMessage::ChatError { message, conversation_id }) => {
+        Some(ServerMessage::ChatError { message, conversation_id, spend_limit_id }) => {
             assert!(message.contains("invalid conversation id"), "message was: {message}");
             assert_eq!(conversation_id.as_deref(), Some("../escape"));
+            assert_eq!(spend_limit_id, None);
         }
         other => panic!("expected ChatError, got {other:?}"),
     }

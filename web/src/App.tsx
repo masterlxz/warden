@@ -4,6 +4,7 @@ import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import LoginView from "./components/LoginView";
 import SkillsView from "./components/SkillsView";
+import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
@@ -22,7 +23,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "skills";
+type View = "chat" | "vault" | "usage" | "skills";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -257,6 +258,12 @@ export default function App() {
     return connection.transcribe(audio);
   }
 
+  async function handleExtendLimit(limitId: string): Promise<void> {
+    const connection = connRef.current;
+    if (!connection) throw new Error("sem conexão com o hub");
+    await connection.extendLimit(limitId);
+  }
+
   function openConversation(id: string) {
     setSidebarOpen(false);
     setView("chat");
@@ -337,6 +344,9 @@ export default function App() {
           <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
             Vault
           </button>
+          <button type="button" className={view === "usage" ? "tab tab--active" : "tab"} onClick={() => setView("usage")}>
+            Uso
+          </button>
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
@@ -376,11 +386,14 @@ export default function App() {
                 disabled={!phase.connected}
                 onSend={handleSend}
                 onTranscribe={handleTranscribe}
+                onExtendLimit={handleExtendLimit}
               />
             </div>
           </div>
         ) : view === "vault" ? (
           <VaultView conn={conn} />
+        ) : view === "usage" ? (
+          <UsageView conn={conn} />
         ) : (
           <SkillsView conn={conn} />
         )}

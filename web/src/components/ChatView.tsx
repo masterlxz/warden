@@ -14,6 +14,33 @@ interface Props {
   onSend: (message: string, attachments: Attachment[]) => void;
   /** The hub's transcription of a voice recording (P78). */
   onTranscribe: (audio: Attachment) => Promise<string>;
+  /** Lets a spending limit the turn stopped on go one step further (P4/P78). */
+  onExtendLimit: (limitId: string) => Promise<void>;
+}
+
+/** Under an error from a spending limit: allow more, then say to send again — never resends by itself. */
+function ExtendLimitAction({ limitId, onExtend }: { limitId: string; onExtend: (limitId: string) => Promise<void> }) {
+  const [state, setState] = useState<{ kind: "idle" | "busy" | "done" } | { kind: "error"; message: string }>({ kind: "idle" });
+  if (state.kind === "done") return <p className="bubble-plain">Liberado. Envie a mensagem de novo.</p>;
+  return (
+    <div className="bubble-actions">
+      <button
+        type="button"
+        className="link-button"
+        disabled={state.kind === "busy"}
+        onClick={() => {
+          setState({ kind: "busy" });
+          onExtend(limitId).then(
+            () => setState({ kind: "done" }),
+            (err) => setState({ kind: "error", message: err instanceof Error ? err.message : String(err) }),
+          );
+        }}
+      >
+        {state.kind === "busy" ? "Liberando…" : `Liberar mais (${limitId})`}
+      </button>
+      {state.kind === "error" && <span>{state.message}</span>}
+    </div>
+  );
 }
 
 type Voice = { kind: "idle" } | { kind: "recording"; recorder: VoiceRecorder } | { kind: "transcribing" };
@@ -58,7 +85,7 @@ function PendingChip({ item, onRemove }: { item: PendingAttachment; onRemove: ()
   );
 }
 
-export default function ChatView({ entries, pending, disabled, onSend, onTranscribe }: Props) {
+export default function ChatView({ entries, pending, disabled, onSend, onTranscribe, onExtendLimit }: Props) {
   const [draft, setDraft] = useState("");
   const [attached, setAttached] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -177,6 +204,7 @@ export default function ChatView({ entries, pending, disabled, onSend, onTranscr
                 {entry.attachments.map((attachment, j) => (
                   <AttachmentView key={j} attachment={attachment} />
                 ))}
+                {entry.spendLimitId && <ExtendLimitAction limitId={entry.spendLimitId} onExtend={onExtendLimit} />}
               </li>
             ))}
             {pending && (

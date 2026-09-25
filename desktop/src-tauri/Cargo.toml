@@ -39,6 +39,8 @@ tokio = { workspace = true, features = ["sync"] }
 warden-bootstrap = { path = "../../crates/warden-bootstrap" }
 warden-core = { path = "../../crates/warden-core" }
 warden-server = { path = "../../crates/warden-server" }
+# `LimitStatusDto` (P78): the Usage screen shows spending limits in the same shape the web UI gets.
+warden-server-protocol = { path = "../../crates/warden-server-protocol" }
 warden-sync = { path = "../../crates/warden-sync" }
 
 [dev-dependencies]

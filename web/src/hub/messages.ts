@@ -59,6 +59,46 @@ export interface VaultSearchHit {
   line: string;
 }
 
+/** Mirrors `warden_server_protocol::protocol::LimitStatusDto` (P78/P4). `fraction` >= 1 is exhausted;
+ * `extendTokens`/`extendCostUsd` are what one `extendLimit` adds. */
+export interface LimitStatus {
+  id: string;
+  scope: string;
+  windowHours: number;
+  usedTokens: number;
+  maxTokens: number | null;
+  usedCostUsd: number;
+  maxCostUsd: number | null;
+  fraction: number;
+  warn: boolean;
+  exceeded: boolean;
+  unpricedCalls: number;
+  freesUpInMinutes: number | null;
+  extendTokens: number;
+  extendCostUsd: number;
+}
+
+export interface SpendBucket {
+  key: string;
+  calls: number;
+  tokens: number;
+  costUsd: number;
+  unpricedCalls: number;
+}
+
+/** Mirrors `warden_server_protocol::protocol::UsageReportDto` (P78). */
+export interface UsageReport {
+  total: Usage;
+  conversationCount: number;
+  messageCount: number;
+  byDevice: { deviceId: string; name?: string; conversationCount: number; messageCount: number; usage: Usage }[];
+  daily: { date: string; calls: number; tokens: number }[];
+  limitsEnabled: boolean;
+  limits: LimitStatus[];
+  recent?: { windowHours: number; byModel: SpendBucket[]; byChannel: SpendBucket[] };
+  ledgerError?: string;
+}
+
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
    * `deviceToken` from an earlier `helloAck`. */
@@ -90,6 +130,10 @@ export type ClientMessage =
   | { type: "saveVaultNote"; requestId: number; path: string; content: string; expectedVersion?: string }
   | { type: "deleteVaultNote"; requestId: number; path: string; expectedVersion: string }
   | { type: "searchVault"; requestId: number; query: string }
+  /** P78 — usage across the whole hub; `tzOffsetMinutes` is the viewer's offset from UTC (UTC−3 = -180). */
+  | { type: "requestUsage"; requestId: number; tzOffsetMinutes: number }
+  /** P78 — one `extend_step` more for a spending limit, answered by `limitExtended`. */
+  | { type: "extendLimit"; requestId: number; limitId: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -107,7 +151,8 @@ export type ServerMessage =
   | { type: "pong"; nonce: number }
   /** `conversationId` (P78) — which conversation this answers; `chat` has no `requestId`. */
   | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[]; conversationId?: string }
-  | { type: "chatError"; message: string; conversationId?: string }
+  /** `spendLimitId` (P4/P78): the turn stopped on that spending limit — offer `extendLimit`. */
+  | { type: "chatError"; message: string; conversationId?: string; spendLimitId?: string }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
   | { type: "skillList"; requestId: number; skills: SkillDto[] }
   | { type: "skillOk"; requestId: number }
@@ -125,6 +170,9 @@ export type ServerMessage =
   | { type: "vaultOk"; requestId: number }
   | { type: "vaultSearchResults"; requestId: number; hits: VaultSearchHit[] }
   | { type: "vaultError"; requestId: number; message: string; conflict: boolean }
+  | { type: "usageReport"; requestId: number; report: UsageReport }
+  | { type: "limitExtended"; requestId: number; limit: LimitStatus }
+  | { type: "usageError"; requestId: number; message: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -166,6 +214,9 @@ export function decode(text: string): ServerMessage {
     case "vaultSaved":
     case "vaultOk":
     case "vaultSearchResults":
+    case "usageReport":
+    case "limitExtended":
+    case "usageError":
       return json as ServerMessage;
     case "vaultError": {
       const raw = json as { requestId: number; message: string; conflict?: boolean };
