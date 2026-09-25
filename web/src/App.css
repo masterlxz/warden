@@ -432,6 +432,168 @@ button:focus-visible {
   min-height: 2.6rem;
 }
 
+/* Conversations (P78) — a sidebar next to the chat, a drawer on phones */
+
+.chat-layout {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  min-height: 2.6rem;
+}
+
+.chat-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-toggle,
+.drawer-scrim {
+  display: none;
+}
+
+.conversations {
+  flex: none;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow-y: auto;
+}
+
+.conversations-empty {
+  margin: 0.5rem 0;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.conversations-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.conversation {
+  border-radius: 8px;
+}
+
+.conversation--active {
+  background: var(--color-accent-soft);
+}
+
+.conversation-open {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0.5rem 0.6rem 0.1rem;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.conversation-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation--active .conversation-title {
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.conversation-meta {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.conversation-actions {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0.3rem 0.3rem;
+  font-size: 0.8rem;
+}
+
+/* Only on hover/focus where there's a pointer; always visible on touch screens. */
+@media (hover: hover) {
+  .conversation:not(.conversation--active):not(.conversation--editing):not(:hover):not(:focus-within) .conversation-actions {
+    visibility: hidden;
+  }
+}
+
+.conversation--editing form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem;
+}
+
+@media (max-width: 720px) {
+  .drawer-toggle {
+    display: inline-block;
+    flex: none;
+  }
+
+  .conversations {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 2;
+    width: min(300px, 85%);
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    box-shadow: none;
+  }
+
+  .chat-layout--drawer-open .conversations {
+    transform: none;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.18);
+  }
+
+  .chat-layout--drawer-open .drawer-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border: none;
+    background: rgba(0, 0, 0, 0.3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversations {
+    transition: none;
+  }
+}
+
 /* Skills */
 
 .skills-view,

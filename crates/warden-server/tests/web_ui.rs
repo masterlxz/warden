@@ -67,7 +67,7 @@ async fn the_websocket_protocol_still_works_on_the_same_port() {
     assert!(http_get(addr, "GET", "/").await.starts_with("HTTP/1.1 200 OK"));
 
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "browser-1", "Browser", "test-key").await.unwrap();
-    conn.send(&ClientMessage::Chat { message: "hello".into() }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "hello".into(), conversation_id: None }).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "hi from the hub"),
         other => panic!("expected ChatResponse, got {other:?}"),

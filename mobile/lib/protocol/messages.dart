@@ -68,15 +68,21 @@ final class GoodbyeMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'goodbye', 'reason': reason};
 }
 
-/// A chat turn (Fase 7.3) — answered by the `Orchestrator` `warden-server` hosts, keyed by this
-/// device's id (one conversation per device, same pattern as Telegram/WhatsApp on the Rust side).
+/// A chat turn (Fase 7.3) — answered by the `Orchestrator` `warden-server` hosts, appended to one of
+/// this device's conversations. [conversationId] picks which (P78): an id the hub has never seen
+/// starts a new one; null is the device's default conversation.
 final class ChatMessage extends ClientMessage {
-  const ChatMessage(this.message);
+  const ChatMessage(this.message, {this.conversationId});
 
   final String message;
+  final String? conversationId;
 
   @override
-  Map<String, dynamic> toJson() => {'type': 'chat', 'message': message};
+  Map<String, dynamic> toJson() => {
+        'type': 'chat',
+        'message': message,
+        if (conversationId != null) 'conversationId': conversationId,
+      };
 }
 
 /// The result of a `ToolCallRequestMessage` this client was asked to run (Fase 7.4).
@@ -101,17 +107,80 @@ final class ToolCallErrorMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'toolCallError', 'callId': callId, 'message': message};
 }
 
-/// Asks for this device's persisted conversation (P40) — answered by a [HistoryServerMessage] or
-/// [HistoryErrorMessage] carrying the same `requestId`. `limit` keeps only the most recent
-/// messages; null asks for all of them.
+/// Asks for one of this device's persisted conversations (P40) — answered by a
+/// [HistoryServerMessage] or [HistoryErrorMessage] carrying the same `requestId`. `limit` keeps
+/// only the most recent messages; null asks for all of them. A null [conversationId] is the
+/// default conversation, same as [ChatMessage].
 final class RequestHistoryMessage extends ClientMessage {
-  const RequestHistoryMessage(this.requestId, {this.limit});
+  const RequestHistoryMessage(this.requestId, {this.limit, this.conversationId});
 
   final int requestId;
   final int? limit;
+  final String? conversationId;
 
   @override
-  Map<String, dynamic> toJson() => {'type': 'requestHistory', 'requestId': requestId, 'limit': limit};
+  Map<String, dynamic> toJson() => {
+        'type': 'requestHistory',
+        'requestId': requestId,
+        'limit': limit,
+        if (conversationId != null) 'conversationId': conversationId,
+      };
+}
+
+/// P78 — lists this device's conversations; answered by [ConversationListMessage] or
+/// [ConversationErrorMessage] with the same `requestId`.
+final class ListConversationsMessage extends ClientMessage {
+  const ListConversationsMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'listConversations', 'requestId': requestId};
+}
+
+/// P78 — answered by [ConversationOkMessage] or [ConversationErrorMessage].
+final class RenameConversationMessage extends ClientMessage {
+  const RenameConversationMessage(this.requestId, this.conversationId, this.title);
+
+  final int requestId;
+  final String conversationId;
+  final String title;
+
+  @override
+  Map<String, dynamic> toJson() =>
+      {'type': 'renameConversation', 'requestId': requestId, 'conversationId': conversationId, 'title': title};
+}
+
+/// P78 — answered by [ConversationOkMessage] or [ConversationErrorMessage].
+final class DeleteConversationMessage extends ClientMessage {
+  const DeleteConversationMessage(this.requestId, this.conversationId);
+
+  final int requestId;
+  final String conversationId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'deleteConversation', 'requestId': requestId, 'conversationId': conversationId};
+}
+
+/// One of this device's conversations in a [ConversationListMessage] (P78). Mirrors
+/// `warden_server_protocol::protocol::ConversationSummary`.
+class ConversationSummary {
+  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt});
+
+  final String id;
+  final String title;
+  final int createdAt;
+  final int updatedAt;
+
+  static ConversationSummary fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return ConversationSummary(
+      id: map['id'] as String,
+      title: map['title'] as String,
+      createdAt: map['createdAt'] as int,
+      updatedAt: map['updatedAt'] as int,
+    );
+  }
 }
 
 /// Token usage for one chat turn, when the provider reported it. Mirrors
@@ -184,8 +253,9 @@ sealed class ServerMessage {
           json['content'] as String,
           Usage.fromJson(json['usage'] as Map<String, dynamic>?),
           attachments: (json['attachments'] as List<dynamic>?)?.map(Attachment.fromJson).toList() ?? const [],
+          conversationId: json['conversationId'] as String?,
         ),
-      'chatError' => ChatErrorMessage(json['message'] as String),
+      'chatError' => ChatErrorMessage(json['message'] as String, conversationId: json['conversationId'] as String?),
       'toolCallRequest' => ToolCallRequestMessage(
           json['callId'] as int,
           json['tool'] as String,
@@ -196,6 +266,12 @@ sealed class ServerMessage {
           (json['messages'] as List<dynamic>).map(HistoryEntry.fromJson).toList(),
         ),
       'historyError' => HistoryErrorMessage(json['requestId'] as int, json['message'] as String),
+      'conversationList' => ConversationListMessage(
+          json['requestId'] as int,
+          (json['conversations'] as List<dynamic>).map(ConversationSummary.fromJson).toList(),
+        ),
+      'conversationOk' => ConversationOkMessage(json['requestId'] as int),
+      'conversationError' => ConversationErrorMessage(json['requestId'] as int, json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
       final other => throw FormatException('Unknown ServerMessage type: $other'),
     };
@@ -232,17 +308,23 @@ final class PongMessage extends ServerMessage {
 }
 
 final class ChatResponseMessage extends ServerMessage {
-  const ChatResponseMessage(this.content, this.usage, {this.attachments = const []});
+  const ChatResponseMessage(this.content, this.usage, {this.attachments = const [], this.conversationId});
 
   final String content;
   final Usage? usage;
   final List<Attachment> attachments;
+
+  /// Which conversation this answers (P78) — `chat` carries no request id.
+  final String? conversationId;
 }
 
 final class ChatErrorMessage extends ServerMessage {
-  const ChatErrorMessage(this.message);
+  const ChatErrorMessage(this.message, {this.conversationId});
 
   final String message;
+
+  /// Same as [ChatResponseMessage.conversationId].
+  final String? conversationId;
 }
 
 /// Asks this client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
@@ -265,6 +347,29 @@ final class HistoryServerMessage extends ServerMessage {
 /// The server couldn't read this device's conversation (P40).
 final class HistoryErrorMessage extends ServerMessage {
   const HistoryErrorMessage(this.requestId, this.message);
+
+  final int requestId;
+  final String message;
+}
+
+/// Reply to a [ListConversationsMessage] (P78), newest-updated first.
+final class ConversationListMessage extends ServerMessage {
+  const ConversationListMessage(this.requestId, this.conversations);
+
+  final int requestId;
+  final List<ConversationSummary> conversations;
+}
+
+/// Reply to a successful rename/delete (P78).
+final class ConversationOkMessage extends ServerMessage {
+  const ConversationOkMessage(this.requestId);
+
+  final int requestId;
+}
+
+/// A list/rename/delete failed (P78) — the raw error text.
+final class ConversationErrorMessage extends ServerMessage {
+  const ConversationErrorMessage(this.requestId, this.message);
 
   final int requestId;
   final String message;

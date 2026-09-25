@@ -18,8 +18,8 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
 use warden_core::spend::SpendContext;
 
+use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
-use crate::history::handle_history_request;
 use crate::skills::handle_skill_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::tls::HubTls;
@@ -331,6 +331,16 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
 
     eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}");
 
+    // P78: this device's own conversations directory — resolved (and its pre-P78 conversation
+    // migrated into it) once here, before any of its requests can touch it.
+    let conversations_dir = match device_conversations_dir(&conversations_dir, &device_id) {
+        Ok(dir) => Arc::new(dir),
+        Err(err) => {
+            eprintln!("warden-server: failed to prepare {device_id}'s conversations directory: {err:#}");
+            return reject(&mut sink, "server could not open this device's conversations").await;
+        }
+    };
+
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: server_name.to_string(),
         device_token: issued_token,
@@ -424,24 +434,35 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message }) => {
+                Ok(ClientMessage::Chat { message, conversation_id }) => {
+                    let conversation_id = match resolve_conversation_id(conversation_id.clone()) {
+                        Ok(id) => id,
+                        Err(message) => {
+                            let _ = tx.send(ServerMessage::ChatError { message, conversation_id });
+                            continue;
+                        }
+                    };
                     // Spending limits (P4) are counted per connected device.
                     let orchestrator = orchestrator.with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
                     let conversations_dir = conversations_dir.clone();
-                    let device_id = device_id.clone();
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
                         let reply = match warden_bootstrap::handle_turn(
                             &orchestrator,
                             &conversations_dir,
-                            &device_id,
+                            &conversation_id,
                             &message,
                             &message,
                         )
                         .await
                         {
-                            Ok(outcome) => ServerMessage::ChatResponse { content: outcome.content, usage: outcome.usage, attachments: outcome.attachments },
-                            Err(err) => ServerMessage::ChatError { message: format!("{err:#}") },
+                            Ok(outcome) => ServerMessage::ChatResponse {
+                                content: outcome.content,
+                                usage: outcome.usage,
+                                attachments: outcome.attachments,
+                                conversation_id: Some(conversation_id),
+                            },
+                            Err(err) => ServerMessage::ChatError { message: format!("{err:#}"), conversation_id: Some(conversation_id) },
                         };
                         let _ = reply_tx.send(reply);
                     });
@@ -490,11 +511,17 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = tx.send(reply);
                     }
                 }
-                Ok(ClientMessage::RequestHistory { request_id, limit }) => {
+                Ok(ClientMessage::RequestHistory { request_id, limit, conversation_id }) => {
                     // P40 — one small file read, answered inline like the skills requests. Inline
                     // also means a `Chat` sent right after this request can never land in the
                     // reply: that turn is only saved once its (spawned) model call finishes.
-                    let _ = tx.send(handle_history_request(&conversations_dir, &device_id, request_id, limit));
+                    let _ = tx.send(handle_history_request(&conversations_dir, request_id, limit, conversation_id));
+                }
+                Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
+                    // P78 — small file I/O, answered inline like `RequestHistory`.
+                    if let Some(reply) = handle_conversation_request(&conversations_dir, message) {
+                        let _ = tx.send(reply);
+                    }
                 }
                 Ok(ClientMessage::Goodbye { reason }) => {
                     eprintln!("warden-server: {device_id} said goodbye ({reason:?})");

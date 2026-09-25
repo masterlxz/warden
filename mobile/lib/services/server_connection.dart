@@ -5,6 +5,7 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
+import 'chat_transcript.dart';
 
 /// Connection state exposed to the UI. Mirrors the lifecycle a Fase 7.2
 /// connection screen needs to render — nothing more.
@@ -55,6 +56,16 @@ class HistoryException implements Exception {
   String toString() => 'HistoryException: $message';
 }
 
+/// A conversation list/rename/delete (P78) failed, timed out, or lost its connection.
+class ConversationException implements Exception {
+  ConversationException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Dart mirror of `crates/warden-server/src/client.rs`'s `ServerConnection`.
 ///
 /// Written against `StreamChannel<dynamic>` rather than `WebSocketChannel`
@@ -102,7 +113,7 @@ typedef ServerConnector = Future<ServerConnection> Function({
   Map<String, ToolHandler> toolHandlers,
 });
 
-class ServerConnection {
+class ServerConnection implements ConversationBackend {
   ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
@@ -115,7 +126,7 @@ class ServerConnection {
       })
       ..onDone(() {
         _heartbeatTimer?.cancel();
-        _failPendingHistory('Connection closed before the history arrived');
+        _failPendingHistory('Connection closed before the hub answered');
         final rejected = _rejectedReason;
         _setStatus(
           _goodbyeSent
@@ -148,7 +159,9 @@ class ServerConnection {
 
   // P40 — in-flight `fetchHistory` calls, keyed by the `requestId` the reply echoes back.
   final _pendingHistory = <int, Completer<List<HistoryEntry>>>{};
-  int _nextHistoryRequestId = 0;
+  // P78 — in-flight conversation list/rename/delete calls, same keying.
+  final _pendingConversation = <int, Completer<ServerMessage>>{};
+  int _nextRequestId = 0;
 
   Timer? _heartbeatTimer;
   int _nextNonce = 0;
@@ -278,7 +291,10 @@ class ServerConnection {
               ChatErrorMessage() ||
               ToolCallRequestMessage() ||
               HistoryServerMessage() ||
-              HistoryErrorMessage():
+              HistoryErrorMessage() ||
+              ConversationListMessage() ||
+              ConversationOkMessage() ||
+              ConversationErrorMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
       }
@@ -318,6 +334,10 @@ class ServerConnection {
         _pendingHistory.remove(requestId)?.complete(messages);
       case HistoryErrorMessage(:final requestId, :final message):
         _pendingHistory.remove(requestId)?.completeError(HistoryException(message));
+      case ConversationListMessage(:final requestId) || ConversationOkMessage(:final requestId):
+        _pendingConversation.remove(requestId)?.complete(msg);
+      case ConversationErrorMessage(:final requestId, :final message):
+        _pendingConversation.remove(requestId)?.completeError(ConversationException(message));
       case AuthErrorMessage(:final reason):
         _rejectedReason = reason;
       case HelloAckMessage():
@@ -340,24 +360,56 @@ class ServerConnection {
     }
   }
 
-  /// Sends one chat turn. The reply arrives asynchronously on [chatStream] as either a
-  /// [ChatResponseMessage] or a [ChatErrorMessage].
-  void sendChat(String message) {
-    _channel.sink.add(ChatMessage(message).encode());
+  /// Sends one chat turn to [conversationId] (P78; null is the default conversation). The reply
+  /// arrives asynchronously on [chatStream] as either a [ChatResponseMessage] or a
+  /// [ChatErrorMessage], tagged with the same conversation id.
+  @override
+  void sendChat(String message, {String? conversationId}) {
+    _channel.sink.add(ChatMessage(message, conversationId: conversationId).encode());
   }
 
-  /// P40 — fetches this device's conversation as persisted by the server (the same one [sendChat]
-  /// turns are appended to), oldest first, keeping only the last [limit] messages. Throws a
+  /// P40 — fetches one of this device's conversations as persisted by the server (null is the
+  /// default one), oldest first, keeping only the last [limit] messages. Throws a
   /// [HistoryException] if the server couldn't read it, didn't answer within [timeout], or the
   /// connection dropped before the reply arrived.
-  Future<List<HistoryEntry>> fetchHistory({int? limit, Duration timeout = const Duration(seconds: 15)}) {
-    final requestId = _nextHistoryRequestId++;
+  @override
+  Future<List<HistoryEntry>> fetchHistory({int? limit, String? conversationId, Duration timeout = const Duration(seconds: 15)}) {
+    final requestId = _nextRequestId++;
     final completer = Completer<List<HistoryEntry>>();
     _pendingHistory[requestId] = completer;
-    _channel.sink.add(RequestHistoryMessage(requestId, limit: limit).encode());
+    _channel.sink.add(RequestHistoryMessage(requestId, limit: limit, conversationId: conversationId).encode());
     return completer.future.timeout(timeout, onTimeout: () {
       _pendingHistory.remove(requestId);
       throw HistoryException('No history reply within ${timeout.inSeconds}s');
+    });
+  }
+
+  /// P78 — this device's conversations, newest-updated first.
+  @override
+  Future<List<ConversationSummary>> listConversations() async {
+    final reply = await _conversationRequest(ListConversationsMessage.new);
+    return reply is ConversationListMessage ? reply.conversations : const [];
+  }
+
+  @override
+  Future<void> renameConversation(String conversationId, String title) =>
+      _conversationRequest((requestId) => RenameConversationMessage(requestId, conversationId, title));
+
+  @override
+  Future<void> deleteConversation(String conversationId) =>
+      _conversationRequest((requestId) => DeleteConversationMessage(requestId, conversationId));
+
+  Future<ServerMessage> _conversationRequest(
+    ClientMessage Function(int requestId) build, {
+    Duration timeout = const Duration(seconds: 15),
+  }) {
+    final requestId = _nextRequestId++;
+    final completer = Completer<ServerMessage>();
+    _pendingConversation[requestId] = completer;
+    _channel.sink.add(build(requestId).encode());
+    return completer.future.timeout(timeout, onTimeout: () {
+      _pendingConversation.remove(requestId);
+      throw ConversationException('The hub did not answer within ${timeout.inSeconds}s');
     });
   }
 
@@ -366,6 +418,10 @@ class ServerConnection {
       completer.completeError(HistoryException(reason));
     }
     _pendingHistory.clear();
+    for (final completer in _pendingConversation.values) {
+      completer.completeError(ConversationException(reason));
+    }
+    _pendingConversation.clear();
   }
 
   void _startHeartbeat() {

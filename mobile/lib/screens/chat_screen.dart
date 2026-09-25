@@ -210,8 +210,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(serverName),
+        // P78 — the open conversation's title, with the hub's name under it.
+        title: ListenableBuilder(
+          listenable: widget.transcript,
+          builder: (context, _) => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.transcript.activeTitle ?? 'New conversation', overflow: TextOverflow.ellipsis),
+              Text(serverName, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
         actions: [
+          Builder(
+            builder: (context) => IconButton(
+              onPressed: () => Scaffold.of(context).openEndDrawer(),
+              icon: const Icon(Icons.forum_outlined),
+              tooltip: 'Conversations',
+            ),
+          ),
           IconButton(
             onPressed: _openFilesDialog,
             icon: const Icon(Icons.folder_outlined),
@@ -223,6 +240,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
+      endDrawer: _ConversationDrawer(transcript: widget.transcript, connected: _status is Connected),
       body: Column(
         children: [
           if (_status is! Connected) _DisconnectedBanner(status: _status),
@@ -255,6 +273,133 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// P78 — this device's conversations on the hub: open one, start a new one, rename or delete.
+class _ConversationDrawer extends StatelessWidget {
+  const _ConversationDrawer({required this.transcript, required this.connected});
+
+  final ChatTranscript transcript;
+
+  /// Rename/delete need the hub; browsing and starting a new (still local) one don't.
+  final bool connected;
+
+  Future<void> _rename(BuildContext context, ConversationSummary conversation) async {
+    final controller = TextEditingController(text: conversation.title);
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename conversation'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 120,
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(controller.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (title == null || title.trim().isEmpty || title.trim() == conversation.title || !context.mounted) return;
+    await _run(context, () => transcript.rename(conversation.id, title.trim()));
+  }
+
+  Future<void> _delete(BuildContext context, ConversationSummary conversation) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete conversation?'),
+        content: Text('"${conversation.title}" will be deleted from the hub. This can\'t be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    await _run(context, () => transcript.delete(conversation.id));
+  }
+
+  Future<void> _run(BuildContext context, Future<void> Function() action) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action();
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: ListenableBuilder(
+          listenable: transcript,
+          builder: (context, _) {
+            final conversations = transcript.conversations;
+            final error = transcript.conversationsError;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      transcript.startNew();
+                      Navigator.of(context).pop();
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('New conversation'),
+                  ),
+                ),
+                if (error != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    child: Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+                if (conversations.isEmpty && error == null)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('No conversations yet.', textAlign: TextAlign.center),
+                  ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: conversations.length,
+                    itemBuilder: (context, index) {
+                      final conversation = conversations[index];
+                      final answering = transcript.isAnswering(conversation.id);
+                      return ListTile(
+                        selected: conversation.id == transcript.activeConversationId,
+                        title: Text(conversation.title.isEmpty ? 'Untitled' : conversation.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: answering ? const Text('Answering…') : null,
+                        onTap: () {
+                          transcript.open(conversation.id);
+                          Navigator.of(context).pop();
+                        },
+                        trailing: PopupMenuButton<String>(
+                          // Nothing on the hub to change yet, or its answer is still on the way.
+                          enabled: connected && !answering,
+                          tooltip: 'Conversation actions',
+                          onSelected: (action) => action == 'rename' ? _rename(context, conversation) : _delete(context, conversation),
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'rename', child: Text('Rename')),
+                            PopupMenuItem(value: 'delete', child: Text('Delete')),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

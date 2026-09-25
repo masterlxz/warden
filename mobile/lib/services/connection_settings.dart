@@ -74,6 +74,19 @@ class ConnectionSettingsStore {
     await prefs.setString(_deviceTokenKey(host, port), token);
   }
 
+  // P78 — the conversation that was open on each hub, reopened on the next connect.
+  static String _lastConversationKey(String host, int port) => 'connection.lastConversation.$host:$port';
+
+  Future<String?> lastConversationFor(String host, int port) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_lastConversationKey(host, port));
+  }
+
+  Future<void> saveLastConversation(String host, int port, String conversationId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastConversationKey(host, port), conversationId);
+  }
+
   Future<String> getOrCreateDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString(_keyDeviceId);

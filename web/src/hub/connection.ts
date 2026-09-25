@@ -7,7 +7,16 @@
  * attachments so the page can show them. Reconnecting is `App.tsx`'s job, not this class's.
  */
 
-import { encode, decode, type Attachment, type ClientMessage, type HistoryMessage, type ServerMessage, type SkillDto } from "./messages";
+import {
+  encode,
+  decode,
+  type Attachment,
+  type ClientMessage,
+  type ConversationSummary,
+  type HistoryMessage,
+  type ServerMessage,
+  type SkillDto,
+} from "./messages";
 
 export type ConnectionStatus =
   | { kind: "disconnected"; reason?: string }
@@ -37,7 +46,8 @@ export function historyToEntries(messages: HistoryMessage[]): ChatEntry[] {
 }
 
 type StatusListener = (status: ConnectionStatus) => void;
-type ChatListener = (entry: ChatEntry) => void;
+/** `conversationId` is the conversation the reply belongs to (P78) — the hub always sends it. */
+type ChatListener = (entry: ChatEntry, conversationId: string | undefined) => void;
 
 export interface ConnectOptions {
   url: string;
@@ -217,10 +227,12 @@ export class ServerConnection {
         this.setStatus({ kind: "disconnected" });
         break;
       case "chatResponse":
-        for (const listener of this.chatListeners) listener({ role: "assistant", content: message.content, attachments: message.attachments });
+        for (const listener of this.chatListeners) {
+          listener({ role: "assistant", content: message.content, attachments: message.attachments }, message.conversationId);
+        }
         break;
       case "chatError":
-        for (const listener of this.chatListeners) listener({ role: "error", content: message.message, attachments: [] });
+        for (const listener of this.chatListeners) listener({ role: "error", content: message.message, attachments: [] }, message.conversationId);
         break;
       case "toolCallRequest":
         // Never advertised any tools, so the hub shouldn't ask — answer anyway so it isn't left waiting.
@@ -229,10 +241,13 @@ export class ServerConnection {
       case "skillList":
       case "skillOk":
       case "history":
+      case "conversationList":
+      case "conversationOk":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
       case "skillError":
       case "historyError":
+      case "conversationError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
       case "authError":
@@ -245,9 +260,24 @@ export class ServerConnection {
     }
   }
 
-  /** Sends one chat turn. The reply arrives asynchronously via `onChatMessage`. */
-  sendChat(message: string): void {
-    this.socket.send(encode({ type: "chat", message }));
+  /** Sends one chat turn to `conversationId` (a new id starts a new conversation). The reply
+   * arrives asynchronously via `onChatMessage`, tagged with the same id. */
+  sendChat(message: string, conversationId: string): void {
+    this.socket.send(encode({ type: "chat", message, conversationId }));
+  }
+
+  /** This device's conversations on the hub, newest-updated first. */
+  async listConversations(): Promise<ConversationSummary[]> {
+    const reply = await this.request((requestId) => ({ type: "listConversations", requestId }));
+    return reply.type === "conversationList" ? reply.conversations : [];
+  }
+
+  async renameConversation(conversationId: string, title: string): Promise<void> {
+    await this.request((requestId) => ({ type: "renameConversation", requestId, conversationId, title }));
+  }
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    await this.request((requestId) => ({ type: "deleteConversation", requestId, conversationId }));
   }
 
   async listSkills(): Promise<SkillDto[]> {
@@ -263,9 +293,10 @@ export class ServerConnection {
     await this.request((requestId) => ({ type: "deleteSkill", requestId, name }));
   }
 
-  /** This device's persisted conversation on the hub, oldest first (the most recent `limit`). */
-  async fetchHistory(limit: number): Promise<HistoryMessage[]> {
-    const reply = await this.request((requestId) => ({ type: "requestHistory", requestId, limit }));
+  /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A
+   * conversation that doesn't exist yet comes back empty. */
+  async fetchHistory(conversationId: string, limit: number): Promise<HistoryMessage[]> {
+    const reply = await this.request((requestId) => ({ type: "requestHistory", requestId, limit, conversationId }));
     return reply.type === "history" ? reply.messages : [];
   }
 

@@ -58,6 +58,21 @@ void main() {
       expect(msg.encode(), '{"type":"chat","message":"hello there"}');
     });
 
+    test('Chat to a named conversation (P78)', () {
+      const msg = ChatMessage('hi', conversationId: 'c1');
+      expect(msg.encode(), '{"type":"chat","message":"hi","conversationId":"c1"}');
+    });
+
+    test('conversation requests (P78)', () {
+      expect(const RequestHistoryMessage(1, limit: 5, conversationId: 'c1').encode(),
+          '{"type":"requestHistory","requestId":1,"limit":5,"conversationId":"c1"}');
+      expect(const ListConversationsMessage(2).encode(), '{"type":"listConversations","requestId":2}');
+      expect(const RenameConversationMessage(3, 'c1', 'Trip').encode(),
+          '{"type":"renameConversation","requestId":3,"conversationId":"c1","title":"Trip"}');
+      expect(const DeleteConversationMessage(4, 'c1').encode(),
+          '{"type":"deleteConversation","requestId":4,"conversationId":"c1"}');
+    });
+
     test('ToolCallResult', () {
       const msg = ToolCallResultMessage(7, {'ok': true});
       expect(msg.encode(), '{"type":"toolCallResult","callId":7,"result":{"ok":true}}');
@@ -122,6 +137,28 @@ void main() {
       final msg = ServerMessage.decode('{"type":"chatError","message":"provider unavailable"}');
       expect(msg, isA<ChatErrorMessage>());
       expect((msg as ChatErrorMessage).message, 'provider unavailable');
+      expect(msg.conversationId, isNull);
+    });
+
+    test('ChatResponse and ChatError name their conversation (P78)', () {
+      final response = ServerMessage.decode('{"type":"chatResponse","content":"a","usage":null,"conversationId":"c1"}');
+      expect((response as ChatResponseMessage).conversationId, 'c1');
+      final error = ServerMessage.decode('{"type":"chatError","message":"boom","conversationId":"c2"}');
+      expect((error as ChatErrorMessage).conversationId, 'c2');
+    });
+
+    test('conversation replies (P78)', () {
+      final list = ServerMessage.decode(
+        '{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}',
+      ) as ConversationListMessage;
+      expect(list.requestId, 1);
+      expect(list.conversations.single.id, 'c1');
+      expect(list.conversations.single.title, 'Trip');
+      expect(list.conversations.single.updatedAt, 2);
+
+      expect((ServerMessage.decode('{"type":"conversationOk","requestId":2}') as ConversationOkMessage).requestId, 2);
+      final error = ServerMessage.decode('{"type":"conversationError","requestId":3,"message":"no conversation"}');
+      expect((error as ConversationErrorMessage).message, 'no conversation');
     });
 
     test('ToolCallRequest', () {

@@ -30,8 +30,8 @@
 //! `CallDeviceTool` checks pairing status. See `device_registry.rs`'s module docs for why the
 //! store is a thin, stateless-between-calls wrapper over a JSON file instead of anything cached.
 
+pub mod conversations;
 pub mod device_registry;
-pub mod history;
 pub mod remote_tool;
 pub mod server;
 pub mod skills;

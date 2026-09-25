@@ -36,7 +36,7 @@ async fn a_chat_that_calls_an_advertised_client_tool_gets_the_real_result_back()
     .await
     .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "list my files".to_string() }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "list my files".to_string(), conversation_id: None }).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ToolCallRequest { call_id, tool, arguments }) => {
@@ -67,7 +67,7 @@ async fn a_client_with_no_advertised_tools_still_gets_a_plain_chat_response() {
         .await
         .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string() }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "ahoy"),
@@ -114,7 +114,7 @@ async fn a_client_tool_colliding_with_a_server_tool_is_renamed_not_dropped() {
     .await
     .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "read my notes".to_string() }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "read my notes".to_string(), conversation_id: None }).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ToolCallRequest { call_id, tool, arguments }) => {
@@ -157,7 +157,7 @@ async fn a_client_tool_with_no_collision_keeps_its_bare_name() {
     .await
     .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "list my files".to_string() }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "list my files".to_string(), conversation_id: None }).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ToolCallRequest { call_id, tool, arguments }) => {

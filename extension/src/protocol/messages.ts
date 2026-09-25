@@ -35,6 +35,14 @@ export interface SkillDto {
   agents: string[];
 }
 
+/** Mirrors `warden_server_protocol::protocol::ConversationSummary` (P78). */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
 export interface HistoryMessage {
   role: "user" | "assistant";
@@ -48,7 +56,9 @@ export type ClientMessage =
    * `deviceToken` from an earlier `helloAck`. */
   | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[] }
   | { type: "ping"; nonce: number }
-  | { type: "chat"; message: string }
+  /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
+   * omitted, the turn goes to the device's default conversation. */
+  | { type: "chat"; message: string; conversationId?: string }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -57,7 +67,11 @@ export type ClientMessage =
   | { type: "deleteSkill"; requestId: number; name: string }
   /** P40 — this device's persisted conversation, answered by `history`/`historyError` with the same
    * `requestId`. `limit` keeps only the most recent messages. */
-  | { type: "requestHistory"; requestId: number; limit?: number }
+  | { type: "requestHistory"; requestId: number; limit?: number; conversationId?: string }
+  /** P78 — this device's conversations, answered by `conversationList`/`conversationOk`/`conversationError`. */
+  | { type: "listConversations"; requestId: number }
+  | { type: "renameConversation"; requestId: number; conversationId: string; title: string }
+  | { type: "deleteConversation"; requestId: number; conversationId: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -73,14 +87,18 @@ export type ServerMessage =
   | { type: "helloAck"; serverName: string; deviceToken?: string }
   | { type: "authError"; reason: string }
   | { type: "pong"; nonce: number }
-  | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[] }
-  | { type: "chatError"; message: string }
+  /** `conversationId` (P78) — which conversation this answers; `chat` has no `requestId`. */
+  | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[]; conversationId?: string }
+  | { type: "chatError"; message: string; conversationId?: string }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
   | { type: "skillList"; requestId: number; skills: SkillDto[] }
   | { type: "skillOk"; requestId: number }
   | { type: "skillError"; requestId: number; message: string }
   | { type: "history"; requestId: number; messages: HistoryMessage[] }
   | { type: "historyError"; requestId: number; message: string }
+  | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
+  | { type: "conversationOk"; requestId: number }
+  | { type: "conversationError"; requestId: number; message: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -102,8 +120,8 @@ export function decode(text: string): ServerMessage {
     case "goodbye":
       return json as ServerMessage;
     case "chatResponse": {
-      const raw = json as { content: string; usage: Usage | null; attachments?: Attachment[] };
-      return { type: "chatResponse", content: raw.content, usage: raw.usage, attachments: raw.attachments ?? [] };
+      const raw = json as { content: string; usage: Usage | null; attachments?: Attachment[]; conversationId?: string };
+      return { type: "chatResponse", content: raw.content, usage: raw.usage, attachments: raw.attachments ?? [], conversationId: raw.conversationId };
     }
     case "skillList": {
       const raw = json as { requestId: number; skills: Array<Omit<SkillDto, "agents"> & { agents?: string[] }> };
@@ -112,6 +130,9 @@ export function decode(text: string): ServerMessage {
     case "skillOk":
     case "skillError":
     case "historyError":
+    case "conversationList":
+    case "conversationOk":
+    case "conversationError":
       return json as ServerMessage;
     case "history": {
       const raw = json as { requestId: number; messages: Array<Omit<HistoryMessage, "attachments"> & { attachments?: Attachment[] }> };

@@ -61,7 +61,9 @@ void main() {
     await tester.enterText(find.byType(TextField), 'hello there');
     await tester.tap(find.byIcon(Icons.send));
     await tester.pump();
-    expect(find.text('hello there'), findsOneWidget);
+    // The transcript only — since P78 the AppBar also shows it, as the new conversation's title.
+    Finder inTranscript(String text) => find.descendant(of: find.byType(ListView), matching: find.text(text));
+    expect(inTranscript('hello there'), findsOneWidget);
 
     // Back out WITHOUT disconnecting — the reply arrives while no chat screen exists.
     await tester.pageBack();
@@ -75,7 +77,7 @@ void main() {
     await tester.tap(find.text('Resume chat'));
     await tester.pumpAndSettle();
 
-    expect(find.text('hello there'), findsOneWidget);
-    expect(find.text('general kenobi'), findsOneWidget);
+    expect(inTranscript('hello there'), findsOneWidget);
+    expect(inTranscript('general kenobi'), findsOneWidget);
   });
 }

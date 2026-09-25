@@ -778,21 +778,34 @@ pub async fn handle_turn(
     title_seed: &str,
     user_input: &str,
 ) -> anyhow::Result<MessageOutcome> {
-    let mut conversation = load_conversation(conversations_dir, conversation_id)?.unwrap_or_else(|| {
-        let now = now_millis();
-        Conversation {
-            id: conversation_id.to_string(),
-            title: title_from(title_seed),
-            messages: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            agent_id: None,
-            provider_id: None,
-        }
-    });
-
-    let history: Vec<Message> = conversation.messages.iter().map(to_message).collect();
+    let existing = load_conversation(conversations_dir, conversation_id)?;
+    let existed = existing.is_some();
+    let history: Vec<Message> = existing.iter().flat_map(|c| &c.messages).map(to_message).collect();
     let outcome = orchestrator.handle_message(&history, user_input).await?;
+
+    // P78: the model call can take a minute, and in the meantime a hub client may have renamed or
+    // deleted this conversation (or finished another turn in it) — so the file is read again here,
+    // under the same lock `rename_conversation`/`delete_conversation` take, instead of saving the
+    // copy loaded above over whatever changed.
+    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut conversation = match load_conversation(conversations_dir, conversation_id)? {
+        Some(conversation) => conversation,
+        // Deleted while the model answered — the answer still goes back, but the conversation
+        // stays deleted instead of coming back with this one turn in it.
+        None if existed => return Ok(outcome),
+        None => {
+            let now = now_millis();
+            Conversation {
+                id: conversation_id.to_string(),
+                title: title_from(title_seed),
+                messages: Vec::new(),
+                created_at: now,
+                updated_at: now,
+                agent_id: None,
+                provider_id: None,
+            }
+        }
+    };
 
     conversation.messages.push(ConversationMessage {
         id: message_id(),
@@ -816,6 +829,40 @@ pub async fn handle_turn(
 
     save_conversation(conversations_dir, &conversation)?;
     Ok(outcome)
+}
+
+/// Serializes the read-modify-write of a conversation file between `handle_turn`'s save and
+/// `rename_conversation`/`delete_conversation` (P78), within this process — the hub is the only
+/// writer of its conversations directory. Held only around file I/O, never the model call.
+static CONVERSATION_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The longest title `rename_conversation` keeps — a sidebar label, not a place for prose.
+pub const MAX_CONVERSATION_TITLE_CHARS: usize = 120;
+
+/// Renames a saved conversation (P78). The title is trimmed and cut to
+/// `MAX_CONVERSATION_TITLE_CHARS`; an empty one is an error. `false` when there's no such
+/// conversation. `updated_at` is left alone: renaming isn't activity, so it doesn't reorder the list.
+pub fn rename_conversation(dir: &Path, id: &str, title: &str) -> anyhow::Result<bool> {
+    let title = title.trim();
+    anyhow::ensure!(!title.is_empty(), "a conversation title can't be empty");
+    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(mut conversation) = load_conversation(dir, id)? else {
+        return Ok(false);
+    };
+    conversation.title = title.chars().take(MAX_CONVERSATION_TITLE_CHARS).collect();
+    save_conversation(dir, &conversation)?;
+    Ok(true)
+}
+
+/// Deletes a saved conversation's file (P78). `false` when there was none.
+pub fn delete_conversation(dir: &Path, id: &str) -> anyhow::Result<bool> {
+    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = dir.join(format!("{id}.json"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("failed to delete conversation file at {}", path.display())),
+    }
 }
 
 /// Loads the config file. An explicit path that doesn't exist is an error (the caller asked
@@ -1799,6 +1846,103 @@ oauth = true
     fn list_conversations_on_missing_directory_returns_empty() {
         let dir = temp_dir("does-not-exist");
         assert_eq!(list_conversations(&dir).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn rename_conversation_trims_keeps_updated_at_and_reports_a_missing_one() {
+        let dir = temp_dir("rename");
+        save_conversation(&dir, &sample_conversation("c1", 100)).unwrap();
+
+        assert!(rename_conversation(&dir, "c1", "  Trip plans  ").unwrap());
+        let renamed = load_conversation(&dir, "c1").unwrap().unwrap();
+        assert_eq!(renamed.title, "Trip plans");
+        assert_eq!(renamed.updated_at, 100);
+
+        assert!(rename_conversation(&dir, "c1", "   ").is_err());
+        assert!(!rename_conversation(&dir, "missing", "x").unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_conversation_removes_the_file_once() {
+        let dir = temp_dir("delete");
+        save_conversation(&dir, &sample_conversation("c1", 100)).unwrap();
+
+        assert!(delete_conversation(&dir, "c1").unwrap());
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), None);
+        assert!(!delete_conversation(&dir, "c1").unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A model that, while "thinking", runs `during` against the conversations directory — the
+    /// stand-in for a hub client renaming or deleting the conversation mid-turn (P78).
+    struct ActsMidTurn {
+        dir: PathBuf,
+        during: fn(&Path),
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProvider for ActsMidTurn {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            (self.during)(&self.dir);
+            Ok(warden_core::model::response_stream(warden_core::model::Response {
+                content: "answer".into(),
+                tool_calls: Vec::new(),
+                usage: None,
+            }))
+        }
+    }
+
+    fn orchestrator_acting_mid_turn(dir: &Path, during: fn(&Path)) -> Orchestrator {
+        let vault = Arc::new(Vault::new(dir.join("vault")));
+        Orchestrator::new(Arc::new(ActsMidTurn { dir: dir.join("conversations"), during }), vault)
+    }
+
+    #[tokio::test]
+    async fn handle_turn_keeps_a_rename_made_while_the_model_answered() {
+        let root = temp_dir("turn-rename");
+        let dir = root.join("conversations");
+        save_conversation(&dir, &sample_conversation("c1", 100)).unwrap();
+        let orchestrator = orchestrator_acting_mid_turn(&root, |dir| {
+            rename_conversation(dir, "c1", "Renamed").unwrap();
+        });
+
+        handle_turn(&orchestrator, &dir, "c1", "hi", "hi").await.unwrap();
+
+        let saved = load_conversation(&dir, "c1").unwrap().unwrap();
+        assert_eq!(saved.title, "Renamed");
+        assert_eq!(saved.messages.len(), 3);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn handle_turn_does_not_bring_back_a_conversation_deleted_while_the_model_answered() {
+        let root = temp_dir("turn-delete");
+        let dir = root.join("conversations");
+        save_conversation(&dir, &sample_conversation("c1", 100)).unwrap();
+        let orchestrator = orchestrator_acting_mid_turn(&root, |dir| {
+            delete_conversation(dir, "c1").unwrap();
+        });
+
+        let outcome = handle_turn(&orchestrator, &dir, "c1", "hi", "hi").await.unwrap();
+
+        assert_eq!(outcome.content, "answer");
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn handle_turn_starts_a_new_conversation_titled_from_the_seed() {
+        let root = temp_dir("turn-new");
+        let dir = root.join("conversations");
+        let orchestrator = orchestrator_acting_mid_turn(&root, |_| {});
+
+        handle_turn(&orchestrator, &dir, "c2", "Plan a trip to Lisbon", "Plan a trip to Lisbon").await.unwrap();
+
+        let saved = load_conversation(&dir, "c2").unwrap().unwrap();
+        assert_eq!(saved.title, "Plan a trip to Lisbon");
+        assert_eq!(saved.messages.len(), 2);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

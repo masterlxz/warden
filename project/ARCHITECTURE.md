@@ -1610,3 +1610,39 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
 - **Limite herdado, não da web**: um turno que falha (ex.: chave de API inválida) não é gravado na conversa
   (`handle_turn` sai no `?` antes do `save_conversation`), então esse `chatError` some do histórico ao
   recarregar a página, igual acontece no mobile e na extensão.
+
+## Várias conversas por device no hub (P78, Sessão 99)
+
+- **Decisões do usuário**: as conversas continuam **por device** (cada device só vê as suas; compartilhar entre
+  devices fica para depois). A fatia cobre listar, criar, trocar, renomear e apagar, na web, na extensão e no
+  mobile.
+- **No disco**: uma pasta por device, `conversations-server/<device>/<conversa>.json`, lida e escrita pelas mesmas
+  funções do `warden-bootstrap`. O arquivo de antes do P78 (`conversations-server/<device_id>.json`) é movido
+  para dentro dela como a conversa `default` uma vez, quando o device conecta (`device_conversations_dir`), antes
+  de qualquer pedido dele. Um arquivo antigo corrompido é movido como está, então o `RequestHistory` continua
+  mostrando o erro de parse.
+- **Ids validados** (`conversations::is_valid_id`: 1 a 64 caracteres de `[A-Za-z0-9_-]`). Um `conversationId`
+  fora disso é recusado antes de chegar ao disco. Um `device_id` fora disso (o `warden-node --device-id` aceita
+  qualquer texto) ganha uma pasta com nome de hash, porque antes o `device_id` virava nome de arquivo sem
+  checagem nenhuma.
+- **Protocolo aditivo**: `Chat.conversationId?` e `RequestHistory.conversationId?`, onde ausente significa a
+  conversa `default`; assim, um cliente de antes do P78 (ou o `warden-node`) continua funcionando sem mudar. O
+  `ChatResponse`/`ChatError` devolvem o `conversationId`: o `Chat` não tem `requestId`, e sem isso uma resposta
+  atrasada cairia na conversa aberta no momento. Mensagens novas: `ListConversations` → `ConversationList`, e
+  `RenameConversation`/`DeleteConversation` → `ConversationOk`/`ConversationError`.
+- **A conversa nasce no primeiro `Chat`**: o cliente gera o id e o hub cria o arquivo, com o título tirado da
+  mensagem (`title_from`). Até a resposta chegar ela ainda não está no disco, então os clientes a mostram na
+  lista de forma otimista e bloqueiam renomear/apagar enquanto há turno pendente naquela conversa.
+- **Concorrência no `handle_turn`**: a chamada do modelo leva até um minuto, então agora o arquivo é relido
+  depois dela, sob um `Mutex` do processo (`CONVERSATION_WRITES`) que o `rename_conversation`/
+  `delete_conversation` também usam. Assim, uma renomeação feita durante o turno não é sobrescrita, e uma
+  conversa apagada durante o turno não volta (a resposta ainda é entregue, mas não é gravada). O lock só
+  protege I/O de arquivo, nunca a chamada do modelo. Renomear não mexe no `updated_at`, para não reordenar a lista.
+- **Espera por conversa nos clientes**: cada conversa aguarda a própria resposta, e dá para mandar mensagem em
+  outra enquanto isso. Como o hub só grava o turno depois de respondido, ao voltar para uma conversa pendente o
+  cliente mostra o histórico mais a pergunta que ainda espera. A última conversa aberta é lembrada:
+  `localStorage` na web, `chrome.storage` na extensão e `SharedPreferences` por hub no mobile.
+- **UI**: na web, barra lateral (gaveta no celular); na extensão, um `<select>` com ações, porque o painel é
+  estreito; no mobile, um `endDrawer`, para não tirar a seta de voltar do `ChatScreen`. No mobile o
+  `ChatTranscript` recebe uma `ConversationBackend` (que o `ServerConnection` implementa) em vez de funções
+  soltas, e por isso dá para testá-lo com um fake.

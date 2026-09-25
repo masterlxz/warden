@@ -44,6 +44,17 @@ pub struct HistoryMessage {
     pub attachments: Vec<Attachment>,
 }
 
+/// One of a device's conversations in a `ConversationList` (P78) — enough for a sidebar; the
+/// messages themselves come from `RequestHistory`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummary {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -69,11 +80,14 @@ pub enum ClientMessage {
     Ping {
         nonce: u64,
     },
-    /// A chat turn (Fase 7.3) — answered by the `Orchestrator` `Server` now hosts, keyed by this
-    /// connection's `device_id` (one conversation per device, same pattern as Telegram's
-    /// `chat_id`/WhatsApp's JID).
+    /// A chat turn (Fase 7.3) — answered by the `Orchestrator` `Server` now hosts, appended to one
+    /// of this device's conversations. `conversation_id` picks which (P78): an id the hub has never
+    /// seen starts a new conversation, titled from this first message; `None` means the device's
+    /// default conversation, the only one a client from before P78 ever used.
     Chat {
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
     },
     /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
     ToolCallResult {
@@ -126,6 +140,25 @@ pub enum ClientMessage {
         request_id: u64,
         #[serde(default)]
         limit: Option<u32>,
+        /// Which conversation (P78) — `None` is the device's default one, same as `Chat`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+    },
+    /// Lists this device's conversations (P78), newest-updated first. Answered by
+    /// `ConversationList`/`ConversationError` with the same `request_id`.
+    ListConversations {
+        request_id: u64,
+    },
+    /// Renames one of this device's conversations. Answered by `ConversationOk`/`ConversationError`.
+    RenameConversation {
+        request_id: u64,
+        conversation_id: String,
+        title: String,
+    },
+    /// Deletes one of this device's conversations. Answered by `ConversationOk`/`ConversationError`.
+    DeleteConversation {
+        request_id: u64,
+        conversation_id: String,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -165,11 +198,19 @@ pub enum ServerMessage {
         /// stored fixture) still parses.
         #[serde(default)]
         attachments: Vec<Attachment>,
+        /// The conversation this answer belongs to (P78) — the `Chat.conversation_id` it answers,
+        /// resolved (the default conversation's id when that was `None`). `Chat` carries no request
+        /// id, so this is what lets a client with several conversations route a late answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
     },
     /// A `Chat` message failed (missing API key, rate limit, provider error, ...) — the raw error
     /// text, since this protocol has no untrusted-public-bot audience to hide it from.
     ChatError {
         message: String,
+        /// Same as `ChatResponse.conversation_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
     },
     /// Asks a connected client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
     /// `call_id` is scoped to this connection (a simple counter, mirrors `Ping`'s `nonce`) — the
@@ -218,6 +259,21 @@ pub enum ServerMessage {
     /// The conversation file exists but couldn't be read/parsed — the raw error text, same posture
     /// as `SkillError`.
     HistoryError {
+        request_id: u64,
+        message: String,
+    },
+    /// Reply to `ClientMessage::ListConversations`.
+    ConversationList {
+        request_id: u64,
+        conversations: Vec<ConversationSummary>,
+    },
+    /// Reply to a successful `RenameConversation`/`DeleteConversation`.
+    ConversationOk {
+        request_id: u64,
+    },
+    /// A `ListConversations`/`RenameConversation`/`DeleteConversation` failed (invalid id, no such
+    /// conversation, unreadable directory) — the raw error text, same posture as `SkillError`.
+    ConversationError {
         request_id: u64,
         message: String,
     },
@@ -369,11 +425,12 @@ mod tests {
             content: "here you go".into(),
             usage: None,
             attachments: vec![Attachment { mime_type: "image/png".into(), data: "aGVsbG8=".into() }],
+            conversation_id: Some("c1".into()),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"chatResponse","content":"here you go","usage":null,"attachments":[{"mimeType":"image/png","data":"aGVsbG8="}]}"#
+            r#"{"type":"chatResponse","content":"here you go","usage":null,"attachments":[{"mimeType":"image/png","data":"aGVsbG8="}],"conversationId":"c1"}"#
         );
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
     }
@@ -445,7 +502,7 @@ mod tests {
 
     #[test]
     fn history_messages_round_trip_through_json() {
-        let request = ClientMessage::RequestHistory { request_id: 1, limit: Some(50) };
+        let request = ClientMessage::RequestHistory { request_id: 1, limit: Some(50), conversation_id: None };
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(json, r#"{"type":"requestHistory","requestId":1,"limit":50}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), request);
@@ -470,7 +527,59 @@ mod tests {
     #[test]
     fn request_history_without_a_limit_field_means_everything() {
         let msg = serde_json::from_str::<ClientMessage>(r#"{"type":"requestHistory","requestId":2}"#).unwrap();
-        assert_eq!(msg, ClientMessage::RequestHistory { request_id: 2, limit: None });
+        assert_eq!(msg, ClientMessage::RequestHistory { request_id: 2, limit: None, conversation_id: None });
+    }
+
+    #[test]
+    fn a_chat_from_before_conversations_existed_has_no_conversation_id() {
+        let msg = serde_json::from_str::<ClientMessage>(r#"{"type":"chat","message":"hi"}"#).unwrap();
+        assert_eq!(msg, ClientMessage::Chat { message: "hi".into(), conversation_id: None });
+        assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
+
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()) };
+        let json = serde_json::to_string(&with).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
+    }
+
+    #[test]
+    fn conversation_messages_round_trip_through_json() {
+        let cases: Vec<(ClientMessage, &str)> = vec![
+            (ClientMessage::ListConversations { request_id: 1 }, r#"{"type":"listConversations","requestId":1}"#),
+            (
+                ClientMessage::RenameConversation { request_id: 2, conversation_id: "c1".into(), title: "Trip".into() },
+                r#"{"type":"renameConversation","requestId":2,"conversationId":"c1","title":"Trip"}"#,
+            ),
+            (
+                ClientMessage::DeleteConversation { request_id: 3, conversation_id: "c1".into() },
+                r#"{"type":"deleteConversation","requestId":3,"conversationId":"c1"}"#,
+            ),
+        ];
+        for (msg, expected) in cases {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), msg);
+        }
+
+        let replies: Vec<(ServerMessage, &str)> = vec![
+            (
+                ServerMessage::ConversationList {
+                    request_id: 1,
+                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2 }],
+                },
+                r#"{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}"#,
+            ),
+            (ServerMessage::ConversationOk { request_id: 2 }, r#"{"type":"conversationOk","requestId":2}"#),
+            (
+                ServerMessage::ConversationError { request_id: 3, message: "boom".into() },
+                r#"{"type":"conversationError","requestId":3,"message":"boom"}"#,
+            ),
+        ];
+        for (msg, expected) in replies {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), msg);
+        }
     }
 
     #[test]

@@ -43,9 +43,37 @@ export function saveIdentity(identity: Identity): void {
 
 /** `crypto.randomUUID` only exists on secure origins, and a LAN hub is usually plain `http://` —
  * `getRandomValues` works on both. */
-function newDeviceId(): string {
+function randomHex(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return `web-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function newDeviceId(): string {
+  return `web-${randomHex()}`;
+}
+
+const LAST_CONVERSATION_KEY = "warden.web.lastConversation";
+
+/** The conversation this browser had open, reopened on the next visit (P78). */
+export function loadLastConversation(): string | null {
+  try {
+    return localStorage.getItem(LAST_CONVERSATION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastConversation(conversationId: string): void {
+  try {
+    localStorage.setItem(LAST_CONVERSATION_KEY, conversationId);
+  } catch {
+    // best effort — see the module doc
+  }
+}
+
+/** An id for a conversation this browser starts (P78) — within the hub's 1-64 `[A-Za-z0-9_-]`. */
+export function newConversationId(): string {
+  return `c-${randomHex()}`;
 }
 
 /** "Navegador (Firefox, Linux)" — just enough to tell devices apart in the hub's device list. */

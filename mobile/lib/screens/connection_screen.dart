@@ -133,15 +133,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         if (mounted) setState(() => _status = s);
       });
 
+      final lastConversation = await _settingsStore.lastConversationFor(host, port);
       _transcript?.dispose();
       setState(() {
         _connection = connection;
         _transcript = ChatTranscript(
           chatStream: connection.chatStream,
-          sendChat: connection.sendChat,
+          backend: connection,
+          // P78 — reopens the conversation that was open on this hub last time.
+          lastConversationId: lastConversation,
+          onConversationOpened: (id) => unawaited(_settingsStore.saveLastConversation(host, port, id)),
           // P40 — the last 100 messages are plenty to pick a phone conversation back up, and keep
           // the reply small even when older turns carry base64 image attachments.
-          fetchHistory: () => connection.fetchHistory(limit: 100),
+          historyLimit: 100,
         );
         _status = connection.status;
       });

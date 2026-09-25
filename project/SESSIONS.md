@@ -2,7 +2,58 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-24 (Sessão 98)
+> Última atualização: 2026-09-24 (Sessão 99)
+
+---
+
+### 2026-09-24 — Sessão 99
+
+- **Objetivo**: o usuário testou a fatia 1 do P78 no navegador (login, chat e skills funcionaram) e escolheu
+  **várias conversas por device** como próxima fatia. Decisões dele: conversas por device (não compartilhadas),
+  com listar/nova/trocar, apagar e renomear, na web, na extensão e no mobile. Antes, os caches de build foram
+  limpos (`target/`, `mobile/build`, `dist/` do desktop e da extensão; cerca de 38 GB).
+
+**O que foi feito**:
+
+- **Protocolo** (`warden-server-protocol`): `Chat.conversationId?`, `RequestHistory.conversationId?`,
+  `ChatResponse`/`ChatError` com `conversationId?`, `ConversationSummary`, e as mensagens `ListConversations`,
+  `RenameConversation` e `DeleteConversation` com as respostas `ConversationList`, `ConversationOk` e
+  `ConversationError`.
+- **`warden-bootstrap`**: `rename_conversation`, `delete_conversation`, `MAX_CONVERSATION_TITLE_CHARS`. O
+  `handle_turn` relê o arquivo depois da chamada do modelo, sob o lock `CONVERSATION_WRITES`.
+- **Hub**: o `history.rs` virou `conversations.rs` (`is_valid_id`, `resolve_conversation_id`,
+  `device_conversations_dir` com a migração do arquivo antigo, `handle_history_request` e
+  `handle_conversation_request`). O `server.rs` resolve a pasta do device no `Hello` e roteia o `Chat` pelo
+  `conversationId`.
+- **Web**: `ConversationList.tsx` (barra lateral, gaveta no celular, renomear inline, apagar com confirmação), o
+  `App.tsx` com conversa ativa e espera por conversa, e `newConversationId`/`loadLastConversation` no
+  `identity.ts`.
+- **Extensão**: o background guarda a lista, a conversa ativa e os turnos pendentes (evento
+  `conversationsChanged`), e o painel ganhou o `ConversationBar.tsx`.
+- **Mobile**: mensagens em Dart, `ServerConnection` com `listConversations`/`renameConversation`/
+  `deleteConversation` (implementa `ConversationBackend`), `ChatTranscript` reescrito com conversas,
+  `endDrawer` no `ChatScreen`, e a última conversa lembrada por hub no `ConnectionSettingsStore`.
+- **Verificação**:
+  - `cargo test --workspace`: 687 passando, com novos testes no protocolo, 5 no bootstrap (renomear/apagar e
+    renomear/apagar durante o turno), 11 em `conversations.rs` e 1 de integração com várias conversas.
+    `cargo clippy --workspace --all-targets` limpo.
+  - `flutter analyze` limpo e `flutter test` com 93 testes (o `chat_transcript_test` foi reescrito com um fake).
+  - Web e extensão: `tsc` e `build` limpos, extensão em Chrome e Firefox.
+  - Ponta a ponta: `warden-server` real com config isolada e uma conversa no formato antigo no disco, e o
+    `web/src/hub/connection.ts` real rodando no Node. A migração virou `default` com o histórico, o `chatError`
+    voltou com o `conversationId` certo, renomear/apagar funcionaram, e id inválido e conversa inexistente
+    deram erro claro.
+  - **Sem teste em navegador real, no app Android nem na extensão instalada.**
+- **Achados**:
+  - O `device_id` virava nome de arquivo sem validação (o `warden-node --device-id` aceita qualquer texto).
+    Corrigido junto, com uma pasta de nome de hash para ids inválidos.
+  - O aviso "Broken pipe" que aparece no `cargo test --workspace` vem do helper do teste `mcp_stdio` e já
+    existia antes desta sessão.
+
+**Próximo passo**: o usuário reiniciar o hub com o binário novo (o que está rodando é o antigo), recarregar a
+web e testar: criar, trocar, renomear e apagar conversas, e mandar mensagem numa enquanto outra espera. Depois,
+extensão e mobile (o `.so` do Android não mudou, só o Dart). As próximas fatias do P78 são vault,
+configurações, uso/gasto e anexos enviados do navegador.
 
 ---
 

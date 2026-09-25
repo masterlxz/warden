@@ -344,6 +344,40 @@ void main() {
     await expectLater(history, throwsA(isA<HistoryException>()));
   });
 
+  test('conversation requests resolve with their replies, and an error carries the hub message (P78)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test Device',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final list = conn.listConversations();
+    expect(await fromClient.next as String, '{"type":"listConversations","requestId":0}');
+    controller.local.sink.add(
+        '{"type":"conversationList","requestId":0,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}');
+    expect((await list).single.title, 'Trip');
+
+    final rename = conn.renameConversation('c1', 'Lisbon');
+    expect(await fromClient.next as String, '{"type":"renameConversation","requestId":1,"conversationId":"c1","title":"Lisbon"}');
+    controller.local.sink.add('{"type":"conversationOk","requestId":1}');
+    await rename;
+
+    final delete = conn.deleteConversation('gone');
+    expect(await fromClient.next as String, '{"type":"deleteConversation","requestId":2,"conversationId":"gone"}');
+    controller.local.sink.add('{"type":"conversationError","requestId":2,"message":"no conversation with id \'gone\'"}');
+    await expectLater(delete, throwsA(isA<ConversationException>().having((e) => e.message, 'message', contains('gone'))));
+
+    conn.sendChat('hi', conversationId: 'c1');
+    expect(await fromClient.next as String, '{"type":"chat","message":"hi","conversationId":"c1"}');
+  });
+
   test('a device token issued in HelloAck is exposed to the caller (P36)', () async {
     final controller = StreamChannelController<dynamic>();
     final fromClient = StreamQueue<dynamic>(controller.local.stream);

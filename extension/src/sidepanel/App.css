@@ -123,6 +123,39 @@ button:hover:not(:disabled) {
   margin: 0;
 }
 
+/* Conversation picker above the chat (P78). */
+.conversation-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.conversation-bar select,
+.conversation-bar input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.conversation-bar select {
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
+.conversation-bar-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.conversation-bar .error-banner {
+  flex-basis: 100%;
+}
+
 /* Discovered-hub list (Fase 9.1, redefined) — same visual language as the desktop Workspace
    view's device rows, scoped down to this panel's tokens. */
 .hub-empty {

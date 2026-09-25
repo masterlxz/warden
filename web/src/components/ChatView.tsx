@@ -51,7 +51,7 @@ export default function ChatView({ entries, pending, disabled, onSend }: Props) 
     <div className="chat">
       <div className="chat-scroll" aria-live="polite">
         {entries.length === 0 && !pending ? (
-          <p className="chat-empty">Nenhuma mensagem ainda. Esta conversa é a deste navegador no hub.</p>
+          <p className="chat-empty">Nenhuma mensagem ainda. A conversa é criada no hub quando você manda a primeira.</p>
         ) : (
           <ul className="chat-list">
             {entries.map((entry, i) => (
