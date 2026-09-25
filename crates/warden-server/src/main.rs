@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
+use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -177,7 +178,10 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let tls = resolve_tls(&args).await?;
 
     let server_name = resolve_server_name(args.server_name.clone());
-    let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?).await?;
+    let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?)
+        .await?
+        // P78 — voice input from the web UI, with the Whisper key from the same config file.
+        .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))));
     let addr = server.local_addr()?;
     let page_url = match tls.as_ref().and_then(|tls| tls.secure_url(addr.port())) {
         Some(url) => url.replacen("wss://", "https://", 1),

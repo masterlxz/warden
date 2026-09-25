@@ -66,7 +66,7 @@ async fn wss_client_trusting_the_ca_completes_hello_and_chats() {
     let addr = spin_up_tls_server(MockProvider::replying("hi over tls"), HubTls::from_pem_files(cert, key, None).unwrap()).await;
 
     let mut conn = hello(&format!("wss://localhost:{}", addr.port()), ca.client_config()).await.unwrap();
-    conn.send(&warden_server::ClientMessage::Chat { message: "hello".into(), conversation_id: None }).await.unwrap();
+    conn.send(&warden_server::ClientMessage::chat("hello")).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "hi over tls"),
         other => panic!("expected ChatResponse, got {other:?}"),
@@ -141,7 +141,7 @@ async fn https_serves_the_web_ui_and_wss_still_chats_on_the_same_port() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n") && response.contains("Warden test UI"), "{response}");
 
     let mut conn = hello(&format!("wss://localhost:{}", addr.port()), ca.client_config()).await.unwrap();
-    conn.send(&warden_server::ClientMessage::Chat { message: "hello".into(), conversation_id: None }).await.unwrap();
+    conn.send(&warden_server::ClientMessage::chat("hello")).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "hi over tls"),
         other => panic!("expected ChatResponse, got {other:?}"),

@@ -59,7 +59,7 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string }
+  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[] }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -73,6 +73,9 @@ export type ClientMessage =
   | { type: "listConversations"; requestId: number }
   | { type: "renameConversation"; requestId: number; conversationId: string; title: string }
   | { type: "deleteConversation"; requestId: number; conversationId: string }
+  /** P78 — voice input: the hub transcribes the recording (Whisper) and answers with
+   * `transcription`/`transcriptionError`. */
+  | { type: "transcribe"; requestId: number; audio: Attachment }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -100,6 +103,8 @@ export type ServerMessage =
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
   | { type: "conversationOk"; requestId: number }
   | { type: "conversationError"; requestId: number; message: string }
+  | { type: "transcription"; requestId: number; text: string }
+  | { type: "transcriptionError"; requestId: number; message: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -134,6 +139,8 @@ export function decode(text: string): ServerMessage {
     case "conversationList":
     case "conversationOk":
     case "conversationError":
+    case "transcription":
+    case "transcriptionError":
       return json as ServerMessage;
     case "history": {
       const raw = json as { requestId: number; messages: Array<Omit<HistoryMessage, "attachments"> & { attachments?: Attachment[] }> };

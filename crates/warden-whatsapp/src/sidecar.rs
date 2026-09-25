@@ -153,7 +153,7 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
                     let title_seed = sender_name.unwrap_or_else(|| chat_id.clone());
                     // Spending limits (P4) are counted per chat.
                     let orchestrator = orchestrator.with_spend_context(SpendContext::new("whatsapp").with_user(chat_id.clone()));
-                    match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &chat_id, &title_seed, &text).await {
+                    match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &chat_id, &title_seed, &text, Vec::new()).await {
                         Ok(outcome) => (outcome.content, outcome.attachments),
                         Err(err) => {
                             eprintln!("error handling message from {chat_id}: {err:#}");

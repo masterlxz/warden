@@ -18,6 +18,7 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
 use warden_core::spend::SpendContext;
 
+use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::skills::handle_skill_request;
@@ -68,6 +69,7 @@ pub struct Server {
     revocation_check_interval: Duration,
     tls: Option<HubTls>,
     web_ui: Option<Arc<dyn WebAssets>>,
+    transcriber: Option<Arc<dyn Transcriber>>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -94,6 +96,7 @@ impl Server {
             revocation_check_interval: DEFAULT_REVOCATION_CHECK_INTERVAL,
             tls: None,
             web_ui: None,
+            transcriber: None,
         })
     }
 
@@ -110,6 +113,13 @@ impl Server {
     /// `Upgrade: websocket`) gets a file from `assets`. Without this, the hub stays WebSocket-only.
     pub fn with_web_ui(mut self, assets: Arc<dyn WebAssets>) -> Self {
         self.web_ui = Some(assets);
+        self
+    }
+
+    /// Answers `Transcribe` (voice input, P78) with `transcriber`. Without it, every `Transcribe`
+    /// gets a `TranscriptionError`.
+    pub fn with_transcriber(mut self, transcriber: Arc<dyn Transcriber>) -> Self {
+        self.transcriber = Some(transcriber);
         self
     }
 
@@ -151,6 +161,7 @@ impl Server {
             devices_path: self.devices_path,
             revocation_check_interval: self.revocation_check_interval,
             secure_url,
+            transcriber: self.transcriber,
         };
         let tls = self.tls;
         let web_ui = self.web_ui;
@@ -187,6 +198,7 @@ struct ConnectionContext {
     revocation_check_interval: Duration,
     /// `DiscoverAck.secure_url` — set only on a TLS hub that knows its public name.
     secure_url: Option<Arc<str>>,
+    transcriber: Option<Arc<dyn Transcriber>>,
 }
 
 /// Picks the transport for a fresh TCP connection. Without TLS, everything is plain `ws://` as
@@ -274,7 +286,17 @@ fn discover_ack(ctx: &ConnectionContext) -> ServerMessage {
 
 async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
     let discover_reply = discover_ack(&ctx);
-    let ConnectionContext { auth_key, server_name, orchestrator, conversations_dir, devices, devices_path, revocation_check_interval, secure_url: _ } = ctx;
+    let ConnectionContext {
+        auth_key,
+        server_name,
+        orchestrator,
+        conversations_dir,
+        devices,
+        devices_path,
+        revocation_check_interval,
+        secure_url: _,
+        transcriber,
+    } = ctx;
     let (mut sink, mut stream) = ws.split();
 
     let Some(first) = stream.next().await else {
@@ -434,8 +456,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message, conversation_id }) => {
-                    let conversation_id = match resolve_conversation_id(conversation_id.clone()) {
+                Ok(ClientMessage::Chat { message, conversation_id, attachments }) => {
+                    let checked = resolve_conversation_id(conversation_id.clone())
+                        .and_then(|id| validate_attachments(&attachments).map(|()| id));
+                    let conversation_id = match checked {
                         Ok(id) => id,
                         Err(message) => {
                             let _ = tx.send(ServerMessage::ChatError { message, conversation_id });
@@ -451,8 +475,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             &orchestrator,
                             &conversations_dir,
                             &conversation_id,
+                            &title_seed(&message, &attachments),
                             &message,
-                            &message,
+                            attachments,
                         )
                         .await
                         {
@@ -516,6 +541,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     // also means a `Chat` sent right after this request can never land in the
                     // reply: that turn is only saved once its (spawned) model call finishes.
                     let _ = tx.send(handle_history_request(&conversations_dir, request_id, limit, conversation_id));
+                }
+                Ok(ClientMessage::Transcribe { request_id, audio }) => {
+                    // P78 — a Whisper call takes seconds, so it runs off the reader loop like `Chat`.
+                    let transcriber = transcriber.clone();
+                    let reply_tx = tx.clone();
+                    tokio::spawn(async move {
+                        let _ = reply_tx.send(handle_transcribe(transcriber.as_deref(), request_id, audio).await);
+                    });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
                     // P78 — small file I/O, answered inline like `RequestHistory`.

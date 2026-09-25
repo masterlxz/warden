@@ -13,7 +13,7 @@ async fn chat_message_gets_answered_by_the_hosted_orchestrator() {
         .await
         .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
+    conn.send(&ClientMessage::chat("hello")).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { content, .. }) => assert_eq!(content, "ahoy"),
@@ -28,7 +28,7 @@ async fn a_failing_model_call_comes_back_as_a_chat_error_not_a_dropped_connectio
         .await
         .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
+    conn.send(&ClientMessage::chat("hello")).await.unwrap();
 
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatError { message, .. }) => assert!(message.contains("mock provider failure"), "message was: {message}"),
@@ -48,7 +48,7 @@ async fn a_reconnecting_device_can_fetch_its_conversation_history() {
     let url = format!("ws://{addr}");
 
     let mut first = ServerConnection::connect(&url, "dev-1", "Test Device", "test-key").await.unwrap();
-    first.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
+    first.send(&ClientMessage::chat("hello")).await.unwrap();
     assert!(matches!(first.recv().await.unwrap(), Some(ServerMessage::ChatResponse { .. })));
     drop(first);
 
@@ -76,7 +76,7 @@ async fn a_device_keeps_several_conversations_apart() {
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
 
     for (id, text) in [("trip", "plan a trip"), ("work", "draft an email")] {
-        conn.send(&ClientMessage::Chat { message: text.to_string(), conversation_id: Some(id.to_string()) }).await.unwrap();
+        conn.send(&ClientMessage::Chat { message: text.to_string(), conversation_id: Some(id.to_string()), attachments: Vec::new() }).await.unwrap();
         match conn.recv().await.unwrap() {
             Some(ServerMessage::ChatResponse { conversation_id, .. }) => assert_eq!(conversation_id.as_deref(), Some(id)),
             other => panic!("expected ChatResponse, got {other:?}"),
@@ -104,13 +104,13 @@ async fn a_device_keeps_several_conversations_apart() {
     }
 
     // Without an id, a turn goes to the default conversation — what a pre-P78 client gets.
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
+    conn.send(&ClientMessage::chat("hello")).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatResponse { conversation_id, .. }) => assert_eq!(conversation_id.as_deref(), Some("default")),
         other => panic!("expected ChatResponse, got {other:?}"),
     }
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: Some("../escape".into()) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: Some("../escape".into()), attachments: Vec::new() }).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatError { message, conversation_id }) => {
             assert!(message.contains("invalid conversation id"), "message was: {message}");
@@ -118,6 +118,50 @@ async fn a_device_keeps_several_conversations_apart() {
         }
         other => panic!("expected ChatError, got {other:?}"),
     }
+}
+
+/// P78: a turn can carry images/PDFs, even with no words — they're saved on the user's turn (so
+/// history shows them); anything that isn't an image or a PDF is refused before the model.
+#[tokio::test]
+async fn attachments_ride_along_with_a_turn_and_other_types_are_refused() {
+    let addr = spin_up_server(MockProvider::replying("got it")).await;
+    let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
+    let pdf = warden_core::model::Attachment { mime_type: "application/pdf".into(), data: "JVBERi0=".into() };
+
+    conn.send(&ClientMessage::Chat { message: String::new(), conversation_id: None, attachments: vec![pdf.clone()] }).await.unwrap();
+    assert!(matches!(conn.recv().await.unwrap(), Some(ServerMessage::ChatResponse { .. })));
+
+    conn.send(&ClientMessage::RequestHistory { request_id: 1, limit: None, conversation_id: None }).await.unwrap();
+    match conn.recv().await.unwrap() {
+        Some(ServerMessage::History { messages, .. }) => {
+            assert_eq!(messages[0].role, HistoryRole::User);
+            assert_eq!(messages[0].attachments, vec![pdf]);
+        }
+        other => panic!("expected History, got {other:?}"),
+    }
+    conn.send(&ClientMessage::ListConversations { request_id: 2 }).await.unwrap();
+    match conn.recv().await.unwrap() {
+        Some(ServerMessage::ConversationList { conversations, .. }) => assert_eq!(conversations[0].title, "Document"),
+        other => panic!("expected ConversationList, got {other:?}"),
+    }
+
+    let html = warden_core::model::Attachment { mime_type: "text/html".into(), data: "PGgxPg==".into() };
+    conn.send(&ClientMessage::Chat { message: "look".into(), conversation_id: None, attachments: vec![html] }).await.unwrap();
+    match conn.recv().await.unwrap() {
+        Some(ServerMessage::ChatError { message, .. }) => assert!(message.contains("text/html"), "message was: {message}"),
+        other => panic!("expected ChatError, got {other:?}"),
+    }
+}
+
+/// P78: without a transcriber (tests never call Whisper), `Transcribe` is refused, not ignored.
+#[tokio::test]
+async fn transcribe_without_a_transcriber_is_an_error() {
+    let addr = spin_up_server(MockProvider::replying("x")).await;
+    let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
+    let audio = warden_core::model::Attachment { mime_type: "audio/webm".into(), data: "GkXf".into() };
+
+    conn.send(&ClientMessage::Transcribe { request_id: 5, audio }).await.unwrap();
+    assert!(matches!(conn.recv().await.unwrap(), Some(ServerMessage::TranscriptionError { request_id: 5, .. })));
 }
 
 /// Regression test for the reader/writer-task split in `server.rs`: a slow `Chat` call used to
@@ -131,7 +175,7 @@ async fn a_ping_sent_during_a_slow_chat_call_is_answered_immediately() {
         .await
         .unwrap();
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: None }).await.unwrap();
+    conn.send(&ClientMessage::chat("hello")).await.unwrap();
     // Give the server a moment to have actually started the (slow) chat call before pinging.
     tokio::time::sleep(Duration::from_millis(100)).await;
     conn.ping(99).await.unwrap();

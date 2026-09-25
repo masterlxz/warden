@@ -768,7 +768,9 @@ fn to_message(message: &ConversationMessage) -> Message {
 /// starts a fresh `Conversation`, titled from `title_seed`), calls `orchestrator.handle_message`,
 /// appends both the user and assistant messages (with token usage on the assistant one, Fase 5.8)
 /// and persists the result under `conversations_dir` before returning the model's answer. Shared
-/// by every channel that threads conversations this way — Telegram today, WhatsApp later.
+/// by every channel that threads conversations this way — Telegram, WhatsApp and the hub.
+/// `attachments` go with the user's turn (images or PDFs, P78) and are saved on it, so later turns
+/// resend them to the model like the desktop does.
 /// `warden-cli`'s REPL and the desktop app don't use this: the CLI has no persistence at all, and
 /// desktop's frontend already does its own read/append/save around the IPC boundary.
 pub async fn handle_turn(
@@ -777,11 +779,12 @@ pub async fn handle_turn(
     conversation_id: &str,
     title_seed: &str,
     user_input: &str,
+    attachments: Vec<Attachment>,
 ) -> anyhow::Result<MessageOutcome> {
     let existing = load_conversation(conversations_dir, conversation_id)?;
     let existed = existing.is_some();
     let history: Vec<Message> = existing.iter().flat_map(|c| &c.messages).map(to_message).collect();
-    let outcome = orchestrator.handle_message(&history, user_input).await?;
+    let outcome = orchestrator.handle_message_with_attachments(&history, user_input, attachments.clone()).await?;
 
     // P78: the model call can take a minute, and in the meantime a hub client may have renamed or
     // deleted this conversation (or finished another turn in it) — so the file is read again here,
@@ -813,7 +816,7 @@ pub async fn handle_turn(
         content: user_input.to_string(),
         created_at: now_millis(),
         usage: None,
-        attachments: Vec::new(),
+        attachments,
         generated_files: Vec::new(),
     });
     conversation.messages.push(ConversationMessage {
@@ -1907,7 +1910,7 @@ oauth = true
             rename_conversation(dir, "c1", "Renamed").unwrap();
         });
 
-        handle_turn(&orchestrator, &dir, "c1", "hi", "hi").await.unwrap();
+        handle_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new()).await.unwrap();
 
         let saved = load_conversation(&dir, "c1").unwrap().unwrap();
         assert_eq!(saved.title, "Renamed");
@@ -1924,7 +1927,7 @@ oauth = true
             delete_conversation(dir, "c1").unwrap();
         });
 
-        let outcome = handle_turn(&orchestrator, &dir, "c1", "hi", "hi").await.unwrap();
+        let outcome = handle_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new()).await.unwrap();
 
         assert_eq!(outcome.content, "answer");
         assert_eq!(load_conversation(&dir, "c1").unwrap(), None);
@@ -1932,16 +1935,19 @@ oauth = true
     }
 
     #[tokio::test]
-    async fn handle_turn_starts_a_new_conversation_titled_from_the_seed() {
+    async fn handle_turn_starts_a_new_conversation_titled_from_the_seed_and_keeps_the_attachments() {
         let root = temp_dir("turn-new");
         let dir = root.join("conversations");
         let orchestrator = orchestrator_acting_mid_turn(&root, |_| {});
+        let pdf = Attachment { mime_type: "application/pdf".to_string(), data: "JVBE".to_string() };
 
-        handle_turn(&orchestrator, &dir, "c2", "Plan a trip to Lisbon", "Plan a trip to Lisbon").await.unwrap();
+        handle_turn(&orchestrator, &dir, "c2", "Plan a trip to Lisbon", "Plan a trip to Lisbon", vec![pdf.clone()]).await.unwrap();
 
         let saved = load_conversation(&dir, "c2").unwrap().unwrap();
         assert_eq!(saved.title, "Plan a trip to Lisbon");
         assert_eq!(saved.messages.len(), 2);
+        assert_eq!(saved.messages[0].attachments, vec![pdf]);
+        assert!(saved.messages[1].attachments.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 

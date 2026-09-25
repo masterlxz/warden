@@ -152,7 +152,11 @@ fn to_content(message: Message) -> Content {
         Role::System => unreachable!("system messages are pulled out into system_instruction before this point"),
         Role::User => {
             let mut parts: Vec<Part> = message.attachments.into_iter().map(attachment_part).collect();
-            parts.push(Part::text(message.content));
+            // A turn that's only an attachment has no text — no empty text part for it. A PDF
+            // needs nothing special here: `inlineData` takes it like an image (P78).
+            if !message.content.is_empty() || parts.is_empty() {
+                parts.push(Part::text(message.content));
+            }
             Content { role: Some("user"), parts }
         }
         Role::Assistant if !message.tool_calls.is_empty() => Content {
@@ -314,6 +318,16 @@ mod tests {
         assert_eq!(parts[0]["inlineData"]["mimeType"], "image/webp");
         assert_eq!(parts[0]["inlineData"]["data"], "AAAA");
         assert_eq!(parts[1]["text"], "what's this?");
+    }
+
+    #[test]
+    fn a_pdf_only_turn_is_one_inline_data_part() {
+        let message = Message::user_with_attachments("", vec![Attachment { mime_type: "application/pdf".to_string(), data: "JVBE".to_string() }]);
+        let json = serde_json::to_value(to_content(message)).unwrap();
+
+        let parts = json["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "application/pdf");
     }
 
     /// Gemini's "thinking" models reject a follow-up request that's missing this on a

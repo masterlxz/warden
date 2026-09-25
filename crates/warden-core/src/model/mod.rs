@@ -38,15 +38,21 @@ pub struct ToolCall {
     pub thought_signature: Option<String>,
 }
 
-/// An inline image attached to a user message (P28, image-only for now — no generic file/PDF
-/// support, since that varies too much between providers, e.g. OpenAI needs a separate Files
-/// API upload). `data` is raw base64, without a `data:...;base64,` prefix.
+/// Inline media attached to a user message: an image (P28) or, since P78, a PDF
+/// (`PDF_MIME_TYPE`), which all three providers now take inline as base64 (Anthropic's `document`
+/// block, OpenAI's `file` part, Gemini's `inlineData`). `data` is raw base64, without a
+/// `data:...;base64,` prefix.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     pub mime_type: String,
     pub data: String,
 }
+
+pub const PDF_MIME_TYPE: &str = "application/pdf";
+
+/// The mime types a user may attach to a turn — what every provider accepts inline.
+pub const USER_ATTACHMENT_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif", PDF_MIME_TYPE];
 
 #[derive(Debug, Clone)]
 pub struct Message {

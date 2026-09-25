@@ -251,20 +251,6 @@ fn open_generated_file(state: State<'_, AppState>, path: String) -> Result<(), S
     tauri_plugin_opener::open_path(target, None::<&str>).map_err(|e| format!("{e:#}"))
 }
 
-/// Filename handed to the Whisper API for a recorded clip — only the extension matters (the API
-/// infers format from it). `stop_recording` always produces `audio/wav` (native capture, P28);
-/// the other cases are kept for robustness in case that ever changes.
-fn audio_filename_for_mime_type(mime_type: &str) -> &'static str {
-    match mime_type {
-        "audio/webm" => "audio.webm",
-        "audio/ogg" => "audio.ogg",
-        "audio/mp4" => "audio.mp4",
-        "audio/wav" => "audio.wav",
-        "audio/mpeg" => "audio.mp3",
-        _ => "audio.webm",
-    }
-}
-
 /// Transcribes a voice recording from the composer's mic button (P28 part 2) — always via a
 /// dedicated Whisper API key, independent of which chat provider is active, so voice input works
 /// the same regardless of whether Gemini/OpenAI/Anthropic is selected.
@@ -279,7 +265,8 @@ async fn transcribe_audio(audio: AttachmentPayload) -> Result<String, String> {
         .ok_or_else(|| "Set a Whisper API key in Settings to enable voice input".to_string())?;
 
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio.data).map_err(|e| format!("{e:#}"))?;
-    let filename = audio_filename_for_mime_type(&audio.mime_type);
+    // `stop_recording` always produces `audio/wav` (native capture, P28).
+    let filename = warden_core::transcribe::audio_filename_for_mime_type(&audio.mime_type);
 
     warden_core::transcribe::transcribe_audio(&api_key, bytes, filename).await.map_err(|e| format!("{e:#}"))
 }

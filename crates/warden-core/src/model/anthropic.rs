@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -33,6 +33,8 @@ impl AnthropicProvider {
 enum ContentBlock {
     Text { text: String },
     Image { source: ImageSource },
+    /// A PDF attachment (P78) — same base64 source shape as `Image`.
+    Document { source: ImageSource },
     ToolUse { id: String, name: String, input: Value },
     ToolResult { tool_use_id: String, content: String },
 }
@@ -47,7 +49,13 @@ struct ImageSource {
 }
 
 fn attachment_block(attachment: Attachment) -> ContentBlock {
-    ContentBlock::Image { source: ImageSource { kind: "base64", media_type: attachment.mime_type, data: attachment.data } }
+    let is_pdf = attachment.mime_type == PDF_MIME_TYPE;
+    let source = ImageSource { kind: "base64", media_type: attachment.mime_type, data: attachment.data };
+    if is_pdf {
+        ContentBlock::Document { source }
+    } else {
+        ContentBlock::Image { source }
+    }
 }
 
 #[derive(Serialize)]
@@ -196,7 +204,10 @@ fn to_anthropic_message(message: Message) -> AnthropicMessage {
         Role::Assistant => AnthropicMessage { role: "assistant", content: vec![ContentBlock::Text { text: message.content }] },
         Role::User => {
             let mut content: Vec<ContentBlock> = message.attachments.into_iter().map(attachment_block).collect();
-            content.push(ContentBlock::Text { text: message.content });
+            // The API rejects an empty text block — a turn that's only an attachment has no text.
+            if !message.content.is_empty() || content.is_empty() {
+                content.push(ContentBlock::Text { text: message.content });
+            }
             AnthropicMessage { role: "user", content }
         }
     }
@@ -281,6 +292,19 @@ mod tests {
         assert_eq!(content[0]["source"]["data"], "AAAA");
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content[1]["text"], "what's this?");
+    }
+
+    #[test]
+    fn a_pdf_becomes_a_document_block_and_an_empty_text_is_left_out() {
+        let message = Message::user_with_attachments("", vec![Attachment { mime_type: "application/pdf".to_string(), data: "JVBE".to_string() }]);
+        let json = serde_json::to_value(to_anthropic_message(message)).unwrap();
+
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "document");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "application/pdf");
+        assert_eq!(content[0]["source"]["data"], "JVBE");
     }
 
     #[test]

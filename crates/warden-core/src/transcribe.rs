@@ -17,6 +17,20 @@ struct TranscriptionResponse {
     text: String,
 }
 
+/// A file name whose extension tells Whisper the recording's format — it has no separate mime-type
+/// field. Ignores mime parameters, since a browser's `MediaRecorder` reports e.g.
+/// `audio/webm;codecs=opus` (P78). Unknown types fall back to webm, the usual recorder output.
+pub fn audio_filename_for_mime_type(mime_type: &str) -> &'static str {
+    match mime_type.split(';').next().unwrap_or_default().trim() {
+        "audio/webm" => "audio.webm",
+        "audio/ogg" => "audio.ogg",
+        "audio/mp4" => "audio.mp4",
+        "audio/wav" => "audio.wav",
+        "audio/mpeg" => "audio.mp3",
+        _ => "audio.webm",
+    }
+}
+
 /// Transcribes an audio recording to text. `filename` only needs a plausible extension (e.g.
 /// `"audio.webm"`) — the API infers the format from it, no separate mime-type field.
 pub async fn transcribe_audio(api_key: &str, audio_bytes: Vec<u8>, filename: &str) -> anyhow::Result<String> {
@@ -44,5 +58,13 @@ mod tests {
     fn transcription_response_deserializes_from_the_wire_shape() {
         let parsed: TranscriptionResponse = serde_json::from_str(r#"{"text": "hello world"}"#).unwrap();
         assert_eq!(parsed.text, "hello world");
+    }
+
+    #[test]
+    fn audio_filename_ignores_mime_parameters_and_falls_back_to_webm() {
+        assert_eq!(audio_filename_for_mime_type("audio/wav"), "audio.wav");
+        assert_eq!(audio_filename_for_mime_type("audio/webm;codecs=opus"), "audio.webm");
+        assert_eq!(audio_filename_for_mime_type("audio/mp4; codecs=mp4a.40.2"), "audio.mp4");
+        assert_eq!(audio_filename_for_mime_type("audio/unknown"), "audio.webm");
     }
 }

@@ -88,6 +88,11 @@ pub enum ClientMessage {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<String>,
+        /// Images or PDFs sent with this turn (P78) — the mime types in
+        /// `warden_core::model::USER_ATTACHMENT_MIME_TYPES`, within the hub's size cap; anything
+        /// else gets a `ChatError`. With attachments, `message` may be empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
     ToolCallResult {
@@ -160,6 +165,14 @@ pub enum ClientMessage {
         request_id: u64,
         conversation_id: String,
     },
+    /// Voice input (P78): a recording the hub transcribes with Whisper, the same way the desktop's
+    /// mic button does — the text comes back in `Transcription` for the client to put in its
+    /// composer, nothing is sent to the model. `TranscriptionError` when the hub has no Whisper key
+    /// or the call fails.
+    Transcribe {
+        request_id: u64,
+        audio: Attachment,
+    },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
     /// point is finding a hub *before* knowing its credential. Answered by `DiscoverAck` and the
@@ -168,6 +181,13 @@ pub enum ClientMessage {
     Goodbye {
         reason: Option<String>,
     },
+}
+
+impl ClientMessage {
+    /// A plain text `Chat` turn to the default conversation, with no attachments.
+    pub fn chat(message: impl Into<String>) -> Self {
+        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new() }
+    }
 }
 
 /// Messages sent from the server to a connected client.
@@ -274,6 +294,15 @@ pub enum ServerMessage {
     /// A `ListConversations`/`RenameConversation`/`DeleteConversation` failed (invalid id, no such
     /// conversation, unreadable directory) — the raw error text, same posture as `SkillError`.
     ConversationError {
+        request_id: u64,
+        message: String,
+    },
+    /// Reply to `ClientMessage::Transcribe`.
+    Transcription {
+        request_id: u64,
+        text: String,
+    },
+    TranscriptionError {
         request_id: u64,
         message: String,
     },
@@ -533,13 +562,35 @@ mod tests {
     #[test]
     fn a_chat_from_before_conversations_existed_has_no_conversation_id() {
         let msg = serde_json::from_str::<ClientMessage>(r#"{"type":"chat","message":"hi"}"#).unwrap();
-        assert_eq!(msg, ClientMessage::Chat { message: "hi".into(), conversation_id: None });
+        assert_eq!(msg, ClientMessage::chat("hi"));
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
 
-        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()) };
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new() };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
+    }
+
+    #[test]
+    fn a_chat_with_attachments_and_transcription_messages_round_trip() {
+        let chat = ClientMessage::Chat {
+            message: String::new(),
+            conversation_id: None,
+            attachments: vec![Attachment { mime_type: "application/pdf".into(), data: "JVBE".into() }],
+        };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"","attachments":[{"mimeType":"application/pdf","data":"JVBE"}]}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
+
+        let transcribe = ClientMessage::Transcribe { request_id: 1, audio: Attachment { mime_type: "audio/webm".into(), data: "GkXf".into() } };
+        let json = serde_json::to_string(&transcribe).unwrap();
+        assert_eq!(json, r#"{"type":"transcribe","requestId":1,"audio":{"mimeType":"audio/webm","data":"GkXf"}}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), transcribe);
+
+        let text = ServerMessage::Transcription { request_id: 1, text: "hello".into() };
+        assert_eq!(serde_json::to_string(&text).unwrap(), r#"{"type":"transcription","requestId":1,"text":"hello"}"#);
+        let err = ServerMessage::TranscriptionError { request_id: 2, message: "no key".into() };
+        assert_eq!(serde_json::to_string(&err).unwrap(), r#"{"type":"transcriptionError","requestId":2,"message":"no key"}"#);
     }
 
     #[test]

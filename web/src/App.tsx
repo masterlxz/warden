@@ -6,7 +6,7 @@ import LoginView from "./components/LoginView";
 import SkillsView from "./components/SkillsView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
-import type { ConversationSummary } from "./hub/messages";
+import type { Attachment, ConversationSummary } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
 const HISTORY_LIMIT = 200;
@@ -34,6 +34,12 @@ function titleFrom(message: string): string {
   return [...collapsed].length > 40 ? `${[...collapsed].slice(0, 40).join("")}…` : collapsed;
 }
 
+/** What the hub titles a turn with no words after (`title_seed` in `chat_input.rs`). */
+function titleSeed(message: string, attachments: Attachment[]): string {
+  if (message.trim() !== "" || attachments.length === 0) return message;
+  return attachments.every((a) => a.mimeType.startsWith("image/")) ? "Image" : "Document";
+}
+
 export default function App() {
   const identityRef = useRef<Identity>(loadIdentity());
   const connRef = useRef<ServerConnection | null>(null);
@@ -54,9 +60,9 @@ export default function App() {
     saveLastConversation(id);
   }, []);
   /** Turns sent and not answered yet, by conversation id — each conversation waits on its own. */
-  const [pendingTurns, setPendingTurnsState] = useState<Record<string, string>>({});
-  const pendingTurnsRef = useRef<Record<string, string>>({});
-  const setPendingTurns = useCallback((update: (current: Record<string, string>) => Record<string, string>) => {
+  const [pendingTurns, setPendingTurnsState] = useState<Record<string, ChatEntry>>({});
+  const pendingTurnsRef = useRef<Record<string, ChatEntry>>({});
+  const setPendingTurns = useCallback((update: (current: Record<string, ChatEntry>) => Record<string, ChatEntry>) => {
     pendingTurnsRef.current = update(pendingTurnsRef.current);
     setPendingTurnsState(pendingTurnsRef.current);
   }, []);
@@ -97,7 +103,7 @@ export default function App() {
   const loadConversation = useCallback(async (connection: ServerConnection, id: string) => {
     const withPending = (loaded: ChatEntry[]): ChatEntry[] => {
       const waiting = pendingTurnsRef.current[id];
-      return waiting === undefined ? loaded : [...loaded, { role: "user", content: waiting, attachments: [] }];
+      return waiting === undefined ? loaded : [...loaded, waiting];
     };
     try {
       const history = await connection.fetchHistory(id, HISTORY_LIMIT);
@@ -225,22 +231,29 @@ export default function App() {
     setPhase({ kind: "login" });
   }
 
-  function handleSend(message: string) {
+  function handleSend(message: string, attachments: Attachment[]) {
     const connection = connRef.current;
     if (!connection) return;
     const id = activeIdRef.current;
-    setEntries((current) => [...current, { role: "user", content: message, attachments: [] }]);
-    setPendingTurns((current) => ({ ...current, [id]: message }));
+    const entry: ChatEntry = { role: "user", content: message, attachments };
+    setEntries((current) => [...current, entry]);
+    setPendingTurns((current) => ({ ...current, [id]: entry }));
     if (!conversations.some((c) => c.id === id)) {
       const now = Date.now();
-      setConversations((current) => [{ id, title: titleFrom(message), createdAt: now, updatedAt: now }, ...current]);
+      setConversations((current) => [{ id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now }, ...current]);
     }
     try {
-      connection.sendChat(message, id);
+      connection.sendChat(message, id, attachments);
     } catch (err) {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
     }
+  }
+
+  async function handleTranscribe(audio: Attachment): Promise<string> {
+    const connection = connRef.current;
+    if (!connection) throw new Error("sem conexão com o hub");
+    return connection.transcribe(audio);
   }
 
   function openConversation(id: string) {
@@ -353,7 +366,13 @@ export default function App() {
                 </button>
                 <span className="chat-title">{activeTitle}</span>
               </div>
-              <ChatView entries={entries} pending={activeId in pendingTurns} disabled={!phase.connected} onSend={handleSend} />
+              <ChatView
+                entries={entries}
+                pending={activeId in pendingTurns}
+                disabled={!phase.connected}
+                onSend={handleSend}
+                onTranscribe={handleTranscribe}
+              />
             </div>
           </div>
         ) : (

@@ -62,6 +62,7 @@ export interface ConnectOptions {
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /** Where the hub is: the page's own origin (the hub serves this page on its WebSocket port), or
  * `VITE_HUB_URL` under `npm run dev`. */
@@ -243,11 +244,13 @@ export class ServerConnection {
       case "history":
       case "conversationList":
       case "conversationOk":
+      case "transcription":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
       case "skillError":
       case "historyError":
       case "conversationError":
+      case "transcriptionError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
       case "authError":
@@ -260,10 +263,17 @@ export class ServerConnection {
     }
   }
 
-  /** Sends one chat turn to `conversationId` (a new id starts a new conversation). The reply
-   * arrives asynchronously via `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string): void {
-    this.socket.send(encode({ type: "chat", message, conversationId }));
+  /** Sends one chat turn to `conversationId` (a new id starts a new conversation), with any
+   * images/PDFs. The reply arrives asynchronously via `onChatMessage`, tagged with the same id. */
+  sendChat(message: string, conversationId: string, attachments: Attachment[] = []): void {
+    this.socket.send(encode({ type: "chat", message, conversationId, ...(attachments.length > 0 && { attachments }) }));
+  }
+
+  /** P78 — the hub's transcription of a voice recording. Whisper can take a while on a long clip,
+   * hence the longer wait than other requests. */
+  async transcribe(audio: Attachment): Promise<string> {
+    const reply = await this.request((requestId) => ({ type: "transcribe", requestId, audio }), TRANSCRIBE_TIMEOUT_MS);
+    return reply.type === "transcription" ? reply.text : "";
   }
 
   /** This device's conversations on the hub, newest-updated first. */
@@ -300,13 +310,13 @@ export class ServerConnection {
     return reply.type === "history" ? reply.messages : [];
   }
 
-  private request(build: (requestId: number) => ClientMessage): Promise<ServerMessage> {
+  private request(build: (requestId: number) => ClientMessage, timeoutMs = REQUEST_TIMEOUT_MS): Promise<ServerMessage> {
     return new Promise((resolve, reject) => {
       const requestId = this.nextRequestId++;
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error("o hub não respondeu"));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
       try {
         this.socket.send(encode(build(requestId)));

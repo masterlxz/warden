@@ -2,7 +2,44 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-24 (Sessão 99)
+> Última atualização: 2026-09-24 (Sessão 99, continuação)
+
+---
+
+### 2026-09-24 — Sessão 99 (continuação)
+
+- **Objetivo**: P78, anexos enviados do navegador, escolhido pelo usuário. Decisões dele: imagens, voz,
+  arquivos de texto e PDF; imagens reduzidas no navegador; só a web nesta fatia.
+
+**O que foi feito**:
+
+- **Núcleo** (`warden-core`): PDF inline nos três provedores (`document` na Anthropic, `file` na OpenAI e
+  `inlineData` no Gemini), `PDF_MIME_TYPE`/`USER_ATTACHMENT_MIME_TYPES`, e nenhum bloco de texto vazio num
+  turno só com anexo. `transcribe::audio_filename_for_mime_type` veio do desktop e ignora parâmetros de mime.
+- **`warden-bootstrap`**: o `handle_turn` recebe os anexos e os grava no turno do usuário (Telegram e WhatsApp
+  passam `Vec::new()`).
+- **Protocolo**: `Chat.attachments`, `Transcribe`/`Transcription`/`TranscriptionError` e o construtor
+  `ClientMessage::chat(texto)`, que os testes passaram a usar.
+- **Hub**: `chat_input.rs` com a validação (tipos, 10 por turno, 12 MiB), o título de turno sem texto, a trait
+  `Transcriber` e o `WhisperTranscriber`. O `Server::with_transcriber` é ligado no `warden-server` e no hub
+  embutido do desktop, e o `Transcribe` roda fora do laço de leitura.
+- **Web**: `hub/attachments.ts` (prepara imagem, PDF e texto, confere os limites e monta a mensagem),
+  `hub/recorder.ts` (`MediaRecorder`), e o composer do `ChatView` com clipe, arrastar e soltar, colar imagem,
+  prévias removíveis e botão de microfone. O turno pendente guarda a entrada inteira, com os anexos.
+- **Verificação**:
+  - `cargo test --workspace`: 698 passando, incluindo serialização de PDF nos três provedores, validação e
+    transcrição com fake, `handle_turn` gravando os anexos, e integração com PDF sem texto, histórico, título
+    e tipo recusado. `cargo clippy --workspace --all-targets` limpo.
+  - Web: `tsc` e `build` limpos.
+  - Ponta a ponta: `warden-server` real com o `connection.ts` e o `attachments.ts` reais no Node. Tipo inválido
+    recusado, turno com PDF chegando ao Gemini (400 só pela chave falsa), `Transcribe` sem chave com mensagem
+    clara, cerca de código maior que as crases do arquivo, e limite de 12 MB conferido no cliente.
+  - **Sem teste em navegador real e sem chamada de verdade a nenhum provedor com PDF ou ao Whisper.**
+
+**Próximo passo**: o usuário testar num navegador (reiniciar o hub com o binário novo): imagem grande, GIF,
+PDF, arquivo `.md`, colar print, arrastar arquivo e, pelo HTTPS do Tailscale, o microfone. Vale confirmar PDF
+num provedor real, principalmente na OpenAI. Mobile e extensão podem ganhar o envio numa próxima fatia. As
+fatias que sobram do P78 são vault, configurações e uso/gasto.
 
 ---
 

@@ -264,7 +264,7 @@ async fn handle_update(
 
     // Spending limits (P4) are counted per chat: a private chat's id is the person's own.
     let orchestrator = orchestrator.with_spend_context(SpendContext::new("telegram").with_user(conversation_id.clone()));
-    let (reply, attachments) = match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &conversation_id, &title_seed, text).await
+    let (reply, attachments) = match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &conversation_id, &title_seed, text, Vec::new()).await
     {
         Ok(outcome) => (outcome.content, outcome.attachments),
         Err(err) => {

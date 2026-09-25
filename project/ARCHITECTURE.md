@@ -1646,3 +1646,33 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   estreito; no mobile, um `endDrawer`, para não tirar a seta de voltar do `ChatScreen`. No mobile o
   `ChatTranscript` recebe uma `ConversationBackend` (que o `ServerConnection` implementa) em vez de funções
   soltas, e por isso dá para testá-lo com um fake.
+
+## Anexos e voz enviados do navegador (P78, Sessão 99, continuação)
+
+- **Decisões do usuário**: imagens, voz, arquivos de texto e PDF; imagens reduzidas no navegador; só a web
+  nesta fatia (o protocolo já serve para mobile e extensão depois).
+- **PDF entra no núcleo, sem Files API**: os três provedores agora aceitam PDF inline em base64. Na Anthropic,
+  bloco `document`; na OpenAI, parte `file` com `file_data` em data URL (o nome é fixo, `attachment.pdf`,
+  porque o `Attachment` não carrega nome); no Gemini, o mesmo `inlineData` da imagem. Isso revê a decisão da
+  Sessão 40 ("OpenAI exige upload separado"), que ficou desatualizada. `USER_ATTACHMENT_MIME_TYPES` em
+  `warden_core::model` é a lista aceita. Junto, uma correção latente: uma mensagem só com anexo não manda mais
+  bloco de texto vazio, que a Anthropic recusa.
+- **Protocolo**: `Chat.attachments` (aditivo, vazio por padrão) e `Transcribe` → `Transcription`/
+  `TranscriptionError`. O `handle_turn` recebe os anexos e os grava no turno do usuário, então o histórico os
+  mostra e os turnos seguintes os reenviam ao modelo, como no desktop (custo: um PDF volta em todo turno
+  daquela conversa).
+- **Validação no hub** (`chat_input.rs`): só os tipos da lista, no máximo 10 por turno e **12 MiB de base64 no
+  total**. O navegador manda a mensagem inteira num frame só, e o tungstenite lê frames de até 16 MiB, então um
+  anexo maior derrubaria a conexão em vez de dar erro. A web confere o mesmo limite antes de enviar. Um turno
+  sem texto recebe o título "Image" ou "Document".
+- **Texto vai no próprio texto da mensagem**: arquivos de texto (até 200 KB) são lidos no navegador e entram na
+  mensagem como bloco cercado, com o nome do arquivo. A cerca é maior que qualquer sequência de crases do
+  arquivo. Não precisou mudar provedor nenhum.
+- **Imagens**: redimensionadas para no máximo 2048 px e recomprimidas em JPEG 0,85 com fundo branco, a menos
+  que já sejam pequenas (até 1 MB e dentro dos 2048 px). GIF vai como está, para manter a animação.
+- **Voz**: `MediaRecorder` no navegador (webm/opus no Chrome/Firefox, mp4 no Safari) e o hub transcreve com o
+  Whisper. A chave é a mesma `api_keys.whisper` do microfone do desktop, relida do config a cada chamada
+  (`WhisperTranscriber`, atrás de uma trait `Transcriber` para os testes não chamarem a API). O
+  `audio_filename_for_mime_type` saiu do desktop para o `warden_core::transcribe` e passou a ignorar
+  parâmetros como `;codecs=opus`. **O navegador só libera o microfone em HTTPS ou `localhost`**: num hub de LAN
+  em `http://`, o botão aparece desabilitado com a explicação, e a voz depende do TLS do Tailscale (P36).

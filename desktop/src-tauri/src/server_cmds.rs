@@ -193,7 +193,9 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
 
     let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path)
         .await?
-        .with_web_ui(Arc::new(warden_server::EmbeddedWebUi));
+        .with_web_ui(Arc::new(warden_server::EmbeddedWebUi))
+        // P78 — voice input from the web UI, with the same Whisper key as the desktop's mic button.
+        .with_transcriber(Arc::new(warden_server::chat_input::WhisperTranscriber::new(None)));
     let bound_addr = server.local_addr()?;
     let (secure_url, cert_renewal) = match tailscale {
         Some((tls, cert)) => {

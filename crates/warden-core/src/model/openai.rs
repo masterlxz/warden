@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -82,6 +82,8 @@ enum Content {
 enum ContentPart {
     Text { text: String },
     ImageUrl { image_url: ImageUrl },
+    /// A PDF attachment (P78), sent inline as a data URL — no Files API upload.
+    File { file: FileData },
 }
 
 #[derive(Serialize)]
@@ -89,8 +91,20 @@ struct ImageUrl {
     url: String,
 }
 
+#[derive(Serialize)]
+struct FileData {
+    filename: &'static str,
+    file_data: String,
+}
+
 fn attachment_part(attachment: Attachment) -> ContentPart {
-    ContentPart::ImageUrl { image_url: ImageUrl { url: format!("data:{};base64,{}", attachment.mime_type, attachment.data) } }
+    let url = format!("data:{};base64,{}", attachment.mime_type, attachment.data);
+    if attachment.mime_type == PDF_MIME_TYPE {
+        // The API wants a file name; `Attachment` doesn't carry one.
+        ContentPart::File { file: FileData { filename: "attachment.pdf", file_data: url } }
+    } else {
+        ContentPart::ImageUrl { image_url: ImageUrl { url } }
+    }
 }
 
 #[derive(Serialize)]
@@ -249,7 +263,8 @@ fn to_chat_message(message: Message) -> ChatMessage {
     let content = if message.attachments.is_empty() {
         Content::Text(message.content)
     } else {
-        let mut parts = vec![ContentPart::Text { text: message.content }];
+        // A turn that's only an attachment has no text — no empty text part for it.
+        let mut parts = if message.content.is_empty() { Vec::new() } else { vec![ContentPart::Text { text: message.content }] };
         parts.extend(message.attachments.into_iter().map(attachment_part));
         Content::Parts(parts)
     };
@@ -332,6 +347,18 @@ mod tests {
         assert_eq!(parts[0]["text"], "what's this?");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn a_pdf_becomes_a_file_part_and_an_empty_text_is_left_out() {
+        let message = Message::user_with_attachments("", vec![Attachment { mime_type: "application/pdf".to_string(), data: "JVBE".to_string() }]);
+        let json = serde_json::to_value(to_chat_message(message)).unwrap();
+
+        let parts = json["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "file");
+        assert_eq!(parts[0]["file"]["filename"], "attachment.pdf");
+        assert_eq!(parts[0]["file"]["file_data"], "data:application/pdf;base64,JVBE");
     }
 
     #[test]
