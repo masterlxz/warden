@@ -452,6 +452,29 @@ Permitir que terceiros escrevam plugins sem modificar o core:
 - MCP servers como padrão de plugins
 - Marketplace de plugins
 
+**Atualizado 2026-09-26** (Sessão 103, ideia do usuário, só registro): **dois marketplaces, um de plugins e um
+de skills**, e o sistema de plugins precisa "engordar" antes. Hoje o Warden se estende por servidores MCP, skills
+no vault e tools em código, sem um conceito de "plugin" que empacote isso. Perguntas abertas (ver P85): o que um
+plugin contém (MCP + skills + agentes + configuração, ou WASM), manifesto e versões, permissões pedidas e
+aprovadas pelo usuário, onde o marketplace fica hospedado (central ou descentralizado), assinatura/revisão contra
+plugin malicioso, e se skills são um tipo de plugin ou um marketplace à parte.
+
+### Multiusuário no mesmo Warden
+
+Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo
+workspace, com **permissões configuráveis**. Hoje o hub tem um dono (a chave de pareamento) e os devices são
+aparelhos, não pessoas. Perguntas abertas (ver P84): o que é um usuário (conta, TruthID, grupo de devices), o que é
+de cada um e o que é compartilhado (conversas, vault, skills, agentes, chaves, limites), papéis e permissões (por
+tool, agente, pasta do vault), e relação com o tier pago (P50).
+
+### Vários servidores — failover e divisão de carga
+
+Ideia do usuário (2026-09-26, Sessão 103), só registro: mais de um hub servindo o mesmo usuário, para que a falha
+ou a sobrecarga de um não derrube o Warden. Hoje cada cliente fala com um hub só e o estado mora no disco dele.
+Perguntas abertas (ver P86): ativo-passivo ou ativo-ativo, onde fica o estado compartilhado (o sync já replica o
+vault; conversas e devices não), como o cliente troca de hub, tools entre devices em hubs diferentes, e relação com
+o tier pago (P50).
+
 ### Storage Provider plugável (desacoplar vault de TruthID)
 
 Spec trazida pronta pelo usuário (2026-09-08) propondo desacoplar **onde a memória `.md` é
