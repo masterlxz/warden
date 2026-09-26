@@ -19,10 +19,10 @@ use warden_bootstrap::settings::{
     check_active_provider, check_agents, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
 };
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_live_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
+    aggregate_usage, bootstrap, build_model_provider, build_storage_provider, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, ManageAgentsTool, McpServerConfig,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
     Overrides,
     Provider, ProviderConfig, RemoteNodeConfig, StorageProviderKind, UsageSummary,
 };
@@ -30,7 +30,6 @@ use warden_core::memory::Vault;
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
-use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_server_protocol::protocol::{LimitSettingsDto, PriceSettingsDto};
 
 struct AppState {
@@ -174,7 +173,9 @@ async fn send_message(
     agent_id: Option<String>,
     provider_id: Option<String>,
 ) -> Result<SendMessageResult, String> {
-    let mut orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
+    // Spends as the desktop (P4) — set before scoping, so the agents this one delegates or writes to
+    // spend the same way.
+    let mut orchestrator = { state.orchestrator.lock().unwrap().clone() }?.with_spend_context(SpendContext::new("desktop"));
     let history: Vec<Message> = history.into_iter().map(Into::into).collect();
     let attachments: Vec<Attachment> = attachments.into_iter().map(Into::into).collect();
 
@@ -184,32 +185,18 @@ async fn send_message(
         let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
         if let Some(id) = &agent_id {
-            if let Some(agent) = config.agents.iter().find(|a| &a.id == id) {
-                persona = Some(agent.persona.clone());
-                // Scopes the skill catalog and `use_skill` to this agent (P72 c).
-                orchestrator = orchestrator.with_agent(Some(id.clone()));
-                // Delegation targets are built from the orchestrator *before* it is narrowed to this
-                // agent's tools, so each target gets its own list rather than this agent's (P46).
-                // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
-                let agents_revision = AgentsRevision::default();
-                let delegate_tool = if agent.can_delegate_to_agents {
-                    build_live_delegate_to_agent_tool(&path, &config, &orchestrator, agents_revision.clone())
-                } else {
-                    None
-                };
-                let known_tools: Vec<String> = orchestrator.tools().iter().map(|t| t.spec().name).collect();
-                orchestrator = orchestrator.with_allowed_tools(agent.allowed_tools.as_deref());
-                if let Some(tool) = delegate_tool {
-                    orchestrator = orchestrator.with_tool(tool);
-                }
-                // Lets a "chief" create/edit other agents (P46); every change waits for the user's yes.
-                if agent.can_manage_agents {
-                    let manage = ManageAgentsTool::new(path.clone())
-                        .with_known_tools(known_tools)
-                        .with_caller_limit(agent.allowed_tools.clone())
-                        .with_agents_revision(agents_revision);
-                    orchestrator = orchestrator.with_tool(Arc::new(manage));
-                }
+            // `message_agent` writes into the same conversations the sidebar lists, and tells the
+            // window to reload them.
+            let notify_app = app.clone();
+            let extras = AgentExtras {
+                conversations_dir: default_conversations_dir(),
+                on_conversation_changed: Some(Arc::new(move |conversation_id: &str| {
+                    let _ = notify_app.emit("conversations-changed", conversation_id.to_string());
+                })),
+            };
+            if let Some(scoped) = scope_to_agent(&orchestrator, &config, Some(&path), id, extras) {
+                persona = Some(scoped.persona);
+                orchestrator = scoped.orchestrator;
             }
         }
         if let Some(id) = &provider_id {
@@ -221,9 +208,7 @@ async fn send_message(
 
     // Tools that need a human "yes" (SSH hosts with `require_approval`, `manage_agents`) ask through
     // the window; every other channel has no approver and those actions are refused there.
-    let orchestrator = orchestrator
-        .with_spend_context(SpendContext::new("desktop"))
-        .with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
+    let orchestrator = orchestrator.with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult {
@@ -348,6 +333,9 @@ struct AgentPayload {
     /// Opt-in (P46) for the `manage_agents` tool — see `AgentConfig::can_manage_agents`.
     #[serde(default)]
     can_manage_agents: bool,
+    /// Opt-in (P46) for the `message_agent` tool — see `AgentConfig::can_message_agents`.
+    #[serde(default)]
+    can_message_agents: bool,
     /// Tool isolation (P46) — see `AgentConfig::allowed_tools`. `None` (JSON `null`) = every tool.
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
@@ -533,6 +521,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 provider_id: a.provider_id.unwrap_or_default(),
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
+                can_message_agents: a.can_message_agents,
                 allowed_tools: a.allowed_tools,
             })
             .collect(),
@@ -621,6 +610,7 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
                 provider_id: Some(a.provider_id),
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
+                can_message_agents: a.can_message_agents,
                 allowed_tools: a.allowed_tools,
             })
             .collect(),

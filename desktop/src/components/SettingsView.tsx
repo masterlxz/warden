@@ -640,6 +640,21 @@ function AgentCard({
         <span className="settings-checkbox-row">
           <input
             type="checkbox"
+            checked={agent.canMessageAgents}
+            onChange={(e) => onChange({ ...agent, canMessageAgents: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can leave messages for other agents</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent write to another agent as a colleague. The message and the answer land in a conversation
+          ("this agent → the other") that shows up in your sidebar, where you can also talk to the other agent.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
             checked={agent.allowedTools !== null}
             onChange={(e) => onChange({ ...agent, allowedTools: e.currentTarget.checked ? [] : null })}
           />
@@ -1022,7 +1037,10 @@ function SettingsView() {
   function addAgent() {
     setForm((f) => ({
       ...f,
-      agents: [...f.agents, { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null }],
+      agents: [
+        ...f.agents,
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, allowedTools: null },
+      ],
     }));
   }
 

@@ -1806,3 +1806,57 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   mesma espera de 1 s e o mesmo lock do salvar configurações, então as duas telas dividem o mesmo ritmo de
   tentativas. **A troca da chave de pareamento fica fora da web** de propósito: quem descobrisse a chave poderia
   trocá-la e deixar o dono sem acesso. Ela fica no terminal (`gen-key` + reiniciar) e no desktop da máquina do hub.
+
+## Agentes nomeados no hub e modo "funcionários" (P46, Sessão 104)
+
+- **Um lugar só para "falar como o agente X"**: `warden_bootstrap::agent_scope::scope_to_agent(base, config,
+  config_path, agent_id, AgentExtras)` faz o que o desktop (`send_message`) e o CLI (`resolve_turn_context`) faziam
+  cada um à sua maneira, e agora o hub também: `with_agent` (skills), os alvos do `delegate_to_agent` montados do
+  orquestrador **ainda sem estreitar** (cada alvo fica com a lista própria), `with_allowed_tools` do agente, e as
+  tools opt-in (`delegate_to_agent`, `manage_agents`, `message_agent`) por cima. Não troca o modelo nem põe approver:
+  o canal decide (no CLI um `/models use` vence o `provider_id` do agente) e cada canal tem o approver que tem.
+  `base` precisa vir com o contexto de gasto (P4) já posto, porque delegados e destinatários de recado são clonados
+  dele; o desktop passou a pôr o `with_spend_context` antes de escopar.
+- **Hub**: `ClientMessage::Chat.agent_id` (opcional, `serde(default)`, o mobile de hoje não muda) e
+  `ConversationSummary.agent_id`. O hub relê o `config.toml` pelo `SettingsHost::config_path()` a cada turno com
+  agente (sem `SettingsHost`, ou com id inexistente, `ChatError` antes do modelo) e roda `handle_agent_turn`, que é
+  o `handle_turn` com persona e grava `conversation.agent_id` a cada turno (`None` limpa: quem manda sem agente não
+  tem agente selecionado). O seletor da web lê a lista de agentes do `requestSettings` que ela já usa, sem mensagem
+  nova.
+- **Aprovação pela conexão**: `warden-server/src/approval.rs::WsApprover`, um por conexão, manda
+  `ServerMessage::ApprovalRequest { approvalId, target, action, detail }` ao aparelho que está conversando e espera
+  `ClientMessage::ResolveApproval`. Prazo de 120 s, igual ao das tools: ao esgotar, manda `ApprovalCancelled` e conta
+  como não. Conexão caída conta como não na hora (`close()` limpa os pendentes), e id desconhecido é ignorado. Vale
+  para o `manage_agents`, para host SSH com aprovação e para a pausa de limite de gasto (P4), que usam o mesmo
+  approver. Decisão do usuário: aprova quem está no navegador que mandou a mensagem, sem repetir a chave de
+  pareamento (como no desktop).
+- **Modo "funcionários" = recado para a conversa do colega** (`warden-bootstrap/src/message_agent.rs`), decisão do
+  usuário entre três opções (recado, passar a conversa, quadro no vault). `message_agent { action: send|read,
+  agent_id, message?, wait? }`:
+  - O recado vai para a conversa `thread_id(A, B)` (`agents-` + FNV-1a de 64 bits dos dois nomes; nome de agente é
+    texto livre, então o id é um hash estável e seguro para arquivo, e os nomes ficam no título `"A → B"`), no
+    diretório de conversas do canal, com `agent_id = B`. Quem abre a conversa e escreve fala direto com B, com os
+    recados como contexto.
+  - O recado é gravado **antes** de B começar (aparece na lista enquanto B trabalha). B roda numa task destacada, com
+    `handle_turn` e a persona, skills, `allowed_tools` e provider **dele** (`delegate_targets`, o mesmo do
+    `delegate_to_agent`), a partir do orquestrador base. A resposta, ou o erro, é gravada na mesma conversa.
+  - **Parada estrutural contra ping-pong**: B nunca recebe `message_agent`/`delegate_to_agent`/`manage_agents` nem
+    approver, porque essas coisas são anexadas por turno e o turno de B não recebe nenhuma. **Um recado em andamento
+    por par** (`IN_FLIGHT`, conjunto global por caminho do arquivo, liberado por `Drop`): no máximo um turno de fundo
+    por par de agentes, faça o modelo o que fizer.
+  - `wait: true` espera até 180 s; depois disso devolve `still_answering` e B continua. `read` diz se B ainda está
+    respondendo e devolve as respostas depois do último recado.
+  - Opt-in `AgentConfig.can_message_agents`, só ligado por uma pessoa: o `manage_agents` cria sem ele, e ele entrou
+    nos `FLAG_GATED_TOOLS` (não pode ser pedido via `allowed_tools`). A spec relê o config a cada iteração, então um
+    agente criado no meio do turno já aparece.
+  - Aviso de mudança (`ConversationsChanged`): no desktop é o evento Tauri `conversations-changed` (o `App.tsx` pega
+    do disco só aquela conversa). No hub é `ServerMessage::ConversationsChanged`, mandado por um sender **fraco**
+    (`downgrade`), para um agente que ainda responde depois de o aparelho sair não segurar a task de escrita da
+    conexão.
+  - **Onde vale**: desktop e hub/web. O CLI não guarda conversas, então lá o agente não recebe a tool (pendência
+    registrada). No hub, a conversa vai para o diretório do aparelho que mandou a mensagem.
+- **Limitações aceitas**: o turno de B não é cobrado do `TurnBudget` do turno de A (é um turno próprio, com o
+  próprio teto de delegação); os limites de gasto por período (P4) valem, porque o contexto de gasto vem junto. No
+  desktop, o frontend grava conversas sem o lock do bootstrap, então se a pessoa escrever na conversa "A → B"
+  exatamente enquanto B grava a resposta, um dos dois pode sobrescrever o outro (janela pequena, mesma classe do P78).
+  O approver da web vale para qualquer aparelho que já pode conversar (inclusive `Pending`), igual ao chat.

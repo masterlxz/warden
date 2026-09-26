@@ -42,6 +42,8 @@ export interface ConversationSummary {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** The agent (P46) this conversation last spoke with — absent for none. */
+  agentId?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
@@ -140,6 +142,7 @@ export interface AgentSettings {
   providerId: string;
   canDelegateToAgents: boolean;
   canManageAgents: boolean;
+  canMessageAgents: boolean;
   allowedTools: string[] | null;
 }
 
@@ -208,7 +211,9 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[] }
+  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string }
+  /** P46 — the person's answer to an `approvalRequest`. */
+  | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -288,6 +293,12 @@ export type ServerMessage =
   /** `you` is this browser's own device id. */
   | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
   | { type: "deviceError"; requestId: number; message: string; authRejected: boolean }
+  /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
+  | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }
+  /** The hub stopped waiting (deadline): close the prompt. */
+  | { type: "approvalCancelled"; approvalId: number }
+  /** An agent left a message for another, or answered one, in one of this browser's conversations. */
+  | { type: "conversationsChanged"; conversationId: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -335,6 +346,9 @@ export function decode(text: string): ServerMessage {
     case "settings":
     case "settingsSaved":
     case "deviceList":
+    case "approvalRequest":
+    case "approvalCancelled":
+    case "conversationsChanged":
       return json as ServerMessage;
     case "deviceError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };

@@ -383,7 +383,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
 
       <Section
         title="Agentes"
-        hint="Personas que uma conversa pode escolher (no desktop e nas delegações entre agentes)."
+        hint="Personas que uma conversa pode escolher (aqui no chat, no desktop e nas delegações entre agentes)."
         action={
           <button
             type="button"
@@ -391,7 +391,10 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             onClick={() =>
               update((d) => ({
                 ...d,
-                agents: [...d.agents, keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null })],
+                agents: [
+                  ...d.agents,
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, allowedTools: null }),
+                ],
               }))
             }
           >
@@ -429,6 +432,10 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 <label className="settings-check">
                   <input type="checkbox" checked={a.canManageAgents} onChange={(e) => patchAgent(a.key, { canManageAgents: e.target.checked })} />
                   Pode criar e editar agentes (sempre com a sua aprovação)
+                </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={a.canMessageAgents} onChange={(e) => patchAgent(a.key, { canMessageAgents: e.target.checked })} />
+                  Pode deixar recados para outros agentes (numa conversa que você vê)
                 </label>
                 <label className="settings-check">
                   <input

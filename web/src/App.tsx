@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
+import ApprovalModal from "./components/ApprovalModal";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
@@ -8,7 +9,7 @@ import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
-import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ChatEntry } from "./hub/connection";
+import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import type { Attachment, ConversationSummary } from "./hub/messages";
 
@@ -73,6 +74,15 @@ export default function App() {
   const [view, setView] = useState<View>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [conn, setConn] = useState<ServerConnection | null>(null);
+  /** The hub's configured agents (P46), for the chat's agent selector. */
+  const [agentIds, setAgentIds] = useState<string[]>([]);
+  /** The agent the open conversation speaks with — "" for none. */
+  const [agentId, setAgentId] = useState("");
+  /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
+  const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
+  /** Mirrors `conversations` for the connection's callbacks. */
+  const conversationsRef = useRef<ConversationSummary[]>([]);
+  conversationsRef.current = conversations;
 
   const forgetToken = useCallback(() => {
     const { deviceToken: _dropped, ...rest } = identityRef.current;
@@ -99,6 +109,16 @@ export default function App() {
     } catch (err) {
       if (connRef.current === connection) setConversationsError(`Não foi possível carregar as conversas: ${errorText(err)}`);
       return undefined;
+    }
+  }, []);
+
+  /** Re-reads the agent list. Without it (settings unreadable) the selector just offers none. */
+  const refreshAgents = useCallback(async (connection: ServerConnection) => {
+    try {
+      const { settings } = await connection.requestSettings();
+      if (connRef.current === connection) setAgentIds(settings.agents.map((a) => a.id));
+    } catch {
+      if (connRef.current === connection) setAgentIds([]);
     }
   }, []);
 
@@ -165,6 +185,17 @@ export default function App() {
         // New title/order — and a conversation started here now exists on the hub.
         void refreshConversations(connection);
       });
+      connection.onApproval((event) => {
+        if (event.kind === "prompt") setApprovals((queue) => [...queue, event.prompt]);
+        else setApprovals((queue) => queue.filter((p) => p.approvalId !== event.approvalId));
+      });
+      // An agent left a message for another, or answered one (P46): new or changed conversations.
+      connection.onConversationsChanged((conversationId) => {
+        void refreshConversations(connection);
+        if (conversationId === activeIdRef.current && !(conversationId in pendingTurnsRef.current)) {
+          void loadConversation(connection, conversationId);
+        }
+      });
       connection.onStatusChange((status) => {
         if (status.kind === "connected" || connRef.current !== connection) return;
         connRef.current = null;
@@ -174,6 +205,8 @@ export default function App() {
         }
         // The hub may still finish and save those turns, but this connection won't hear the answer.
         setPendingTurns(() => ({}));
+        // Nobody can answer those any more: the hub counts them as a no.
+        setApprovals([]);
         if (status.kind === "disconnected") return; // our own goodbye (logout)
         if (connection.wasRejected) {
           forgetToken();
@@ -184,6 +217,7 @@ export default function App() {
         scheduleReconnect();
       });
 
+      void refreshAgents(connection);
       const list = await refreshConversations(connection);
       if (connRef.current !== connection) return;
       // Keep the open conversation across reconnects. A remembered one that was deleted
@@ -192,10 +226,12 @@ export default function App() {
       if (list && !list.some((c) => c.id === current) && !(current in pendingTurnsRef.current)) {
         setActiveId(list[0]?.id ?? newConversationId());
       }
+      const open = list?.find((c) => c.id === activeIdRef.current);
+      if (open) setAgentId(open.agentId ?? "");
       await loadConversation(connection, activeIdRef.current);
     },
     // `scheduleReconnect` (below) only touches refs and state setters, so it's safe to leave out.
-    [clearReconnect, forgetToken, loadConversation, refreshConversations, setActiveId, setPendingTurns],
+    [clearReconnect, forgetToken, loadConversation, refreshAgents, refreshConversations, setActiveId, setPendingTurns],
   );
 
   function scheduleReconnect() {
@@ -231,8 +267,19 @@ export default function App() {
     setEntries([]);
     setConversations([]);
     setPendingTurns(() => ({}));
+    setApprovals([]);
+    setAgentIds([]);
     setServerName(null);
     setPhase({ kind: "login" });
+  }
+
+  function handleApproval(approvalId: number, approved: boolean) {
+    setApprovals((queue) => queue.filter((p) => p.approvalId !== approvalId));
+    try {
+      connRef.current?.resolveApproval(approvalId, approved);
+    } catch {
+      // The connection is gone; the hub already counts an unanswered request as a no.
+    }
   }
 
   function handleSend(message: string, attachments: Attachment[]) {
@@ -244,10 +291,13 @@ export default function App() {
     setPendingTurns((current) => ({ ...current, [id]: entry }));
     if (!conversations.some((c) => c.id === id)) {
       const now = Date.now();
-      setConversations((current) => [{ id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now }, ...current]);
+      setConversations((current) => [
+        { id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now, ...(agentId && { agentId }) },
+        ...current,
+      ]);
     }
     try {
-      connection.sendChat(message, id, attachments);
+      connection.sendChat(message, id, attachments, agentId || undefined);
     } catch (err) {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
@@ -272,6 +322,8 @@ export default function App() {
     if (id === activeIdRef.current) return;
     setActiveId(id);
     setEntries([]);
+    // Each conversation remembers the agent it spoke with last (P46).
+    setAgentId(conversationsRef.current.find((c) => c.id === id)?.agentId ?? "");
     const connection = connRef.current;
     if (connection) void loadConversation(connection, id);
   }
@@ -283,6 +335,13 @@ export default function App() {
     if (!conversations.some((c) => c.id === activeIdRef.current) && entries.length === 0) return;
     setActiveId(newConversationId());
     setEntries([]);
+    setAgentId("");
+  }
+
+  function showView(next: View) {
+    setView(next);
+    // Agents may have been added or renamed in Settings meanwhile.
+    if (next === "chat" && connRef.current) void refreshAgents(connRef.current);
   }
 
   async function handleRename(id: string, title: string) {
@@ -340,7 +399,7 @@ export default function App() {
           <span className={`status-dot ${phase.connected ? "status-dot--on" : "status-dot--off"}`} title={phase.connected ? "Conectado" : "Reconectando…"} />
         </div>
         <nav className="app-tabs" aria-label="Seções">
-          <button type="button" className={view === "chat" ? "tab tab--active" : "tab"} onClick={() => setView("chat")}>
+          <button type="button" className={view === "chat" ? "tab tab--active" : "tab"} onClick={() => showView("chat")}>
             Chat
           </button>
           <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
@@ -393,6 +452,20 @@ export default function App() {
                   ☰ Conversas
                 </button>
                 <span className="chat-title">{activeTitle}</span>
+                {(agentIds.length > 0 || agentId !== "") && (
+                  <label className="agent-picker">
+                    <span className="agent-picker-label">Agente</span>
+                    <select value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={activeId in pendingTurns}>
+                      <option value="">Nenhum</option>
+                      {agentIds.map((id) => (
+                        <option key={id} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                      {agentId !== "" && !agentIds.includes(agentId) && <option value={agentId}>{agentId} (removido)</option>}
+                    </select>
+                  </label>
+                )}
               </div>
               <ChatView
                 entries={entries}
@@ -416,6 +489,7 @@ export default function App() {
           <SkillsView conn={conn} />
         )}
       </main>
+      <ApprovalModal queue={approvals} onAnswer={handleApproval} />
     </div>
   );
 }

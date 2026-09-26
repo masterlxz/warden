@@ -150,6 +150,12 @@ usa a mesma limpeza. Falta do P46: fila de jobs.
 gasta do mesmo teto de chamadas do turno e o que não foi coletado é cancelado ao fim do turno (nada persistido). Com isso
 o pacote do P46 está completo; falta só validar com modelo real (o teto por período/usuário do P4 veio na Sessão 86).
 
+**Agentes no hub e modo "funcionários" (Sessão 104)**: a web (e qualquer cliente do hub) escolhe o agente por conversa,
+com as mesmas tools opt-in do desktop e aprovação pelo próprio navegador. O modo "funcionários" ganhou o mecanismo
+que faltava: `message_agent`, com que um agente deixa um recado para outro numa conversa "A → B" que o usuário vê e na
+qual pode entrar. O colega responde em segundo plano, como ele mesmo, sem poder mandar recado de volta. Falta: CLI e
+mobile (P87).
+
 **Limites de gasto por janela (P4, Sessão 86)**: teto em tokens e/ou $ por janela deslizante configurável, por escopo
 (global, agente, canal, usuário do canal), checado antes de cada chamada de modelo. Ao esgotar, o turno **pausa e
 pergunta** (desktop/CLI) — "sim" libera um passo pelo resto da janela, "não" encerra — e o agente enxerga o medidor

@@ -59,18 +59,17 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, build_model_provider, default_limit_configs, default_model_for, load_config_from_path,
-    remove_agent_references, remove_provider_references, rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, AgentConfig,
-    FileConfig, LimitConfig, LimitScope, ManageAgentsTool, Overrides, Provider, ProviderConfig, SshHostConfig,
+    build_model_provider, default_limit_configs, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
+    rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, scope_to_agent, AgentConfig, AgentExtras, FileConfig,
+    LimitConfig, LimitScope, Overrides, Provider, ProviderConfig, SshHostConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::skill::{self, Skill, SkillStore};
 use warden_core::spend::{now_millis, LimitStatus, Price, SpendGuard, Spent, DEFAULT_EXTEND_STEP, DEFAULT_WARN_AT};
-use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::ssh::test_connection;
-use warden_core::tool::{ApprovalRequest, Approver, Tool};
+use warden_core::tool::{ApprovalRequest, Approver};
 
 use crate::commands::{self, Command, ParseOutcome};
 
@@ -840,14 +839,12 @@ async fn run_turn(
     terminal: &mut CliTerminal,
     model_override: Option<Arc<dyn ModelProvider>>,
     system_prompt: Option<&str>,
-    extra_tools: Vec<Arc<dyn Tool>>,
 ) -> anyhow::Result<Option<MessageOutcome>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
     let orchestrator = match model_override {
         Some(model) => orchestrator.with_model(model),
         None => orchestrator.clone(),
     };
-    let orchestrator = extra_tools.into_iter().fold(orchestrator, |orchestrator, tool| orchestrator.with_tool(tool));
     // Tools that need a human "yes" (`ssh_*` on a host with `require_approval`) ask through here.
     let (approval_tx, mut approval_rx) = mpsc::unbounded_channel::<(ApprovalRequest, oneshot::Sender<bool>)>();
     let orchestrator = orchestrator.with_approver(Arc::new(ChannelApprover { requests: approval_tx }));
@@ -1080,17 +1077,16 @@ async fn prompt_field(terminal: &mut CliTerminal, title: &str, initial: &str) ->
 struct TurnContext {
     model_override: Option<Arc<dyn ModelProvider>>,
     system_prompt: Option<String>,
-    /// Opt-in tools (`delegate_to_agent`, `manage_agents`), attached after `allowed_tools` is applied.
-    extra_tools: Vec<Arc<dyn Tool>>,
-    /// The active agent's `allowed_tools` (P46); `None` = every tool.
-    allowed_tools: Option<Vec<String>>,
+    /// The session's orchestrator scoped to the active agent (P46/P72 c): its skills, its own tool
+    /// list and the opt-in tools it has flags for — see `warden_bootstrap::scope_to_agent`.
+    orchestrator: Orchestrator,
 }
 
 /// Resolves what this turn should actually use, given the session's `provider_id`/`agent_id`
 /// selections — a model override (only when it differs from whatever `run()`'s own `orchestrator`
-/// parameter already is), a persona to pass as `system_prompt`, and (P46) the tools to attach when
-/// the active agent has opted in: `delegate_to_agent` (`AgentConfig.can_delegate_to_agents`) and
-/// `manage_agents` (`can_manage_agents`). Reloads config fresh only when at least one selection
+/// parameter already is), a persona to pass as `system_prompt`, and (P46) the orchestrator scoped to
+/// the active agent (`scope_to_agent`: skills, `allowed_tools`, `delegate_to_agent`, `manage_agents`;
+/// no `message_agent`, since the terminal keeps no conversations). Reloads config fresh only when at least one selection
 /// is active; when neither is, returns an empty context immediately with no disk access at
 /// all, so a session that never touches `/models`/`/agents` behaves exactly as before this
 /// feature existed. An explicit `/models use` always wins over an active agent's own
@@ -1098,37 +1094,23 @@ struct TurnContext {
 /// the desktop's chat header uses between its agent and provider selectors.
 fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> anyhow::Result<TurnContext> {
     if session.provider_id.is_none() && session.agent_id.is_none() {
-        return Ok(TurnContext { model_override: None, system_prompt: None, extra_tools: Vec::new(), allowed_tools: None });
+        return Ok(TurnContext { model_override: None, system_prompt: None, orchestrator: orchestrator.clone() });
     }
 
     let config = load_fresh_config(session.config_path.as_deref())?;
 
-    let active_agent = session.agent_id.as_ref().and_then(|id| config.agents.iter().find(|a| &a.id == id));
-    let system_prompt = active_agent.map(|a| a.persona.clone());
-    let mut extra_tools: Vec<Arc<dyn Tool>> = Vec::new();
-    if let Some(agent) = active_agent {
-        // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
-        let agents_revision = AgentsRevision::default();
-        if agent.can_delegate_to_agents {
-            extra_tools.extend(match &session.config_path {
-                Some(path) => build_live_delegate_to_agent_tool(path, &config, orchestrator, agents_revision.clone()),
-                None => build_delegate_to_agent_tool(&config, orchestrator),
-            });
-        }
-        if agent.can_manage_agents {
-            // The tool reads and writes the same file `/agents` does; without a path there is nothing to edit.
-            if let Some(path) = &session.config_path {
-                extra_tools.push(Arc::new(
-                    ManageAgentsTool::new(path)
-                        .with_known_tools(session.tool_names.clone())
-                        .with_caller_limit(agent.allowed_tools.clone())
-                        .with_agents_revision(agents_revision),
-                ));
-            }
-        }
-    }
+    let scoped = session
+        .agent_id
+        .as_deref()
+        .and_then(|id| scope_to_agent(orchestrator, &config, session.config_path.as_deref(), id, AgentExtras::default()));
+    let agent_provider_id = scoped.as_ref().and_then(|s| s.provider_id.clone());
+    let (system_prompt, scoped_orchestrator) = match scoped {
+        Some(scoped) => (Some(scoped.persona), scoped.orchestrator),
+        // An agent removed from the file since `/agents use` keeps only its skill scope, as before.
+        None => (None, orchestrator.with_agent(session.agent_id.clone())),
+    };
 
-    let effective_provider_id = session.provider_id.clone().or_else(|| active_agent.and_then(|a| a.provider_id.clone()));
+    let effective_provider_id = session.provider_id.clone().or(agent_provider_id);
 
     let model_override = match effective_provider_id {
         Some(provider_id) => {
@@ -1142,8 +1124,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
         None => None,
     };
 
-    let allowed_tools = active_agent.and_then(|a| a.allowed_tools.clone());
-    Ok(TurnContext { model_override, system_prompt, extra_tools, allowed_tools })
+    Ok(TurnContext { model_override, system_prompt, orchestrator: scoped_orchestrator })
 }
 
 async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
@@ -1922,8 +1903,12 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let marker = if session.agent_id.as_deref() == Some(a.id.as_str()) { " [ativo]" } else { "" };
             let delegate_marker = if a.can_delegate_to_agents { " [delega]" } else { "" };
             let manage_marker = if a.can_manage_agents { " [cria]" } else { "" };
+            let message_marker = if a.can_message_agents { " [recados]" } else { "" };
             let tools_marker = a.allowed_tools.as_ref().map(|t| format!(" [tools: {}]", t.len())).unwrap_or_default();
-            (format!("{} ({}) — {}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, tools_marker), Style::default())
+            (
+                format!("{} ({}) — {}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tools_marker),
+                Style::default(),
+            )
         })
         .collect();
     render_message_card(terminal, "agentes", accent_style(), lines)
@@ -1994,6 +1979,15 @@ async fn prompt_agent_can_manage(terminal: &mut CliTerminal, initial: bool) -> a
     .await
 }
 
+async fn prompt_agent_can_message(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(
+        terminal,
+        " pode deixar recados pra outros agentes? vale no desktop e na web, não no terminal (s/n) ",
+        initial,
+    )
+    .await
+}
+
 /// Loops a single wizard field until it's blank (= every tool) or a comma-separated list of tools
 /// that exist. Returns `Ok(None)` if the user cancels (distinct from `Ok(Some(None))`, "all tools").
 async fn prompt_agent_tools(terminal: &mut CliTerminal, known: &[String], initial: Option<&[String]>) -> anyhow::Result<Option<Option<Vec<String>>>> {
@@ -2017,8 +2011,8 @@ fn parse_agent_tools(input: &str, known: &[String]) -> Result<Option<Vec<String>
     }
     let mut tools: Vec<String> = Vec::new();
     for name in input.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-        if matches!(name, "delegate_to_agent" | "manage_agents") {
-            return Err(format!("'{name}' não entra na lista — use as perguntas de delegar/criar agentes"));
+        if matches!(name, "delegate_to_agent" | "manage_agents" | "message_agent") {
+            return Err(format!("'{name}' não entra na lista — use as perguntas de delegar/criar agentes/recados"));
         }
         if !known.iter().any(|k| k == name) {
             return Err(format!("tool '{name}' não existe — disponíveis: {}", known.join(", ")));
@@ -2063,12 +2057,23 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_manage_agents) = prompt_agent_can_manage(terminal, false).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_message_agents) = prompt_agent_can_message(terminal, false).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, None).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
 
-    config.agents.push(AgentConfig { id: id.clone(), persona, provider_id, can_delegate_to_agents, can_manage_agents, allowed_tools });
+    config.agents.push(AgentConfig {
+        id: id.clone(),
+        persona,
+        provider_id,
+        can_delegate_to_agents,
+        can_manage_agents,
+        can_message_agents,
+        allowed_tools,
+    });
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
@@ -2096,13 +2101,24 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_manage_agents) = prompt_agent_can_manage(terminal, current.can_manage_agents).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_message_agents) = prompt_agent_can_message(terminal, current.can_message_agents).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, current.allowed_tools.as_deref()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
 
     let old_id = current.id.clone();
-    config.agents[index] = AgentConfig { id: new_id.clone(), persona, provider_id, can_delegate_to_agents, can_manage_agents, allowed_tools };
+    config.agents[index] = AgentConfig {
+        id: new_id.clone(),
+        persona,
+        provider_id,
+        can_delegate_to_agents,
+        can_manage_agents,
+        can_message_agents,
+        allowed_tools,
+    };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
     }
@@ -2815,7 +2831,7 @@ pub async fn run(
         insert_card(&mut terminal, vec![("você".to_string(), dim_style)], dim_style, plain_body_rows(trimmed), None)?;
         terminal.insert_before(1, |_buf| {})?;
 
-        let TurnContext { model_override, system_prompt, extra_tools, allowed_tools } = match resolve_turn_context(&session, orchestrator) {
+        let TurnContext { model_override, system_prompt, orchestrator: scoped } = match resolve_turn_context(&session, orchestrator) {
             Ok(resolved) => resolved,
             Err(err) => {
                 render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
@@ -2823,10 +2839,7 @@ pub async fn run(
             }
         };
 
-        // Scopes the skill catalog and `use_skill` to the active agent (P72 c), and its tools to its
-        // own list (P46) — before `run_turn` attaches the opt-in tools, which follow their own flags.
-        let scoped = orchestrator.with_agent(session.agent_id.clone()).with_allowed_tools(allowed_tools.as_deref());
-        match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref(), extra_tools).await {
+        match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref()).await {
             Ok(Some(outcome)) => {
                 session.turn_count += 1;
                 if let Some(usage) = &outcome.usage {

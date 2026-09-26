@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,7 +18,9 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
 use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
+use warden_bootstrap::{build_model_provider, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
+use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
@@ -431,6 +433,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     // P78: the hub's orchestrator can be swapped by a settings save, so this is rebuilt whenever the
     // shared one changes (see `ConnectionOrchestrator`).
     let mut orchestrator = ConnectionOrchestrator::new(shared_orchestrator.clone(), tools, tool_channel.clone(), device_id.clone());
+    // P46: approvals for this device's turns come back on this connection.
+    let approver = WsApprover::new(tx.clone());
 
     // P36: `revoke` must also end a connection that's already open — it happens in another
     // process (`warden-server devices revoke`, the desktop's Workspace screen), so the only signal
@@ -455,7 +459,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message, conversation_id, attachments }) => {
+                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id }) => {
                     let checked = resolve_conversation_id(conversation_id.clone())
                         .and_then(|id| validate_attachments(&attachments).map(|()| id));
                     let conversation_id = match checked {
@@ -466,17 +470,31 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         }
                     };
                     // Spending limits (P4) are counted per connected device.
-                    let orchestrator = orchestrator.current().with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
+                    let base = orchestrator.current().with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
+                    let (orchestrator, persona) = match &agent_id {
+                        None => (base, None),
+                        Some(id) => match scope_chat_agent(&base, settings.as_deref(), id, &conversations_dir, &tx) {
+                            Ok((scoped, persona)) => (scoped, Some(persona)),
+                            Err(message) => {
+                                let _ = tx.send(ServerMessage::ChatError { message, conversation_id: Some(conversation_id), spend_limit_id: None });
+                                continue;
+                            }
+                        },
+                    };
+                    // `manage_agents` and SSH hosts that need a yes ask this device.
+                    let orchestrator = orchestrator.with_approver(Arc::new(approver.clone()));
                     let conversations_dir = conversations_dir.clone();
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
-                        let reply = match warden_bootstrap::handle_turn(
+                        let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
+                        let reply = match warden_bootstrap::handle_agent_turn(
                             &orchestrator,
                             &conversations_dir,
                             &conversation_id,
                             &title_seed(&message, &attachments),
                             &message,
                             attachments,
+                            agent,
                         )
                         .await
                         {
@@ -494,6 +512,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         };
                         let _ = reply_tx.send(reply);
                     });
+                }
+                Ok(ClientMessage::ResolveApproval { approval_id, approved }) => {
+                    approver.resolve(approval_id, approved);
                 }
                 Ok(ClientMessage::ToolCallResult { call_id, result }) => {
                     tool_channel.resolve(call_id, Ok(result));
@@ -646,13 +667,52 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     }
 
     devices.lock().unwrap().remove(&device_id);
-    // `tool_channel` and this connection's own `Orchestrator` (its `RemoteTool`s) hold `tx` clones
-    // too — dropped here so the writer task actually ends once in-flight `Chat` tasks finish,
-    // instead of waiting on a sender that lives as long as this function.
-    drop((tx, tool_channel, orchestrator));
+    // Nobody is left to answer: open approvals count as a no right away.
+    approver.close();
+    // `tool_channel`, the approver and this connection's own `Orchestrator` (its `RemoteTool`s) hold
+    // `tx` clones too — dropped here so the writer task actually ends once in-flight `Chat` tasks
+    // finish, instead of waiting on a sender that lives as long as this function.
+    drop((tx, tool_channel, orchestrator, approver));
     writer_task.await.ok();
 
     Ok(())
+}
+
+/// A `Chat` turn's orchestrator speaking as the configured agent `agent_id` (P46), and its persona.
+/// The config is read fresh from the hub's settings file, so an agent created or edited a moment ago
+/// (web settings, `manage_agents`, the desktop) is what answers. `message_agent` writes into this
+/// device's conversations and tells it through `ConversationsChanged` — through a weak sender, so an
+/// agent still answering after the device left doesn't keep the connection's writer alive.
+fn scope_chat_agent(
+    base: &Orchestrator,
+    settings: Option<&dyn SettingsHost>,
+    agent_id: &str,
+    conversations_dir: &Path,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+) -> Result<(Orchestrator, String), String> {
+    let host = settings.ok_or_else(|| "this hub has no settings file, so it has no agents".to_string())?;
+    let path = host.config_path();
+    let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    let notify_tx = tx.downgrade();
+    let extras = AgentExtras {
+        conversations_dir: Some(conversations_dir.to_path_buf()),
+        on_conversation_changed: Some(Arc::new(move |conversation_id: &str| {
+            if let Some(tx) = notify_tx.upgrade() {
+                let _ = tx.send(ServerMessage::ConversationsChanged { conversation_id: conversation_id.to_string() });
+            }
+        })),
+    };
+    let scoped = scope_to_agent(base, &config, Some(&path), agent_id, extras).ok_or_else(|| format!("agent '{agent_id}' not found"))?;
+    let mut orchestrator = scoped.orchestrator;
+    if let Some(provider_id) = &scoped.provider_id {
+        let provider = config
+            .providers
+            .iter()
+            .find(|p| &p.id == provider_id)
+            .ok_or_else(|| format!("agent '{agent_id}' uses the model provider '{provider_id}', which no longer exists"))?;
+        orchestrator = orchestrator.with_model(build_model_provider(provider, None).map_err(|e| format!("{e:#}"))?);
+    }
+    Ok((orchestrator, scoped.persona))
 }
 
 /// One connection's view of the hub's orchestrator: the shared one, plus a `RemoteTool` for every

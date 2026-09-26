@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import ChatArea from "./components/ChatArea";
 import Sidebar from "./components/Sidebar";
@@ -60,6 +61,26 @@ function App() {
     invoke<Conversation[]>("list_conversations")
       .then(setConversations)
       .catch((err) => console.error("failed to load conversation history:", err));
+  }, []);
+
+  // An agent left a message for another, or answered one (P46 `message_agent`): the backend wrote
+  // that conversation to disk, so take the saved copy of it — only it, the rest stays as is here.
+  useEffect(() => {
+    const unlisten = listen<string>("conversations-changed", (event) => {
+      invoke<Conversation[]>("list_conversations")
+        .then((saved) => {
+          const changed = saved.find((c) => c.id === event.payload);
+          if (!changed) return;
+          setConversations((prev) => {
+            const rest = prev.filter((c) => c.id !== changed.id);
+            return [changed, ...rest].sort((a, b) => b.updatedAt - a.updatedAt);
+          });
+        })
+        .catch((err) => console.error("failed to reload a conversation:", err));
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, []);
 
   // Settings (providers/agents) only has a UI to edit itself in the Settings screen — refetch

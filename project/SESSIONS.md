@@ -2,7 +2,56 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 103)
+> Última atualização: 2026-09-26 (Sessão 104)
+
+---
+
+### 2026-09-26 — Sessão 104
+
+- **Objetivo**: P46, os dois itens escolhidos pelo usuário: (1) agentes nomeados no hub (web; mobile só no
+  protocolo) e (2) o modo "funcionários". Plano aprovado em Plan mode, com três decisões do usuário: recado para a
+  conversa do colega, aprovação num modal no navegador que mandou a mensagem, e mobile só no protocolo por enquanto.
+
+**O que foi feito**:
+
+- **`scope_to_agent`** (`warden-bootstrap/src/agent_scope.rs`): a montagem de "falar como o agente X" (skills, alvos
+  de delegação, `allowed_tools`, tools opt-in) virou uma função só, usada pelo desktop, pelo CLI e pelo hub. O desktop
+  passou a pôr o contexto de gasto antes de escopar.
+- **Hub**: `Chat.agentId`, `ConversationSummary.agentId`, `handle_agent_turn` (persona + `agent_id` gravado),
+  `WsApprover` (`approval.rs`: `ApprovalRequest`/`ApprovalCancelled`/`ResolveApproval`, 120 s, conexão caída = não),
+  e `ConversationsChanged` por sender fraco.
+- **`message_agent`** (`warden-bootstrap/src/message_agent.rs`) com o opt-in `can_message_agents`. Conversa
+  `agents-<hash>` titulada "A → B"; o recado é gravado antes, B responde numa task destacada, sem poder mandar recado de
+  volta; um recado em andamento por par; `wait` com 180 s; `read`. Entrou nos `FLAG_GATED_TOOLS` do `manage_agents`,
+  que cria agentes sem a flag.
+- **Telas**: web com seletor de agente no chat, `ApprovalModal.tsx` e o checkbox nas Settings. Desktop com o
+  checkbox e o evento `conversations-changed`, que recarrega só aquela conversa. CLI com a pergunta no wizard e o
+  marcador `[recados]`. O CSS foi editado pelo Edit.
+- Docs: `ARCHITECTURE.md` (seção nova), `PENDING.md` (P46 atualizado, P87 novo), `ROADMAP.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 775 passando, 0 falhas. `cargo clippy` limpo no workspace e no desktop. `tsc`/`build` da web
+  e do desktop limpos.
+- **Testes novos**: 7 do `message_agent`/`scope_to_agent`, 4 do `WsApprover`, 1 de protocolo e 4 de integração do hub
+  com modelo roteirizado (`tests/agents.rs`): persona pelo `agentId`, agente inexistente, aprovação sim/não do
+  `manage_agents` e recado com resposta e `ConversationsChanged`.
+- **Achado**: dois testes do `message_agent` falharam na suíte paralela com polling de 2 a 5 s, porque todo turno roda
+  a busca semântica do vault, que carrega um modelo. Troquei por um helper `eventually` com 30 s.
+- **Gemini real**, num `warden-server` isolado (`XDG_CONFIG_HOME` no scratchpad, config montado a partir do real sem
+  imprimir a chave, o `~/.config/warden` só foi lido):
+  - O agente "chefe" **escolheu sozinho** o `message_agent` e deixou o recado "Por favor, faça um haicai sobre o mar.".
+  - O "poeta" respondeu **como ele mesmo**, com um haicai, dentro da conversa "chefe → poeta", que apareceu na lista
+    com `agent=poeta` e disparou dois `conversationsChanged`.
+  - Na primeira tentativa, o 503 do Gemini também caiu no turno do poeta, e o erro ficou gravado na conversa, como
+    previsto.
+- **Não confirmado com o modelo real**: a resposta final do chefe depois do recado e o cenário do `manage_agents`.
+  O Gemini devolveu 503 ("high demand") nas três tentativas em ~8 minutos. Esses dois caminhos só estão cobertos pelos
+  testes com modelo roteirizado.
+- **Não testado**: nenhuma tela foi aberta (P80/P87).
+
+**Próximo passo**: repetir o teste do Gemini quando a API estiver normal (roteiro em `client.mjs`, mesma ideia do
+hub isolado). Depois o P80/P87 com o usuário, abrindo as telas. Depois P79 ou P61.
 
 ---
 

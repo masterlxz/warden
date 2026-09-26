@@ -29,14 +29,18 @@ use warden_core::tool::spend_tool::BudgetTool;
 use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
+pub mod agent_scope;
 mod config_file;
 pub mod manage_agents;
+pub mod message_agent;
 pub mod settings;
 pub mod skill_gen;
 pub mod spend;
 pub mod usage;
+pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
+pub use message_agent::{ConversationsChanged, MessageAgentTool};
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
@@ -122,6 +126,11 @@ pub struct AgentConfig {
     /// are switched on by a human in the Settings screen / `/agents` only.
     #[serde(default)]
     pub can_manage_agents: bool,
+    /// Opt-in (P46, "funcionários" mode) for the `message_agent` tool: leave a message in a
+    /// conversation with another agent, who answers it there in the background. Switched on by a
+    /// person only — `manage_agents` never grants it.
+    #[serde(default)]
+    pub can_message_agents: bool,
     /// Tool isolation (P46): the only tools this agent may use, by name. `None` (the default, and
     /// what every config.toml written before this field means) keeps every tool. `delegate_to_agent`
     /// and `manage_agents` never belong here — they follow the two `can_*` flags above. Applied in
@@ -838,25 +847,88 @@ pub async fn handle_turn(
     user_input: &str,
     attachments: Vec<Attachment>,
 ) -> anyhow::Result<MessageOutcome> {
+    handle_agent_turn(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, None).await
+}
+
+/// The named agent a `handle_agent_turn` speaks as: its persona goes in as the system prompt, and
+/// its id is saved on the conversation so a client reopening it picks the same agent (P46, hub).
+#[derive(Debug, Clone, Copy)]
+pub struct TurnAgent<'a> {
+    pub id: &'a str,
+    pub persona: &'a str,
+}
+
+/// `handle_turn` with an optional agent (P46): `orchestrator` should already be scoped to it
+/// (`agent_scope::scope_to_agent`). `None` is exactly `handle_turn` — no persona, and the
+/// conversation's `agent_id` is cleared, since a client that sends none has no agent selected.
+pub async fn handle_agent_turn(
+    orchestrator: &Orchestrator,
+    conversations_dir: &Path,
+    conversation_id: &str,
+    title_seed: &str,
+    user_input: &str,
+    attachments: Vec<Attachment>,
+    agent: Option<TurnAgent<'_>>,
+) -> anyhow::Result<MessageOutcome> {
     let existing = load_conversation(conversations_dir, conversation_id)?;
     let existed = existing.is_some();
     let history: Vec<Message> = existing.iter().flat_map(|c| &c.messages).map(to_message).collect();
-    let outcome = orchestrator.handle_message_with_attachments(&history, user_input, attachments.clone()).await?;
+    let outcome = orchestrator.handle_turn(&history, user_input, attachments.clone(), agent.map(|a| a.persona)).await?;
 
-    // P78: the model call can take a minute, and in the meantime a hub client may have renamed or
-    // deleted this conversation (or finished another turn in it) — so the file is read again here,
-    // under the same lock `rename_conversation`/`delete_conversation` take, instead of saving the
-    // copy loaded above over whatever changed.
+    let user = ConversationMessage {
+        id: message_id(),
+        role: ChatRole::User,
+        content: user_input.to_string(),
+        created_at: now_millis(),
+        usage: None,
+        attachments,
+        generated_files: Vec::new(),
+    };
+    append_to_conversation(
+        conversations_dir,
+        conversation_id,
+        title_seed,
+        agent.map(|a| a.id),
+        !existed,
+        vec![user, assistant_message(&outcome)],
+    )?;
+    Ok(outcome)
+}
+
+fn assistant_message(outcome: &MessageOutcome) -> ConversationMessage {
+    ConversationMessage {
+        id: message_id(),
+        role: ChatRole::Assistant,
+        content: outcome.content.clone(),
+        created_at: now_millis(),
+        usage: outcome.usage,
+        attachments: outcome.attachments.clone(),
+        generated_files: outcome.generated_files.clone(),
+    }
+}
+
+/// Appends `messages` to a conversation file and saves it, setting its `agent_id`. The file is
+/// read here, under the same lock `rename_conversation`/`delete_conversation` take (P78): a model
+/// call can take a minute, and in the meantime a hub client may have renamed or deleted the
+/// conversation (or finished another turn in it), so a copy loaded before the call must not be
+/// saved over what changed. A missing file is created, titled from `title_seed`, only when
+/// `create` — otherwise it was deleted meanwhile and stays deleted (`Ok(false)`).
+fn append_to_conversation(
+    dir: &Path,
+    id: &str,
+    title_seed: &str,
+    agent_id: Option<&str>,
+    create: bool,
+    messages: Vec<ConversationMessage>,
+) -> anyhow::Result<bool> {
     let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut conversation = match load_conversation(conversations_dir, conversation_id)? {
+    let mut conversation = match load_conversation(dir, id)? {
         Some(conversation) => conversation,
-        // Deleted while the model answered — the answer still goes back, but the conversation
-        // stays deleted instead of coming back with this one turn in it.
-        None if existed => return Ok(outcome),
+        None if !create => return Ok(false),
         None => {
             let now = now_millis();
             Conversation {
-                id: conversation_id.to_string(),
+                id: id.to_string(),
                 title: title_from(title_seed),
                 messages: Vec::new(),
                 created_at: now,
@@ -866,29 +938,11 @@ pub async fn handle_turn(
             }
         }
     };
-
-    conversation.messages.push(ConversationMessage {
-        id: message_id(),
-        role: ChatRole::User,
-        content: user_input.to_string(),
-        created_at: now_millis(),
-        usage: None,
-        attachments,
-        generated_files: Vec::new(),
-    });
-    conversation.messages.push(ConversationMessage {
-        id: message_id(),
-        role: ChatRole::Assistant,
-        content: outcome.content.clone(),
-        created_at: now_millis(),
-        usage: outcome.usage,
-        attachments: outcome.attachments.clone(),
-        generated_files: outcome.generated_files.clone(),
-    });
+    conversation.messages.extend(messages);
+    conversation.agent_id = agent_id.map(str::to_string);
     conversation.updated_at = now_millis();
-
-    save_conversation(conversations_dir, &conversation)?;
-    Ok(outcome)
+    save_conversation(dir, &conversation)?;
+    Ok(true)
 }
 
 /// Serializes the read-modify-write of a conversation file between `handle_turn`'s save and
@@ -1778,6 +1832,7 @@ oauth = true
                 provider_id: Some("ollama-local".to_string()),
                 can_delegate_to_agents: true,
                 can_manage_agents: true,
+                can_message_agents: true,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
             storage_provider: Some(StorageProviderKind::DecentralizedVault),
@@ -2380,6 +2435,7 @@ oauth = true
             provider_id: provider_id.map(str::to_string),
             can_delegate_to_agents: false,
             can_manage_agents: false,
+            can_message_agents: false,
             allowed_tools: None,
         }
     }

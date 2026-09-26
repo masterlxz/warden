@@ -54,6 +54,9 @@ pub struct ConversationSummary {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The agent (P46) this conversation last spoke with, so a client restores its selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// One line matching a `SearchVault` query (P78) — `warden_core::memory::SearchHit` on the wire.
@@ -296,6 +299,9 @@ pub struct AgentSettingsDto {
     pub provider_id: String,
     pub can_delegate_to_agents: bool,
     pub can_manage_agents: bool,
+    /// P46 "funcionários" mode. `#[serde(default)]`: a screen from before it existed leaves it off.
+    #[serde(default)]
+    pub can_message_agents: bool,
     /// `None` keeps every tool.
     pub allowed_tools: Option<Vec<String>>,
 }
@@ -419,6 +425,17 @@ pub enum ClientMessage {
         /// else gets a `ChatError`. With attachments, `message` may be empty.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<Attachment>,
+        /// The configured agent (P46) this turn speaks as: its persona, model, skills and tool
+        /// list, plus the tools its flags give it. Saved on the conversation. `None` = no agent,
+        /// what every client from before this field sends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+    },
+    /// The person's answer to a `ServerMessage::ApprovalRequest` (P46 `manage_agents`, SSH hosts
+    /// that need approval). An id with no pending request is ignored.
+    ResolveApproval {
+        approval_id: u64,
+        approved: bool,
     },
     /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
     ToolCallResult {
@@ -586,7 +603,7 @@ pub enum ClientMessage {
 impl ClientMessage {
     /// A plain text `Chat` turn to the default conversation, with no attachments.
     pub fn chat(message: impl Into<String>) -> Self {
-        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new() }
+        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None }
     }
 }
 
@@ -797,6 +814,25 @@ pub enum ServerMessage {
         message: String,
         #[serde(default)]
         auth_rejected: bool,
+    },
+    /// A tool in this client's `Chat` turn needs the person's yes (P46 `manage_agents`, SSH hosts
+    /// with `require_approval`) — `warden_core::tool::ApprovalRequest` on the wire. Answered by
+    /// `ResolveApproval`; no answer before the hub's deadline counts as no.
+    ApprovalRequest {
+        approval_id: u64,
+        target: String,
+        action: String,
+        detail: String,
+    },
+    /// The hub stopped waiting for `approval_id` (deadline reached): the client should close it.
+    ApprovalCancelled {
+        approval_id: u64,
+    },
+    /// One of this device's conversations was created or changed outside a `Chat` reply — an agent
+    /// left a message for another (P46 `message_agent`), or answered one. The client reloads its list
+    /// (and the conversation, if it's open).
+    ConversationsChanged {
+        conversation_id: String,
     },
     /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
     /// "which machine is this" and let them pick it, never a secret.
@@ -1057,10 +1093,30 @@ mod tests {
         assert_eq!(msg, ClientMessage::chat("hi"));
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
 
-        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new() };
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
+    }
+
+    #[test]
+    fn a_chat_can_name_an_agent_and_approvals_round_trip() {
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()) };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
+
+        let ask = ServerMessage::ApprovalRequest { approval_id: 3, target: "poet".into(), action: "create_agent".into(), detail: "d".into() };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(json, r#"{"type":"approvalRequest","approvalId":3,"target":"poet","action":"create_agent","detail":"d"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), ask);
+
+        let answer = serde_json::from_str::<ClientMessage>(r#"{"type":"resolveApproval","approvalId":3,"approved":true}"#).unwrap();
+        assert_eq!(answer, ClientMessage::ResolveApproval { approval_id: 3, approved: true });
+        let cancelled = serde_json::to_string(&ServerMessage::ApprovalCancelled { approval_id: 3 }).unwrap();
+        assert_eq!(cancelled, r#"{"type":"approvalCancelled","approvalId":3}"#);
+        let changed = serde_json::to_string(&ServerMessage::ConversationsChanged { conversation_id: "c".into() }).unwrap();
+        assert_eq!(changed, r#"{"type":"conversationsChanged","conversationId":"c"}"#);
     }
 
     #[test]
@@ -1069,6 +1125,7 @@ mod tests {
             message: String::new(),
             conversation_id: None,
             attachments: vec![Attachment { mime_type: "application/pdf".into(), data: "JVBE".into() }],
+            agent_id: None,
         };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"","attachments":[{"mimeType":"application/pdf","data":"JVBE"}]}"#);
@@ -1108,7 +1165,7 @@ mod tests {
             (
                 ServerMessage::ConversationList {
                     request_id: 1,
-                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2 }],
+                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None }],
                 },
                 r#"{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}"#,
             ),

@@ -112,6 +112,9 @@ export interface AgentEntry {
    * *other* agents, each change shown to you for approval first. It can never switch this flag, or
    * `canDelegateToAgents`, on for any agent — only this checkbox does. */
   canManageAgents: boolean;
+  /** Opt-in (P46, "funcionários" mode) — when true, this agent gets the `message_agent` tool: it can
+   * leave a message for another agent, which answers it in a conversation you see in the sidebar. */
+  canMessageAgents: boolean;
   /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
    * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
   allowedTools: string[] | null;

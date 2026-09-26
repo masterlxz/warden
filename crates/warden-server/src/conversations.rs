@@ -137,6 +137,7 @@ fn to_summary(conversation: Conversation) -> ConversationSummary {
         title: conversation.title,
         created_at: conversation.created_at,
         updated_at: conversation.updated_at,
+        agent_id: conversation.agent_id,
     }
 }
 

@@ -102,6 +102,20 @@ type StatusListener = (status: ConnectionStatus) => void;
 /** `conversationId` is the conversation the reply belongs to (P78) — the hub always sends it. */
 type ChatListener = (entry: ChatEntry, conversationId: string | undefined) => void;
 
+/** P46 — a tool in this browser's turn waiting for the person's yes. */
+export interface ApprovalPrompt {
+  approvalId: number;
+  target: string;
+  action: string;
+  detail: string;
+}
+
+/** `prompt` opens an approval; `cancelled` closes one the hub stopped waiting for. */
+export type ApprovalEvent = { kind: "prompt"; prompt: ApprovalPrompt } | { kind: "cancelled"; approvalId: number };
+type ApprovalListener = (event: ApprovalEvent) => void;
+/** Called with the id of a conversation an agent created or changed (P46 `message_agent`). */
+type ConversationsListener = (conversationId: string) => void;
+
 export interface ConnectOptions {
   url: string;
   deviceId: string;
@@ -139,6 +153,8 @@ export class ServerConnection {
   private readonly socket: WebSocket;
   private readonly statusListeners = new Set<StatusListener>();
   private readonly chatListeners = new Set<ChatListener>();
+  private readonly approvalListeners = new Set<ApprovalListener>();
+  private readonly conversationsListeners = new Set<ConversationsListener>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private nextNonce = 0;
   private pendingPingNonce: number | null = null;
@@ -195,6 +211,16 @@ export class ServerConnection {
   onChatMessage(listener: ChatListener): () => void {
     this.chatListeners.add(listener);
     return () => this.chatListeners.delete(listener);
+  }
+
+  onApproval(listener: ApprovalListener): () => void {
+    this.approvalListeners.add(listener);
+    return () => this.approvalListeners.delete(listener);
+  }
+
+  onConversationsChanged(listener: ConversationsListener): () => void {
+    this.conversationsListeners.add(listener);
+    return () => this.conversationsListeners.delete(listener);
   }
 
   static connect(options: ConnectOptions): Promise<ServerConnection> {
@@ -292,6 +318,17 @@ export class ServerConnection {
           listener({ role: "error", content: message.message, attachments: [], spendLimitId: message.spendLimitId }, message.conversationId);
         }
         break;
+      case "approvalRequest": {
+        const { approvalId, target, action, detail } = message;
+        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail } });
+        break;
+      }
+      case "approvalCancelled":
+        for (const listener of this.approvalListeners) listener({ kind: "cancelled", approvalId: message.approvalId });
+        break;
+      case "conversationsChanged":
+        for (const listener of this.conversationsListeners) listener(message.conversationId);
+        break;
       case "toolCallRequest":
         // Never advertised any tools, so the hub shouldn't ask — answer anyway so it isn't left waiting.
         this.socket.send(encode({ type: "toolCallError", callId: message.callId, message: "the web UI has no local tools" }));
@@ -347,9 +384,17 @@ export class ServerConnection {
   }
 
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation), with any
-   * images/PDFs. The reply arrives asynchronously via `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string, attachments: Attachment[] = []): void {
-    this.socket.send(encode({ type: "chat", message, conversationId, ...(attachments.length > 0 && { attachments }) }));
+   * images/PDFs, spoken by `agentId` (P46) when set. The reply arrives asynchronously via
+   * `onChatMessage`, tagged with the same id. */
+  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string): void {
+    this.socket.send(
+      encode({ type: "chat", message, conversationId, ...(attachments.length > 0 && { attachments }), ...(agentId && { agentId }) }),
+    );
+  }
+
+  /** P46 — the person's answer to an `ApprovalPrompt`. */
+  resolveApproval(approvalId: number, approved: boolean): void {
+    this.socket.send(encode({ type: "resolveApproval", approvalId, approved }));
   }
 
   /** P78 — the hub's transcription of a voice recording. Whisper can take a while on a long clip,

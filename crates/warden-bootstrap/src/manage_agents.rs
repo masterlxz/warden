@@ -32,8 +32,9 @@ use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 use crate::{load_config_from_path, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
-/// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`, never a tool list.
-const FLAG_GATED_TOOLS: [&str; 2] = ["delegate_to_agent", "manage_agents"];
+/// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`/`can_message_agents`,
+/// never a tool list.
+const FLAG_GATED_TOOLS: [&str; 3] = ["delegate_to_agent", "manage_agents", "message_agent"];
 /// Small enough that the approval card can show the whole persona — a reviewer must see everything
 /// that will be saved, not a truncated preview.
 const MAX_PERSONA_CHARS: usize = 4000;
@@ -142,6 +143,7 @@ impl ManageAgentsTool {
                     "provider_id": a.provider_id,
                     "can_delegate_to_agents": a.can_delegate_to_agents,
                     "can_manage_agents": a.can_manage_agents,
+                    "can_message_agents": a.can_message_agents,
                     "allowed_tools": a.allowed_tools,
                 })
             })
@@ -218,6 +220,7 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 // Never granted from here; only a person turns these on.
                 can_delegate_to_agents: false,
                 can_manage_agents: false,
+                can_message_agents: false,
                 allowed_tools: Some(tools.clone()),
             });
             format!(
@@ -500,7 +503,15 @@ mod tests {
     }
 
     fn agent(id: &str, delegate: bool, manage: bool) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: format!("persona of {id}"), provider_id: None, can_delegate_to_agents: delegate, can_manage_agents: manage, allowed_tools: None }
+        AgentConfig {
+            id: id.into(),
+            persona: format!("persona of {id}"),
+            provider_id: None,
+            can_delegate_to_agents: delegate,
+            can_manage_agents: manage,
+            can_message_agents: false,
+            allowed_tools: None,
+        }
     }
 
     /// Writes a config with a provider `local` and the given agents, and returns the path.
@@ -599,11 +610,18 @@ mod tests {
     async fn a_model_cannot_smuggle_flags_in_through_extra_arguments() {
         let path = write_config(vec![]);
         let (tool, _) = tool_with(&path, true);
-        tool.call(json!({ "action": "create", "id": "sneaky", "persona": "p", "can_manage_agents": true, "can_delegate_to_agents": true }))
-            .await
-            .unwrap();
+        tool.call(json!({
+            "action": "create",
+            "id": "sneaky",
+            "persona": "p",
+            "can_manage_agents": true,
+            "can_delegate_to_agents": true,
+            "can_message_agents": true
+        }))
+        .await
+        .unwrap();
         let created = &agents_on_disk(&path)[0];
-        assert!(!created.can_delegate_to_agents && !created.can_manage_agents);
+        assert!(!created.can_delegate_to_agents && !created.can_manage_agents && !created.can_message_agents);
     }
 
     #[tokio::test]
