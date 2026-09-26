@@ -27,6 +27,15 @@ void main() {
       expect(result.body, 'Your dentist appointment is Friday at 3pm.');
     });
 
+    test('an approval asks for the person, naming what and whom (P87)', () {
+      final result = notificationContentFor(
+        const ApprovalRequestMessage(3, target: 'poet', action: 'create_agent', detail: 'a new agent'),
+        serverName: 'hub',
+      );
+      expect(result.title, 'hub — Approval needed');
+      expect(result.body, 'create_agent: poet — a new agent');
+    });
+
     test('a chat error is labeled distinctly from a normal reply', () {
       final result = notificationContentFor(
         const ChatErrorMessage('model provider not found'),

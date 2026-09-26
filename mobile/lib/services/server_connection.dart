@@ -152,10 +152,14 @@ class ServerConnection implements ConversationBackend {
   ConnectionStatus get status => _status;
   Stream<ConnectionStatus> get statusStream => _statusController.stream;
 
-  // Carries only ChatResponseMessage/ChatErrorMessage (Fase 7.3) — everything else stays
-  // internal to the handshake/heartbeat machinery above.
+  // Carries ChatResponseMessage/ChatErrorMessage (Fase 7.3) and ConversationsChangedMessage
+  // (P87) — everything else stays internal to the handshake/heartbeat machinery above.
   final _chatController = StreamController<ServerMessage>.broadcast();
   Stream<ServerMessage> get chatStream => _chatController.stream;
+
+  // P87 — ApprovalRequestMessage/ApprovalCancelledMessage, for the chat screen's dialog.
+  final _approvalController = StreamController<ServerMessage>.broadcast();
+  Stream<ServerMessage> get approvalStream => _approvalController.stream;
 
   // P40 — in-flight `fetchHistory` calls, keyed by the `requestId` the reply echoes back.
   final _pendingHistory = <int, Completer<List<HistoryEntry>>>{};
@@ -294,6 +298,12 @@ class ServerConnection implements ConversationBackend {
               HistoryErrorMessage() ||
               ConversationListMessage() ||
               ConversationOkMessage() ||
+              SettingsMessage() ||
+              SettingsErrorMessage() ||
+              ApprovalRequestMessage() ||
+              ApprovalCancelledMessage() ||
+              ConversationsChangedMessage() ||
+              UnknownServerMessage() ||
               ConversationErrorMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
@@ -325,7 +335,15 @@ class ServerConnection implements ConversationBackend {
         _setStatus(const Disconnected());
       case ChatResponseMessage():
       case ChatErrorMessage():
+      case ConversationsChangedMessage():
         _chatController.add(msg);
+      case ApprovalRequestMessage():
+      case ApprovalCancelledMessage():
+        _approvalController.add(msg);
+      case SettingsMessage(:final requestId) || SettingsErrorMessage(:final requestId):
+        _pendingConversation.remove(requestId)?.complete(msg);
+      case UnknownServerMessage():
+        break;
       case ToolCallRequestMessage(:final callId, :final tool, :final arguments):
         // Fire-and-forget: each call runs independently, so a slow one (e.g. reading a large
         // file) never blocks this connection's heartbeat/chat handling in the meantime.
@@ -364,8 +382,25 @@ class ServerConnection implements ConversationBackend {
   /// arrives asynchronously on [chatStream] as either a [ChatResponseMessage] or a
   /// [ChatErrorMessage], tagged with the same conversation id.
   @override
-  void sendChat(String message, {String? conversationId}) {
-    _channel.sink.add(ChatMessage(message, conversationId: conversationId).encode());
+  void sendChat(String message, {String? conversationId, String? agentId}) {
+    _channel.sink.add(ChatMessage(message, conversationId: conversationId, agentId: agentId).encode());
+  }
+
+  /// P87 — the configured agents' ids, from the hub's settings (the web's selector reads the same).
+  /// Throws a [ConversationException] when the hub can't answer.
+  @override
+  Future<List<String>> listAgentIds() async {
+    final reply = await _conversationRequest(RequestSettingsMessage.new);
+    return switch (reply) {
+      SettingsMessage(:final agentIds) => agentIds,
+      SettingsErrorMessage(:final message) => throw ConversationException(message),
+      _ => const [],
+    };
+  }
+
+  /// P87 — the person's answer to an [ApprovalRequestMessage].
+  void resolveApproval(int approvalId, bool approved) {
+    _channel.sink.add(ResolveApprovalMessage(approvalId, approved).encode());
   }
 
   /// P40 — fetches one of this device's conversations as persisted by the server (null is the

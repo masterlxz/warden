@@ -49,6 +49,12 @@ fn is_busy(key: &Path) -> bool {
     in_flight().as_ref().is_some_and(|set| set.contains(key))
 }
 
+/// How many notes this process is still answering. The CLI waits for them before exiting (P87):
+/// the answer runs in this process and would die with it, leaving the note unanswered.
+pub fn answers_in_flight() -> usize {
+    in_flight().as_ref().map_or(0, HashSet::len)
+}
+
 /// Marks a conversation busy until dropped — so a failed or panicking turn frees it too.
 struct InFlight(PathBuf);
 
@@ -430,6 +436,8 @@ mod tests {
         // The message is already there for the person to see, and only one message at a time.
         assert_eq!(s.thread().messages.len(), 1);
         assert_eq!(tool.call(json!({ "action": "read", "agent_id": "bia" })).await.unwrap()["status"], "still_answering");
+        // Other tests run in parallel, so only "at least this one" can be checked.
+        assert!(answers_in_flight() >= 1);
         let busy = tool.call(json!({ "action": "send", "agent_id": "bia", "message": "more" })).await.unwrap_err();
         assert!(busy.to_string().contains("still answering"), "{busy:#}");
 

@@ -65,8 +65,46 @@
   registrado não existia: a tela Sync do mobile tem o campo desde a Fase 4.4. Só o texto de ajuda dele mudou,
   para citar o hub num VPS.
 
-**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, incluindo a seção nova da aba Sync) e o Gemini
-real; ou, em código, o P87.
+**P87**, pedido em seguida. O usuário escolheu as quatro partes de código; o plano foi aprovado em Plan mode.
+
+- **Base**: `ConversationWriteGuard` (o mutex do processo mais uma trava de arquivo em `<pasta>/.writes.lock`) em
+  toda escrita de conversa, e o novo `append_messages`, que devolve a conversa salva.
+- **Desktop**: o frontend anexa (`append_conversation_messages`) em vez de gravar a conversa inteira, e junta a
+  cópia do disco ao estado (`replaceWithSaved`); `save_conversation` saiu.
+- **CLI**: agente com `can_message_agents` recebe `message_agent`, com os recados na pasta do desktop. Sair espera
+  as respostas em andamento (até 180 s, Ctrl+C sai já).
+- **Mobile**: protocolo (`agentId`, `requestSettings`, aprovação, `conversationsChanged`, tipo desconhecido
+  ignorado), seletor de agente no AppBar, diálogo de aprovação em fila, notificação de aprovação em segundo plano e
+  recarga ao mudar uma conversa.
+- **Extensão**: o mesmo no background e no painel (seletor na barra de conversas e cartão de aprovação), mais o
+  selo "!" no ícone.
+
+**Verificação do P87**:
+
+- `cargo test --workspace`: 776 passando, 0 falhas; clippy limpo. Desktop: clippy limpo, 20 testes passando e
+  `tsc`/`build` limpos.
+- Testes novos:
+  - `append_messages` preserva o que outro escritor pôs;
+  - a trava de conversas vale entre processos (o binário de teste como filho);
+  - `answers_in_flight`;
+  - o CLI monta `message_agent` só para o agente com a flag.
+- Mobile: `flutter analyze` limpo e 97 testes passando. Os novos cobrem o JSON do protocolo, o agente por conversa
+  no transcript, a recarga no `ConversationsChanged` e a notificação de aprovação.
+- Extensão: `npm run build` e `build:firefox` limpos (não há testes automatizados nela).
+- **Ponta a ponta** com `warden-server` isolado, um modelo OpenAI-compatible falso em Node (que pede tools) e um
+  cliente WebSocket falando como o mobile/a extensão:
+  - `requestSettings` trouxe `ana,bia`;
+  - um `chat` com `agentId: ana` foi respondido com a persona dela, e a lista voltou com `agentId: ana`;
+  - o `manage_agents` gerou `approvalRequest` (`create_agent poet`); aprovado, o agente foi criado no config e o
+    turno seguiu;
+  - o `message_agent` gerou `conversationsChanged` e a conversa "ana → bia" (`agentId: bia`) ficou com o recado e a
+    resposta de bia.
+- **Não testado**:
+  - o CLI de verdade: não consegui dirigir a TUI por um pseudo-terminal (o crossterm não aceita a resposta
+    simulada da posição do cursor, e não há tmux/screen aqui). A espera ao sair fica para a rodada de testes;
+  - as telas do Flutter, da extensão e do desktop (P80).
+
+**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88), incluindo o CLI com recados e o Gemini real.
 
 ---
 

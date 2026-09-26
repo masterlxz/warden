@@ -70,19 +70,44 @@ final class GoodbyeMessage extends ClientMessage {
 
 /// A chat turn (Fase 7.3) — answered by the `Orchestrator` `warden-server` hosts, appended to one of
 /// this device's conversations. [conversationId] picks which (P78): an id the hub has never seen
-/// starts a new one; null is the device's default conversation.
+/// starts a new one; null is the device's default conversation. [agentId] (P46/P87) speaks as that
+/// configured agent: its persona, skills and tools.
 final class ChatMessage extends ClientMessage {
-  const ChatMessage(this.message, {this.conversationId});
+  const ChatMessage(this.message, {this.conversationId, this.agentId});
 
   final String message;
   final String? conversationId;
+  final String? agentId;
 
   @override
   Map<String, dynamic> toJson() => {
         'type': 'chat',
         'message': message,
         if (conversationId != null) 'conversationId': conversationId,
+        if (agentId != null) 'agentId': agentId,
       };
+}
+
+/// Asks for the hub's settings (P78) — here only for the configured agents' ids (P87), the same
+/// way the web's agent selector gets them. Answered by [SettingsMessage] or [SettingsErrorMessage].
+final class RequestSettingsMessage extends ClientMessage {
+  const RequestSettingsMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'requestSettings', 'requestId': requestId};
+}
+
+/// The person's answer to an [ApprovalRequestMessage] (P87).
+final class ResolveApprovalMessage extends ClientMessage {
+  const ResolveApprovalMessage(this.approvalId, this.approved);
+
+  final int approvalId;
+  final bool approved;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'resolveApproval', 'approvalId': approvalId, 'approved': approved};
 }
 
 /// The result of a `ToolCallRequestMessage` this client was asked to run (Fase 7.4).
@@ -165,12 +190,15 @@ final class DeleteConversationMessage extends ClientMessage {
 /// One of this device's conversations in a [ConversationListMessage] (P78). Mirrors
 /// `warden_server_protocol::protocol::ConversationSummary`.
 class ConversationSummary {
-  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt});
+  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt, this.agentId});
 
   final String id;
   final String title;
   final int createdAt;
   final int updatedAt;
+
+  /// The agent this conversation last spoke with (P46/P87), restored when it's opened.
+  final String? agentId;
 
   static ConversationSummary fromJson(dynamic json) {
     final map = json as Map<String, dynamic>;
@@ -179,6 +207,7 @@ class ConversationSummary {
       title: map['title'] as String,
       createdAt: map['createdAt'] as int,
       updatedAt: map['updatedAt'] as int,
+      agentId: map['agentId'] as String?,
     );
   }
 }
@@ -273,7 +302,25 @@ sealed class ServerMessage {
       'conversationOk' => ConversationOkMessage(json['requestId'] as int),
       'conversationError' => ConversationErrorMessage(json['requestId'] as int, json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
-      final other => throw FormatException('Unknown ServerMessage type: $other'),
+      'settings' => SettingsMessage(
+          json['requestId'] as int,
+          [
+            for (final agent in ((json['settings'] as Map<String, dynamic>)['agents'] as List<dynamic>? ?? const []))
+              (agent as Map<String, dynamic>)['id'] as String,
+          ],
+        ),
+      'settingsError' => SettingsErrorMessage(json['requestId'] as int, json['message'] as String),
+      'approvalRequest' => ApprovalRequestMessage(
+          json['approvalId'] as int,
+          target: json['target'] as String,
+          action: json['action'] as String,
+          detail: json['detail'] as String,
+        ),
+      'approvalCancelled' => ApprovalCancelledMessage(json['approvalId'] as int),
+      'conversationsChanged' => ConversationsChangedMessage(json['conversationId'] as String),
+      // A message this app doesn't know yet (a newer hub) is skipped, not a broken connection.
+      final String other => UnknownServerMessage(other),
+      _ => throw const FormatException('ServerMessage without a type'),
     };
   }
 
@@ -379,4 +426,53 @@ final class GoodbyeServerMessage extends ServerMessage {
   const GoodbyeServerMessage(this.reason);
 
   final String? reason;
+}
+
+/// Reply to [RequestSettingsMessage], reduced to what this app uses: the agents' ids (P87).
+final class SettingsMessage extends ServerMessage {
+  const SettingsMessage(this.requestId, this.agentIds);
+
+  final int requestId;
+  final List<String> agentIds;
+}
+
+final class SettingsErrorMessage extends ServerMessage {
+  const SettingsErrorMessage(this.requestId, this.message);
+
+  final int requestId;
+  final String message;
+}
+
+/// A tool in this device's turn needs the person's yes (P46/P87: an agent creating or editing
+/// another, an SSH host with approval, a spending-limit pause). No answer before the hub's
+/// deadline (120 s) counts as no.
+final class ApprovalRequestMessage extends ServerMessage {
+  const ApprovalRequestMessage(this.approvalId, {required this.target, required this.action, required this.detail});
+
+  final int approvalId;
+  final String target;
+  final String action;
+  final String detail;
+}
+
+/// The hub stopped waiting for [approvalId]: its dialog closes.
+final class ApprovalCancelledMessage extends ServerMessage {
+  const ApprovalCancelledMessage(this.approvalId);
+
+  final int approvalId;
+}
+
+/// One of this device's conversations changed outside a chat reply — an agent left a note for
+/// another, or answered one (P46 `message_agent`).
+final class ConversationsChangedMessage extends ServerMessage {
+  const ConversationsChangedMessage(this.conversationId);
+
+  final String conversationId;
+}
+
+/// A message type this app doesn't handle.
+final class UnknownServerMessage extends ServerMessage {
+  const UnknownServerMessage(this.type);
+
+  final String type;
 }

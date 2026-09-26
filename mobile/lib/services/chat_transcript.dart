@@ -18,7 +18,8 @@ class ChatEntry {
 /// What [ChatTranscript] needs from the hub — `ServerConnection` in the app, a fake in tests, so
 /// the transcript can be tested without a WebSocket.
 abstract interface class ConversationBackend {
-  void sendChat(String message, {String? conversationId});
+  void sendChat(String message, {String? conversationId, String? agentId});
+  Future<List<String>> listAgentIds();
   Future<List<HistoryEntry>> fetchHistory({int? limit, String? conversationId});
   Future<List<ConversationSummary>> listConversations();
   Future<void> renameConversation(String conversationId, String title);
@@ -63,6 +64,11 @@ class ChatTranscript extends ChangeNotifier {
 
   /// Turns sent and not answered yet, by conversation id.
   final _pending = <String, String>{};
+
+  /// P87 — the hub's configured agents, and the one the next turn speaks as (null: none). Opening a
+  /// conversation restores the agent it last spoke with; a new one keeps the last choice.
+  var _agentIds = <String>[];
+  String? _agentId;
   String? _conversationsError;
   bool _disposed = false;
 
@@ -78,6 +84,9 @@ class ChatTranscript extends ChangeNotifier {
     return null;
   }
 
+  List<String> get agentIds => List.unmodifiable(_agentIds);
+  String? get selectedAgentId => _agentId;
+
   bool get waitingForReply => _pending.containsKey(_activeId);
   bool isAnswering(String conversationId) => _pending.containsKey(conversationId);
 
@@ -87,14 +96,46 @@ class ChatTranscript extends ChangeNotifier {
   /// The list, then the conversation opened last time (or the most recent, if that one is gone; a
   /// new one when there are none), then its transcript.
   Future<void> _start() async {
+    unawaited(refreshAgents());
     final list = await refreshConversations();
     if (_disposed) return;
     if (list != null && !list.any((c) => c.id == _activeId) && !_pending.containsKey(_activeId)) {
       _activeId = list.isEmpty ? _newConversationId() : list.first.id;
-      notifyListeners();
     }
+    _restoreAgent(_activeId);
+    notifyListeners();
     onConversationOpened?.call(_activeId);
     await _loadHistory(_activeId);
+  }
+
+  /// Re-reads the configured agents. A hub that can't answer leaves the selector empty.
+  Future<void> refreshAgents() async {
+    List<String> ids;
+    try {
+      ids = await backend.listAgentIds();
+    } catch (_) {
+      ids = const [];
+    }
+    if (_disposed) return;
+    _agentIds = ids;
+    notifyListeners();
+  }
+
+  /// Speak as [agentId] from the next turn on (null: no agent).
+  void selectAgent(String? agentId) {
+    if (agentId == _agentId) return;
+    _agentId = agentId;
+    notifyListeners();
+  }
+
+  /// The agent [conversationId] last spoke with, when the hub has it; otherwise the choice stays.
+  void _restoreAgent(String conversationId) {
+    for (final c in _conversations) {
+      if (c.id == conversationId) {
+        _agentId = c.agentId;
+        return;
+      }
+    }
   }
 
   /// Re-reads the conversation list. A conversation started here whose first turn is still in
@@ -145,6 +186,7 @@ class ChatTranscript extends ChangeNotifier {
     if (conversationId == _activeId) return;
     _activeId = conversationId;
     _entries.clear();
+    _restoreAgent(conversationId);
     notifyListeners();
     onConversationOpened?.call(conversationId);
     unawaited(_loadHistory(conversationId));
@@ -173,6 +215,12 @@ class ChatTranscript extends ChangeNotifier {
   }
 
   void _onMessage(ServerMessage msg) {
+    if (msg is ConversationsChangedMessage) {
+      // An agent left a note in one of this device's conversations, or answered one (P87).
+      unawaited(refreshConversations());
+      if (msg.conversationId == _activeId && !_pending.containsKey(_activeId)) unawaited(_loadHistory(_activeId));
+      return;
+    }
     final (entry, conversationId) = switch (msg) {
       ChatResponseMessage(:final content, :final attachments, :final conversationId) =>
         (ChatEntry(EntryRole.assistant, content, attachments: attachments), conversationId),
@@ -198,10 +246,13 @@ class ChatTranscript extends ChangeNotifier {
     _pending[id] = trimmed;
     if (!_conversations.any((c) => c.id == id)) {
       final now = DateTime.now().millisecondsSinceEpoch;
-      _conversations = [ConversationSummary(id: id, title: titleFrom(trimmed), createdAt: now, updatedAt: now), ..._conversations];
+      _conversations = [
+        ConversationSummary(id: id, title: titleFrom(trimmed), createdAt: now, updatedAt: now, agentId: _agentId),
+        ..._conversations,
+      ];
     }
     notifyListeners();
-    backend.sendChat(trimmed, conversationId: id);
+    backend.sendChat(trimmed, conversationId: id, agentId: _agentId);
     return true;
   }
 

@@ -4,6 +4,8 @@ import ChatView from "./ChatView";
 import ConversationBar from "./ConversationBar";
 import SkillsView from "./SkillsView";
 import TabsView from "./TabsView";
+import ApprovalCard from "./ApprovalCard";
+import type { ApprovalPrompt } from "../protocol/messages";
 import type { ChatEntry, ConnectionStatus } from "../background/connection";
 import type { BackgroundEvent, ConnectionSettings, ConversationState, GetStatusResponse, OkResponse } from "../background/popup_protocol";
 
@@ -14,7 +16,15 @@ export default function App() {
   const [connectError, setConnectError] = useState<string | undefined>(undefined);
   const [connecting, setConnecting] = useState(false);
   /** P78 — kept by the background, which also knows what's waiting on an answer. */
-  const [conversationState, setConversationState] = useState<ConversationState>({ conversations: [], activeConversationId: null, pendingIds: [] });
+  const [conversationState, setConversationState] = useState<ConversationState>({
+    conversations: [],
+    activeConversationId: null,
+    pendingIds: [],
+    agentIds: [],
+    agentId: null,
+  });
+  /** P87 — approvals the hub is waiting on, kept by the background. */
+  const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
   const [tab, setTab] = useState<"chat" | "skills" | "tabs">("chat");
 
   useEffect(() => {
@@ -22,7 +32,9 @@ export default function App() {
       setStatus(res.status);
       setHistory(res.history);
       setSavedSettings(res.savedSettings);
-      setConversationState({ conversations: res.conversations, activeConversationId: res.activeConversationId, pendingIds: res.pendingIds });
+      const { conversations, activeConversationId, pendingIds, agentIds, agentId } = res;
+      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId });
+      setApprovals(res.approvals);
     });
 
     function onEvent(event: BackgroundEvent) {
@@ -33,7 +45,10 @@ export default function App() {
       } else if (event.type === "historyLoaded") {
         setHistory(event.history);
       } else if (event.type === "conversationsChanged") {
-        setConversationState({ conversations: event.conversations, activeConversationId: event.activeConversationId, pendingIds: event.pendingIds });
+        const { conversations, activeConversationId, pendingIds, agentIds, agentId } = event;
+        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId });
+      } else if (event.type === "approvalsChanged") {
+        setApprovals(event.approvals);
       }
     }
     chrome.runtime.onMessage.addListener(onEvent);
@@ -80,6 +95,7 @@ export default function App() {
           </nav>
           {/* All three stay mounted (just hidden) so switching tabs never scrolls away or loses a half-typed message. */}
           <div className="tab-panel" hidden={tab !== "chat"}>
+            {approvals[0] && <ApprovalCard prompt={approvals[0]} waiting={approvals.length - 1} />}
             <ConversationBar {...conversationState} />
             <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />
           </div>

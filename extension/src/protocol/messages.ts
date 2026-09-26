@@ -41,6 +41,16 @@ export interface ConversationSummary {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** The agent this conversation last spoke with (P46/P87), restored when it's opened. */
+  agentId?: string;
+}
+
+/** A tool in this device's turn needs the person's yes (P87) — mirrors `ServerMessage::ApprovalRequest`. */
+export interface ApprovalPrompt {
+  approvalId: number;
+  target: string;
+  action: string;
+  detail: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
@@ -58,7 +68,10 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string }
+  | { type: "chat"; message: string; conversationId?: string; agentId?: string }
+  /** P87 — only for the configured agents' ids, as the web's selector does. */
+  | { type: "requestSettings"; requestId: number }
+  | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -99,6 +112,13 @@ export type ServerMessage =
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
   | { type: "conversationOk"; requestId: number }
   | { type: "conversationError"; requestId: number; message: string }
+  /** Reply to `requestSettings`, reduced to what this client uses (P87). */
+  | { type: "settings"; requestId: number; agentIds: string[] }
+  | { type: "settingsError"; requestId: number; message: string }
+  | ({ type: "approvalRequest" } & ApprovalPrompt)
+  | { type: "approvalCancelled"; approvalId: number }
+  /** An agent left a note in one of this device's conversations, or answered one (P46 `message_agent`). */
+  | { type: "conversationsChanged"; conversationId: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -127,6 +147,14 @@ export function decode(text: string): ServerMessage {
       const raw = json as { requestId: number; skills: Array<Omit<SkillDto, "agents"> & { agents?: string[] }> };
       return { type: "skillList", requestId: raw.requestId, skills: raw.skills.map((skill) => ({ ...skill, agents: skill.agents ?? [] })) };
     }
+    case "settings": {
+      const raw = json as { requestId: number; settings: { agents?: Array<{ id: string }> } };
+      return { type: "settings", requestId: raw.requestId, agentIds: (raw.settings.agents ?? []).map((a) => a.id) };
+    }
+    case "settingsError":
+    case "approvalRequest":
+    case "approvalCancelled":
+    case "conversationsChanged":
     case "skillOk":
     case "skillError":
     case "historyError":

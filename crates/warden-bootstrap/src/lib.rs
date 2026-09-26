@@ -946,29 +946,36 @@ fn assistant_message(outcome: &MessageOutcome) -> ConversationMessage {
     }
 }
 
-/// Appends `messages` to a conversation file and saves it, setting its `agent_id`. The file is
-/// read here, under the same lock `rename_conversation`/`delete_conversation` take (P78): a model
-/// call can take a minute, and in the meantime a hub client may have renamed or deleted the
-/// conversation (or finished another turn in it), so a copy loaded before the call must not be
-/// saved over what changed. A missing file is created, titled from `title_seed`, only when
-/// `create` — otherwise it was deleted meanwhile and stays deleted (`Ok(false)`).
-fn append_to_conversation(
-    dir: &Path,
-    id: &str,
-    title_seed: &str,
-    agent_id: Option<&str>,
-    create: bool,
-    messages: Vec<ConversationMessage>,
-) -> anyhow::Result<bool> {
-    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+/// How `append_messages` treats the conversation besides adding the messages.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppendOptions<'a> {
+    /// The title of a conversation this call creates.
+    pub title_seed: &'a str,
+    /// Always set: `None` clears it (whoever sent the turn had no agent selected).
+    pub agent_id: Option<&'a str>,
+    /// `None` leaves it as it is; `Some(None)` clears it. Only the desktop tracks one.
+    pub provider_id: Option<Option<&'a str>>,
+    /// Create the file when it's missing. Otherwise a missing file was deleted meanwhile and stays
+    /// deleted.
+    pub create: bool,
+}
+
+/// Appends `messages` to a conversation file and saves it, returning it as saved (`None`: missing
+/// and not `create`). The file is read here, under the lock `rename_conversation`/
+/// `delete_conversation` take (P78): a model call can take a minute, and in the meantime a client
+/// may have renamed or deleted the conversation, or another writer — an agent answering a
+/// `message_agent` note (P46), the desktop's own screen, the CLI in another process — added to
+/// it, so a copy loaded before must never be saved over what changed.
+pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, messages: Vec<ConversationMessage>) -> anyhow::Result<Option<Conversation>> {
+    let _guard = ConversationWriteGuard::acquire(dir)?;
     let mut conversation = match load_conversation(dir, id)? {
         Some(conversation) => conversation,
-        None if !create => return Ok(false),
+        None if !options.create => return Ok(None),
         None => {
             let now = now_millis();
             Conversation {
                 id: id.to_string(),
-                title: title_from(title_seed),
+                title: title_from(options.title_seed),
                 messages: Vec::new(),
                 created_at: now,
                 updated_at: now,
@@ -978,16 +985,48 @@ fn append_to_conversation(
         }
     };
     conversation.messages.extend(messages);
-    conversation.agent_id = agent_id.map(str::to_string);
+    conversation.agent_id = options.agent_id.map(str::to_string);
+    if let Some(provider_id) = options.provider_id {
+        conversation.provider_id = provider_id.map(str::to_string);
+    }
     conversation.updated_at = now_millis();
     save_conversation(dir, &conversation)?;
-    Ok(true)
+    Ok(Some(conversation))
 }
 
-/// Serializes the read-modify-write of a conversation file between `handle_turn`'s save and
-/// `rename_conversation`/`delete_conversation` (P78), within this process — the hub is the only
-/// writer of its conversations directory. Held only around file I/O, never the model call.
+fn append_to_conversation(
+    dir: &Path,
+    id: &str,
+    title_seed: &str,
+    agent_id: Option<&str>,
+    create: bool,
+    messages: Vec<ConversationMessage>,
+) -> anyhow::Result<bool> {
+    let options = AppendOptions { title_seed, agent_id, provider_id: None, create };
+    Ok(append_messages(dir, id, options, messages)?.is_some())
+}
+
+/// Serializes the read-modify-write of a conversation file between every writer (P78, P87): this
+/// process's mutex, plus an OS file lock on `<dir>/.writes.lock` for the other processes that
+/// write the same directory (the CLI leaves `message_agent` notes in the desktop's). Held only
+/// around file I/O, never a model call; the listing skips it, as it isn't `.json`.
 static CONVERSATION_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct ConversationWriteGuard {
+    _in_process: std::sync::MutexGuard<'static, ()>,
+    _file: std::fs::File,
+}
+
+impl ConversationWriteGuard {
+    fn acquire(dir: &Path) -> anyhow::Result<Self> {
+        let in_process = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::fs::create_dir_all(dir).with_context(|| format!("failed to create conversations directory at {}", dir.display()))?;
+        let path = dir.join(".writes.lock");
+        let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+        file.lock().with_context(|| format!("failed to lock {}", path.display()))?;
+        Ok(Self { _in_process: in_process, _file: file })
+    }
+}
 
 /// The longest title `rename_conversation` keeps — a sidebar label, not a place for prose.
 pub const MAX_CONVERSATION_TITLE_CHARS: usize = 120;
@@ -998,7 +1037,7 @@ pub const MAX_CONVERSATION_TITLE_CHARS: usize = 120;
 pub fn rename_conversation(dir: &Path, id: &str, title: &str) -> anyhow::Result<bool> {
     let title = title.trim();
     anyhow::ensure!(!title.is_empty(), "a conversation title can't be empty");
-    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ConversationWriteGuard::acquire(dir)?;
     let Some(mut conversation) = load_conversation(dir, id)? else {
         return Ok(false);
     };
@@ -1009,7 +1048,7 @@ pub fn rename_conversation(dir: &Path, id: &str, title: &str) -> anyhow::Result<
 
 /// Deletes a saved conversation's file (P78). `false` when there was none.
 pub fn delete_conversation(dir: &Path, id: &str) -> anyhow::Result<bool> {
-    let _guard = CONVERSATION_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ConversationWriteGuard::acquire(dir)?;
     let path = dir.join(format!("{id}.json"));
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(true),
@@ -1993,6 +2032,72 @@ oauth = true
         assert!(delete_conversation(&dir, "c1").unwrap());
         assert_eq!(load_conversation(&dir, "c1").unwrap(), None);
         assert!(!delete_conversation(&dir, "c1").unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn append_messages_keeps_what_another_writer_added() {
+        let dir = temp_dir("append");
+        let note = |id: &str, role: ChatRole| ConversationMessage {
+            id: id.into(),
+            role,
+            content: id.into(),
+            created_at: 1,
+            usage: None,
+            attachments: Vec::new(),
+            generated_files: Vec::new(),
+        };
+        let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), create: true };
+        let created = append_messages(&dir, "c1", options, vec![note("hi", ChatRole::User)]).unwrap().unwrap();
+        assert_eq!((created.title.as_str(), created.agent_id.as_deref(), created.provider_id.as_deref()), ("first words", Some("writer"), Some("openai")));
+
+        // Another writer (an agent answering a note) adds to it; the screen's next append keeps it.
+        append_to_conversation(&dir, "c1", "", Some("writer"), false, vec![note("from B", ChatRole::Assistant)]).unwrap();
+        let options = AppendOptions { agent_id: Some("writer"), ..Default::default() };
+        let saved = append_messages(&dir, "c1", options, vec![note("me again", ChatRole::User)]).unwrap().unwrap();
+        let contents: Vec<&str> = saved.messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["hi", "from B", "me again"]);
+        assert_eq!(saved.provider_id.as_deref(), Some("openai"), "left alone when not given");
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), Some(saved));
+
+        assert_eq!(append_messages(&dir, "gone", AppendOptions::default(), vec![note("x", ChatRole::User)]).unwrap(), None);
+        assert_eq!(list_conversations(&dir).unwrap().len(), 1, "the lock file isn't a conversation");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    const CHILD_CONVERSATIONS: &str = "WARDEN_CONVERSATION_LOCK_CHILD";
+
+    /// Run by `conversation_writes_wait_for_another_process` in a child process. Does nothing in a
+    /// normal test run.
+    #[test]
+    fn child_holds_the_conversations_lock() {
+        let Ok(dir) = std::env::var(CHILD_CONVERSATIONS) else { return };
+        let dir = PathBuf::from(dir);
+        let _held = ConversationWriteGuard::acquire(&dir).unwrap();
+        std::fs::write(dir.join("held"), "").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+
+    #[test]
+    fn conversation_writes_wait_for_another_process() {
+        let dir = temp_dir("cross-process");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::child_holds_the_conversations_lock", "--nocapture"])
+            .env(CHILD_CONVERSATIONS, &dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !dir.join("held").exists() {
+            assert!(std::time::Instant::now() < deadline, "the child never took the lock");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let started = std::time::Instant::now();
+        save_conversation(&dir, &sample_conversation("c1", 1)).unwrap();
+        assert!(rename_conversation(&dir, "c1", "renamed").unwrap());
+        assert!(started.elapsed() >= std::time::Duration::from_millis(300), "{:?}", started.elapsed());
+        assert!(child.wait().unwrap().success());
         std::fs::remove_dir_all(&dir).ok();
     }
 

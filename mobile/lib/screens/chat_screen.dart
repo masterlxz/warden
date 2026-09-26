@@ -38,6 +38,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   StreamSubscription<ServerMessage>? _chatSubscription;
   StreamSubscription<ConnectionStatus>? _statusSubscription;
+  StreamSubscription<ServerMessage>? _approvalSubscription;
+
+  /// P87 — approvals the hub is waiting on, oldest first, and the one whose dialog is open.
+  final _approvals = <ApprovalRequestMessage>[];
+  int? _approvalShown;
 
   ConnectionStatus _status = const Disconnected();
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
@@ -53,6 +58,56 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _statusSubscription = widget.connection.statusStream.listen((s) {
       if (mounted) setState(() => _status = s);
     });
+    _approvalSubscription = widget.connection.approvalStream.listen(_onApproval);
+  }
+
+  /// P87 — a tool in this device's turn needs the person's yes (an agent creating another, an SSH
+  /// host with approval, a spending-limit pause). One dialog at a time; the hub gives up (and says
+  /// so) after 120 s, which closes it.
+  void _onApproval(ServerMessage msg) {
+    switch (msg) {
+      case ApprovalRequestMessage():
+        _approvals.add(msg);
+        if (shouldNotifyFor(_lifecycleState)) {
+          unawaited(showChatNotification(msg, serverName: widget.connection.serverName));
+        }
+        _showNextApproval();
+      case ApprovalCancelledMessage(:final approvalId):
+        _approvals.removeWhere((a) => a.approvalId == approvalId);
+        if (_approvalShown == approvalId && mounted) Navigator.of(context).pop();
+      default:
+        break;
+    }
+  }
+
+  Future<void> _showNextApproval() async {
+    if (_approvalShown != null || _approvals.isEmpty || !mounted) return;
+    final request = _approvals.first;
+    _approvalShown = request.approvalId;
+    final approved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Approval needed'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${request.action}: ${request.target}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            if (request.detail.isNotEmpty) ...[const SizedBox(height: 8), Text(request.detail)],
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Deny')),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('Approve')),
+        ],
+      ),
+    );
+    // Null: the hub gave up on it first (ApprovalCancelled closed the dialog).
+    if (approved != null) widget.connection.resolveApproval(request.approvalId, approved);
+    _approvals.removeWhere((a) => a.approvalId == request.approvalId);
+    _approvalShown = null;
+    _showNextApproval();
   }
 
   @override
@@ -60,6 +115,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _chatSubscription?.cancel();
     _statusSubscription?.cancel();
+    _approvalSubscription?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -217,11 +273,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(widget.transcript.activeTitle ?? 'New conversation', overflow: TextOverflow.ellipsis),
-              Text(serverName, style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                [serverName, if (widget.transcript.selectedAgentId != null) 'as ${widget.transcript.selectedAgentId}'].join(' · '),
+                style: Theme.of(context).textTheme.bodySmall,
+                overflow: TextOverflow.ellipsis,
+              ),
             ],
           ),
         ),
         actions: [
+          // P87 — which configured agent this conversation speaks as.
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) => _AgentMenu(transcript: widget.transcript),
+          ),
           Builder(
             builder: (context) => IconButton(
               onPressed: () => Scaffold.of(context).openEndDrawer(),
@@ -274,6 +339,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// P87 — picks the agent the next turns speak as, like the web's selector. Hidden while the hub has
+/// no agents configured (and none is selected); locked while the conversation waits on a reply.
+class _AgentMenu extends StatelessWidget {
+  const _AgentMenu({required this.transcript});
+
+  final ChatTranscript transcript;
+
+  /// `PopupMenuButton` can't return null as a choice, so "no agent" is this.
+  static const _none = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = transcript.selectedAgentId;
+    final ids = transcript.agentIds;
+    if (ids.isEmpty && selected == null) return const SizedBox.shrink();
+    return PopupMenuButton<String>(
+      enabled: !transcript.waitingForReply,
+      tooltip: 'Agent',
+      icon: Icon(selected == null ? Icons.person_outline : Icons.person),
+      initialValue: selected ?? _none,
+      onOpened: () => unawaited(transcript.refreshAgents()),
+      onSelected: (id) => transcript.selectAgent(id == _none ? null : id),
+      itemBuilder: (context) => [
+        const PopupMenuItem(value: _none, child: Text('No agent')),
+        for (final id in ids) PopupMenuItem(value: id, child: Text(id)),
+        if (selected != null && !ids.contains(selected)) PopupMenuItem(value: selected, child: Text('$selected (removed)')),
+      ],
     );
   }
 }

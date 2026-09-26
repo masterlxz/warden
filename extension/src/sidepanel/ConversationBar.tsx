@@ -6,12 +6,14 @@ interface Props {
   conversations: ConversationSummary[];
   activeConversationId: string | null;
   pendingIds: string[];
+  agentIds: string[];
+  agentId: string | null;
 }
 
 /** P78 — which of this device's conversations the chat shows, plus new/rename/delete. A `<select>`
  * rather than a list: the side panel is narrow. Talks to the background directly, like `SkillsView`;
  * the result comes back as a `conversationsChanged` event. */
-export default function ConversationBar({ conversations, activeConversationId, pendingIds }: Props) {
+export default function ConversationBar({ conversations, activeConversationId, pendingIds, agentIds, agentId }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -106,6 +108,26 @@ export default function ConversationBar({ conversations, activeConversationId, p
           </>
         )}
       </span>
+      {(agentIds.length > 0 || agentId !== null) && (
+        // P87 — which configured agent the next turns speak as; locked while an answer is on the way.
+        <label className="conversation-bar-agent">
+          Agente
+          <select
+            value={agentId ?? ""}
+            disabled={activeConversationId !== null && pendingIds.includes(activeConversationId)}
+            onFocus={() => void chrome.runtime.sendMessage({ type: "refreshAgents" })}
+            onChange={(e) => void chrome.runtime.sendMessage({ type: "selectAgent", agentId: e.target.value || null })}
+          >
+            <option value="">Nenhum</option>
+            {agentIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+            {agentId !== null && !agentIds.includes(agentId) && <option value={agentId}>{agentId} (removido)</option>}
+          </select>
+        </label>
+      )}
       {error && <p className="error-banner">{error}</p>}
     </div>
   );

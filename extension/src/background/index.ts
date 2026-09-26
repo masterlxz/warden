@@ -17,7 +17,7 @@
 import { ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
 import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, ConversationState, PopupRequest } from "./popup_protocol";
-import type { ConversationSummary } from "../protocol/messages";
+import type { ApprovalPrompt, ConversationSummary } from "../protocol/messages";
 import { toolSpecs, toolHandlers } from "./tools";
 import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
 import { setUpPanelOpening, supportsHubDiscovery } from "./platform";
@@ -41,6 +41,11 @@ let activeConversationId: string | null = null;
 /** Turns sent and not answered yet, by conversation id — the hub only saves a turn once it's
  * answered, so this is what puts the question back on screen when switching to that conversation. */
 let pendingTurns: Record<string, string> = {};
+/** P87 — the hub's configured agents and the one the next turn speaks as. */
+let agentIds: string[] = [];
+let agentId: string | null = null;
+/** P87 — approvals the hub is waiting on. The panel may be closed, so the icon shows a "!" too. */
+let approvals: ApprovalPrompt[] = [];
 
 async function getOrCreateDeviceId(): Promise<string> {
   const stored = await chrome.storage.local.get(STORAGE_KEY_DEVICE_ID);
@@ -88,7 +93,33 @@ function addChatEntry(entry: ChatEntry): void {
 const HISTORY_LIMIT = 100;
 
 function conversationState(): ConversationState {
-  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns) };
+  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId };
+}
+
+function setApprovals(next: ApprovalPrompt[]): void {
+  approvals = next;
+  void chrome.action.setBadgeText({ text: approvals.length > 0 ? "!" : "" });
+  broadcast({ type: "approvalsChanged", approvals });
+}
+
+/** P87 — re-reads the configured agents. A hub that can't answer leaves the selector empty. */
+async function refreshAgents(from: ServerConnection): Promise<void> {
+  let ids: string[];
+  try {
+    ids = await from.listAgentIds();
+  } catch (err) {
+    console.warn("warden: could not list agents", err);
+    ids = [];
+  }
+  if (connection !== from) return;
+  agentIds = ids;
+  broadcastConversations();
+}
+
+/** The agent `id` last spoke with, when the hub has that conversation; otherwise the choice stays. */
+function restoreAgent(id: string): void {
+  const conversation = conversations.find((c) => c.id === id);
+  if (conversation) agentId = conversation.agentId ?? null;
 }
 
 function broadcastConversations(): void {
@@ -135,6 +166,7 @@ async function loadHistory(from: ServerConnection, conversationId: string): Prom
 /** P78 — shows `id` in the chat: empty right away, then its transcript once the hub answers. */
 function openConversation(id: string): void {
   setActiveConversation(id);
+  restoreAgent(id);
   history = [];
   broadcast({ type: "historyLoaded", history });
   broadcastConversations();
@@ -149,8 +181,9 @@ async function restoreConversations(from: ServerConnection): Promise<void> {
   const current = activeConversationId;
   if (list && (current === null || !list.some((c) => c.id === current))) {
     setActiveConversation(list[0]?.id ?? crypto.randomUUID());
-    broadcastConversations();
   }
+  if (activeConversationId !== null) restoreAgent(activeConversationId);
+  broadcastConversations();
   if (activeConversationId !== null) await loadHistory(from, activeConversationId);
 }
 
@@ -161,7 +194,7 @@ setGroupChangeListener(() => broadcast({ type: "groupChanged" }));
 async function handleRequest(request: PopupRequest): Promise<unknown> {
   switch (request.type) {
     case "getStatus":
-      return { status: currentStatus, history, savedSettings: await getSavedSettings(), ...conversationState() };
+      return { status: currentStatus, history, savedSettings: await getSavedSettings(), approvals, ...conversationState() };
 
     case "connect": {
       connection?.goodbye();
@@ -191,14 +224,28 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       history = [];
       conversations = [];
       pendingTurns = {};
+      agentIds = [];
+      setApprovals([]);
       if (activeConversationId === null) {
         const stored = await chrome.storage.local.get(STORAGE_KEY_ACTIVE_CONVERSATION);
         activeConversationId = (stored[STORAGE_KEY_ACTIVE_CONVERSATION] as string | undefined) ?? null;
       }
       connection.onStatusChange((status) => {
-        // A dropped connection never hears the answers it was waiting on.
-        if (status.kind !== "connected") pendingTurns = {};
+        // A dropped connection never hears the answers it was waiting on, nor its approvals.
+        if (status.kind !== "connected") {
+          pendingTurns = {};
+          setApprovals([]);
+        }
         setStatus(status);
+      });
+      connection.onApproval((event) => {
+        if (event.kind === "prompt") setApprovals([...approvals, event.prompt]);
+        else setApprovals(approvals.filter((a) => a.approvalId !== event.approvalId));
+      });
+      connection.onConversationChanged((conversationId) => {
+        // An agent left a note here, or answered one: new list, and the transcript if it's open.
+        void refreshConversations(next);
+        if (conversationId === activeConversationId && !(conversationId in pendingTurns)) void loadHistory(next, conversationId);
       });
       connection.onChatMessage((entry, conversationId) => {
         const id = conversationId ?? activeConversationId;
@@ -219,12 +266,14 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         } satisfies ConnectionSettings,
       });
       void restoreConversations(next);
+      void refreshAgents(next);
       return { ok: true };
     }
 
     case "disconnect":
       connection?.goodbye();
       connection = null;
+      setApprovals([]);
       setStatus({ kind: "disconnected" });
       return { ok: true };
 
@@ -241,12 +290,26 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         const now = Date.now();
         const collapsed = request.message.split(/\s+/).filter(Boolean).join(" ");
         const title = [...collapsed].length > 40 ? `${[...collapsed].slice(0, 40).join("")}…` : collapsed;
-        conversations = [{ id, title, createdAt: now, updatedAt: now }, ...conversations];
+        conversations = [{ id, title, createdAt: now, updatedAt: now, ...(agentId !== null && { agentId }) }, ...conversations];
       }
       broadcastConversations();
-      connection.sendChat(request.message, id);
+      connection.sendChat(request.message, id, agentId ?? undefined);
       return { ok: true };
     }
+
+    case "selectAgent":
+      agentId = request.agentId;
+      broadcastConversations();
+      return { ok: true };
+
+    case "refreshAgents":
+      if (connection) await refreshAgents(connection);
+      return { ok: true };
+
+    case "resolveApproval":
+      setApprovals(approvals.filter((a) => a.approvalId !== request.approvalId));
+      connection?.resolveApproval(request.approvalId, request.approved);
+      return { ok: true };
 
     case "selectConversation":
       if (request.conversationId !== activeConversationId) openConversation(request.conversationId);

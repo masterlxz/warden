@@ -170,11 +170,33 @@ void main() {
       expect(request.arguments, {'path': 'abc'});
     });
 
-    test('unknown type throws FormatException', () {
-      expect(
-        () => ServerMessage.decode('{"type":"somethingElse"}'),
-        throwsA(isA<FormatException>()),
-      );
+    test('an unknown type is skipped, not an error', () {
+      final msg = ServerMessage.decode('{"type":"somethingElse"}');
+      expect(msg, isA<UnknownServerMessage>());
+      expect((msg as UnknownServerMessage).type, 'somethingElse');
+      expect(() => ServerMessage.decode('{"text":"no type"}'), throwsA(isA<FormatException>()));
+    });
+
+    test('agents, approvals and changed conversations (P87)', () {
+      expect(const ChatMessage('hi', conversationId: 'c1', agentId: 'chief').toJson(),
+          {'type': 'chat', 'message': 'hi', 'conversationId': 'c1', 'agentId': 'chief'});
+      expect(const ChatMessage('hi').toJson(), {'type': 'chat', 'message': 'hi'});
+      expect(const RequestSettingsMessage(4).toJson(), {'type': 'requestSettings', 'requestId': 4});
+      expect(const ResolveApprovalMessage(3, true).toJson(), {'type': 'resolveApproval', 'approvalId': 3, 'approved': true});
+
+      final settings = ServerMessage.decode(
+          '{"type":"settings","requestId":4,"version":"v","secretsWritable":false,"settings":{"agents":[{"id":"chief","persona":"p"},{"id":"poet","persona":"q"}],"other":1}}');
+      expect((settings as SettingsMessage).agentIds, ['chief', 'poet']);
+
+      final ask = ServerMessage.decode('{"type":"approvalRequest","approvalId":3,"target":"poet","action":"create_agent","detail":"d"}');
+      expect(ask, isA<ApprovalRequestMessage>());
+      expect((ask as ApprovalRequestMessage).target, 'poet');
+      expect((ServerMessage.decode('{"type":"approvalCancelled","approvalId":3}') as ApprovalCancelledMessage).approvalId, 3);
+      expect((ServerMessage.decode('{"type":"conversationsChanged","conversationId":"c"}') as ConversationsChangedMessage).conversationId, 'c');
+
+      final list = ServerMessage.decode(
+          '{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"T","createdAt":1,"updatedAt":2,"agentId":"chief"}]}');
+      expect((list as ConversationListMessage).conversations.single.agentId, 'chief');
     });
   });
 }

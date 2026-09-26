@@ -12,6 +12,9 @@ import '../protocol/messages.dart';
 /// One notification, not one per message: reusing this fixed id means a new reply replaces the
 /// previous one in the tray instead of stacking up while the user is away.
 const _notificationId = 1;
+
+/// P87 — an approval gets its own notification, so a reply arriving after it doesn't replace it.
+const _approvalNotificationId = 2;
 const _channelId = 'chat_messages';
 const _channelName = 'Chat messages';
 const _channelDescription = "Notifies you when Warden replies while the app isn't in the foreground";
@@ -32,6 +35,8 @@ bool shouldNotifyFor(AppLifecycleState state) => state != AppLifecycleState.resu
   final (title, rawBody) = switch (message) {
     ChatResponseMessage(:final content) => (serverName, content),
     ChatErrorMessage(:final message) => ('$serverName — Error', message),
+    ApprovalRequestMessage(:final action, :final target, :final detail) =>
+      ('$serverName — Approval needed', '$action: $target${detail.isEmpty ? '' : ' — $detail'}'),
     _ => (serverName, ''),
   };
   return (title: title, body: _truncate(rawBody));
@@ -72,7 +77,7 @@ Future<void> requestNotificationPermission() async {
 Future<void> showChatNotification(ServerMessage message, {required String serverName}) async {
   final (:title, :body) = notificationContentFor(message, serverName: serverName);
   await _plugin.show(
-    id: _notificationId,
+    id: message is ApprovalRequestMessage ? _approvalNotificationId : _notificationId,
     title: title,
     body: body,
     notificationDetails: const NotificationDetails(

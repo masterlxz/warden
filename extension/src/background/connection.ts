@@ -13,6 +13,7 @@
 import {
   encode,
   decode,
+  type ApprovalPrompt,
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
@@ -49,6 +50,9 @@ export interface ChatEntry {
 type StatusListener = (status: ConnectionStatus) => void;
 /** `conversationId` is the conversation the reply belongs to (P78). */
 type ChatListener = (entry: ChatEntry, conversationId: string | undefined) => void;
+/** P87 — a new approval to show, or one the hub stopped waiting on. */
+export type ApprovalEvent = { kind: "prompt"; prompt: ApprovalPrompt } | { kind: "cancelled"; approvalId: number };
+type ApprovalListener = (event: ApprovalEvent) => void;
 
 export interface ConnectOptions {
   host: string;
@@ -80,6 +84,8 @@ export class ServerConnection {
   private readonly socket: WebSocket;
   private readonly statusListeners = new Set<StatusListener>();
   private readonly chatListeners = new Set<ChatListener>();
+  private readonly approvalListeners = new Set<ApprovalListener>();
+  private readonly changedListeners = new Set<(conversationId: string) => void>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private nextNonce = 0;
   private pendingPingNonce: number | null = null;
@@ -104,7 +110,17 @@ export class ServerConnection {
     this.toolHandlers = toolHandlers;
     this.currentStatus = { kind: "connected", serverName };
     this.startHeartbeat();
-    socket.addEventListener("message", (event) => this.onMessage(decode(event.data as string)));
+    socket.addEventListener("message", (event) => {
+      let message: ServerMessage;
+      try {
+        message = decode(event.data as string);
+      } catch (err) {
+        // A message this client doesn't know yet (a newer hub) is skipped, not a broken connection.
+        console.warn("warden:", err);
+        return;
+      }
+      this.onMessage(message);
+    });
     socket.addEventListener("error", () => {
       this.stopHeartbeat();
       this.setStatus({ kind: "failure", message: "WebSocket error" });
@@ -127,6 +143,18 @@ export class ServerConnection {
   onStatusChange(listener: StatusListener): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
+  }
+
+  /** P87 — a tool in this device's turn waits on the person, or the hub stopped waiting. */
+  onApproval(listener: ApprovalListener): () => void {
+    this.approvalListeners.add(listener);
+    return () => this.approvalListeners.delete(listener);
+  }
+
+  /** P87 — one of this device's conversations changed outside a chat reply. */
+  onConversationChanged(listener: (conversationId: string) => void): () => void {
+    this.changedListeners.add(listener);
+    return () => this.changedListeners.delete(listener);
   }
 
   onChatMessage(listener: ChatListener): () => void {
@@ -235,6 +263,18 @@ export class ServerConnection {
         // reasoning as the Dart client's `unawaited(_handleToolCallRequest(...))`.
         void this.handleToolCallRequest(message.callId, message.tool, message.arguments);
         break;
+      case "approvalRequest": {
+        const { approvalId, target, action, detail } = message;
+        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail } });
+        break;
+      }
+      case "approvalCancelled":
+        for (const listener of this.approvalListeners) listener({ kind: "cancelled", approvalId: message.approvalId });
+        break;
+      case "conversationsChanged":
+        for (const listener of this.changedListeners) listener(message.conversationId);
+        break;
+      case "settings":
       case "skillList":
       case "skillOk":
       case "history":
@@ -245,6 +285,7 @@ export class ServerConnection {
       case "skillError":
       case "historyError":
       case "conversationError":
+      case "settingsError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
         break;
       case "authError":
@@ -272,8 +313,19 @@ export class ServerConnection {
 
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation, P78). The reply
    * arrives asynchronously via `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string): void {
-    this.socket.send(encode({ type: "chat", message, conversationId }));
+  sendChat(message: string, conversationId: string, agentId?: string): void {
+    this.socket.send(encode({ type: "chat", message, conversationId, ...(agentId !== undefined && { agentId }) }));
+  }
+
+  /** P87 — the configured agents' ids, from the hub's settings. */
+  async listAgentIds(): Promise<string[]> {
+    const reply = await this.request((requestId) => ({ type: "requestSettings", requestId }));
+    return reply.type === "settings" ? reply.agentIds : [];
+  }
+
+  /** P87 — the person's answer to an `approvalRequest`. */
+  resolveApproval(approvalId: number, approved: boolean): void {
+    this.socket.send(encode({ type: "resolveApproval", approvalId, approved }));
   }
 
   /** P78 — this device's conversations on the hub, newest-updated first. */

@@ -1855,12 +1855,12 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
     do disco só aquela conversa). No hub é `ServerMessage::ConversationsChanged`, mandado por um sender **fraco**
     (`downgrade`), para um agente que ainda responde depois de o aparelho sair não segurar a task de escrita da
     conexão.
-  - **Onde vale**: desktop e hub/web. O CLI não guarda conversas, então lá o agente não recebe a tool (pendência
-    registrada). No hub, a conversa vai para o diretório do aparelho que mandou a mensagem.
+  - **Onde vale**: desktop e hub/web e, desde a Sessão 106, o CLI (os recados vão para a pasta de conversas do
+    desktop). No hub, a conversa vai para o diretório do aparelho que mandou a mensagem.
 - **Limitações aceitas**: o turno de B não é cobrado do `TurnBudget` do turno de A (é um turno próprio, com o
   próprio teto de delegação); os limites de gasto por período (P4) valem, porque o contexto de gasto vem junto. No
-  desktop, o frontend grava conversas sem o lock do bootstrap, então se a pessoa escrever na conversa "A → B"
-  exatamente enquanto B grava a resposta, um dos dois pode sobrescrever o outro (janela pequena, mesma classe do P78).
+  desktop, ~~o frontend grava conversas sem o lock do bootstrap~~ (resolvido na Sessão 106: o frontend anexa pelo
+  `append_messages`).
   O approver da web vale para qualquer aparelho que já pode conversar (inclusive `Pending`), igual ao chat.
 
 ## Auto-sync no hub e na web (P61 fatia 1, Sessão 105)
@@ -1994,4 +1994,33 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
 - **Nunca aninhar**: no Linux, uma segunda trava por outro descritor do mesmo arquivo espera a primeira, mesmo no
   mesmo processo. Nenhum método que trava chama outro que trava. O `SyncRunner` mantém o mutex em memória por
   cima, que continua cobrindo `init`/`pair` e o último relatório.
+
+## Agentes e aprovação no mobile e na extensão, recados pelo CLI, fim da corrida no desktop (P87, Sessão 106)
+
+- **Escrita de conversa entre processos**: `append_to_conversation`/`rename_conversation`/`delete_conversation`
+  passam por `ConversationWriteGuard`, que junta o mutex do processo (`CONVERSATION_WRITES`) com uma trava de
+  arquivo bloqueante (`File::lock`) em `<pasta>/.writes.lock`, só em volta da leitura e escrita do arquivo. A
+  listagem só lê `.json`, então a trava nunca aparece como conversa. Pública agora:
+  `append_messages(dir, id, AppendOptions { title_seed, agent_id, provider_id, create }, messages)`, que devolve a
+  conversa como ficou no disco (`provider_id: None` deixa como está, porque só o desktop guarda um).
+- **Desktop**: o frontend deixou de gravar a conversa inteira (`save_conversation` saiu). Ele mostra a mensagem na
+  hora e chama `append_conversation_messages`; a cópia do disco volta e entra no estado por `replaceWithSaved`, que
+  mantém no fim o que ainda não chegou ao disco e o aviso de fallback (P79), que só é mostrado e nunca salvo. O
+  evento `conversations-changed` usa a mesma junção. Assim uma resposta de B, ou um recado do CLI, não é apagada.
+- **CLI**: `resolve_turn_context` passa `AgentExtras { conversations_dir: default_conversations_dir() }`, então o
+  agente com `can_message_agents` recebe `message_agent`. A conversa "A → B" aparece no desktop na próxima leitura da
+  lista (não há evento entre processos), e o `read` funciona no terminal. Como a resposta de B roda no processo do
+  CLI, sair (`/exit`, `exit`, Ctrl+D) espera até 180 s por `message_agent::answers_in_flight()`, e Ctrl+C sai já.
+- **Mobile e extensão**, mesmo desenho da web:
+  - os ids dos agentes vêm do `requestSettings` (só `settings.agents[].id` é lido);
+  - o agente vai no `chat` como `agentId`; abrir uma conversa restaura o `agentId` dela e uma nova mantém a última
+    escolha;
+  - o `ApprovalRequest` vira um diálogo (mobile) ou um cartão no topo do painel (extensão), em fila, fechado pelo
+    `ApprovalCancelled`;
+  - o `ConversationsChanged` recarrega a lista e, se a conversa está aberta e sem turno pendente, o histórico.
+- **Avisos quando a tela não está à vista**: no mobile, uma notificação local "Approval needed" com id próprio (não
+  substitui a da resposta). Na extensão, um selo "!" no ícone enquanto houver aprovação pendente, porque o painel
+  pode estar fechado.
+- **Tipos desconhecidos**: o mobile passou a devolver `UnknownServerMessage` em vez de lançar exceção, e a extensão
+  ignora com um aviso no console, para um hub mais novo não quebrar a conexão.
 

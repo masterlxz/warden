@@ -22,7 +22,7 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_model_for, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
+    append_messages, AgentConfig, AppendOptions, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
     Overrides,
     Provider, ProviderConfig, UsageSummary,
 };
@@ -683,10 +683,23 @@ fn list_conversations() -> Result<Vec<Conversation>, String> {
     read_conversations(&dir).map_err(|e| format!("{e:#}"))
 }
 
+/// Adds messages to a conversation (creating it on the first one) and returns it as saved (P87).
+/// The screen used to save the whole conversation it held, which erased anything another writer
+/// added meanwhile — an agent answering a `message_agent` note in the "A → B" conversation, or the
+/// CLI leaving one. Appending re-reads the file under the bootstrap's write lock instead.
 #[tauri::command]
-fn save_conversation(conversation: Conversation) -> Result<(), String> {
+fn append_conversation_messages(
+    conversation_id: String,
+    messages: Vec<ConversationMessage>,
+    title_seed: String,
+    agent_id: Option<String>,
+    provider_id: Option<String>,
+) -> Result<Conversation, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    write_conversation(&dir, &conversation).map_err(|e| format!("{e:#}"))
+    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), create: true };
+    append_messages(&dir, &conversation_id, options, messages)
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or_else(|| "the conversation could not be created".to_string())
 }
 
 /// Backs the "Usage" nav view — the same on-demand aggregation the `usage_stats` tool (`warden-
@@ -787,7 +800,7 @@ pub fn run() {
             get_settings,
             save_settings,
             list_conversations,
-            save_conversation,
+            append_conversation_messages,
             usage_summary,
             mcp_oauth_status,
             mcp_oauth_connect,

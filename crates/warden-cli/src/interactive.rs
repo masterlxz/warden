@@ -1050,6 +1050,37 @@ fn load_fresh_config(config_path: Option<&Path>) -> anyhow::Result<FileConfig> {
 /// error) — same card machinery (`insert_card`) and trailing spacer as the user/assistant/error
 /// cards in `run()`'s own loop, wrapped through `list_body_rows` so a long line never overflows
 /// the card's border.
+/// How long leaving waits for agents still answering a `message_agent` note (P87) — the same
+/// wait the tool's own `wait: true` gives.
+const EXIT_WAIT_FOR_AGENTS: Duration = Duration::from_secs(180);
+
+/// A note's answer runs in this process: leaving now would kill it and leave the note unanswered in
+/// the conversation. Waits for it (Ctrl+C leaves at once).
+async fn wait_for_agents_answering(terminal: &mut CliTerminal) -> anyhow::Result<()> {
+    let busy = warden_bootstrap::message_agent::answers_in_flight();
+    if busy == 0 {
+        return Ok(());
+    }
+    render_message_card(
+        terminal,
+        "recados",
+        accent_style(),
+        vec![(format!("esperando {busy} agente(s) terminar(em) de responder… (Ctrl+C para sair já)"), Style::default())],
+    )?;
+    let deadline = std::time::Instant::now() + EXIT_WAIT_FOR_AGENTS;
+    while warden_bootstrap::message_agent::answers_in_flight() > 0 && std::time::Instant::now() < deadline {
+        if event::poll(Duration::ZERO)? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Ok(())
+}
+
 fn render_message_card(terminal: &mut CliTerminal, title: &str, style: Style, lines: Vec<(String, Style)>) -> anyhow::Result<()> {
     insert_card(terminal, vec![(title.to_string(), style)], style, list_body_rows(lines), None)?;
     terminal.insert_before(1, |_buf| {})?;
@@ -1090,7 +1121,7 @@ struct TurnContext {
 /// selections — a model override (only when it differs from whatever `run()`'s own `orchestrator`
 /// parameter already is), a persona to pass as `system_prompt`, and (P46) the orchestrator scoped to
 /// the active agent (`scope_to_agent`: skills, `allowed_tools`, `delegate_to_agent`, `manage_agents`;
-/// no `message_agent`, since the terminal keeps no conversations). Reloads config fresh only when at least one selection
+/// and `message_agent`, whose notes land in the desktop's conversations directory, P87). Reloads config fresh only when at least one selection
 /// is active; when neither is, returns an empty context immediately with no disk access at
 /// all, so a session that never touches `/models`/`/agents` behaves exactly as before this
 /// feature existed. An explicit `/models use` always wins over an active agent's own
@@ -1106,7 +1137,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
     let scoped = session
         .agent_id
         .as_deref()
-        .and_then(|id| scope_to_agent(orchestrator, &config, session.config_path.as_deref(), id, AgentExtras::default()));
+        .and_then(|id| scope_to_agent(orchestrator, &config, session.config_path.as_deref(), id, cli_agent_extras()));
     let agent_provider_id = scoped.as_ref().and_then(|s| s.provider_id.clone());
     let (system_prompt, scoped_orchestrator) = match scoped {
         Some(scoped) => (Some(scoped.persona), scoped.orchestrator),
@@ -1122,6 +1153,13 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
     };
 
     Ok(TurnContext { model_override, system_prompt, orchestrator: scoped_orchestrator })
+}
+
+/// The terminal keeps no conversations of its own, so `message_agent` notes (P87) go to the
+/// desktop's directory: the "A → B" conversation shows up there, and `read` works here. Nothing is
+/// told when one changes (the desktop sees it on its next list reload).
+fn cli_agent_extras() -> AgentExtras {
+    AgentExtras { conversations_dir: warden_bootstrap::default_conversations_dir(), on_conversation_changed: None }
 }
 
 async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
@@ -2024,7 +2062,7 @@ async fn prompt_agent_can_manage(terminal: &mut CliTerminal, initial: bool) -> a
 async fn prompt_agent_can_message(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
     prompt_agent_flag(
         terminal,
-        " pode deixar recados pra outros agentes? vale no desktop e na web, não no terminal (s/n) ",
+        " pode deixar recados pra outros agentes? no terminal, os recados aparecem nas conversas do desktop (s/n) ",
         initial,
     )
     .await
@@ -2908,6 +2946,7 @@ pub async fn run(
         }
     }
 
+    wait_for_agents_answering(&mut terminal).await?;
     drop(_raw_mode);
 
     if let Some(path) = history_path {
@@ -2920,6 +2959,42 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// These tests never run a model turn.
+    struct NoModel;
+
+    #[async_trait::async_trait]
+    impl warden_core::model::ModelProvider for NoModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            anyhow::bail!("no model in these tests")
+        }
+    }
+
+    #[test]
+    fn an_agent_allowed_to_leave_notes_gets_message_agent_in_the_terminal() {
+        let dir = std::env::temp_dir().join(format!("warden-cli-notes-{}", now_millis()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[[agents]]\nid = \"ana\"\npersona = \"p\"\ncan_message_agents = true\n\n[[agents]]\nid = \"bia\"\npersona = \"p\"\n").unwrap();
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(NoModel), std::sync::Arc::new(warden_core::memory::Vault::new(dir.join("vault"))));
+        let session = |agent: &str| CliSession {
+            config_path: Some(config_path.clone()),
+            vault_path_override: None,
+            provider_id: None,
+            agent_id: Some(agent.to_string()),
+            usage_total: Usage::default(),
+            turn_count: 0,
+            started_at: 0,
+            tool_names: Vec::new(),
+            spend_guard: None,
+        };
+        let tools = |agent: &str| -> Vec<String> {
+            resolve_turn_context(&session(agent), &orchestrator).unwrap().orchestrator.tools().iter().map(|t| t.spec().name).collect()
+        };
+        assert!(tools("ana").contains(&"message_agent".to_string()));
+        assert!(!tools("bia").contains(&"message_agent".to_string()), "only with the flag");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn the_cost_line_never_passes_an_unpriced_call_off_as_free() {

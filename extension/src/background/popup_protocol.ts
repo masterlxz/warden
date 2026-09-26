@@ -7,7 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
-import type { ConversationSummary, SkillDto } from "../protocol/messages";
+import type { ApprovalPrompt, ConversationSummary, SkillDto } from "../protocol/messages";
 import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
@@ -30,6 +30,10 @@ export type PopupRequest =
   | { type: "newConversation" }
   | { type: "renameConversation"; conversationId: string; title: string }
   | { type: "deleteConversation"; conversationId: string }
+  /** P87 — the agent the next turns speak as (`null`: none). */
+  | { type: "selectAgent"; agentId: string | null }
+  | { type: "refreshAgents" }
+  | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "discoverHubs"; port: number }
   | { type: "listSkills" }
   | { type: "saveSkill"; skill: SkillDto; overwrite: boolean }
@@ -45,10 +49,16 @@ export interface ConversationState {
   conversations: ConversationSummary[];
   activeConversationId: string | null;
   pendingIds: string[];
+  /** P87 — the hub's configured agents, and the one the next turn speaks as. Opening a
+   * conversation restores the agent it last spoke with; a new one keeps the last choice. */
+  agentIds: string[];
+  agentId: string | null;
 }
 
 export interface GetStatusResponse extends ConversationState {
   status: ConnectionStatus;
+  /** P87 — approvals the hub is waiting on, oldest first. */
+  approvals: ApprovalPrompt[];
   history: ChatEntry[];
   savedSettings: Partial<ConnectionSettings>;
 }
@@ -98,4 +108,12 @@ export type GroupChangedEvent = { type: "groupChanged" };
 export type HistoryLoadedEvent = { type: "historyLoaded"; history: ChatEntry[] };
 /** P78 — the conversation list, the open conversation or what's waiting on an answer changed. */
 export type ConversationsChangedEvent = { type: "conversationsChanged" } & ConversationState;
-export type BackgroundEvent = StatusChangedEvent | ChatMessageEvent | GroupChangedEvent | HistoryLoadedEvent | ConversationsChangedEvent;
+/** P87 — the queue of approvals the hub is waiting on changed. */
+export type ApprovalsChangedEvent = { type: "approvalsChanged"; approvals: ApprovalPrompt[] };
+export type BackgroundEvent =
+  | StatusChangedEvent
+  | ChatMessageEvent
+  | GroupChangedEvent
+  | HistoryLoadedEvent
+  | ConversationsChangedEvent
+  | ApprovalsChangedEvent;

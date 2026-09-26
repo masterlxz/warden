@@ -15,8 +15,18 @@ class FakeBackend implements ConversationBackend {
   Object? historyError;
   Object? listError;
 
+  /// The agent each sent turn spoke as, in order (P87).
+  final sentAgents = <String?>[];
+  var agentIds = <String>[];
+
   @override
-  void sendChat(String message, {String? conversationId}) => sent.add((message, conversationId));
+  void sendChat(String message, {String? conversationId, String? agentId}) {
+    sent.add((message, conversationId));
+    sentAgents.add(agentId);
+  }
+
+  @override
+  Future<List<String>> listAgentIds() async => agentIds;
 
   @override
   Future<List<HistoryEntry>> fetchHistory({int? limit, String? conversationId}) async {
@@ -94,6 +104,49 @@ void main() {
     expect(transcript.waitingForReply, isTrue);
     expect(transcript.entries.single.role, EntryRole.user);
     expect(transcript.entries.single.text, 'hello');
+  });
+
+  test('the agent follows the conversation, and a new one keeps the last choice (P87)', () async {
+    backend.agentIds = ['chief', 'poet'];
+    backend.conversations = [
+      ConversationSummary(id: 'c1', title: 'with chief', createdAt: 0, updatedAt: 2, agentId: 'chief'),
+      summary('c2'),
+    ];
+    final transcript = make(last: 'c1');
+    await settle();
+
+    expect(transcript.agentIds, ['chief', 'poet']);
+    expect(transcript.selectedAgentId, 'chief', reason: 'restored from the conversation');
+    transcript.send('hi');
+    expect(backend.sentAgents.last, 'chief');
+
+    transcript.open('c2');
+    expect(transcript.selectedAgentId, isNull, reason: 'c2 spoke with no agent');
+    transcript.selectAgent('poet');
+    transcript.startNew();
+    expect(transcript.selectedAgentId, 'poet', reason: 'a new conversation keeps the choice');
+    transcript.send('new one');
+    expect(backend.sentAgents.last, 'poet');
+    expect(transcript.conversations.first.agentId, 'poet');
+  });
+
+  test('a changed conversation reloads the list and the open transcript (P87)', () async {
+    backend.conversations = [summary('c1')];
+    backend.histories['c1'] = [const HistoryEntry(fromUser: true, content: 'note from ana')];
+    final transcript = make(last: 'c1');
+    await settle();
+    expect(transcript.entries.single.text, 'note from ana');
+
+    backend.histories['c1'] = [
+      const HistoryEntry(fromUser: true, content: 'note from ana'),
+      const HistoryEntry(fromUser: false, content: 'answer from bia'),
+    ];
+    backend.conversations = [summary('c1'), summary('agents-x', 'ana → bia')];
+    replies.add(const ConversationsChangedMessage('c1'));
+    await settle();
+
+    expect(transcript.entries.map((e) => e.text), ['note from ana', 'answer from bia']);
+    expect(transcript.conversations.map((c) => c.id), contains('agents-x'));
   });
 
   test('blank text and a pending reply are both ignored', () async {

@@ -48,6 +48,27 @@ function titleFromMessage(content: string): string {
   return collapsed.length > 40 ? `${collapsed.slice(0, 40)}…` : collapsed;
 }
 
+/** Puts the copy of a conversation just read from disk in the list (P87). It wins, since it has
+ * what other writers added, but a message this screen shows and the disk doesn't have yet (its own
+ * append still in flight) stays at the end, and the fallback notice (shown only, never saved) is
+ * kept on the message it belongs to. */
+function replaceWithSaved(conversations: Conversation[], saved: Conversation): Conversation[] {
+  const local = conversations.find((c) => c.id === saved.id);
+  const localById = new Map((local?.messages ?? []).map((m) => [m.id, m]));
+  const savedIds = new Set(saved.messages.map((m) => m.id));
+  const merged: Conversation = {
+    ...saved,
+    messages: [
+      ...saved.messages.map((m) => {
+        const fallbacks = localById.get(m.id)?.fallbacks;
+        return fallbacks ? { ...m, fallbacks } : m;
+      }),
+      ...(local?.messages ?? []).filter((m) => !savedIds.has(m.id)),
+    ],
+  };
+  return [merged, ...conversations.filter((c) => c.id !== saved.id)].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -75,10 +96,7 @@ function App() {
         .then((saved) => {
           const changed = saved.find((c) => c.id === event.payload);
           if (!changed) return;
-          setConversations((prev) => {
-            const rest = prev.filter((c) => c.id !== changed.id);
-            return [changed, ...rest].sort((a, b) => b.updatedAt - a.updatedAt);
-          });
+          setConversations((prev) => replaceWithSaved(prev, changed));
         })
         .catch((err) => console.error("failed to reload a conversation:", err));
     });
@@ -126,10 +144,11 @@ function App() {
   }
 
   function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {
+    const agentId = selectedAgentId || undefined;
+    const providerId = selectedProviderId || undefined;
+    // Shown at once; the saved copy then replaces it (P87).
     setConversations((prev) => {
       const existing = prev.find((c) => c.id === conversationId);
-      const agentId = selectedAgentId || undefined;
-      const providerId = selectedProviderId || undefined;
       const conversation: Conversation = existing
         ? { ...existing, messages: [...existing.messages, message], updatedAt: message.createdAt, agentId, providerId }
         : {
@@ -141,13 +160,21 @@ function App() {
             agentId,
             providerId,
           };
-
-      void invoke("save_conversation", { conversation }).catch((err) =>
-        console.error("failed to persist conversation:", err)
-      );
-
       return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
+
+    // Appended on disk rather than saving the whole conversation held here: another writer (an agent
+    // answering a note in this conversation, the CLI) may have added to it meanwhile (P87).
+    const { fallbacks: _shownOnly, ...saved } = message;
+    invoke<Conversation>("append_conversation_messages", {
+      conversationId,
+      messages: [saved],
+      titleSeed: titleSeed ?? message.content,
+      agentId: agentId ?? null,
+      providerId: providerId ?? null,
+    })
+      .then((onDisk) => setConversations((prev) => replaceWithSaved(prev, onDisk)))
+      .catch((err) => console.error("failed to persist conversation:", err));
   }
 
   async function handleSendMessage(content: string, attachments: Attachment[] = []) {
