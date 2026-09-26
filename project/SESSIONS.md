@@ -44,9 +44,36 @@
 - **Não testado**: nenhuma tela foi aberta (P80); o pareamento real entre um hub num VPS e o desktop pelo Tailscale;
   o recarregamento do orquestrador no desktop quando chega config novo (só compila).
 
-**Próximo passo**: fatia 2 do P61: tirar o seletor de 4 cartões e a migração da tela do desktop, levar a escolha
-"sincronizar com git / Arweave / nada" para lá no mesmo formato da web, e remover `remote_node`, `RemoteNodeProvider`,
-`warden-node`, `vault_node` e o que só existia para eles.
+**Fatia 2** (commit da fatia 1 feito antes, `49d8b01`; plano aprovado em Plan mode):
+
+- **Decisões do usuário**: remover também as traits `StorageProvider`/`AuthProvider` e tudo que as implementava
+  ("remover tudo"), e **manter** o roteamento `CallDeviceTool` do hub.
+- **Removido**: `warden_core::storage`, `DecentralizedVaultProvider`/`TruthIdAuthProvider` (e seus dois testes de
+  integração), `RemoteNodeProvider`/`DeviceTokenStore`/`connect_with_token_store`, `vault_node` e o binário
+  `warden-node` (e os dois testes de integração deles), `StorageProviderKind`/`RemoteNodeConfig`/
+  `resolve_storage_provider`/`build_storage_provider`/`build_auth_provider`/`default_client_device_tokens_path`, e no
+  desktop a seção "Storage", o formulário do remote node, o modal do QR de migração e o passo de migração do
+  `save_settings`. Dependências que ficaram sem uso: `async-trait`/`base64` no `warden-server-protocol` e
+  `async-trait` no `warden-sync`.
+- **Compatibilidade**: `storage_provider`/`[remote_node]` viraram campos legados só de leitura no `FileConfig`
+  (`deny_unknown_fields` recusaria o arquivo), e o próximo save os tira.
+- Docs: `ARCHITECTURE.md` (linhas antigas marcadas como removidas + subseção da fatia 2), `PHASE.md` (9.5),
+  `README.md`, `PENDING.md` (P61 resolvido, **P88** novo com o que sobrou), `ROADMAP.md`.
+
+**Verificação da fatia 2**:
+
+- `cargo test --workspace`: 747 passando, 0 falhas (eram 783; a diferença são os testes das peças removidas, mais
+  1 novo). `cargo clippy --workspace --all-targets` limpo; `tsc`/`build` do desktop limpos.
+- **Achado no teste novo**: um comentário colado na chave removida sai junto com ela no merge do `render_config`,
+  o que faz sentido (era dela); o teste passou a pôr o comentário na chave que fica.
+- `grep` final: nenhuma referência às peças removidas fora dos campos legados, do teste deles e dos docs.
+- **Ponta a ponta**: `warden-server` isolado (scratchpad) subindo com um `config.toml` com
+  `storage_provider = "remote_node"` e `[remote_node]`; `sync status` funcionou; um save pela web (WebSocket do
+  Node) deixou o arquivo sem as duas chaves e com o resto intacto.
+- **Não testado**: nenhuma tela do desktop aberta (a seção "Sync via Git" continua a mesma de antes).
+
+**Próximo passo**: o P80/P87/P88 abrindo as telas com o usuário (aba Sync da web, Aparelhos, agentes), e o teste
+do Gemini real que a Sessão 104 deixou pendente. Depois, P79.
 
 ---
 

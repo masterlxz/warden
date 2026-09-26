@@ -494,10 +494,11 @@ formal), `RemoteNodeProvider` (grátis, rede de nós própria do usuário — de
 MVP sugerido na própria spec, mas **explicitamente pendente de confirmação com o usuário antes de
 codar** — ver detalhes completos em `PENDING.md` P61.
 
-**Mudança de rumo (Sessão 105)**: o agente trabalha sempre no disco local, e o "storage" virou
-para onde o vault sincroniza (git ou Arweave, com o Warden Cloud como opção futura). O auto-sync
-já roda no hub e tem tela na web; o próximo passo é simplificar a tela do desktop e remover o
-`RemoteNodeProvider`/`warden-node`.
+**Fechado na Sessão 105, com mudança de rumo**: o agente trabalha sempre no disco local, e o
+"storage" virou para onde o vault sincroniza (git ou Arweave; um Warden Cloud entraria como mais
+um destino). O auto-sync roda no hub e tem tela na web, e a camada de Storage Provider (traits,
+`RemoteNodeProvider`, `warden-node`, seletor e migração do desktop) foi removida. O que sobrou
+está no P88.
 
 ### Voz
 

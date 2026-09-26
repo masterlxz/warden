@@ -530,6 +530,8 @@ motivou a escolha original do Tauri. Client fala o protocolo WS/JSON do servidor
   anuncia `vault_read`/`vault_write`/`vault_list`/`vault_delete`, executa contra seu próprio `Vault`
   local e devolve o resultado — escopado só a essas 4 tools de vault, não um nó genérico de
   qualquer tool ainda; ver `PENDING.md` P61
+  **Removido na Sessão 105**: o `warden-node` e o `RemoteNodeProvider` saíram com a mudança do P61 (a
+  memória fica sempre local e só sincroniza). O roteamento da 9.4 continua no hub.
 - [x] 9.6 — Workspace de máquinas (ver/gerenciar nós conectados) *(Sessão 60, continuação)* — tela
   nova no desktop (`WorkspaceView.tsx`), lista/aprova/revoga dispositivos do `PairingStore` (9.3).
   Escopo confirmado com o usuário: assume que o desktop roda na **mesma máquina** do

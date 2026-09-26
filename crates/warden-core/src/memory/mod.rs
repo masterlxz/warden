@@ -92,9 +92,8 @@ impl Vault {
         Ok(std::fs::write(path, content)?)
     }
 
-    /// Removes a file from the vault. Added for `StorageProvider`/`LocalFSProvider` (P61) — before
-    /// this, the only deletion path (`warden-sync`'s bundle-apply, P37) reached past `Vault`
-    /// straight into `std::fs::remove_file`; that call site now goes through here instead.
+    /// Removes a file from the vault — how `warden-sync`'s bundle-apply (P37) deletes a note another
+    /// device removed.
     pub fn delete(&self, relative_path: &str) -> anyhow::Result<()> {
         Ok(std::fs::remove_file(self.path_of(relative_path)?)?)
     }

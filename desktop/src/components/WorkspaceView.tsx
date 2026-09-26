@@ -109,7 +109,7 @@ function EmbeddedServerSection() {
         <h3 className="settings-section-title">Ser o hub desta rede</h3>
       </div>
       <p className="settings-hint">
-        Liga um <code>warden-server</code> dentro deste mesmo app — outros dispositivos (mobile, extensão, outro <code>warden-node</code>)
+        Liga um <code>warden-server</code> dentro deste mesmo app — outros dispositivos (mobile, extensão, navegador)
         conseguem se conectar por aqui, na porta escolhida abaixo. Uma vez ligado, volta a subir sozinho toda vez que este app abrir; pra
         acessar de fora da rede local (tipo Jellyfin), redirecione essa porta no seu roteador.
       </p>

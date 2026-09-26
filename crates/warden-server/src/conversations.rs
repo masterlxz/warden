@@ -7,7 +7,7 @@
 //! and written with the same `warden_bootstrap` functions every other channel uses. Before P78 a
 //! device had exactly one conversation, `<root>/<device_id>.json`; `device_conversations_dir`
 //! moves that file into the device's directory as its `default` conversation, the one a client
-//! that never names a conversation (mobile, extension and `warden-node` from before P78) keeps
+//! that never names a conversation (mobile and extension from before P78) keeps
 //! talking to.
 
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub fn resolve_conversation_id(conversation_id: Option<String>) -> Result<String
 }
 
 /// `device_id`'s conversations directory under `root`, created on first write. A device id that
-/// isn't a safe name (`warden-node --device-id` takes anything) gets a hash-derived directory
+/// isn't a safe name (a client picks its own `device_id`) gets a hash-derived directory
 /// instead, so it can never point outside `root`.
 ///
 /// Also migrates the device's pre-P78 single conversation (`<root>/<device_id>.json`) into it as

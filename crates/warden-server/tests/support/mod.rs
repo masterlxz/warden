@@ -205,15 +205,6 @@ pub async fn spin_up_server_with_shutdown(provider: MockProvider) -> (std::net::
     (addr, shutdown_tx)
 }
 
-/// A fresh, empty client-side `DeviceTokenStore` (P36) — for the clients that keep their token
-/// (`RemoteNodeProvider`, `vault_node::connect`).
-pub fn temp_token_store() -> warden_server::DeviceTokenStore {
-    warden_server::DeviceTokenStore::new(std::env::temp_dir().join(format!(
-        "warden-server-test-tokens-{}.json",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    )))
-}
-
 /// Connects `device_id` (registering it as `Pending` in the pairing registry via a real `Hello`),
 /// then immediately approves it — the common setup every `CallDeviceTool` test needs for a device
 /// to be allowed to call or be called. Returns the now-approved connection.

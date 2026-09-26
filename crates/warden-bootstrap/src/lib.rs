@@ -57,28 +57,6 @@ pub enum Provider {
     OpenaiCompatible,
 }
 
-/// Where the vault's memory actually lives (P61) — selects the `warden_core::storage::StorageProvider`
-/// `build_storage_provider` constructs. Unlike `Provider` above, this isn't a registry (there's
-/// only ever one active storage backend per install, not several pre-configured ones to switch
-/// between) — a single config field is enough. `RemoteNode`/`ManagedCloud` are placeholders for
-/// v2/v3 (see `PENDING.md` P61) — `build_storage_provider` errors clearly if either is selected,
-/// since neither has an implementation yet.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum StorageProviderKind {
-    /// Free, local disk — the absolute default, and what every install already does today
-    /// (`Vault` itself, before this abstraction existed).
-    Local,
-    /// Paid-by-subscription, backed by TruthID/Arweave (`warden-sync`'s `SyncEngine`) — the only
-    /// kind depending on TruthID. See `warden_sync::DecentralizedVaultProvider`'s doc comment for
-    /// what it does and doesn't do yet.
-    DecentralizedVault,
-    /// v2, not implemented yet — another machine the user owns, via the node network (Fase 9).
-    RemoteNode,
-    /// v3, not implemented yet — traditional hosted infra, paid to Fabio, no Web3.
-    ManagedCloud,
-}
-
 /// One configured model provider (Sessão 35's provider registry) — the desktop Settings screen
 /// lets the user add/edit/delete any number of these, each independently selectable as the
 /// active one. Kept as a flat list rather than a map so ordering is stable for display and `id`
@@ -197,31 +175,11 @@ impl SshHostConfig {
     }
 }
 
-/// Config for `StorageProviderKind::RemoteNode` (P61, v2) — which `warden-server` hub both this
-/// device and the one actually holding the vault connect through, and which of its registered
-/// devices is the target. No Settings-screen UI yet (config.toml/env only, same posture as
-/// `AgentConfig`/`delegate_max_depth`) — and there's no way to usefully fill this in yet either,
-/// since the target-side "vault node agent" process this would point at doesn't exist.
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteNodeConfig {
-    /// The `warden-server` hub both sides connect through, e.g. `"ws://100.x.x.x:7420"`.
-    pub server_url: String,
-    /// This device's own id when it connects to `server_url` as a client.
-    pub device_id: String,
-    pub device_name: String,
-    /// Shared secret for `server_url`'s `Hello` handshake.
-    pub auth_key: String,
-    /// The *other* device (already connected to the same hub) that actually holds the vault.
-    pub target_device_id: String,
-}
-
 /// Config for `warden_sync::GitSyncEngine` (P63, v1) — a self-hosted/remote git repo (Gitea,
 /// GitHub, ...) as an alternative to Arweave/TruthID for syncing the vault, for whoever doesn't
 /// want that dependency. HTTPS + token only in v1 (SSH/deploy-key is v2); the token is only ever
 /// read here and passed to `git` as a per-invocation URL credential — `GitSyncEngine` never writes
-/// it to disk. No Settings-screen UI yet (config.toml only), same posture `RemoteNodeConfig` had
-/// before P61 v2.
+/// it to disk. Set from the desktop's and the web's Settings (the web only takes `https://`).
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GitSyncConfig {
@@ -377,18 +335,17 @@ pub struct FileConfig {
     /// no `agent_id` just runs with no persona, the same behavior as before this existed.
     #[serde(default)]
     pub agents: Vec<AgentConfig>,
-    /// Where the vault's memory lives (P61). `None` means "not migrated yet" — resolved to
-    /// `StorageProviderKind::Local` by `resolve_storage_provider`, same as every install already
-    /// implicitly was before this field existed. Has a desktop Settings screen (the "Storage"
-    /// section) as of this session; `RemoteNode`/`ManagedCloud` are still shown there as "coming
-    /// soon" and can't be selected through it.
-    pub storage_provider: Option<StorageProviderKind>,
-    /// Only meaningful when `storage_provider` is `RemoteNode` — see `RemoteNodeConfig`'s own doc
-    /// comment for why there's no UI for this yet either.
-    pub remote_node: Option<RemoteNodeConfig>,
+    /// `storage_provider = "..."` and `[remote_node]` from before Sessão 105, when P61 had the
+    /// vault's memory live on a chosen backend (the desktop wrote the first on every save). The
+    /// memory is always local now and only syncs, so both are read and ignored — the file has
+    /// `deny_unknown_fields` and would otherwise stop loading — and never written back, so the
+    /// next save drops them.
+    #[serde(default, skip_serializing, rename = "storage_provider")]
+    pub legacy_storage_provider: Option<toml::Value>,
+    #[serde(default, skip_serializing, rename = "remote_node")]
+    pub legacy_remote_node: Option<toml::Value>,
     /// Sync via a remote git repo instead of Arweave/TruthID (P63) — `None` means this backend
-    /// isn't configured; unrelated to `storage_provider`/`remote_node` above, which are about
-    /// where the vault's *primary copy* lives, not how it's synced between devices.
+    /// isn't configured.
     pub git_sync: Option<GitSyncConfig>,
     /// The desktop app embedding its own `warden-server` hub (Fase 9.1 follow-up) — `None` means
     /// never configured (equivalent to `enabled: false`, but distinct so the Settings UI can tell
@@ -745,19 +702,12 @@ pub fn default_tls_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("tls"))
 }
 
-/// The *client* side of P36's device tokens — what this machine was issued by each hub it pairs
-/// with as a Rust client (`warden-node`, a `[remote_node]` storage provider). Separate from
-/// `devices.json`, which is the hub's own registry of the devices pairing with *it*.
-pub fn default_client_device_tokens_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("warden").join("device_tokens.json"))
-}
-
 /// What the desktop's Workspace screen embeds in the QR code a new client scans (Fase 9.7) — the
-/// two fields a `RemoteNodeConfig`/mobile `ConnectionScreen` would otherwise need typed by hand:
-/// which hub to connect to, and its shared secret. Deliberately its own tiny JSON file, not a
-/// field on `FileConfig`: it's a Workspace-only concern (generating a QR), unrelated to the
-/// providers/agents/mcp settings that file's Settings-screen form already covers, and — unlike
-/// `RemoteNodeConfig` — it never gets read by `bootstrap()`/`build_storage_provider`.
+/// two fields the mobile `ConnectionScreen` would otherwise need typed by hand: which hub to
+/// connect to, and its shared secret. Deliberately its own tiny JSON file, not a field on
+/// `FileConfig`: it's a Workspace-only concern (generating a QR), unrelated to the
+/// providers/agents/mcp settings that file's Settings-screen form already covers, and it never
+/// gets read by `bootstrap()`.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HubPairingConfig {
@@ -1037,28 +987,6 @@ pub fn resolve_delegate_max_depth(from_env: Option<String>, from_file: Option<u3
     from_env.and_then(|v| v.trim().parse().ok()).or(from_file).unwrap_or(DEFAULT_DELEGATE_MAX_DEPTH)
 }
 
-/// Env-wins-over-file precedence for `storage_provider` (P61), but unlike `resolve_flag`/
-/// `resolve_delegate_max_depth` — both permissive about a malformed env value — an unrecognized
-/// `WARDEN_STORAGE_PROVIDER` is a hard error: silently falling back to the file/default value would
-/// mean a typo changes *where the user's memory lives* without any indication anything went wrong.
-/// Defaults to `Local` when neither is set, matching what every install already did before this
-/// field existed.
-pub fn resolve_storage_provider(from_env: Option<String>, from_file: Option<StorageProviderKind>) -> anyhow::Result<StorageProviderKind> {
-    match from_env {
-        Some(value) => match value.trim().to_lowercase().as_str() {
-            "local" => Ok(StorageProviderKind::Local),
-            "decentralized_vault" => Ok(StorageProviderKind::DecentralizedVault),
-            "remote_node" => Ok(StorageProviderKind::RemoteNode),
-            "managed_cloud" => Ok(StorageProviderKind::ManagedCloud),
-            other => Err(anyhow::anyhow!(
-                "WARDEN_STORAGE_PROVIDER='{other}' is not a recognized storage provider — expected one of \
-                 local, decentralized_vault, remote_node, managed_cloud"
-            )),
-        },
-        None => Ok(from_file.unwrap_or(StorageProviderKind::Local)),
-    }
-}
-
 /// Registers whatever tools an already-attempted MCP connection advertises, or logs a warning
 /// and leaves `base_tools` untouched on failure — a misconfigured or unreachable server shouldn't
 /// take down the whole orchestrator, same graceful-degradation spirit as a missing
@@ -1114,7 +1042,7 @@ pub struct Overrides {
 }
 
 /// Resolves the vault path with the same override-then-config-then-default precedence `bootstrap()`
-/// itself uses — extracted out (P61) so callers that need a `Vault`/`StorageProvider` outside of
+/// itself uses — extracted out (P61) so callers that need the vault outside of
 /// `bootstrap()` (e.g. the sync subsystem in CLI/desktop/mobile) don't have to re-derive this
 /// independently. Previously duplicated by hand in `warden-cli`'s own `resolve_vault_path` and
 /// missing entirely from the desktop's `SyncEngine` construction (which just hardcoded its own
@@ -1135,79 +1063,6 @@ pub fn resolve_generated_path(config: &FileConfig, resolved_vault_path: &Path) -
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| resolved_vault_path.parent().unwrap_or_else(|| Path::new(".")).join("generated"))
-}
-
-/// Builds the `StorageProvider` for a resolved `StorageProviderKind` (P61) — the factory
-/// `storage_provider`/`WARDEN_STORAGE_PROVIDER` select between. `async` (unlike every other
-/// `build_*` helper in this file) because `RemoteNode` needs a real network round-trip
-/// (`RemoteNodeProvider::connect`) to construct — `Local`/`DecentralizedVault` never touch
-/// `.await` internally, but the signature has to accommodate the one variant that does.
-/// `ManagedCloud` (v3, see `PENDING.md` P61) is still not implemented, and errors clearly rather
-/// than silently falling back to `Local`. Not yet called from `bootstrap()` itself: `Orchestrator`
-/// uses `Vault` directly for chat/memory (search, standing memory, ...) — none of which are
-/// `StorageProvider` concerns — so this is additive machinery for the sync subsystem (and now
-/// `RemoteNodeProvider`'s caller-side wiring) to adopt, not a replacement for how `Orchestrator`
-/// already reads/writes the vault.
-pub async fn build_storage_provider(
-    kind: StorageProviderKind,
-    vault: Arc<Vault>,
-    remote_node: Option<&RemoteNodeConfig>,
-) -> anyhow::Result<Arc<dyn warden_core::storage::StorageProvider>> {
-    Ok(match kind {
-        StorageProviderKind::Local => Arc::new(warden_core::storage::LocalFSProvider::new(vault)),
-        StorageProviderKind::DecentralizedVault => {
-            // Same default-path helpers desktop's own `AppState.sync` already uses to build a
-            // `SyncEngine` (`desktop/src-tauri/src/lib.rs`'s `sync_secrets_path`/
-            // `sync_manifest_path`) — `warden-sync` can't call `default_config_path` itself
-            // (`warden-bootstrap` depends on `warden-sync`, not the other way around), so this is
-            // the one place that can assemble the engine `DecentralizedVaultProvider` needs for
-            // its `_interactive` methods (P61 follow-up) to actually reach Arweave.
-            let config_path = default_config_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
-            let secrets_path = warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"));
-            let manifest_path = warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"));
-            let sync = warden_sync::SyncEngine::new(vault.root().to_path_buf(), config_path, secrets_path, manifest_path);
-            Arc::new(warden_sync::DecentralizedVaultProvider::new(vault, sync))
-        }
-        StorageProviderKind::RemoteNode => {
-            let cfg = remote_node
-                .ok_or_else(|| anyhow::anyhow!("storage_provider 'remote_node' requires a [remote_node] config section"))?;
-            let tokens_path = default_client_device_tokens_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
-            Arc::new(
-                warden_server_protocol::RemoteNodeProvider::connect(
-                    &cfg.server_url,
-                    &cfg.device_id,
-                    &cfg.device_name,
-                    &cfg.auth_key,
-                    cfg.target_device_id.clone(),
-                    &warden_server_protocol::DeviceTokenStore::new(tokens_path),
-                )
-                .await?,
-            )
-        }
-        StorageProviderKind::ManagedCloud => {
-            return Err(anyhow::anyhow!("storage_provider 'managed_cloud' is not implemented yet (planned for v3 — see PENDING.md P61)"));
-        }
-    })
-}
-
-/// Builds the `AuthProvider` for a resolved `StorageProviderKind` (P61) — mirrors
-/// `build_storage_provider`'s per-kind dispatch, and shares its "additive machinery, nothing in
-/// `bootstrap()` calls this yet" posture. Only `DecentralizedVault` needs real identity/payment
-/// gating: `warden_sync::TruthIdAuthProvider`, backed by the pairing manifest already written by
-/// `SyncEngine` — see its own doc comment for why `is_subscription_active` there is a pairing
-/// check, not a real subscription check (no billing system exists anywhere in this codebase yet).
-/// Every other kind gets `NoAuthProvider`: `Local` genuinely needs no identity to write to disk,
-/// and `RemoteNode`/`ManagedCloud` have no `StorageProvider` implementation to gate in the first
-/// place (`build_storage_provider` already errors on both before an `AuthProvider` would ever
-/// matter) — never errors, unlike `build_storage_provider`, since `NoAuthProvider` is always a
-/// valid (if trivial) answer for any kind.
-pub fn build_auth_provider(kind: StorageProviderKind, manifest_path: PathBuf) -> Arc<dyn warden_core::storage::AuthProvider> {
-    match kind {
-        StorageProviderKind::DecentralizedVault => Arc::new(warden_sync::TruthIdAuthProvider::new(manifest_path)),
-        StorageProviderKind::Local | StorageProviderKind::RemoteNode | StorageProviderKind::ManagedCloud => {
-            Arc::new(warden_core::storage::NoAuthProvider)
-        }
-    }
 }
 
 /// Builds the one `ModelProvider` the orchestrator will use, from a resolved `ProviderConfig` —
@@ -1787,6 +1642,30 @@ oauth = true
     }
 
     #[test]
+    fn a_config_from_before_sessao_105_still_loads_and_a_save_drops_the_storage_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "warden-legacy-storage-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "storage_provider = \"remote_node\"\n# mine\nvault_path = \"/v\"\n\n[remote_node]\nserver_url = \"ws://h:7420\"\ndevice_id = \"a\"\n",
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&path, true).unwrap();
+        assert_eq!(config.vault_path.as_deref(), Some("/v"));
+        save_config(&path, &config).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("storage_provider") && !saved.contains("remote_node"), "{saved}");
+        assert!(saved.contains("# mine") && saved.contains("vault_path"), "{saved}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn save_config_round_trips_through_load_config() {
         let path = temp_toml_path("save-round-trip");
         let config = FileConfig {
@@ -1836,14 +1715,8 @@ oauth = true
                 can_message_agents: true,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
-            storage_provider: Some(StorageProviderKind::DecentralizedVault),
-            remote_node: Some(RemoteNodeConfig {
-                server_url: "ws://100.64.0.1:7420".to_string(),
-                device_id: "dev-caller".to_string(),
-                device_name: "Caller Device".to_string(),
-                auth_key: "shared-secret".to_string(),
-                target_device_id: "dev-target".to_string(),
-            }),
+            legacy_storage_provider: None,
+            legacy_remote_node: None,
             git_sync: Some(GitSyncConfig { remote_url: "https://gitea.example.com/user/vault.git".to_string(), token: "pat-secret".to_string() }),
             embedded_server: Some(EmbeddedServerConfig {
                 enabled: true,
@@ -2199,22 +2072,6 @@ oauth = true
     }
 
     #[test]
-    fn resolve_storage_provider_prefers_env_over_file_and_defaults_to_local() {
-        assert_eq!(
-            resolve_storage_provider(Some("decentralized_vault".to_string()), Some(StorageProviderKind::Local)).unwrap(),
-            StorageProviderKind::DecentralizedVault
-        );
-        assert_eq!(resolve_storage_provider(None, Some(StorageProviderKind::DecentralizedVault)).unwrap(), StorageProviderKind::DecentralizedVault);
-        assert_eq!(resolve_storage_provider(None, None).unwrap(), StorageProviderKind::Local);
-    }
-
-    #[test]
-    fn resolve_storage_provider_errors_on_an_unrecognized_env_value_instead_of_falling_back() {
-        let err = resolve_storage_provider(Some("dropbox".to_string()), Some(StorageProviderKind::Local)).unwrap_err();
-        assert!(err.to_string().contains("dropbox"));
-    }
-
-    #[test]
     fn resolve_vault_path_prefers_override_then_config_then_default() {
         let default = PathBuf::from("/default/vault");
         let config = FileConfig { vault_path: Some("/from/config".to_string()), ..Default::default() };
@@ -2244,79 +2101,6 @@ oauth = true
         let config = FileConfig { generated_path: Some("/custom/output".to_string()), ..Default::default() };
 
         assert_eq!(resolve_generated_path(&config, &PathBuf::from("/home/user/Warden/vault")), PathBuf::from("/custom/output"));
-    }
-
-    #[tokio::test]
-    async fn build_storage_provider_supports_local_and_decentralized_vault_but_not_managed_cloud_yet() {
-        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
-            "warden-bootstrap-storage-provider-vault-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ))));
-        assert!(build_storage_provider(StorageProviderKind::Local, vault.clone(), None).await.is_ok());
-        let decentralized = build_storage_provider(StorageProviderKind::DecentralizedVault, vault.clone(), None).await.unwrap();
-        // Round-trip through the real provider, not just "construction didn't error" — catches a
-        // signature-wiring mistake in the `SyncEngine` this arm now builds (P61 follow-up).
-        decentralized.write("a.md", b"hello").await.unwrap();
-        assert_eq!(decentralized.read("a.md").await.unwrap(), b"hello");
-        assert_eq!(decentralized.list().await.unwrap(), vec!["a.md".to_string()]);
-        assert!(build_storage_provider(StorageProviderKind::ManagedCloud, vault, None).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn build_storage_provider_remote_node_requires_a_config_section() {
-        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
-            "warden-bootstrap-storage-provider-remote-node-no-config-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ))));
-        let err = expect_err(build_storage_provider(StorageProviderKind::RemoteNode, vault, None).await);
-        assert!(err.contains("requires a"), "error was: {err}");
-    }
-
-    #[tokio::test]
-    async fn build_storage_provider_remote_node_errors_clearly_when_the_hub_is_unreachable() {
-        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
-            "warden-bootstrap-storage-provider-remote-node-unreachable-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ))));
-        let cfg = RemoteNodeConfig {
-            server_url: "ws://127.0.0.1:1".to_string(),
-            device_id: "dev-caller".to_string(),
-            device_name: "Caller".to_string(),
-            auth_key: "test-key".to_string(),
-            target_device_id: "dev-target".to_string(),
-        };
-        assert!(build_storage_provider(StorageProviderKind::RemoteNode, vault, Some(&cfg)).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn build_auth_provider_gates_only_decentralized_vault_on_truthid_pairing() {
-        let manifest_path = std::env::temp_dir().join(format!(
-            "warden-bootstrap-auth-provider-manifest-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-
-        // Every non-decentralized kind gets `NoAuthProvider` — always "active", never errors,
-        // regardless of whether `manifest_path` even exists.
-        for kind in [StorageProviderKind::Local, StorageProviderKind::RemoteNode, StorageProviderKind::ManagedCloud] {
-            let auth = build_auth_provider(kind, manifest_path.clone());
-            assert!(auth.is_subscription_active().await.unwrap());
-            assert_eq!(auth.get_user_id().await.unwrap(), None);
-        }
-
-        // `DecentralizedVault` reads the real manifest — unpaired (missing file) reports inactive
-        // with no user id, matching `TruthIdAuthProvider`'s own tests.
-        let auth = build_auth_provider(StorageProviderKind::DecentralizedVault, manifest_path.clone());
-        assert!(!auth.is_subscription_active().await.unwrap());
-        assert_eq!(auth.get_user_id().await.unwrap(), None);
-
-        warden_sync::manifest::save_manifest(
-            &manifest_path,
-            &warden_sync::SyncManifest { version: 1, owner_address: Some("wallet-abc".to_string()), ..Default::default() },
-        )
-        .unwrap();
-        let auth = build_auth_provider(StorageProviderKind::DecentralizedVault, manifest_path);
-        assert!(auth.is_subscription_active().await.unwrap());
-        assert_eq!(auth.get_user_id().await.unwrap(), Some("wallet-abc".to_string()));
     }
 
     /// `Arc<dyn ModelProvider>` isn't `Debug`, so `Result::unwrap_err` (which requires the `Ok`

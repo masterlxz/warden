@@ -7,10 +7,6 @@ edition.workspace = true
 name = "warden-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "warden-node"
-path = "src/bin/warden-node.rs"
-
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

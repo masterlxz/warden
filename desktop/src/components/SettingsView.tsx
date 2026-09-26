@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, RemoteNodeConfig, Settings, SshHostEntry, StorageProviderKind } from "../types";
+import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 
 const emptySettings: Settings = {
@@ -18,8 +17,6 @@ const emptySettings: Settings = {
   mcpServers: [],
   agents: [],
   sshHosts: [],
-  storageProvider: "local",
-  remoteNode: null,
   gitSync: null,
   limits: null,
   defaultLimits: [],
@@ -28,154 +25,12 @@ const emptySettings: Settings = {
   version: "",
 };
 
-/** The four `StorageProviderKind` options (P61), in display order — the copy here is the
- * "explicit and didactic" explanation the spec asked for instead of a bare technical dropdown.
- * `managedCloud` is listed for visibility into what's planned, but `comingSoon` keeps it
- * unselectable: it has no working `StorageProvider` implementation yet (`build_storage_provider`
- * errors on it), and `save_settings` rejects it defensively even if a later UI bug ever let it
- * through. `remoteNode` (v2) is real — selecting it reveals `RemoteNodeForm` below. */
-const STORAGE_PROVIDER_OPTIONS: {
-  value: StorageProviderKind;
-  label: string;
-  price: string;
-  description: string;
-  comingSoon?: boolean;
-}[] = [
-  {
-    value: "local",
-    label: "Local disk",
-    price: "Free",
-    description: "Your vault lives only on this machine's disk. The default for every install.",
-  },
-  {
-    value: "decentralized_vault",
-    label: "Decentralized vault (TruthID)",
-    price: "Paid subscription",
-    description:
-      "Backed by TruthID/Arweave. Set up pairing and push/pull on the Sync screen. Reading and writing here " +
-      "behaves the same as Local disk today — this only picks the backend label, it doesn't move your files.",
-  },
-  {
-    value: "remote_node",
-    label: "Remote node",
-    price: "Free",
-    description:
-      "Another machine you own, reached through a warden-server hub (Phase 9). Needs that hub running and a " +
-      "warden-node process serving your vault on the target machine — fill in the connection details below.",
-  },
-  {
-    value: "managed_cloud",
-    label: "Managed cloud",
-    price: "Paid",
-    description: "Traditional hosted infrastructure, no Web3. Not implemented yet.",
-    comingSoon: true,
-  },
-];
-
-function StorageProviderPicker({
-  value,
-  onChange,
-}: {
-  value: StorageProviderKind;
-  onChange: (next: StorageProviderKind) => void;
-}) {
-  return (
-    <div className="storage-provider-list">
-      {STORAGE_PROVIDER_OPTIONS.map((opt) => (
-        <label
-          key={opt.value}
-          className={`storage-provider-option${value === opt.value ? " storage-provider-option-selected" : ""}${
-            opt.comingSoon ? " storage-provider-option-disabled" : ""
-          }`}
-        >
-          <input
-            type="radio"
-            name="storage-provider"
-            value={opt.value}
-            checked={value === opt.value}
-            disabled={opt.comingSoon}
-            onChange={() => onChange(opt.value)}
-          />
-          <div className="storage-provider-option-body">
-            <div className="storage-provider-option-header">
-              <span className="settings-label">{opt.label}</span>
-              <span className="storage-provider-badge">{opt.comingSoon ? "Coming soon" : opt.price}</span>
-            </div>
-            <span className="settings-hint">{opt.description}</span>
-          </div>
-        </label>
-      ))}
-    </div>
-  );
-}
-
-const emptyRemoteNode: RemoteNodeConfig = { serverUrl: "", deviceId: "", deviceName: "", authKey: "", targetDeviceId: "" };
-
-/** Connection form for `StorageProviderKind: "remote_node"` (P61 v2) — same conditional-field
- * pattern as `ProviderCard`'s Base URL row, but at the section level since this isn't tied to a
- * list of entries. `value` is `null` until the user starts typing; `onChange` always passes a
- * complete object back so partial edits never get lost between keystrokes. */
-function RemoteNodeForm({ value, onChange }: { value: RemoteNodeConfig | null; onChange: (next: RemoteNodeConfig) => void }) {
-  const current = value ?? emptyRemoteNode;
-
-  function set<K extends keyof RemoteNodeConfig>(key: K, v: RemoteNodeConfig[K]) {
-    onChange({ ...current, [key]: v });
-  }
-
-  return (
-    <div className="storage-provider-remote-form">
-      <label className="settings-field">
-        <span className="settings-label">Hub server URL</span>
-        <input
-          className="settings-input"
-          type="text"
-          placeholder="wss://hub.tailXXXX.ts.net:7420 or ws://192.168.x.x:7420"
-          value={current.serverUrl}
-          onChange={(e) => set("serverUrl", e.currentTarget.value)}
-        />
-      </label>
-      <label className="settings-field">
-        <span className="settings-label">This device's id</span>
-        <input
-          className="settings-input"
-          type="text"
-          placeholder="e.g. my-laptop"
-          value={current.deviceId}
-          onChange={(e) => set("deviceId", e.currentTarget.value)}
-        />
-      </label>
-      <label className="settings-field">
-        <span className="settings-label">This device's name</span>
-        <input
-          className="settings-input"
-          type="text"
-          placeholder="e.g. Fabio's laptop"
-          value={current.deviceName}
-          onChange={(e) => set("deviceName", e.currentTarget.value)}
-        />
-      </label>
-      <ApiKeyField label="Hub auth key" value={current.authKey} onChange={(v) => set("authKey", v)} />
-      <label className="settings-field">
-        <span className="settings-label">Target device id</span>
-        <input
-          className="settings-input"
-          type="text"
-          placeholder="the device on the hub that actually holds the vault"
-          value={current.targetDeviceId}
-          onChange={(e) => set("targetDeviceId", e.currentTarget.value)}
-        />
-      </label>
-    </div>
-  );
-}
-
 const emptyGitSync: GitSyncConfig = { remoteUrl: "", token: "" };
 
 /** Connection form for the git sync backend (P63/P71 v2) — a self-hosted/remote git repo as an
- * alternative to Arweave for the Sync screen's push/pull (and the auto-sync loop). Independent of
- * `StorageProviderPicker`/`RemoteNodeForm` above: this doesn't change where the vault lives, only
- * which transport Sync uses. Same "value is null until the user starts typing" pattern as
- * `RemoteNodeForm`. */
+ * alternative to Arweave for the Sync screen's push/pull (and the auto-sync loop). The vault itself
+ * always lives on this machine (P61). `value` is `null` until the user starts typing; `onChange`
+ * always passes a complete object back so partial edits never get lost between keystrokes. */
 function GitSyncForm({ value, onChange }: { value: GitSyncConfig | null; onChange: (next: GitSyncConfig) => void }) {
   const current = value ?? emptyGitSync;
 
@@ -184,7 +39,7 @@ function GitSyncForm({ value, onChange }: { value: GitSyncConfig | null; onChang
   }
 
   return (
-    <div className="storage-provider-remote-form">
+    <div className="git-sync-form">
       <label className="settings-field">
         <span className="settings-label">Remote URL</span>
         <input
@@ -967,9 +822,6 @@ function SettingsView() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  // Set mid-save (P61 follow-up) only when the storage-provider migration this save triggers has
-  // something real to publish to Arweave — see the `migration-qr` event emitted by `save_settings`.
-  const [migrationQrSvg, setMigrationQrSvg] = useState<string | null>(null);
   const [toolNames, setToolNames] = useState<string[]>([]);
 
   useEffect(() => {
@@ -1161,23 +1013,8 @@ function SettingsView() {
       return;
     }
 
-    // Mirrors save_settings's own all-or-nothing check — catches it before the IPC round-trip.
-    const remoteNodeFilled = form.remoteNode
-      ? [form.remoteNode.serverUrl, form.remoteNode.deviceId, form.remoteNode.deviceName, form.remoteNode.authKey, form.remoteNode.targetDeviceId].filter(
-          (s) => s.trim() !== "",
-        ).length
-      : 0;
-    if (remoteNodeFilled > 0 && remoteNodeFilled < 5) {
-      setError("Remote node connection fields must be filled in together, or left entirely blank.");
-      return;
-    }
-    if (form.storageProvider === "remote_node" && remoteNodeFilled === 0) {
-      setError("Storage provider 'Remote node' needs its connection fields filled in below.");
-      return;
-    }
-
     // Mirrors save_settings's own all-or-nothing check for git_sync — catches it before the IPC
-    // round-trip, same reasoning as the remoteNodeFilled check above.
+    // round-trip.
     const gitSyncFilled = form.gitSync ? [form.gitSync.remoteUrl, form.gitSync.token].filter((s) => s.trim() !== "").length : 0;
     if (gitSyncFilled === 1) {
       setError("Git sync fields (remote URL and token) must be filled in together, or left entirely blank.");
@@ -1185,9 +1022,6 @@ function SettingsView() {
     }
 
     setIsSaving(true);
-    const unlistenQr = await listen<{ qrSvg: string }>("migration-qr", (event) => {
-      setMigrationQrSvg(event.payload.qrSvg);
-    });
     try {
       await invoke("save_settings", {
         payload: {
@@ -1202,8 +1036,6 @@ function SettingsView() {
           mcp_servers: form.mcpServers,
           agents: form.agents,
           ssh_hosts: form.sshHosts,
-          storage_provider: form.storageProvider,
-          remote_node: remoteNodeFilled === 5 ? form.remoteNode : null,
           git_sync: gitSyncFilled === 2 ? form.gitSync : null,
           // `null` means "no limits written" (the safety net applies), `[]` means "all off" — sent as is.
           limits: form.limits,
@@ -1216,8 +1048,6 @@ function SettingsView() {
     } catch (err) {
       setError(String(err));
     } finally {
-      unlistenQr();
-      setMigrationQrSvg(null);
       setIsSaving(false);
     }
   }
@@ -1339,26 +1169,13 @@ function SettingsView() {
 
         <section className="settings-section">
           <div className="settings-section-header">
-            <h3 className="settings-section-title">Storage</h3>
-          </div>
-          <p className="settings-hint">Where your agent's memory (the vault) is read from and written to.</p>
-          <StorageProviderPicker
-            value={form.storageProvider}
-            onChange={(storageProvider) => setForm((f) => ({ ...f, storageProvider }))}
-          />
-          {form.storageProvider === "remote_node" && (
-            <RemoteNodeForm value={form.remoteNode} onChange={(remoteNode) => setForm((f) => ({ ...f, remoteNode }))} />
-          )}
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-header">
             <h3 className="settings-section-title">Sync via Git</h3>
           </div>
           <p className="settings-hint">
-            A self-hosted/remote git repo (Gitea, GitHub, ...) as an alternative to Arweave for syncing the vault +
-            config.toml — free, and fully automatable (no phone approval). Fill this in to unlock manual push/pull
-            and automatic sync on the Sync screen; leaving it blank keeps Arweave (or nothing) as the sync backend.
+            Your memory (the vault) always lives on this machine; sync keeps it the same on your other devices. A
+            self-hosted/remote git repo (Gitea, GitHub, ...) is the alternative to Arweave for that — free, and fully
+            automatable (no phone approval). Fill this in to unlock manual push/pull and automatic sync on the Sync
+            screen; leaving it blank keeps Arweave (or nothing) as the sync backend.
           </p>
           <GitSyncForm value={form.gitSync} onChange={(gitSync) => setForm((f) => ({ ...f, gitSync }))} />
         </section>
@@ -1435,16 +1252,6 @@ function SettingsView() {
           {isSaving ? "Saving…" : "Save settings"}
         </button>
       </form>
-
-      {migrationQrSvg && (
-        <div className="settings-modal-backdrop">
-          <div className="sync-qr-card settings-modal-card">
-            <p className="settings-hint">Aprove no app TruthID pra publicar a memória migrada no Arweave.</p>
-            <div className="sync-qr-image" dangerouslySetInnerHTML={{ __html: migrationQrSvg }} />
-            <p className="settings-hint">Aguardando aprovação…</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

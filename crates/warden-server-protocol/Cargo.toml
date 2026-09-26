@@ -5,8 +5,6 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-async-trait.workspace = true
-base64.workspace = true
 futures-util = "0.3"
 # `ring` picked explicitly — see `src/tls.rs` for why the provider is never left to rustls.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

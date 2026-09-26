@@ -151,28 +151,9 @@ export interface ApprovalRequest {
   detail: string;
 }
 
-/** Mirrors `warden_bootstrap::StorageProviderKind` (P61) — where the vault's memory lives.
- * `remoteNode` (v2) is selectable — see `RemoteNodeConfig` for its connection form. `managedCloud`
- * (v3) has no working implementation yet (`build_storage_provider` errors on it); the Settings
- * screen shows it as "coming soon" and doesn't let the user select it. */
-export type StorageProviderKind = "local" | "decentralized_vault" | "remote_node" | "managed_cloud";
-
-/** Mirrors `warden_bootstrap::RemoteNodeConfig` (P61 v2) — connection details for
- * `StorageProviderKind: "remote_node"`: which `warden-server` hub both this device and the one
- * actually holding the vault connect through, and which of its registered devices is the target.
- * All-or-nothing on save — see `save_settings`'s validation. */
-export interface RemoteNodeConfig {
-  serverUrl: string;
-  deviceId: string;
-  deviceName: string;
-  authKey: string;
-  targetDeviceId: string;
-}
-
 /** Mirrors `warden_bootstrap::GitSyncConfig` (P63/P71 v2) — a self-hosted/remote git repo as an
- * alternative sync transport to Arweave, chosen independently of `storageProvider` (this is what
- * the Sync screen's Git section, and the auto-sync loop, use — not where the vault lives day to
- * day). All-or-nothing on save — see `save_settings`'s validation. */
+ * alternative sync transport to Arweave (what the Sync screen's Git section, and the auto-sync
+ * loop, use). All-or-nothing on save — see `save_settings`'s validation. */
 export interface GitSyncConfig {
   remoteUrl: string;
   token: string;
@@ -378,12 +359,6 @@ export interface Settings {
   agents: AgentEntry[];
   /** SSH servers the AI can run commands on (P47). */
   sshHosts: SshHostEntry[];
-  /** Where the vault's memory lives (P61) — defaults to `"local"` for every install that
-   * predates this field. Picking `"decentralized_vault"` doesn't turn on Arweave backup by
-   * itself: that still goes exclusively through the separate Sync screen. */
-  storageProvider: StorageProviderKind;
-  /** Connection details for `storageProvider: "remote_node"` — `null` until filled in. */
-  remoteNode: RemoteNodeConfig | null;
   /** Connection details for the git sync backend (P63/P71) — `null` until filled in on the "Sync
    * via Git" section. */
   gitSync: GitSyncConfig | null;

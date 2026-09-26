@@ -39,7 +39,7 @@ crates/                 Shared Rust: the agent's core logic and every non-UI bac
   warden-core             Orchestrator, memory (Vault), model/tool abstractions
   warden-bootstrap         Reads config.toml, wires a ready-to-use agent for any channel
   warden-server-protocol   Wire protocol + LAN discovery between hub and clients
-  warden-server            The hub (binaries: warden-server, warden-node)
+  warden-server            The hub (the warden-server binary)
   warden-sync              Vault sync — Arweave/TruthID or a self-hosted git remote
   warden-truthid           Client for the TruthID app's pairing/payment protocol
   warden-cli               The `warden` terminal command

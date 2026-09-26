@@ -62,11 +62,9 @@ type DeviceRegistry = Arc<Mutex<HashMap<String, RemoteToolChannel>>>;
 
 /// The server side of the Fase 9 client↔server WebSocket protocol.
 ///
-/// As of Fase 7.3, hosts a real `Orchestrator` and answers `Chat` messages with it. As of this
-/// session (Fase 9.3/9.4), also keeps a registry of every connected device and routes
-/// `CallDeviceTool` from one connection to a specific other one — the client-side piece that
-/// would actually *use* this routing (e.g. a `StorageProvider` backed by another machine's vault,
-/// P61's `RemoteNodeProvider`) doesn't exist yet; this is the server-side foundation for it.
+/// As of Fase 7.3, hosts a real `Orchestrator` and answers `Chat` messages with it. As of Fase
+/// 9.3/9.4, also keeps a registry of every connected device and routes `CallDeviceTool` from one
+/// connection to a specific other one (no client uses it today — see `lib.rs`).
 pub struct Server {
     listener: TcpListener,
     auth_key: Arc<str>,
