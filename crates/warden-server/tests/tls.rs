@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
-use support::{http_get, raw_http, spin_up_server_with_web_ui, spin_up_tls_server, test_web_ui, MockProvider};
+use support::{http_get, raw_http, spin_up_server_with_web_ui, spin_up_tls_server, test_web_ui, MockProvider, DISCOVERY_TIMEOUT};
 use warden_server::{discover_hubs_on, HubTls, ServerConnection, ServerMessage};
 use warden_server_protocol::tls::client_config_with_roots;
 
@@ -100,7 +100,7 @@ async fn plain_discovery_still_finds_a_tls_hub_and_learns_its_wss_url() {
     let tls = HubTls::from_pem_files(cert, key, Some("localhost".to_string())).unwrap();
     let addr = spin_up_tls_server(MockProvider::replying("unused"), tls).await;
 
-    let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], addr.port()).await.unwrap();
+    let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], addr.port(), DISCOVERY_TIMEOUT).await.unwrap();
     assert_eq!(hubs.len(), 1);
     assert_eq!(hubs[0].server_name, "Test Hub");
     let secure_url = hubs[0].secure_url.clone().expect("a TLS hub advertises its wss:// URL");
@@ -178,7 +178,7 @@ async fn with_a_web_ui_plain_discovery_still_works_and_plain_hello_is_still_refu
     let tls = HubTls::from_pem_files(cert, key, Some("localhost".to_string())).unwrap();
     let addr = spin_up_server_with_web_ui(MockProvider::replying("unused"), test_web_ui(), Some(tls)).await;
 
-    let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], addr.port()).await.unwrap();
+    let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], addr.port(), DISCOVERY_TIMEOUT).await.unwrap();
     assert_eq!(hubs.len(), 1);
     assert_eq!(hubs[0].secure_url.as_deref(), Some(format!("wss://localhost:{}", addr.port()).as_str()));
 

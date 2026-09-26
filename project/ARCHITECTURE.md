@@ -1773,3 +1773,20 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
 - **UI** (em português, como o resto da web): um rascunho só, com "Salvar" e "Descartar" num rodapé fixo. O
   "Salvar" abre o campo da chave de pareamento, que não fica guardada. Um conflito oferece "Recarregar". O
   "customizar" limites parte dos `defaultLimits` que o hub manda, então os números continuam num lugar só.
+
+## Salvar o `config.toml` sem apagar o que foi escrito à mão, e chave de pareamento mínima (P82/P83, Sessão 102)
+
+- **Um ponto de escrita, com merge**: todo save (desktop, web ⚙, CLI, `manage_agents`) continua passando por
+  `save_config`, que agora chama `render_config(existing, config)`. O `FileConfig` segue sendo a fonte da verdade
+  (serializado com `toml::to_string_pretty` como antes); o `toml_edit` só decide **como** isso cai no arquivo que
+  já existe. Nada de editar chave por chave em cada tela: as telas continuam montando um `FileConfig` inteiro.
+- **Regras do merge**: valor igual (comparado pelo valor, não pelo texto) fica intacto; valor mudado herda o
+  espaço e o comentário de fim de linha do antigo; chave ausente sai com os comentários de cima dela; chave nova
+  entra, e tabela nova vai para o fim do arquivo. Array de tabelas casa entradas por `id` ou `name` (posição só
+  quando não há nenhum dos dois), e uma entrada nova fica logo depois da anterior. Vazios (`agents = []`,
+  `[api_keys]` sem nada) não são acrescentados, porque todo campo desses é `#[serde(default)]`. Arquivo que não é
+  TOML válido recebe a saída antiga, inteira.
+- **Chave de pareamento com pelo menos 32 caracteres** (`MIN_AUTH_KEY_LEN`, `is_strong_auth_key`): desde a Sessão
+  101 ela também protege o salvar configurações, onde um erro custa só 1 s. Escolha do usuário: recusar ao subir,
+  não só avisar. Vale para o `warden-server serve` (com `warden-server gen-key` para gerar) e para o hub embutido
+  do desktop (salvar o campo e ligar). Devices já pareados não são afetados, porque usam o token deles.

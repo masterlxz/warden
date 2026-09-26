@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::sync::oneshot;
 use warden_bootstrap::{
-    default_config_path, default_server_conversations_dir, default_server_devices_path, default_tls_dir, generate_auth_key, load_config_from_path, save_config,
-    EmbeddedServerConfig,
+    default_config_path, default_server_conversations_dir, default_server_devices_path, default_tls_dir, generate_auth_key, is_strong_auth_key, load_config_from_path, save_config,
+    EmbeddedServerConfig, MIN_AUTH_KEY_LEN,
 };
 use warden_core::orchestrator::Orchestrator;
 use warden_server::{SettingsHost, SharedOrchestrator};
@@ -144,11 +144,18 @@ pub fn generate_embedded_server_auth_key() -> String {
     generate_auth_key()
 }
 
+fn weak_auth_key_message() -> String {
+    format!("A auth key precisa ter pelo menos {MIN_AUTH_KEY_LEN} caracteres — use \"Gerar nova chave\" para criar uma nova (devices já pareados continuam funcionando)")
+}
+
 #[tauri::command]
 pub fn save_embedded_server_config(port: u16, auth_key: String, server_name: Option<String>, tailscale_cert: bool) -> Result<(), String> {
     let auth_key = auth_key.trim().to_string();
     if auth_key.is_empty() {
         return Err("Auth key não pode ficar em branco".to_string());
+    }
+    if !is_strong_auth_key(&auth_key) {
+        return Err(weak_auth_key_message());
     }
     if port == 0 {
         return Err("Escolha uma porta válida".to_string());
@@ -204,6 +211,10 @@ pub fn embedded_server_status(state: State<'_, AppState>) -> EmbeddedServerStatu
 /// builds and spawns the real `warden_server::Server`, wired to `serve_until` so the returned
 /// handle's `shutdown_tx` actually stops it and frees the port later.
 pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &EmbeddedServerConfig) -> anyhow::Result<EmbeddedServerHandle> {
+    // P83 — also catches a short key saved before this check existed, on start and on auto-start.
+    if !is_strong_auth_key(&config.auth_key) {
+        anyhow::bail!(weak_auth_key_message());
+    }
     let orchestrator = state.orchestrator.lock().unwrap().clone().map_err(|e| anyhow::anyhow!(e))?;
     let conversations_dir = default_server_conversations_dir().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
     let devices_path = default_server_devices_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
@@ -291,20 +302,20 @@ mod tests {
         };
 
         let server_config =
-            EmbeddedServerConfig { enabled: true, port: 0, auth_key: "test-auth-key".to_string(), server_name: Some("Test Desktop".to_string()), tailscale_cert: false };
+            EmbeddedServerConfig { enabled: true, port: 0, auth_key: "test-auth-key-long-enough-for-p83-check".to_string(), server_name: Some("Test Desktop".to_string()), tailscale_cert: false };
 
         let handle = start_embedded_server_inner(&state, &server_config).await.unwrap();
         // `bound_addr` reflects the `0.0.0.0` bind host `local_addr()` reports — not a connectable
         // destination on every platform, so dial loopback explicitly with the same assigned port.
         let port = handle.bound_addr.port();
 
-        let mut conn = warden_server::ServerConnection::connect(&format!("ws://127.0.0.1:{port}"), "dev-1", "Test Client", "test-auth-key")
+        let mut conn = warden_server::ServerConnection::connect(&format!("ws://127.0.0.1:{port}"), "dev-1", "Test Client", "test-auth-key-long-enough-for-p83-check")
             .await
             .unwrap();
         conn.ping(1).await.unwrap();
         assert!(matches!(conn.recv().await.unwrap(), Some(warden_server::ServerMessage::Pong { nonce: 1 })));
 
-        let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], port).await.unwrap();
+        let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], port, std::time::Duration::from_secs(10)).await.unwrap();
         assert_eq!(hubs.len(), 1);
         assert_eq!(hubs[0].server_name, "Test Desktop");
         assert_eq!(hubs[0].secure_url, None);

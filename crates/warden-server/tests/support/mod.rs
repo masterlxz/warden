@@ -14,6 +14,10 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::{Tool, ToolSpec};
 use warden_server::Server;
 
+/// Per-host timeout for `discover_hubs_on` in tests — far above the real 800 ms, since a debug
+/// build on a busy machine can take seconds to answer a local probe (P81).
+pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A `ModelProvider` test double — no real API key needed, same helper (`response_stream`)
 /// `warden-core`'s own unit tests use to turn a canned `Response` into a `ChatStream`.
 pub struct MockProvider {

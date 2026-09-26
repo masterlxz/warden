@@ -2,7 +2,7 @@ mod support;
 
 use std::time::Duration;
 
-use support::{spin_up_server, MockProvider};
+use support::{spin_up_server, MockProvider, DISCOVERY_TIMEOUT};
 use warden_server::{ClientMessage, PairingStatus, PairingStore, ServerConnection, ServerMessage};
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn multiple_pings_on_the_same_connection_all_get_replies() {
 async fn discover_gets_an_ack_with_the_hub_name_and_no_device_registration() {
     let (addr, devices_path) = support::spin_up_server_with_devices_path(MockProvider::replying("unused")).await;
 
-    let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], addr.port()).await.unwrap();
+    let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], addr.port(), DISCOVERY_TIMEOUT).await.unwrap();
 
     assert_eq!(hubs.len(), 1);
     assert_eq!(hubs[0].server_name, "Test Hub");
@@ -64,7 +64,7 @@ async fn discover_gets_an_ack_with_the_hub_name_and_no_device_registration() {
 
 #[tokio::test]
 async fn discover_finds_nothing_on_a_host_with_no_server() {
-    let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], 1).await.unwrap();
+    let hubs = warden_server::discover_hubs_on(vec![std::net::Ipv4Addr::LOCALHOST], 1, DISCOVERY_TIMEOUT).await.unwrap();
     assert!(hubs.is_empty());
 }
 

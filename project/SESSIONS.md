@@ -2,7 +2,36 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 101)
+> Última atualização: 2026-09-26 (Sessão 102)
+
+---
+
+### 2026-09-26 — Sessão 102
+
+- **Objetivo**: as pendências que dá para fechar sem o usuário testar nada (o P80 fica com ele): P82, P83 e P81,
+  com plano aprovado em Plan mode. Decisão do usuário no P83: recusar chave fraca ao subir.
+
+**O que foi feito**:
+
+- **P82** — `crates/warden-bootstrap/src/config_file.rs::render_config`: o `FileConfig` é serializado como antes e
+  fundido no `config.toml` existente com `toml_edit` (valores iguais ficam intactos, comentários ficam, arrays de
+  tabelas casam por `id`/`name`, entradas novas vão logo depois das irmãs e tabelas novas para o fim, vazios que o
+  serializador sempre escreve não entram). `save_config` usa isso; o `write_config` do hub funde no arquivo lido para
+  a checagem de versão (antes ele chamava `save_config` no temporário, que não existia).
+- **P83** — `MIN_AUTH_KEY_LEN`/`is_strong_auth_key` no bootstrap; `warden-server serve` recusa chave com menos de 32
+  caracteres e o subcomando novo `warden-server gen-key` imprime uma; o desktop recusa ao salvar o campo do hub
+  embutido e ao ligar (inclusive no auto-start).
+- **P81** — `discover_hubs_on` recebe o timeout do probe; os testes usam 10 s.
+- **Verificação**: `cargo test --workspace` com 753 passando em três rodadas seguidas (o P81 não voltou),
+  `cargo clippy --workspace --all-targets` limpo. 10 testes novos no `config_file.rs` (arquivo idêntico quando nada
+  muda, comentário em linha mudada, apagar e reordenar provedor, tabela inline, entrada nova antes da tabela
+  seguinte) e o teste de save do hub agora confere que os comentários sobrevivem. À mão: `gen-key` imprime 64 hex,
+  `serve --auth-key curta` sai com a mensagem, uma chave de 40 caracteres passa da checagem.
+- **Limite conhecido**: comentários escritos acima de uma chave que o save remove saem junto com ela.
+
+**Próximo passo**: o P80 (testar a web contra o hub de verdade) continua com o usuário. **Atenção**: se o
+`warden-server` do usuário usa uma chave com menos de 32 caracteres, ele não sobe mais — gerar uma com
+`warden-server gen-key`. Depois disso, as decisões em aberto: P79 (roteador de APIs), P46 e P61.
 
 ---
 

@@ -39,14 +39,16 @@ pub struct DiscoveredHub {
 /// retry-until-timeout loop like `pairing::join`'s, since there's no code the hub might not have
 /// shown yet; a caller wanting a fresher list just calls this again (e.g. a "Refresh" button).
 pub async fn discover_hubs(port: u16) -> anyhow::Result<Vec<DiscoveredHub>> {
-    discover_hubs_on(candidate_hosts()?, port).await
+    discover_hubs_on(candidate_hosts()?, port, PROBE_TIMEOUT).await
 }
 
 /// Same as `discover_hubs`, but sweeps only `hosts` — used by tests to avoid sweeping the real
-/// LAN, same reasoning as `pairing::join_with_hosts`.
-pub async fn discover_hubs_on(hosts: Vec<Ipv4Addr>, port: u16) -> anyhow::Result<Vec<DiscoveredHub>> {
+/// LAN, same reasoning as `pairing::join_with_hosts`. `probe_timeout` is a parameter so tests can
+/// give a debug build on a busy machine more than `PROBE_TIMEOUT` (P81: 800 ms wasn't always
+/// enough for a local hub to answer under load).
+pub async fn discover_hubs_on(hosts: Vec<Ipv4Addr>, port: u16, probe_timeout: Duration) -> anyhow::Result<Vec<DiscoveredHub>> {
     let mut hubs: Vec<DiscoveredHub> = stream::iter(hosts)
-        .map(|host| probe_one(host, port))
+        .map(|host| probe_one(host, port, probe_timeout))
         .buffer_unordered(CONCURRENCY)
         .filter_map(|hub| async { hub })
         .collect()
@@ -58,14 +60,14 @@ pub async fn discover_hubs_on(hosts: Vec<Ipv4Addr>, port: u16) -> anyhow::Result
 /// One connect+Discover+DiscoverAck attempt against a single `host:port`. `None` covers every
 /// "this wasn't a hub" outcome (nothing listening, timed out, malformed/unexpected reply) — none
 /// of those should abort the sweep, since a different host on the LAN might still answer.
-async fn probe_one(host: Ipv4Addr, port: u16) -> Option<DiscoveredHub> {
+async fn probe_one(host: Ipv4Addr, port: u16, probe_timeout: Duration) -> Option<DiscoveredHub> {
     // A TLS-only hub (P36) answers plain `ws://` only on this path; others ignore the path.
     let url = format!("ws://{host}:{port}{DISCOVER_PATH}");
-    let (mut ws, _) = tokio::time::timeout(PROBE_TIMEOUT, tokio_tungstenite::connect_async(&url)).await.ok()?.ok()?;
+    let (mut ws, _) = tokio::time::timeout(probe_timeout, tokio_tungstenite::connect_async(&url)).await.ok()?.ok()?;
 
     ws.send(Message::Text(serde_json::to_string(&ClientMessage::Discover).ok()?.into())).await.ok()?;
 
-    let Message::Text(text) = tokio::time::timeout(PROBE_TIMEOUT, ws.next()).await.ok()??.ok()? else {
+    let Message::Text(text) = tokio::time::timeout(probe_timeout, ws.next()).await.ok()??.ok()? else {
         return None;
     };
     match serde_json::from_str::<ServerMessage>(&text).ok()? {
@@ -80,7 +82,7 @@ mod tests {
 
     #[tokio::test]
     async fn discover_hubs_on_finds_nothing_when_no_one_is_listening() {
-        let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], 65_500).await.unwrap();
+        let hubs = discover_hubs_on(vec![Ipv4Addr::LOCALHOST], 65_500, PROBE_TIMEOUT).await.unwrap();
         assert!(hubs.is_empty());
     }
 }

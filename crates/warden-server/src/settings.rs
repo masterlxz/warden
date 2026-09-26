@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use warden_bootstrap::settings::{apply_hub_settings, config_version, hub_settings};
-use warden_bootstrap::{load_config_from_path, save_config, FileConfig};
+use warden_bootstrap::{load_config_from_path, render_config, FileConfig};
 use warden_core::orchestrator::Orchestrator;
 use warden_server_protocol::protocol::{HubSettingsDto, HubSettingsUpdate};
 use warden_server_protocol::ServerMessage;
@@ -174,7 +174,7 @@ pub async fn handle_save_settings(access: &SettingsAccess<'_>, request_id: u64, 
         Err(message) => return settings_error(request_id, message),
     };
 
-    if let Err(err) = write_config(&path, &config) {
+    if let Err(err) = write_config(&path, previous.as_deref(), &config) {
         return settings_error(request_id, format!("{err:#}"));
     }
     let orchestrator = match host.build().await {
@@ -210,10 +210,14 @@ fn read_optional(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
 }
 
 /// `save_config`, but through a temporary file and a rename, so a reader never sees half a file.
-fn write_config(path: &Path, config: &FileConfig) -> anyhow::Result<()> {
-    let staged = staging_path(path);
-    save_config(&staged, config)?;
-    std::fs::rename(&staged, path).with_context(|| format!("failed to write config file at {}", path.display()))
+/// Merged into `previous` (the file as it was read for the version check), keeping its comments
+/// (P82).
+fn write_config(path: &Path, previous: Option<&[u8]>, config: &FileConfig) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("failed to create config directory at {}", parent.display()))?;
+    }
+    let contents = render_config(previous.and_then(|bytes| std::str::from_utf8(bytes).ok()), config)?;
+    write_atomic(path, contents.as_bytes())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -261,12 +265,13 @@ mod tests {
     }
 
     const START: &str = r#"
-enable_shell = false
+enable_shell = false # desligado de propósito
 active_provider = "main"
 
 [api_keys]
 whisper = "sk-whisper-kept-secret-abcdef"
 
+# o provedor principal
 [[providers]]
 id = "main"
 kind = "anthropic"
@@ -359,6 +364,10 @@ api_key = "sk-ant-original-secret-9999"
         let text = std::fs::read_to_string(host.config_path()).unwrap();
         assert!(text.contains("sk-ant-new") && text.contains("sk-whisper-kept-secret-abcdef"), "{text}");
         assert!(text.contains("enable_shell = false"), "what the screen doesn't show is carried over: {text}");
+        assert!(
+            text.contains("enable_shell = false # desligado de propósito") && text.contains("# o provedor principal\n[[providers]]"),
+            "comments written by hand survive a save (P82): {text}"
+        );
         std::fs::remove_dir_all(&host.dir).unwrap();
     }
 

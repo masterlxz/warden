@@ -41,6 +41,9 @@ enum Command {
         #[command(subcommand)]
         action: DevicesAction,
     },
+    /// Prints a fresh random pairing key (64 hex chars) for `serve --auth-key` /
+    /// WARDEN_SERVER_AUTH_KEY.
+    GenKey,
 }
 
 #[derive(Subcommand, Debug)]
@@ -92,7 +95,7 @@ struct ServeArgs {
     /// Pairing key — what a new client presents in its first Hello to get its own device token
     /// (P36). Devices already holding a token keep working if this changes, so rotating it only
     /// affects new pairings. Falls back to WARDEN_SERVER_AUTH_KEY if not passed (env wins if both
-    /// are set).
+    /// are set). Must be at least 32 characters; `warden-server gen-key` prints one.
     #[arg(long)]
     auth_key: Option<String>,
 
@@ -194,6 +197,14 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
                 "no auth key configured — set WARDEN_SERVER_AUTH_KEY or pass --auth-key"
             )
         })?;
+    // P83 — the pairing key also guards saving settings from the web, so a short one is refused.
+    if !warden_bootstrap::is_strong_auth_key(&auth_key) {
+        anyhow::bail!(
+            "the auth key must be at least {} characters — generate one with `warden-server gen-key` and use it in \
+             WARDEN_SERVER_AUTH_KEY or --auth-key (paired devices keep working; only new pairings need the new key)",
+            warden_bootstrap::MIN_AUTH_KEY_LEN
+        );
+    }
 
     let overrides = Overrides { provider: args.provider.map(Into::into), model: args.model.clone(), vault_path: args.vault_path.clone(), ..Default::default() };
     let orchestrator = bootstrap(args.config.as_deref(), overrides.clone(), default_vault_path()).await?;
@@ -264,5 +275,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => run_serve(args).await,
         Command::Devices { action } => run_devices_command(action),
+        Command::GenKey => {
+            println!("{}", warden_bootstrap::generate_auth_key());
+            Ok(())
+        }
     }
 }

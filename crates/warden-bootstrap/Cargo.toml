@@ -13,6 +13,8 @@ serde_json.workspace = true
 # `time` only: the approval prompt in `manage_agents` gives up after a deadline.
 tokio = { workspace = true, features = ["time"] }
 toml.workspace = true
+# P82: saving `config.toml` without dropping the user's comments (`config_file.rs`).
+toml_edit.workspace = true
 warden-core = { path = "../warden-core" }
 warden-server-protocol = { path = "../warden-server-protocol" }
 warden-sync = { path = "../warden-sync" }

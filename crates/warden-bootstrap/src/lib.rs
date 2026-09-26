@@ -29,11 +29,13 @@ use warden_core::tool::spend_tool::BudgetTool;
 use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
+mod config_file;
 pub mod manage_agents;
 pub mod settings;
 pub mod skill_gen;
 pub mod spend;
 pub mod usage;
+pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
@@ -255,6 +257,17 @@ pub fn generate_auth_key() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Shortest pairing key a hub will start with (P83) — half of what `generate_auth_key` produces.
+/// The pairing key also guards saving settings from the web (P78), where a wrong guess only costs
+/// a 1 s wait, so a short hand-typed key would be the weak point.
+pub const MIN_AUTH_KEY_LEN: usize = 32;
+
+/// Whether `key` is long enough to be a hub's pairing key (see `MIN_AUTH_KEY_LEN`). Callers word
+/// their own refusal — the CLI in English, the desktop in Portuguese.
+pub fn is_strong_auth_key(key: &str) -> bool {
+    key.trim().chars().count() >= MIN_AUTH_KEY_LEN
+}
+
 /// Config file shape (TOML). Every field is optional — overrides and env vars (for API keys)
 /// always win over what's here, and the whole file is optional too.
 #[derive(Deserialize, Serialize, Default, Debug, PartialEq)]
@@ -439,13 +452,18 @@ pub fn default_model_for(provider: Provider) -> Option<&'static str> {
 
 /// Writes `config` as TOML to `path`, creating the parent directory if it doesn't exist yet
 /// (the default OS config dir may never have been created before the first save from a
-/// settings UI).
+/// settings UI). An existing file keeps its comments and layout (P82, see `render_config`).
 pub fn save_config(path: &Path, config: &FileConfig) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config directory at {}", parent.display()))?;
     }
-    let contents = toml::to_string_pretty(config).context("failed to serialize config")?;
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("failed to read config file at {}", path.display())),
+    };
+    let contents = render_config(existing.as_deref(), config)?;
     std::fs::write(path, contents).with_context(|| format!("failed to write config file at {}", path.display()))
 }
 
@@ -1778,6 +1796,15 @@ oauth = true
         assert_eq!(a.len(), 64);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+        assert!(is_strong_auth_key(&a));
+    }
+
+    #[test]
+    fn short_or_padded_auth_keys_are_not_strong() {
+        assert!(!is_strong_auth_key(""));
+        assert!(!is_strong_auth_key("secret"));
+        assert!(!is_strong_auth_key(&format!("  {}  ", "a".repeat(MIN_AUTH_KEY_LEN - 1))));
+        assert!(is_strong_auth_key(&"a".repeat(MIN_AUTH_KEY_LEN)));
     }
 
     #[test]
