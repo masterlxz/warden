@@ -1,6 +1,7 @@
 //! P61 on the hub: the web's Sync screen over a real socket (status, init, sync now), against a
 //! real local bare git remote, and the standalone hub's own loop reloading the orchestrator when a
-//! round brings another device's `config.toml`.
+//! round brings another device's `config.toml`. Also the hub showing a pairing code (P88) that a
+//! device joins through with the hub's address.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -124,6 +125,45 @@ async fn the_web_sets_up_the_hub_and_its_notes_reach_another_device() {
     let report = laptop.run_once().await;
     assert_eq!(report.error, None, "{report:?}");
     assert_eq!(std::fs::read_to_string(dir.join("laptop").join("vault").join("nota.md")).unwrap(), "do hub");
+}
+
+#[tokio::test]
+async fn a_device_joins_the_group_through_a_code_the_hub_shows() {
+    let dir = temp_dir();
+    let remote = bare_remote(&dir);
+    let hub_runner = Arc::new(device(&dir, "hub", &remote, ""));
+    hub_runner.init_fresh().await.unwrap();
+    std::fs::write(dir.join("hub").join("vault").join("nota.md"), "do hub").unwrap();
+    assert!(hub_runner.run_once().await.pushed.is_some());
+    let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator(&dir)), dir.join("conversations"), dir.join("devices.json"))
+        .await
+        .unwrap()
+        .with_sync(Arc::clone(&hub_runner), None);
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+    let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "web-1", "Browser", "test-key").await.unwrap();
+
+    conn.send(&action("test-key", SyncActionDto::PairHost)).await.unwrap();
+    let Some(ServerMessage::SyncStatus { status: shown, pairing_code: Some(code), .. }) = conn.recv().await.unwrap() else { panic!("no code") };
+    assert!(shown.hosting_until_ms.is_some());
+
+    // The laptop types the code and the hub's address, the way it would reach a hub on a VPS.
+    let laptop = device(&dir, "laptop", &remote, "");
+    laptop.pair_join(&code, Some(std::net::Ipv4Addr::LOCALHOST)).await.unwrap();
+    let report = laptop.run_once().await;
+    assert_eq!(report.error, None, "{report:?}");
+    assert_eq!(std::fs::read_to_string(dir.join("laptop").join("vault").join("nota.md")).unwrap(), "do hub");
+
+    let mut after = status(&mut conn, ClientMessage::RequestSyncStatus { request_id: 3 }).await.unwrap();
+    for _ in 0..50 {
+        if after.hosting_until_ms.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        after = status(&mut conn, ClientMessage::RequestSyncStatus { request_id: 3 }).await.unwrap();
+    }
+    assert_eq!(after.hosting_until_ms, None);
+    assert_eq!(after.last_pairing.map(|p| p.error), Some(None), "the hub saw the join");
 }
 
 #[tokio::test]

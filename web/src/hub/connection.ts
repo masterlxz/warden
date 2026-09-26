@@ -553,6 +553,13 @@ export class ServerConnection {
     return reply.status;
   }
 
+  /** Has the hub show a pairing code (P88); asking again while one is up gives the same code. */
+  async startPairHost(pairingKey: string): Promise<{ status: SyncStatus; code: string }> {
+    const reply = await this.request((requestId) => ({ type: "syncAction", requestId, pairingKey, action: { kind: "pairHost" } }));
+    if (reply.type !== "syncStatus" || !reply.pairingCode) throw new Error("resposta inesperada do hub");
+    return { status: reply.status, code: reply.pairingCode };
+  }
+
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A
    * conversation that doesn't exist yet comes back empty. */
   async fetchHistory(conversationId: string, limit: number): Promise<HistoryMessage[]> {

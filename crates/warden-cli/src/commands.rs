@@ -62,7 +62,9 @@ pub enum Command {
     SyncPush,
     SyncPull,
     SyncPairShow,
-    SyncPairJoin(String),
+    /// `/sync pair <code> [ip]` — with the ip, only that address is tried (a hub on a VPS over
+    /// Tailscale, P88); without it, the LAN is swept.
+    SyncPairJoin(String, Option<String>),
     SyncGitPush,
     SyncGitPull,
 }
@@ -146,7 +148,8 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("sync", ["push"]) => Command::SyncPush,
         ("sync", ["pull"]) => Command::SyncPull,
         ("sync", ["pair"]) => Command::SyncPairShow,
-        ("sync", ["pair", code]) => Command::SyncPairJoin(code.to_string()),
+        ("sync", ["pair", code]) => Command::SyncPairJoin(code.to_string(), None),
+        ("sync", ["pair", code, host]) => Command::SyncPairJoin(code.to_string(), Some(host.to_string())),
         ("sync", ["git", "push"]) => Command::SyncGitPush,
         ("sync", ["git", "pull"]) => Command::SyncGitPull,
         _ => return ParseOutcome::Unrecognized(trimmed.to_string()),
@@ -363,7 +366,11 @@ mod tests {
 
     #[test]
     fn sync_pair_join_captures_the_typed_code() {
-        assert!(matches!(assert_recognized("/sync pair ABCD1234"), Command::SyncPairJoin(code) if code == "ABCD1234"));
+        assert!(matches!(assert_recognized("/sync pair ABCD1234"), Command::SyncPairJoin(code, None) if code == "ABCD1234"));
+        assert!(matches!(
+            assert_recognized("/sync pair ABCD1234 100.64.0.2"),
+            Command::SyncPairJoin(code, Some(host)) if code == "ABCD1234" && host == "100.64.0.2"
+        ));
     }
 
     #[test]

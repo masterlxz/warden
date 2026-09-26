@@ -1897,8 +1897,9 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
 - **Web**: aba "Sync" (`SyncView.tsx`) com destino, pendências, última rodada e "Sincronizar agora"; num hub sem
   chave, "Parear com outro aparelho" (código + IP opcional) ou "Este é o primeiro aparelho". Arweave pela web fica
   só no pull automático: o push precisa do QR no celular.
-- **Limitações**: o hub só entra num grupo de sync (join); não mostra código para outro aparelho parear com ele. Os
-  comandos manuais de git do desktop (`git_sync_cmds.rs`) não pegam o lock do runner.
+- **Limitações**: ~~o hub só entra num grupo de sync (join); não mostra código para outro aparelho parear com
+  ele~~ (resolvido na Sessão 106, ver "O hub mostra um código de pareamento"). Os comandos manuais de git do desktop
+  (`git_sync_cmds.rs`) não pegam o lock do runner.
 
 ### Fatia 2: a camada de Storage Provider saiu (Sessão 105)
 
@@ -1952,4 +1953,26 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   linha "Respondido por X — Y falhou (motivo)" acima da resposta na web; o `send_message` do desktop devolve o
   mesmo e o `MessageBubble` mostra (não é gravado na conversa); o CLI imprime uma linha esmaecida. Telegram e
   WhatsApp: só o log.
+
+## O hub mostra um código de pareamento (P88 item 1, Sessão 106)
+
+- **Problema**: o hub só entrava num grupo de sync. Um aparelho novo não tinha como receber a chave de um hub sem
+  tela, e quem digita o código (desktop, `/sync pair` do CLI) só varria a rede local, então um hub num VPS nunca
+  seria achado.
+- **`SyncRunner::start_hosting`**: abre um `PairingHost` (o mesmo do desktop), dá `spawn` no `wait_for_join` e
+  guarda a sessão (código, validade, `AbortHandle`) num `Arc<Mutex<Hosting>>`. Pedir de novo com uma sessão aberta
+  devolve o mesmo código, sem abrir outra porta. Ao terminar, a task limpa a sessão e grava `last_pairing` (ok ou
+  o erro); um número de sessão impede que uma task velha apague uma sessão mais nova. `cancel_hosting` aborta a
+  task, e o `TcpListener` cai junto.
+- **Fora do lock das rodadas**: hospedar só lê a chave e não mexe no disco. Segurar o lock por até 5 minutos
+  travaria o loop e o "Sincronizar agora".
+- **O código só vai na resposta ao `PairHost`**: `SyncStatus.pairingCode` (fora do `SyncStatusDto`). O status que
+  qualquer aparelho pareado lê só traz `hostingUntilMs` e `lastPairing`, porque quem tem o código leva a chave do
+  vault. A web guarda o código e a chave digitada só no estado da tela, para o "Parar de mostrar" não pedir a chave
+  de novo, e recarrega o status a cada 3 s enquanto o código está aberto.
+- **Protocolo**: `SyncActionDto::PairHost` e `CancelPairHost`, os dois com a chave do hub como toda ação.
+- **Sem tela**: `warden-server sync host` mostra o código, as portas (48070 a 48074) e espera. Pode rodar com o
+  `serve` no ar, porque não mexe no disco; se a web já estiver hospedando, ele pega a próxima porta livre da faixa.
+- **Quem digita o código aceita um IP**: `pairing_join` do desktop (`host?`, campo "IP (opcional)" na tela Sync) e
+  `/sync pair <código> [ip]` no CLI usam `pairing_join_with_hosts`, como já faziam a web e o `sync pair --host`.
 

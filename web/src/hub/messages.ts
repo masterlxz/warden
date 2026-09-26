@@ -242,10 +242,19 @@ export interface SyncStatus {
   pendingVaultChanges: number;
   pendingConfigChanged: boolean;
   lastRound?: SyncRound;
+  /** Until when the hub is showing a pairing code (P88). The code itself only comes back to `pairHost`. */
+  hostingUntilMs?: number;
+  /** How the last pairing the hub showed a code for ended; no `error` means a device joined. */
+  lastPairing?: { atMs: number; error?: string };
 }
 
 /** Mirrors `SyncActionDto`. `host` is an IPv4 address (a Tailscale one works). */
-export type SyncAction = { kind: "syncNow" } | { kind: "init" } | { kind: "pairJoin"; code: string; host?: string };
+export type SyncAction =
+  | { kind: "syncNow" }
+  | { kind: "init" }
+  | { kind: "pairJoin"; code: string; host?: string }
+  | { kind: "pairHost" }
+  | { kind: "cancelPairHost" };
 
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
@@ -340,7 +349,7 @@ export type ServerMessage =
   /** `you` is this browser's own device id. */
   | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
   | { type: "deviceError"; requestId: number; message: string; authRejected: boolean }
-  | { type: "syncStatus"; requestId: number; status: SyncStatus }
+  | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
   | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }

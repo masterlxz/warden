@@ -3,11 +3,15 @@
 //! paired device; the actions ask for the pairing key again, with the same 1 s wait and the same
 //! per-hub lock as a settings save, so all of them share one guessing rate. The lock is only held
 //! for the key check: a sync round or a pairing can take a while and must not hold up a save.
+//!
+//! The hub can also show a pairing code (P88) for another device to join through. That code is
+//! only ever in the reply to the `PairHost` that asked for it, never in the status any paired
+//! device can read: whoever has it gets the vault key.
 
 use std::net::Ipv4Addr;
 
-use warden_bootstrap::auto_sync::{SyncBackend, SyncReport, SyncRunner, SyncState};
-use warden_server_protocol::protocol::{SyncActionDto, SyncBackendDto, SyncPulledDto, SyncPushedDto, SyncRoundDto, SyncStatusDto};
+use warden_bootstrap::auto_sync::{PairingResult, SyncBackend, SyncReport, SyncRunner, SyncState};
+use warden_server_protocol::protocol::{SyncActionDto, SyncBackendDto, SyncPairingDto, SyncPulledDto, SyncPushedDto, SyncRoundDto, SyncStatusDto};
 use warden_server_protocol::ServerMessage;
 
 use crate::settings::{keys_match, SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
@@ -35,6 +39,8 @@ fn status_dto(state: SyncState) -> SyncStatusDto {
         pending_vault_changes: state.pending_vault_changes,
         pending_config_changed: state.pending_config_changed,
         last_round: state.last_round.as_ref().map(round_dto),
+        hosting_until_ms: state.hosting_until_ms,
+        last_pairing: state.last_pairing.map(|PairingResult { at_ms, error }| SyncPairingDto { at_ms, error }),
     }
 }
 
@@ -47,8 +53,12 @@ pub fn handle_sync_status(runner: Option<&SyncRunner>, request_id: u64) -> Serve
     let Some(runner) = runner else {
         return sync_error(request_id, NO_SYNC.to_string(), false);
     };
+    status_reply(runner, request_id, None)
+}
+
+fn status_reply(runner: &SyncRunner, request_id: u64, pairing_code: Option<String>) -> ServerMessage {
     match runner.state() {
-        Ok(state) => ServerMessage::SyncStatus { request_id, status: status_dto(state) },
+        Ok(state) => ServerMessage::SyncStatus { request_id, status: status_dto(state), pairing_code },
         Err(err) => sync_error(request_id, format!("{err:#}"), false),
     }
 }
@@ -84,6 +94,16 @@ pub async fn handle_sync_action(access: &SyncAccess<'_>, request_id: u64, pairin
             Ok(())
         }
         SyncActionDto::Init => runner.init_fresh().await,
+        SyncActionDto::PairHost => {
+            return match runner.start_hosting().await {
+                Ok(shown) => status_reply(runner, request_id, Some(shown.code)),
+                Err(err) => sync_error(request_id, format!("{err:#}"), false),
+            };
+        }
+        SyncActionDto::CancelPairHost => {
+            runner.cancel_hosting();
+            Ok(())
+        }
         SyncActionDto::PairJoin { code, host } => match host.as_deref().map(str::trim).filter(|h| !h.is_empty()).map(str::parse::<Ipv4Addr>) {
             Some(Err(_)) => Err(anyhow::anyhow!("'{}' is not an IPv4 address", host.unwrap_or_default().trim())),
             Some(Ok(host)) => runner.pair_join(code.trim(), Some(host)).await,
@@ -91,7 +111,7 @@ pub async fn handle_sync_action(access: &SyncAccess<'_>, request_id: u64, pairin
         },
     };
     match result {
-        Ok(()) => handle_sync_status(Some(runner), request_id),
+        Ok(()) => status_reply(runner, request_id, None),
         Err(err) => sync_error(request_id, format!("{err:#}"), false),
     }
 }
@@ -169,7 +189,7 @@ mod tests {
         assert_eq!(runner.state().unwrap().backend, SyncBackend::NotSetUp, "nothing ran");
 
         let reply = act(&runner, KEY, SyncActionDto::Init).await;
-        let ServerMessage::SyncStatus { request_id: 7, status } = reply else { panic!("{reply:?}") };
+        let ServerMessage::SyncStatus { request_id: 7, status, .. } = reply else { panic!("{reply:?}") };
         assert_eq!(status.backend, SyncBackendDto::Arweave);
 
         let reply = act(&runner, KEY, SyncActionDto::Init).await;
@@ -187,6 +207,31 @@ mod tests {
         let reply = act(&runner, KEY, SyncActionDto::PairJoin { code: "AB12".into(), host: Some("my-laptop".into()) }).await;
         let ServerMessage::SyncError { message, auth_rejected: false, .. } = reply else { panic!("{reply:?}") };
         assert!(message.contains("IPv4"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn the_pairing_code_only_goes_to_whoever_asked_with_the_key() {
+        let (runner, _dir) = runner("host");
+        let reply = act(&runner, KEY, SyncActionDto::PairHost).await;
+        assert!(matches!(reply, ServerMessage::SyncError { auth_rejected: false, .. }), "no vault key yet: {reply:?}");
+        act(&runner, KEY, SyncActionDto::Init).await;
+
+        let reply = act(&runner, "wrong", SyncActionDto::PairHost).await;
+        assert!(matches!(reply, ServerMessage::SyncError { auth_rejected: true, .. }), "{reply:?}");
+        assert_eq!(runner.state().unwrap().hosting_until_ms, None, "nothing was opened");
+
+        let reply = act(&runner, KEY, SyncActionDto::PairHost).await;
+        let ServerMessage::SyncStatus { status, pairing_code: Some(code), .. } = reply else { panic!("{reply:?}") };
+        assert!(status.hosting_until_ms.is_some());
+        assert!(!code.is_empty());
+
+        let ServerMessage::SyncStatus { status, pairing_code, .. } = handle_sync_status(Some(&runner), 2) else { panic!() };
+        assert_eq!((status.hosting_until_ms.is_some(), pairing_code), (true, None), "reading the status never shows the code");
+
+        let reply = act(&runner, KEY, SyncActionDto::CancelPairHost).await;
+        let ServerMessage::SyncStatus { status, pairing_code: None, .. } = reply else { panic!("{reply:?}") };
+        assert_eq!(status.hosting_until_ms, None);
+        assert_eq!(status.last_pairing.and_then(|p| p.error).as_deref(), Some("cancelled"));
     }
 
     #[test]

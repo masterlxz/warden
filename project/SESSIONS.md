@@ -2,7 +2,51 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 105)
+> Última atualização: 2026-09-26 (Sessão 106)
+
+---
+
+### 2026-09-26 — Sessão 106
+
+- **Objetivo**: seguir com código. O usuário escolheu o item (1) do P88, o hub mostrar um código de pareamento.
+  O plano foi aprovado em Plan mode.
+
+**O que foi feito**:
+
+- **`SyncRunner`** (`warden-bootstrap/src/auto_sync.rs`): `start_hosting` (abre o `PairingHost` em segundo plano,
+  pedir de novo devolve o mesmo código), `cancel_hosting`, e no `SyncState` os campos `hosting_until_ms` e
+  `last_pairing`. Fica fora do lock das rodadas.
+- **Protocolo**: `SyncActionDto::PairHost`/`CancelPairHost`, `SyncStatusDto.hostingUntilMs`/`lastPairing` e
+  `SyncStatus.pairingCode`, preenchido só na resposta ao `PairHost`. O status aberto a qualquer aparelho pareado
+  nunca traz o código.
+- **Hub**: `warden-server/src/sync.rs` trata as duas ações; subcomando novo `warden-server sync host`.
+- **Web**: seção "Parear outro aparelho com este hub" na aba Sync, com o código, a validade, o endereço do hub
+  (`location.hostname`), "Parar de mostrar" e o resultado do último pareamento.
+- **Quem digita o código aceita um IP**: desktop (campo "IP (opcional)" na tela Sync, `pairing_join` com `host`) e
+  `/sync pair <código> [ip]` no CLI.
+- Docs: `ARCHITECTURE.md` (seção nova), `PENDING.md` (P88 item 1).
+
+**Verificação**:
+
+- `cargo test --workspace`: 766 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. Desktop:
+  clippy limpo, 20 testes passando, `tsc`/`build` limpos. Web: `tsc`/`build` limpos.
+- **Testes novos**: 2 do runner (um aparelho entra pelo código que o outro mostra, com o `last_pairing` ok; cancelar
+  fecha a porta e o outro não recebe a chave), 1 do hub (chave errada não abre nada, o código só vem na resposta, o
+  status não o traz e cancelar funciona), 1 de integração com socket de verdade (o hub mostra o código pela web e
+  um laptop entra pelo IP e recebe a nota pelo git), 1 de protocolo e o parser do `/sync pair <código> <ip>`.
+- **Ponta a ponta** com o binário real, `XDG_CONFIG_HOME` no scratchpad (nada do `~/.config/warden` foi tocado),
+  cliente WebSocket do Node:
+  - Com a chave errada: recusado em 1 s, e nada foi aberto.
+  - `PairHost` devolveu o código. Pedir de novo deu o mesmo código, e o status não trouxe o código.
+  - Um segundo aparelho rodou `warden-server sync pair <código> --host 127.0.0.1` e ficou com a mesma chave
+    (`device_id` diferente), e o status do hub passou a mostrar o `lastPairing` sem erro.
+  - Depois de cancelar, um terceiro aparelho não conseguiu entrar e ficou sem chave.
+  - `warden-server sync host` com o `serve` no ar: um quarto aparelho entrou.
+- **Não testado**: as telas (web e desktop) não foram abertas (P80); o pareamento real hub-num-VPS ↔ desktop
+  pelo Tailscale.
+
+**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, incluindo a seção nova da aba Sync) e o Gemini
+real; ou, em código, os itens (2)/(3) do P88 ou o P87.
 
 ---
 

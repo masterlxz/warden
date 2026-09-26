@@ -431,6 +431,22 @@ pub struct SyncStatusDto {
     pub pending_config_changed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_round: Option<SyncRoundDto>,
+    /// Until when the hub is showing a pairing code (P88). The code only goes back in the reply
+    /// to the `PairHost` that asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosting_until_ms: Option<i64>,
+    /// How the last pairing the hub showed a code for ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pairing: Option<SyncPairingDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPairingDto {
+    pub at_ms: i64,
+    /// Absent: a device joined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What `SyncAction` asks the hub to do — the same as `warden-server sync now|init|pair`.
@@ -449,6 +465,11 @@ pub enum SyncActionDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<String>,
     },
+    /// Shows a pairing code other devices join through (P88), answered with the code in
+    /// `SyncStatus::pairing_code`. Asking again while one is up hands back the same code.
+    PairHost,
+    /// Stops showing the code.
+    CancelPairHost,
 }
 
 /// The part of the hub's `config.toml` the web settings screen shows (P78): providers, agents, the
@@ -964,6 +985,9 @@ pub enum ServerMessage {
     SyncStatus {
         request_id: u64,
         status: SyncStatusDto,
+        /// Only in the reply to a `PairHost`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pairing_code: Option<String>,
     },
     /// A sync request failed. `auth_rejected`: the pairing key was wrong; nothing ran.
     SyncError {
@@ -1562,7 +1586,10 @@ mod tests {
                 pending_vault_changes: 2,
                 pending_config_changed: false,
                 last_round: Some(SyncRoundDto { at_ms: 9, pulled: None, pushed: Some(SyncPushedDto { commit_sha: "abc".into(), files_changed: 2 }), error: None }),
+                hosting_until_ms: None,
+                last_pairing: None,
             },
+            pairing_code: None,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["type"], "syncStatus");
@@ -1579,6 +1606,35 @@ mod tests {
 
         let error: ServerMessage = serde_json::from_str(r#"{"type":"syncError","requestId":5,"message":"m","authRejected":true}"#).unwrap();
         assert_eq!(error, ServerMessage::SyncError { request_id: 5, message: "m".into(), auth_rejected: true });
+        assert!(json.get("pairingCode").is_none());
+    }
+
+    #[test]
+    fn pairing_host_messages_use_the_web_shapes() {
+        let host: ClientMessage = serde_json::from_str(r#"{"type":"syncAction","requestId":7,"pairingKey":"k","action":{"kind":"pairHost"}}"#).unwrap();
+        assert!(matches!(host, ClientMessage::SyncAction { action: SyncActionDto::PairHost, .. }));
+        let cancel: ClientMessage =
+            serde_json::from_str(r#"{"type":"syncAction","requestId":8,"pairingKey":"k","action":{"kind":"cancelPairHost"}}"#).unwrap();
+        assert!(matches!(cancel, ClientMessage::SyncAction { action: SyncActionDto::CancelPairHost, .. }));
+
+        let status = ServerMessage::SyncStatus {
+            request_id: 7,
+            status: SyncStatusDto {
+                backend: SyncBackendDto::Arweave,
+                git_remote: None,
+                last_synced_at_ms: None,
+                pending_vault_changes: 0,
+                pending_config_changed: false,
+                last_round: None,
+                hosting_until_ms: Some(300_000),
+                last_pairing: Some(SyncPairingDto { at_ms: 5, error: Some("cancelled".into()) }),
+            },
+            pairing_code: Some("AB12CD".into()),
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["pairingCode"], "AB12CD");
+        assert_eq!(json["status"]["hostingUntilMs"], 300_000);
+        assert_eq!(json["status"]["lastPairing"], serde_json::json!({ "atMs": 5, "error": "cancelled" }));
     }
 
     #[test]

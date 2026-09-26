@@ -1174,7 +1174,7 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/sync push — enviar mudanças locais (mostra QR pro TruthID escanear)",
         "/sync pull — buscar a versão mais recente",
         "/sync pair — mostrar um código de pareamento e esperar outro device",
-        "/sync pair <code> — parear com um device que já mostrou um código",
+        "/sync pair <code> [ip] — parear com um device que já mostrou um código (com o ip, só nele: um hub num VPS pelo Tailscale)",
         "/sync git push — enviar mudanças locais via git remoto (precisa de [git_sync] no config.toml)",
         "/sync git pull — buscar as mudanças novas via git remoto",
         "  um .syncignore na raiz do vault (um padrão por linha, tipo .gitignore) mantém o que bater",
@@ -2694,16 +2694,22 @@ async fn cmd_sync_pair_show(terminal: &mut CliTerminal, session: &CliSession) ->
         accent_style(),
         vec![
             (format!("código de pareamento: {}", host.code()), Style::default()),
-            ("digite esse código em /sync pair <code> no outro dispositivo. aguardando…".to_string(), Style::default()),
+            ("digite esse código em /sync pair <code> [ip] no outro dispositivo. aguardando…".to_string(), Style::default()),
         ],
     )?;
     host.wait_for_join().await?;
     render_message_card(terminal, "sync", accent_style(), vec![("pareado com sucesso!".to_string(), Style::default())])
 }
 
-async fn cmd_sync_pair_join(terminal: &mut CliTerminal, session: &CliSession, code: String) -> anyhow::Result<()> {
+async fn cmd_sync_pair_join(terminal: &mut CliTerminal, session: &CliSession, code: String, host: Option<String>) -> anyhow::Result<()> {
     let engine = make_sync_engine(session)?;
-    engine.pairing_join(&code).await?;
+    match host {
+        Some(host) => {
+            let ip = host.parse::<std::net::Ipv4Addr>().map_err(|_| anyhow::anyhow!("'{host}' não é um endereço IPv4"))?;
+            engine.pairing_join_with_hosts(&code, vec![ip]).await?;
+        }
+        None => engine.pairing_join(&code).await?,
+    }
     render_message_card(terminal, "sync", accent_style(), vec![("pareado com sucesso!".to_string(), Style::default())])
 }
 
@@ -2796,7 +2802,7 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::SyncPush => cmd_sync_push(terminal, session).await,
         Command::SyncPull => cmd_sync_pull(terminal, session).await,
         Command::SyncPairShow => cmd_sync_pair_show(terminal, session).await,
-        Command::SyncPairJoin(code) => cmd_sync_pair_join(terminal, session, code).await,
+        Command::SyncPairJoin(code, host) => cmd_sync_pair_join(terminal, session, code, host).await,
         Command::SyncGitPush => cmd_sync_git_push(terminal, session).await,
         Command::SyncGitPull => cmd_sync_git_pull(terminal, session).await,
     }

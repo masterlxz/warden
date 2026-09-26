@@ -54,6 +54,7 @@ function SyncView() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingStatus, setPairingStatus] = useState<"idle" | "hosting" | "completed" | "failed">("idle");
   const [joinCode, setJoinCode] = useState("");
+  const [joinHost, setJoinHost] = useState("");
   const [joining, setJoining] = useState(false);
 
   const [autoSyncMessage, setAutoSyncMessage] = useState<string | null>(null);
@@ -227,8 +228,10 @@ function SyncView() {
     setJoining(true);
     setError(null);
     try {
-      await invoke("pairing_join", { code: joinCode.trim() });
+      const host = joinHost.trim();
+      await invoke("pairing_join", { code: joinCode.trim(), host: host || null });
       setJoinCode("");
+      setJoinHost("");
       refreshStatus();
     } catch (err) {
       setError(String(err));
@@ -416,10 +419,22 @@ function SyncView() {
               onChange={(e) => setJoinCode(e.target.value)}
               disabled={joining}
             />
+            <input
+              type="text"
+              className="settings-input"
+              placeholder="IP (opcional)"
+              value={joinHost}
+              onChange={(e) => setJoinHost(e.target.value)}
+              disabled={joining}
+            />
             <button type="submit" className="settings-save-btn" disabled={joining || joinCode.trim().length === 0}>
               Parear
             </button>
           </form>
+          <p className="settings-hint">
+            O IP é o do aparelho que mostra o código (um do Tailscale serve, como o de um hub num VPS). Sem ele, a busca é só na
+            rede local.
+          </p>
         </div>
       </section>
     </div>

@@ -8,12 +8,18 @@
 //! push waits for a TruthID phone approval and never runs unattended. A device that has no vault
 //! key yet (`sync_secrets.json`) has nothing to do. Rounds never overlap: the loop, a "sync now",
 //! an init and a pairing all take the same lock.
+//!
+//! A device already in the group can also show a pairing code (`start_hosting`, P88) so another
+//! one joins through it. That waits up to `PAIRING_TIMEOUT` in the background and only reads the
+//! vault key, so it stays out of the rounds' lock.
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+// Re-exported for `warden-server sync host`, which says how long the code lasts and which ports to open.
+pub use warden_sync::pairing::protocol::{PAIRING_PORTS, PAIRING_TIMEOUT};
 use warden_sync::{GitSyncEngine, SyncEngine};
 
 use crate::load_config_from_path;
@@ -74,6 +80,39 @@ pub struct SyncState {
     pub pending_config_changed: bool,
     /// The most recent round this process ran, if any.
     pub last_round: Option<SyncReport>,
+    /// Until when this device is showing a pairing code. The code itself is never part of the
+    /// state: anyone who reads it can take the vault key.
+    pub hosting_until_ms: Option<i64>,
+    /// How the most recent pairing this device showed a code for ended.
+    pub last_pairing: Option<PairingResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairingResult {
+    pub at_ms: i64,
+    /// `None`: a device joined.
+    pub error: Option<String>,
+}
+
+/// The code `start_hosting` is showing, and until when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedPairing {
+    pub code: String,
+    pub expires_at_ms: i64,
+}
+
+struct ActiveHosting {
+    shown: HostedPairing,
+    /// Tells apart the session a finishing task belongs to from a newer one.
+    session: u64,
+    task: tokio::task::AbortHandle,
+}
+
+#[derive(Default)]
+struct Hosting {
+    active: Option<ActiveHosting>,
+    last: Option<PairingResult>,
+    next_session: u64,
 }
 
 pub struct SyncRunner {
@@ -84,11 +123,12 @@ pub struct SyncRunner {
     git_repo_path: PathBuf,
     lock: tokio::sync::Mutex<()>,
     last: Mutex<Option<SyncReport>>,
+    hosting: Arc<Mutex<Hosting>>,
 }
 
 impl SyncRunner {
     pub fn new(vault_path: PathBuf, config_path: PathBuf, secrets_path: PathBuf, manifest_path: PathBuf, git_repo_path: PathBuf) -> Self {
-        Self { vault_path, config_path, secrets_path, manifest_path, git_repo_path, lock: tokio::sync::Mutex::new(()), last: Mutex::new(None) }
+        Self { vault_path, config_path, secrets_path, manifest_path, git_repo_path, lock: tokio::sync::Mutex::new(()), last: Mutex::new(None), hosting: Arc::default() }
     }
 
     /// The paths every Warden install uses under the OS config dir (`warden_sync::paths`).
@@ -232,6 +272,8 @@ impl SyncRunner {
             pending_vault_changes: status.pending_vault_changes,
             pending_config_changed: status.pending_config_changed,
             last_round: self.last.lock().unwrap().clone(),
+            hosting_until_ms: self.active_hosting().map(|h| h.expires_at_ms),
+            last_pairing: self.hosting.lock().unwrap().last.clone(),
         })
     }
 
@@ -251,6 +293,60 @@ impl SyncRunner {
             Some(host) => engine.pairing_join_with_hosts(code, vec![host]).await,
             None => engine.pairing_join(code).await,
         }
+    }
+}
+
+impl SyncRunner {
+    /// Shows a pairing code other devices join through (`/sync pair <code>`, the desktop's Sync
+    /// screen, `warden-server sync pair`), waiting in the background until one does or
+    /// `PAIRING_TIMEOUT` runs out. Asking again while a code is up hands back the same one.
+    pub async fn start_hosting(&self) -> anyhow::Result<HostedPairing> {
+        if let Some(shown) = self.active_hosting() {
+            return Ok(shown);
+        }
+        // Errors on a device without a vault key, with nothing to hand over.
+        let host = self.pairing_host().await?;
+        let shown = HostedPairing { code: host.code().to_string(), expires_at_ms: now_ms() + PAIRING_TIMEOUT.as_millis() as i64 };
+
+        let mut hosting = self.hosting.lock().unwrap();
+        // Another call got here first while this one was binding: keep that one, this listener
+        // is dropped with `host`.
+        if let Some(active) = hosting.active.as_ref().filter(|a| a.shown.expires_at_ms > now_ms()) {
+            return Ok(active.shown.clone());
+        }
+        let session = hosting.next_session;
+        hosting.next_session += 1;
+        let slot = Arc::clone(&self.hosting);
+        let task = tokio::spawn(async move {
+            let error = host.wait_for_join().await.err().map(|err| format!("{err:#}"));
+            let mut hosting = slot.lock().unwrap();
+            if hosting.active.as_ref().is_some_and(|a| a.session == session) {
+                hosting.active = None;
+                hosting.last = Some(PairingResult { at_ms: now_ms(), error });
+            }
+        });
+        hosting.active = Some(ActiveHosting { shown: shown.clone(), session, task: task.abort_handle() });
+        Ok(shown)
+    }
+
+    /// Stops showing the code, closing its port. Nothing happens when none is up.
+    pub fn cancel_hosting(&self) {
+        let mut hosting = self.hosting.lock().unwrap();
+        if let Some(active) = hosting.active.take() {
+            active.task.abort();
+            hosting.last = Some(PairingResult { at_ms: now_ms(), error: Some("cancelled".to_string()) });
+        }
+    }
+
+    /// A pairing host for a caller that waits on it itself (`warden-server sync host`), outside
+    /// `start_hosting`'s bookkeeping.
+    pub async fn pairing_host(&self) -> anyhow::Result<warden_sync::pairing::PairingHost> {
+        self.arweave_engine().pairing_host().await
+    }
+
+    fn active_hosting(&self) -> Option<HostedPairing> {
+        let hosting = self.hosting.lock().unwrap();
+        hosting.active.as_ref().map(|a| a.shown.clone())
     }
 }
 
@@ -373,5 +469,53 @@ mod tests {
         assert_eq!(key(&a), key(&b));
         // A second pairing would throw that key away.
         assert!(b.init_fresh().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_device_in_the_group_shows_a_code_another_joins_through() {
+        let dir = temp_dir("host");
+        let a = device(&dir, "a", None);
+        assert!(a.start_hosting().await.is_err(), "no vault key, nothing to hand over");
+        a.init_fresh().await.unwrap();
+
+        let shown = a.start_hosting().await.unwrap();
+        assert_eq!(a.start_hosting().await.unwrap(), shown, "asking again shows the same code");
+        let state = a.state().unwrap();
+        assert_eq!((state.hosting_until_ms, state.last_pairing), (Some(shown.expires_at_ms), None));
+
+        let b = device(&dir, "b", None);
+        b.pair_join(&shown.code, Some(Ipv4Addr::LOCALHOST)).await.unwrap();
+        let key = |r: &SyncRunner| warden_sync::manifest::load_secrets(&r.secrets_path).unwrap().unwrap().vault_key;
+        assert_eq!(key(&a), key(&b));
+
+        // The host's side finishes right after the joiner's ack.
+        let mut state = a.state().unwrap();
+        for _ in 0..50 {
+            if state.hosting_until_ms.is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            state = a.state().unwrap();
+        }
+        assert_eq!(state.hosting_until_ms, None);
+        assert_eq!(state.last_pairing.map(|p| p.error), Some(None));
+    }
+
+    #[tokio::test]
+    async fn cancelling_closes_the_code() {
+        let dir = temp_dir("host-cancel");
+        let a = device(&dir, "a", None);
+        a.init_fresh().await.unwrap();
+        let shown = a.start_hosting().await.unwrap();
+        a.cancel_hosting();
+        let state = a.state().unwrap();
+        assert_eq!(state.hosting_until_ms, None);
+        assert_eq!(state.last_pairing.and_then(|p| p.error).as_deref(), Some("cancelled"));
+
+        // Nobody answers on the pairing ports any more, so the joiner gives up.
+        let b = device(&dir, "b", None);
+        let joined = tokio::time::timeout(Duration::from_secs(3), b.pair_join(&shown.code, Some(Ipv4Addr::LOCALHOST))).await;
+        assert!(!matches!(joined, Ok(Ok(()))), "{joined:?}");
+        assert_eq!(b.state().unwrap().backend, SyncBackend::NotSetUp);
     }
 }

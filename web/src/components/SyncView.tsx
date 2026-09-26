@@ -6,6 +6,9 @@ import type { SyncAction, SyncRound, SyncStatus } from "../hub/messages";
 // in step with the other devices, every 5 minutes on its own. Here: how it's going, "sync now",
 // and — on a hub with no vault key yet — becoming the first device or pairing with one that has
 // the key. The git remote itself is set in Settings. Every action asks for the pairing key.
+// Once the hub is in a group it can also show a pairing code for another device to join through
+// (P88); the code only comes back to the request that asked for it, so it lives in this screen's
+// state and nowhere else.
 
 const BACKEND_LABEL: Record<SyncStatus["backend"], string> = {
   notSetUp: "Ainda não configurada",
@@ -33,6 +36,11 @@ function roundSummary(round: SyncRound): string {
 /** What the pairing-key prompt is about to run. */
 type Pending = { action: SyncAction; label: string };
 
+/** The code this screen asked the hub to show, and the key it was asked with (to stop it without typing it again). */
+type Hosting = { code: string; pairingKey: string };
+
+const HOSTING_POLL_MS = 3000;
+
 export default function SyncView({ conn }: { conn: ServerConnection | null }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +50,7 @@ export default function SyncView({ conn }: { conn: ServerConnection | null }) {
   const [busy, setBusy] = useState(false);
   const [code, setCode] = useState("");
   const [host, setHost] = useState("");
+  const [hosting, setHosting] = useState<Hosting | null>(null);
 
   const load = useCallback(async () => {
     if (!conn) return;
@@ -57,6 +66,18 @@ export default function SyncView({ conn }: { conn: ServerConnection | null }) {
     void load();
   }, [load]);
 
+  // While a code is up, watch for the other device joining (or the code running out).
+  const hostingUntil = status?.hostingUntilMs;
+  useEffect(() => {
+    if (!hostingUntil) return;
+    const timer = window.setInterval(() => void load(), HOSTING_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [hostingUntil, load]);
+
+  useEffect(() => {
+    if (status && !status.hostingUntilMs) setHosting(null);
+  }, [status]);
+
   function cancel() {
     setPending(null);
     setPairingKey("");
@@ -68,6 +89,13 @@ export default function SyncView({ conn }: { conn: ServerConnection | null }) {
     setBusy(true);
     setKeyError(null);
     try {
+      if (pending.action.kind === "pairHost") {
+        const shown = await conn.startPairHost(pairingKey);
+        setHosting({ code: shown.code, pairingKey });
+        setStatus(shown.status);
+        cancel();
+        return;
+      }
       setStatus(await conn.syncAction(pairingKey, pending.action));
       if (pending.action.kind === "pairJoin") {
         setCode("");
@@ -81,6 +109,18 @@ export default function SyncView({ conn }: { conn: ServerConnection | null }) {
         cancel();
         setError(message(err));
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stopHosting() {
+    if (!conn || !hosting) return;
+    setBusy(true);
+    try {
+      setStatus(await conn.syncAction(hosting.pairingKey, { kind: "cancelPairHost" }));
+    } catch (err) {
+      setError(message(err));
     } finally {
       setBusy(false);
     }
@@ -170,6 +210,53 @@ export default function SyncView({ conn }: { conn: ServerConnection | null }) {
                 </button>
               </div>
             ))}
+        </section>
+      )}
+
+      {status && status.backend !== "notSetUp" && (
+        <section className="usage-section settings-card">
+          <h2 className="usage-heading">Parear outro aparelho com este hub</h2>
+          {hosting && status.hostingUntilMs ? (
+            <>
+              <p className="skills-hint">No outro aparelho, abra a tela de Sync e digite este código (no terminal: <code>/sync pair &lt;código&gt; &lt;IP&gt;</code>):</p>
+              <p className="sync-pairing-code">{hosting.code}</p>
+              <p className="skills-item-description">
+                Vale por mais {Math.max(1, Math.ceil((status.hostingUntilMs - Date.now()) / 60_000))} min. Fora da rede local do hub,
+                informe também o endereço dele: <code>{window.location.hostname}</code> (um IP do Tailscale serve), com as portas
+                48070 a 48074 liberadas.
+              </p>
+              <div className="skills-actions">
+                <button type="button" className="link-button" disabled={busy || !conn} onClick={() => void stopHosting()}>
+                  Parar de mostrar
+                </button>
+              </div>
+            </>
+          ) : pending?.action.kind === "pairHost" ? (
+            keyPrompt
+          ) : (
+            <>
+              <p className="skills-hint">
+                Um aparelho novo entra no grupo pelo hub: o hub mostra um código por 5 minutos e o outro aparelho o digita.
+                {status.hostingUntilMs && " Já há um código aberto, pedido em outro lugar; pedir de novo mostra o mesmo."}
+              </p>
+              {status.lastPairing && (
+                <p className={status.lastPairing.error ? "error-banner" : "skills-item-description"}>
+                  Último pareamento ({dateFormatter.format(new Date(status.lastPairing.atMs))}):{" "}
+                  {status.lastPairing.error ? status.lastPairing.error : "o outro aparelho entrou no grupo."}
+                </p>
+              )}
+              <div className="skills-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={!conn || pending !== null}
+                  onClick={() => setPending({ action: { kind: "pairHost" }, label: "Mostrar o código" })}
+                >
+                  Mostrar um código
+                </button>
+              </div>
+            </>
+          )}
         </section>
       )}
 

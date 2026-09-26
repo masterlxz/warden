@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
-use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL};
+use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, PAIRING_PORTS, PAIRING_TIMEOUT};
 use warden_bootstrap::{bootstrap, Overrides};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
@@ -82,6 +82,9 @@ enum SyncCommand {
         #[arg(long)]
         host: Option<std::net::Ipv4Addr>,
     },
+    /// Shows a pairing code another device joins this hub's sync group with, and waits for it.
+    /// Safe while `serve` runs: it only reads the vault key.
+    Host,
 }
 
 #[derive(Subcommand, Debug)]
@@ -202,6 +205,19 @@ async fn run_sync_command(args: SyncArgs) -> anyhow::Result<()> {
         SyncCommand::Pair { code, host } => {
             runner.pair_join(&code, host).await?;
             println!("paired — this hub now has the vault key");
+        }
+        SyncCommand::Host => {
+            let host = runner.pairing_host().await?;
+            let port = host.local_addr()?.port();
+            println!("pairing code: {}", host.code());
+            println!(
+                "type it on the other device (desktop Sync screen, or `/sync pair <code> <this hub's IP>` in the terminal); \
+                 listening on port {port} for {} min",
+                PAIRING_TIMEOUT.as_secs() / 60
+            );
+            println!("from outside this hub's LAN, give the other device this hub's IP (a Tailscale one works) and allow ports {}-{}", PAIRING_PORTS[0], PAIRING_PORTS[PAIRING_PORTS.len() - 1]);
+            host.wait_for_join().await?;
+            println!("paired — the other device now has the vault key");
         }
     }
     let state = runner.state()?;

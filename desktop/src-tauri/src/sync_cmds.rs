@@ -157,10 +157,20 @@ pub async fn pairing_start(app: AppHandle, state: State<'_, AppState>) -> Result
     Ok(PairingStartPayload { code })
 }
 
-/// Sweeps the LAN for a device showing `code` and adopts the vault key it hands over.
+/// Sweeps the LAN for a device showing `code` and adopts the vault key it hands over. With
+/// `host` (an IPv4 address), only that address is tried: how to reach a hub on a VPS over
+/// Tailscale (P88), which no LAN sweep finds.
 #[tauri::command]
-pub async fn pairing_join(state: State<'_, AppState>, code: String) -> Result<(), String> {
-    state.sync.pairing_join(&code).await.map_err(|e| format!("{e:#}"))
+pub async fn pairing_join(state: State<'_, AppState>, code: String, host: Option<String>) -> Result<(), String> {
+    let code = code.trim();
+    match host.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        Some(host) => {
+            let ip = host.parse::<std::net::Ipv4Addr>().map_err(|_| format!("'{host}' is not an IPv4 address"))?;
+            state.sync.pairing_join_with_hosts(code, vec![ip]).await
+        }
+        None => state.sync.pairing_join(code).await,
+    }
+    .map_err(|e| format!("{e:#}"))
 }
 
 #[derive(Serialize, Clone)]

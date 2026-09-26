@@ -808,6 +808,19 @@ button:focus-visible {
   color: var(--color-text-muted);
 }
 
+.sync-pairing-code {
+  display: inline-block;
+  margin: 0.5rem 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 1.4em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--color-accent-dark);
+  background: var(--color-accent-soft);
+  padding: 0.4em 0.8em;
+  border-radius: 8px;
+}
+
 .skills-actions {
   display: flex;
   gap: 0.5rem;
