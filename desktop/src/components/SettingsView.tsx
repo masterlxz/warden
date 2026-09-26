@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
 import type { AgentEntry, Combo, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
+import ApiKeysSection from "./ApiKeysSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 
 const emptySettings: Settings = {
@@ -1438,6 +1439,9 @@ function SettingsView() {
           {isSaving ? "Saving…" : "Save settings"}
         </button>
       </form>
+
+      {/* P12 — saved on its own, outside the form above. */}
+      <ApiKeysSection />
     </div>
   );
 }

@@ -236,6 +236,19 @@ pub struct DeviceDto {
     pub last_seen_ms: i64,
 }
 
+/// One Warden API key (P12), for the settings screens. Never the key or its hash: `shown` is its
+/// first characters, for recognizing it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyDto {
+    pub id: String,
+    pub name: String,
+    pub shown: String,
+    pub created_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at_ms: Option<i64>,
+}
+
 /// What `SetDeviceStatus` does — the same two actions as `warden-server devices approve|revoke`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -739,6 +752,23 @@ pub enum ClientMessage {
         device_id: String,
         action: DeviceAction,
     },
+    /// The Warden API's keys (P12), answered by `ApiKeyList`. Open to any paired device, like the
+    /// device list; creating and revoking ask for the pairing key again.
+    ListApiKeys {
+        request_id: u64,
+    },
+    /// Answered by `ApiKeyCreated`, the only time the key itself is sent.
+    CreateApiKey {
+        request_id: u64,
+        pairing_key: String,
+        name: String,
+    },
+    /// Answered by the updated `ApiKeyList`.
+    RevokeApiKey {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -972,6 +1002,24 @@ pub enum ServerMessage {
         request_id: u64,
         devices: Vec<DeviceDto>,
         you: String,
+    },
+    /// Reply to `ListApiKeys` and to a successful `RevokeApiKey`, oldest first.
+    ApiKeyList {
+        request_id: u64,
+        keys: Vec<ApiKeyDto>,
+    },
+    /// Reply to `CreateApiKey`: `key` is shown once and kept nowhere on the hub.
+    ApiKeyCreated {
+        request_id: u64,
+        key: String,
+        keys: Vec<ApiKeyDto>,
+    },
+    /// An API key request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
+    ApiKeyError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
     },
     /// A device request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     DeviceError {
@@ -1558,6 +1606,23 @@ mod tests {
 
         let error: ServerMessage = serde_json::from_str(r#"{"type":"deviceError","requestId":4,"message":"m"}"#).unwrap();
         assert_eq!(error, ServerMessage::DeviceError { request_id: 4, message: "m".into(), auth_rejected: false });
+    }
+
+    #[test]
+    fn api_key_messages_use_the_web_shapes() {
+        let create: ClientMessage = serde_json::from_str(r#"{"type":"createApiKey","requestId":2,"pairingKey":"k","name":"n8n"}"#).unwrap();
+        assert_eq!(create, ClientMessage::CreateApiKey { request_id: 2, pairing_key: "k".into(), name: "n8n".into() });
+        let revoke: ClientMessage = serde_json::from_str(r#"{"type":"revokeApiKey","requestId":3,"pairingKey":"k","id":"abc"}"#).unwrap();
+        assert_eq!(revoke, ClientMessage::RevokeApiKey { request_id: 3, pairing_key: "k".into(), id: "abc".into() });
+        let created = ServerMessage::ApiKeyCreated {
+            request_id: 2,
+            key: "wdn_x".into(),
+            keys: vec![ApiKeyDto { id: "abc".into(), name: "n8n".into(), shown: "wdn_12345678".into(), created_at_ms: 5, last_used_at_ms: None }],
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({ "type": "apiKeyCreated", "requestId": 2, "key": "wdn_x", "keys": [{ "id": "abc", "name": "n8n", "shown": "wdn_12345678", "createdAtMs": 5 }] })
+        );
     }
 
     #[test]

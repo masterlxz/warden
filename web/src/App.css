@@ -1661,3 +1661,15 @@ button:focus-visible {
   justify-content: flex-end;
   gap: 0.5rem;
 }
+
+/* P12 — a Warden API key just created, shown once. */
+.api-key-created {
+  margin-bottom: 0.75rem;
+}
+
+.api-key-value {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  user-select: all;
+}

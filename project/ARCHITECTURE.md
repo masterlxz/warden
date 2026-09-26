@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Warden API (P12, Sessão 106) | Formato próprio vs compatível com a OpenAI; repassar as tools do cliente vs ignorar; salvar as chamadas como conversas vs só o gasto | **Compatível com a OpenAI (`/v1/models`, `/v1/chat/completions`, com stream) no mesmo porto do hub, tools do cliente ignoradas e nada salvo além do gasto no canal `api`** ✓ (escolhas do usuário). Chaves criadas no app (web, desktop, `warden-server api-keys`), só o hash no disco. O repasse de tools fica como pendência ligada ao P89 — ver "Warden API" |
 | Roteador de APIs de IA (P79, Sessão 105) | Construir um roteador próprio vs embutir o 9Router (Node + Next.js, MIT) vs recomendar instalar por fora | **Fallback nativo entre provedores cadastrados + roteador externo opcional** ✓ (escolha do usuário). Embutir descartado (runtime Node inteiro no hub em Rust, dependência de outro projeto). Um roteador externo continua funcionando como provedor `openai_compatible`. OAuth de assinatura de consumidor fica fora do Warden (termos dos provedores). Implementado na mesma sessão, e o roteamento virou **combos com nome** (P90) — ver "Fallback entre provedores (P79) e combos (P90)" |
 | Onde a memória mora vs sync (P61, Sessão 105) | Provider escolhido como fonte de leitura/escrita do agente (`Orchestrator` sobre `dyn StorageProvider`) vs disco local sempre + provider como destino de sync vs híbrido cache+fonte remota | **Disco local sempre + sync** ✓ (escolha do usuário: "local deixa mais rápido"). O agente nunca lê pela rede; o "storage" vira para onde o vault sincroniza (git ou Arweave). Consequência: o seletor de 4 cartões do desktop e a migração entre providers perdem o sentido, e `remote_node`/`RemoteNodeProvider`/`warden-node` saem (fatia 2, decisão do usuário: sem código morto). Fatia 1: o auto-sync sai do desktop para `warden_bootstrap::auto_sync::SyncRunner` e passa a rodar também no hub standalone, com tela na web |
 | Framework desktop | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
@@ -2023,4 +2024,41 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   pode estar fechado.
 - **Tipos desconhecidos**: o mobile passou a devolver `UnknownServerMessage` em vez de lançar exceção, e a extensão
   ignora com um aviso no console, para um hub mais novo não quebrar a conexão.
+
+## Warden API (P12, Sessão 106)
+
+- **O que é**: o agente do hub no formato de chat completions da OpenAI, no mesmo porto do WebSocket e da
+  web. Qualquer cliente OpenAI (script, n8n, app de chat) aponta a base URL para `http(s)://<hub>/v1`, usa
+  uma chave criada no app e fala com o Warden: vault, skills, tools e, com `model: "warden/<agente>"`, a
+  persona e o escopo daquele agente (`scope_to_agent`).
+- **Roteamento** (`server.rs::serve_web_or_ws`): a cabeça da requisição é sempre lida, com ou sem web UI.
+  Um upgrade de WebSocket segue para o protocolo, `/v1/` vai para `openai_api.rs`, e o resto vai para a
+  página ou recebe `404`. Num hub só-TLS, `http://` recebe o mesmo redirecionamento (ou `426`) da página,
+  inclusive na API.
+- **HTTP à mão**, como o `web_ui.rs`: `RequestHead` passou a trazer os cabeçalhos e onde o corpo começa. O
+  corpo vem pelo `Content-Length` (até 8 MiB; chunked → `411`), uma requisição por conexão, com
+  `Connection: close`. O SDK oficial em Python aceita.
+- **Chaves** (`api_keys.rs`, `~/.config/warden/api_keys.json`):
+  - `wdn_` + 64 hex; só o SHA-256 vai ao disco, com `shown` (os 12 primeiros caracteres) para a lista;
+  - o arquivo é relido a cada chamada, então revogar vale na próxima requisição, até de outro processo;
+  - o último uso é regravado no máximo uma vez por minuto.
+  Chave errada ou ausente → `401 invalid_api_key` depois de 1 s (a mesma taxa da chave de pareamento).
+- **Turno**:
+  - `system`/`developer` do cliente é somado à persona; `user`/`assistant` viram o histórico; a última
+    mensagem precisa ser do usuário.
+  - `tools`, `tool_choice`, mensagens `tool` e `tool_calls` do cliente são ignorados. Uma parte que não é
+    texto (imagem) → `400`.
+  - O orquestrador compartilhado roda com `SpendContext::new("api").with_user(<nome da chave>)`, então os
+    limites (P4) valem, e um limite atingido volta como `429` com `code: "spend_limit:<id>"`.
+  - Sem approver, o que pede aprovação é recusado; sem pasta de conversas, não há `message_agent`.
+  - Com `stream`, o SSE traz `chat.completion.chunk` a cada `ContentDelta` do `handle_turn_streaming`, um
+    `finish_reason: "stop"`, o `usage` quando o cliente pede `stream_options.include_usage`, e `[DONE]`.
+- **Gestão**:
+  - protocolo `ListApiKeys` (aberto a aparelhos pareados), `CreateApiKey`/`RevokeApiKey` (com a chave de
+    pareamento, o lock e a espera das configurações) → `ApiKeyList`/`ApiKeyCreated`/`ApiKeyError`;
+  - na web, a seção "Warden API" das Configurações; no desktop, a seção em Settings (comandos Tauri sobre o
+    mesmo arquivo), fora do formulário;
+  - no terminal, `warden-server api-keys list|create|revoke`.
+- **Fica de fora**: o repasse das tools do cliente (P89), imagens, `/v1/embeddings` e outros endpoints, e
+  keep-alive.
 

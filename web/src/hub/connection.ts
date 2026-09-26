@@ -10,6 +10,7 @@
 import {
   encode,
   decode,
+  type ApiKey,
   type Attachment,
   type ClientMessage,
   type ConversationSummary,
@@ -52,6 +53,16 @@ export class SettingsError extends Error {
   constructor(
     message: string,
     public readonly conflict: boolean,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** A Warden API key change the hub refused (P12). `authRejected`: the pairing key was wrong. */
+export class ApiKeyError extends Error {
+  constructor(
+    message: string,
     public readonly authRejected: boolean,
   ) {
     super(message);
@@ -369,8 +380,13 @@ export class ServerConnection {
       case "settings":
       case "settingsSaved":
       case "deviceList":
+      case "apiKeyList":
+      case "apiKeyCreated":
       case "syncStatus":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "apiKeyError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new ApiKeyError(message.message, message.authRejected)));
         break;
       case "syncError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new SyncError(message.message, message.authRejected)));
@@ -529,6 +545,26 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "listDevices", requestId }));
     if (reply.type !== "deviceList") throw new Error("resposta inesperada do hub");
     return { devices: reply.devices, you: reply.you };
+  }
+
+  /** The Warden API's keys (P12), oldest first. */
+  async listApiKeys(): Promise<ApiKey[]> {
+    const reply = await this.request((requestId) => ({ type: "listApiKeys", requestId }));
+    if (reply.type !== "apiKeyList") throw new Error("resposta inesperada do hub");
+    return reply.keys;
+  }
+
+  /** A new key: `key` is the only time it's ever sent. Rejects with `ApiKeyError`. */
+  async createApiKey(pairingKey: string, name: string): Promise<{ key: string; keys: ApiKey[] }> {
+    const reply = await this.request((requestId) => ({ type: "createApiKey", requestId, pairingKey, name }));
+    if (reply.type !== "apiKeyCreated") throw new Error("resposta inesperada do hub");
+    return { key: reply.key, keys: reply.keys };
+  }
+
+  async revokeApiKey(pairingKey: string, id: string): Promise<ApiKey[]> {
+    const reply = await this.request((requestId) => ({ type: "revokeApiKey", requestId, pairingKey, id }));
+    if (reply.type !== "apiKeyList") throw new Error("resposta inesperada do hub");
+    return reply.keys;
   }
 
   /** Approves or revokes a device; rejects with `DeviceError` on a wrong pairing key. */

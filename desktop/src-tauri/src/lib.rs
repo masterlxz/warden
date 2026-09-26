@@ -1,3 +1,4 @@
+mod api_key_cmds;
 mod approval;
 mod git_sync_cmds;
 mod qr;
@@ -831,6 +832,9 @@ pub fn run() {
             skills_cmds::save_skill_attachment,
             skills_cmds::delete_skill_attachment,
             skills_cmds::generate_skill_draft,
+            api_key_cmds::list_api_keys,
+            api_key_cmds::create_api_key,
+            api_key_cmds::revoke_api_key,
             workspace_cmds::list_paired_devices,
             workspace_cmds::approve_paired_device,
             workspace_cmds::revoke_paired_device,

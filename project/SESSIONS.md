@@ -104,7 +104,48 @@
     simulada da posição do cursor, e não há tmux/screen aqui). A espera ao sair fica para a rodada de testes;
   - as telas do Flutter, da extensão e do desktop (P80).
 
-**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88), incluindo o CLI com recados e o Gemini real.
+**P12, Warden API**, pedido em seguida. Decisões do usuário: tools do cliente ignoradas na v1, nada salvo além do
+gasto, e chaves geridas na web, no desktop e no terminal. O plano foi aprovado em Plan mode.
+
+- **`api_keys.rs`**: `ApiKeyStore` em `api_keys.json`. A chave é `wdn_` + 64 hex, mostrada uma vez, e só o
+  SHA-256 vai ao disco; o arquivo é relido a cada chamada.
+- **`openai_api.rs`**: `/v1/models` e `/v1/chat/completions` (com stream SSE), autenticação `Bearer` com 1 s de
+  espera no erro, erros no formato da OpenAI e gasto no canal `api` por chave. O roteamento do hub passou a ler a
+  cabeça da requisição sempre (`/v1/` → API, com ou sem web UI), e a `RequestHead` traz cabeçalhos e o início do
+  corpo.
+- **Gestão**:
+  - protocolo `ListApiKeys`/`CreateApiKey`/`RevokeApiKey` (`api_key_admin.rs`);
+  - seção "Warden API" nas Configurações da web e no Settings do desktop (comandos Tauri sobre o mesmo arquivo);
+  - `warden-server api-keys list|create|revoke`.
+  O `serve` e o hub embutido do desktop ligam a API.
+- Docs: `ARCHITECTURE.md` (registro de decisões e seção nova), `PENDING.md` (P12 fechado, P51 atualizado e
+  **P91** novo para o repasse das tools do cliente) e `README.md` (como usar).
+
+**Verificação do P12**:
+
+- `cargo test --workspace`: 787 passando, 0 falhas; clippy limpo. Desktop: clippy limpo, 20 testes passando e
+  `tsc`/`build` limpos. Web: `tsc`/`build` limpos.
+- Testes novos:
+  - `ApiKeyStore`: só o hash no disco, nome único, chave certa e revogada;
+  - handlers da gestão: chave de pareamento errada não cria nada;
+  - JSON do protocolo;
+  - `parse_head` com cabeçalhos e corpo;
+  - conversão das mensagens: tools do cliente fora, imagem recusada;
+  - 5 de integração com `Server` real: `/v1/models` com agentes, 401 com espera, revogação na hora, persona do
+    agente mais o `system` do cliente, gasto no canal `api`, stream com `[DONE]` e `usage`, erros
+    404/400/405, e a página e o WebSocket no mesmo porto.
+- **Ponta a ponta** com o binário real no scratchpad e o modelo falso em Node:
+  - `warden-server api-keys create/list`;
+  - `curl` em `/v1/models` e em `/v1/chat/completions`, normal e em stream;
+  - o **SDK oficial da OpenAI em Python** (instalado num venv no scratchpad): modelos, resposta como agente,
+    stream, 404 e 401;
+  - chaves pelo WebSocket como a web faz: chave de pareamento errada recusada em 1 s, chave criada funcionando e
+    revogação de outra;
+  - revogar pelo CLI com o `serve` rodando: a mesma chave passou de 200 para 401.
+- **Não testado**: as telas da web e do desktop (rodada de testes, P80).
+
+**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, a Warden API nas telas), incluindo o CLI com
+recados e o Gemini real.
 
 ---
 

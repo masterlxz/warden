@@ -197,6 +197,15 @@ export interface HubDevice {
   lastSeenMs: number;
 }
 
+/** Mirrors `ApiKeyDto` (P12): one Warden API key, never the key or its hash. `shown` is its start. */
+export interface ApiKey {
+  id: string;
+  name: string;
+  shown: string;
+  createdAtMs: number;
+  lastUsedAtMs?: number;
+}
+
 /** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
 export interface HubSettingsUpdate {
   providers: ProviderEdit[];
@@ -298,6 +307,9 @@ export type ClientMessage =
   | { type: "saveSettings"; requestId: number; pairingKey: string; baseVersion: string; update: HubSettingsUpdate }
   /** Sessão 103 — the hub's paired devices; approving or revoking repeats the pairing key. */
   | { type: "listDevices"; requestId: number }
+  | { type: "listApiKeys"; requestId: number }
+  | { type: "createApiKey"; requestId: number; pairingKey: string; name: string }
+  | { type: "revokeApiKey"; requestId: number; pairingKey: string; id: string }
   | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
   /** P61 — the hub's vault sync; an action repeats the pairing key. */
   | { type: "requestSyncStatus"; requestId: number }
@@ -349,6 +361,9 @@ export type ServerMessage =
   /** `you` is this browser's own device id. */
   | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
   | { type: "deviceError"; requestId: number; message: string; authRejected: boolean }
+  | { type: "apiKeyList"; requestId: number; keys: ApiKey[] }
+  | { type: "apiKeyCreated"; requestId: number; key: string; keys: ApiKey[] }
+  | { type: "apiKeyError"; requestId: number; message: string; authRejected: boolean }
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
@@ -411,6 +426,8 @@ export function decode(text: string): ServerMessage {
     case "settings":
     case "settingsSaved":
     case "deviceList":
+    case "apiKeyList":
+    case "apiKeyCreated":
     case "syncStatus":
     case "approvalRequest":
     case "approvalCancelled":
@@ -419,6 +436,10 @@ export function decode(text: string): ServerMessage {
     case "deviceError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };
       return { type: "deviceError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
+    }
+    case "apiKeyError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "apiKeyError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
     }
     case "syncError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };

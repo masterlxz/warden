@@ -784,6 +784,12 @@ pub fn default_server_devices_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("devices.json"))
 }
 
+/// Where a hub keeps the Warden API's keys (P12) — only their hashes, never a key itself. Shared by
+/// the standalone hub and the desktop's embedded one, like `devices.json`.
+pub fn default_api_keys_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("api_keys.json"))
+}
+
 /// Where a hub keeps the TLS certificate it fetches with `tailscale cert` (P36) — shared by
 /// `warden-server serve --tailscale-cert` and the desktop's embedded hub.
 pub fn default_tls_dir() -> Option<PathBuf> {

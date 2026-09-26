@@ -42,6 +42,12 @@ enum Command {
         #[command(subcommand)]
         action: DevicesAction,
     },
+    /// The Warden API's keys (P12): what an OpenAI-compatible client presents as its bearer token
+    /// to `http(s)://<hub>/v1`. A running `serve` sees a change on the next request.
+    ApiKeys {
+        #[command(subcommand)]
+        action: ApiKeysAction,
+    },
     /// Prints a fresh random pairing key (64 hex chars) for `serve --auth-key` /
     /// WARDEN_SERVER_AUTH_KEY.
     GenKey,
@@ -97,6 +103,16 @@ enum DevicesAction {
     /// running `serve` closes its open connection within a few seconds. To also keep it from
     /// pairing again under a *new* id, rotate the pairing key (`--auth-key`) and restart.
     Revoke { device_id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum ApiKeysAction {
+    /// Every key: id, name, its first characters, when it was created and last used.
+    List,
+    /// A new key named NAME — printed once, never stored.
+    Create { name: String },
+    /// Removes a key; clients using it get 401 from the next request on.
+    Revoke { id: String },
 }
 
 /// Warden's server-side WebSocket endpoint (Fase 9/7.3): hosts a real `Orchestrator` (same
@@ -307,6 +323,37 @@ fn run_devices_command(action: DevicesAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn api_keys_path() -> anyhow::Result<PathBuf> {
+    warden_bootstrap::default_api_keys_path().context("could not determine the OS config directory for the API keys")
+}
+
+fn run_api_keys_command(action: ApiKeysAction) -> anyhow::Result<()> {
+    let store = warden_server::api_keys::ApiKeyStore::new(api_keys_path()?);
+    match action {
+        ApiKeysAction::List => {
+            let keys = store.list()?;
+            if keys.is_empty() {
+                println!("no API keys yet — create one with `warden-server api-keys create <name>`");
+            }
+            for key in keys {
+                let used = key.last_used_at_ms.map_or("never used".to_string(), |ms| format!("last used {ms}"));
+                println!("{}\t{}\t{}…\tcreated {}\t{used}", key.id, key.name, key.shown, key.created_at_ms);
+            }
+        }
+        ApiKeysAction::Create { name } => {
+            let created = store.create(&name)?;
+            println!("{}", created.key);
+            eprintln!("key '{}' created (id {}) — copy it now, it isn't shown again", created.info.name, created.info.id);
+            eprintln!("use it as the bearer token with base URL http(s)://<this hub>:<port>/v1 (model \"warden\" or \"warden/<agent>\")");
+        }
+        ApiKeysAction::Revoke { id } => {
+            anyhow::ensure!(store.revoke(&id)?, "no API key with id '{id}'");
+            println!("key '{id}' revoked");
+        }
+    }
+    Ok(())
+}
+
 async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let auth_key = std::env::var("WARDEN_SERVER_AUTH_KEY")
         .ok()
@@ -346,7 +393,8 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
         .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))))
-        .with_sync(runner, Some(AUTO_SYNC_INTERVAL));
+        .with_sync(runner, Some(AUTO_SYNC_INTERVAL))
+        .with_api(api_keys_path()?);
     if let Some(settings) = settings {
         server = server.with_settings(Arc::new(settings));
     }
@@ -374,6 +422,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         server = server.with_web_ui(Arc::new(EmbeddedWebUi));
     }
+    eprintln!("warden-server: Warden API (OpenAI-compatible) at {}/v1 — keys: `warden-server api-keys create <name>`", page_url.trim_end_matches('/'));
     server.serve().await
 }
 
@@ -398,6 +447,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => run_serve(args).await,
         Command::Devices { action } => run_devices_command(action),
+        Command::ApiKeys { action } => run_api_keys_command(action),
         Command::Sync(args) => run_sync_command(args).await,
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());

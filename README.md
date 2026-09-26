@@ -28,6 +28,9 @@ for the others.
   all) or through a plain git remote you already control.
 - **Skills** — reusable instructions the model loads on demand, stored as plain markdown in your vault;
   create them by hand, by describing them, or just by asking for one in a chat.
+- **Warden API** — the hub also speaks the OpenAI chat-completions format: point any OpenAI client
+  (a script, n8n, a chat app) at `http(s)://<hub>/v1` with a key created in the app, and it talks to
+  your agent, vault and tools included.
 - **Sub-agents, named personas, voice, generated documents** — delegate sub-tasks to scoped sub-agents,
   configure named agents with their own personality, talk by voice, and have the model produce real
   PDF/CSV/XLSX/Markdown files as deliverables.
@@ -83,6 +86,22 @@ cd extension && npm install && npm run build   # load dist/ as an unpacked exten
 # Run the mobile app
 cd mobile && flutter pub get && flutter run
 ```
+
+### Warden API (OpenAI-compatible)
+
+With a hub running (`warden-server serve`, or the desktop's embedded hub), create a key and use it as
+any OpenAI client's API key:
+
+```bash
+warden-server api-keys create n8n        # prints the key once; also in Settings (desktop and web)
+curl http://<hub>:7420/v1/chat/completions \
+  -H "Authorization: Bearer wdn_..." -H "Content-Type: application/json" \
+  -d '{"model": "warden", "messages": [{"role": "user", "content": "What did I write about the trip?"}]}'
+```
+
+`GET /v1/models` lists `warden` and one `warden/<agent>` per configured agent. Streaming (`"stream":
+true`) works; tools the client sends are ignored (the agent answers with its own), nothing is saved as
+a conversation, and the spend counts toward the `api` channel's limits.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

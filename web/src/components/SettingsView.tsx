@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { SettingsError, type LoadedSettings, type ServerConnection } from "../hub/connection";
+import ApiKeysSection from "./ApiKeysSection";
 import type {
   AgentSettings,
   Combo,
@@ -837,6 +838,9 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           </div>
         )}
       </div>
+
+      {/* P12 — saved on its own, not with the form above. */}
+      <ApiKeysSection conn={conn} />
     </div>
   );
 }

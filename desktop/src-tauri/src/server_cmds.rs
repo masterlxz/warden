@@ -313,6 +313,10 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     }
     // P61 — the web's Sync screen drives the desktop's own runner; the desktop already loops it.
     server = server.with_sync(state.sync_runner.clone(), None);
+    // The Warden API (P12) on the same port, with the keys the Settings screen manages.
+    if let Some(path) = warden_bootstrap::default_api_keys_path() {
+        server = server.with_api(path);
+    }
     let bound_addr = server.local_addr()?;
     let secure_url = tls.as_ref().and_then(|tls| tls.secure_url(bound_addr.port()));
     let tls_without_host = tls.is_some() && secure_url.is_none();

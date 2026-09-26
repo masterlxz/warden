@@ -33,6 +33,9 @@ use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOT
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
 use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
+use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyChange};
+use crate::api_keys::ApiKeyStore;
+use crate::openai_api::{self, ApiContext};
 use crate::web_ui::{self, Rewind, WebAssets};
 use warden_server_protocol::tls::DISCOVER_PATH;
 use warden_server_protocol::{ClientMessage, ServerMessage};
@@ -82,6 +85,8 @@ pub struct Server {
     /// Whether this server runs `sync`'s rounds on its own loop (the standalone hub), or only
     /// answers for a runner someone else loops (the desktop's embedded hub).
     sync_loop: Option<Duration>,
+    /// Where the Warden API's keys live (P12). `None`: no API on this hub.
+    api_keys: Option<Arc<PathBuf>>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -112,7 +117,15 @@ impl Server {
             settings: None,
             sync: None,
             sync_loop: None,
+            api_keys: None,
         })
+    }
+
+    /// Serves the Warden API (P12) on this same port: `/v1/models` and `/v1/chat/completions`,
+    /// OpenAI-compatible, for anyone holding a key from `api_keys_path` (see `api_keys.rs`).
+    pub fn with_api(mut self, api_keys_path: PathBuf) -> Self {
+        self.api_keys = Some(Arc::new(api_keys_path));
+        self
     }
 
     /// Makes this hub TLS-only (P36): `Hello` and everything after it only over `wss://`. The same
@@ -197,6 +210,7 @@ impl Server {
             settings: self.settings,
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync: self.sync,
+            api_keys: self.api_keys,
         };
         let _sync_loop = match (&ctx.sync, self.sync_loop) {
             (Some(runner), Some(every)) => Some(AbortOnDrop(tokio::spawn(sync_loop(runner.clone(), every, ctx.settings.clone(), ctx.orchestrator.clone())))),
@@ -242,6 +256,31 @@ struct ConnectionContext {
     /// One settings save at a time on this hub.
     settings_lock: Arc<tokio::sync::Mutex<()>>,
     sync: Option<Arc<SyncRunner>>,
+    api_keys: Option<Arc<PathBuf>>,
+}
+
+impl ConnectionContext {
+    fn api(&self) -> ApiContext {
+        ApiContext { orchestrator: self.orchestrator.clone(), settings: self.settings.clone(), keys_path: self.api_keys.clone() }
+    }
+}
+
+/// Off the reader loop: a wrong key waits a second under the settings lock.
+fn spawn_api_key_change(
+    api_keys: &Option<Arc<PathBuf>>,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth_key: &Arc<str>,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+    request_id: u64,
+    pairing_key: String,
+    change: ApiKeyChange,
+) {
+    let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
+    let (lock, auth_key, reply_tx) = (lock.clone(), auth_key.clone(), tx.clone());
+    tokio::spawn(async move {
+        let reply = handle_api_key_change(store.as_ref(), &lock, &auth_key, request_id, &pairing_key, change).await;
+        let _ = reply_tx.send(reply);
+    });
 }
 
 /// Stops a task when the server that spawned it stops serving.
@@ -285,11 +324,8 @@ async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTl
         let stream = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, tls.acceptor.accept(stream)).await??;
         return serve_web_or_ws(stream, peer, true, web_ui, ctx).await;
     }
-    if web_ui.is_none() {
-        return serve_plain_discover(stream, ctx).await;
-    }
-    // Plain bytes to a TLS hub with a web UI: a browser typing `http://` gets sent to `https://`,
-    // while a discovery probe (a WebSocket upgrade) still goes where it always did.
+    // Plain bytes to a TLS hub: a browser typing `http://` (or an API client, P12) gets sent to
+    // `https://`, while a discovery probe (a WebSocket upgrade) still goes where it always did.
     let mut stream = stream;
     let Some(head) = tokio::time::timeout(web_ui::HEAD_TIMEOUT, web_ui::read_request_head(&mut stream)).await?? else {
         return Ok(());
@@ -307,20 +343,22 @@ async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTl
 /// is answered as a page request and the connection ends there.
 /// `secure` is whether this connection may carry a new API key (see `settings::is_secure`).
 async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, secure: bool, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
-    let Some(assets) = web_ui else {
-        let ws = tokio_tungstenite::accept_async(stream).await?;
-        return handle_connection(ws, peer, secure, ctx).await;
-    };
     let Some(head) = tokio::time::timeout(web_ui::HEAD_TIMEOUT, web_ui::read_request_head(&mut stream)).await?? else {
         return Ok(());
     };
     if head.is_websocket_upgrade {
         let ws = tokio_tungstenite::accept_async(Rewind::new(head.raw, stream)).await?;
-        handle_connection(ws, peer, secure, ctx).await
-    } else {
-        web_ui::serve(&mut stream, &head, assets.as_ref()).await?;
-        Ok(())
+        return handle_connection(ws, peer, secure, ctx).await;
     }
+    if head.path.starts_with(openai_api::API_PREFIX) {
+        openai_api::serve(&mut stream, &head, &ctx.api()).await?;
+        return Ok(());
+    }
+    match web_ui {
+        Some(assets) => web_ui::serve(&mut stream, &head, assets.as_ref()).await?,
+        None => web_ui::not_found(&mut stream, head.method == "HEAD").await?,
+    }
+    Ok(())
 }
 
 /// A plain `ws://` connection to a TLS-only hub: upgraded only on `DISCOVER_PATH` (refused with
@@ -369,6 +407,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         settings,
         settings_lock,
         sync,
+        api_keys,
     } = ctx;
     let (mut sink, mut stream) = ws.split();
 
@@ -688,6 +727,16 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let reply = handle_set_device_status(&store, &lock, &auth_key, &you, request_id, &pairing_key, &target, action).await;
                         let _ = reply_tx.send(reply);
                     });
+                }
+                Ok(ClientMessage::ListApiKeys { request_id }) => {
+                    let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
+                    let _ = tx.send(handle_list_api_keys(store.as_ref(), request_id));
+                }
+                Ok(ClientMessage::CreateApiKey { request_id, pairing_key, name }) => {
+                    spawn_api_key_change(&api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Create { name });
+                }
+                Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
+                    spawn_api_key_change(&api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
                 }
                 Ok(ClientMessage::RequestSyncStatus { request_id }) => {
                     // Computes the pending diff over the whole vault: off the reader loop.

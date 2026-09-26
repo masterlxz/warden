@@ -64,6 +64,17 @@ pub(crate) struct RequestHead {
     pub method: String,
     pub path: String,
     pub is_websocket_upgrade: bool,
+    /// Every header, names as sent (the Warden API reads `Authorization`/`Content-Length`, P12).
+    pub headers: Vec<(String, String)>,
+    /// Where the body starts in `raw` — whatever of it arrived with the head.
+    pub body_start: usize,
+}
+
+impl RequestHead {
+    /// The first header named `name` (any case).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
 }
 
 /// Reads until the blank line ending the head. `Ok(None)` = the peer closed, sent garbage, or sent
@@ -78,7 +89,14 @@ pub(crate) async fn read_request_head<S: AsyncRead + Unpin>(stream: &mut S) -> i
         }
         raw.extend_from_slice(&chunk[..n]);
         if let Some(parsed) = parse_head(&raw) {
-            return Ok(parsed.map(|(method, path, is_websocket_upgrade)| RequestHead { raw, method, path, is_websocket_upgrade }));
+            return Ok(parsed.map(|ParsedHead { method, path, is_websocket_upgrade, headers, body_start }| RequestHead {
+                raw,
+                method,
+                path,
+                is_websocket_upgrade,
+                headers,
+                body_start,
+            }));
         }
         if raw.len() > MAX_HEAD_BYTES {
             return Ok(None);
@@ -86,23 +104,29 @@ pub(crate) async fn read_request_head<S: AsyncRead + Unpin>(stream: &mut S) -> i
     }
 }
 
-/// `None` = incomplete, read more. `Some(None)` = not HTTP. `Some(Some(..))` = method, path, and
-/// whether it asks for a WebSocket upgrade.
-fn parse_head(raw: &[u8]) -> Option<Option<(String, String, bool)>> {
+struct ParsedHead {
+    method: String,
+    path: String,
+    is_websocket_upgrade: bool,
+    headers: Vec<(String, String)>,
+    body_start: usize,
+}
+
+/// `None` = incomplete, read more. `Some(None)` = not HTTP.
+fn parse_head(raw: &[u8]) -> Option<Option<ParsedHead>> {
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut request = httparse::Request::new(&mut headers);
     match request.parse(raw) {
         Ok(httparse::Status::Partial) => None,
         Err(_) => Some(None),
-        Ok(httparse::Status::Complete(_)) => {
+        Ok(httparse::Status::Complete(body_start)) => {
             let (Some(method), Some(path)) = (request.method, request.path) else {
                 return Some(None);
             };
-            let upgrade = request
-                .headers
-                .iter()
-                .any(|h| h.name.eq_ignore_ascii_case("upgrade") && String::from_utf8_lossy(h.value).to_ascii_lowercase().contains("websocket"));
-            Some(Some((method.to_string(), path.to_string(), upgrade)))
+            let headers: Vec<(String, String)> =
+                request.headers.iter().map(|h| (h.name.to_string(), String::from_utf8_lossy(h.value).into_owned())).collect();
+            let is_websocket_upgrade = headers.iter().any(|(name, value)| name.eq_ignore_ascii_case("upgrade") && value.to_ascii_lowercase().contains("websocket"));
+            Some(Some(ParsedHead { method: method.to_string(), path: path.to_string(), is_websocket_upgrade, headers, body_start }))
         }
     }
 }
@@ -146,7 +170,7 @@ pub(crate) async fn redirect_to_https<S: AsyncWrite + Unpin>(stream: &mut S, hea
     }
 }
 
-async fn not_found<S: AsyncWrite + Unpin>(stream: &mut S, head_only: bool) -> io::Result<()> {
+pub(crate) async fn not_found<S: AsyncWrite + Unpin>(stream: &mut S, head_only: bool) -> io::Result<()> {
     write_response(stream, "404 Not Found", &[], "text/plain; charset=utf-8", b"not found", head_only).await
 }
 
@@ -193,7 +217,7 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-async fn write_response<S: AsyncWrite + Unpin>(stream: &mut S, status: &str, extra: &[(&str, &str)], content_type: &str, body: &[u8], head_only: bool) -> io::Result<()> {
+pub(crate) async fn write_response<S: AsyncWrite + Unpin>(stream: &mut S, status: &str, extra: &[(&str, &str)], content_type: &str, body: &[u8], head_only: bool) -> io::Result<()> {
     let mut head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n",
         body.len()
@@ -278,11 +302,17 @@ mod tests {
 
     #[test]
     fn parse_head_waits_for_the_blank_line_and_spots_upgrades() {
+        let summary = |raw: &[u8]| parse_head(raw).map(|p| p.map(|p| (p.method, p.path, p.is_websocket_upgrade)));
         assert!(parse_head(b"GET / HTTP/1.1\r\nHost: x\r\n").is_none());
-        assert_eq!(parse_head(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n"), Some(Some(("GET".into(), "/a".into(), false))));
+        assert_eq!(summary(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n"), Some(Some(("GET".into(), "/a".into(), false))));
         let upgrade = b"GET / HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: WebSocket\r\n\r\n";
-        assert_eq!(parse_head(upgrade), Some(Some(("GET".into(), "/".into(), true))));
-        assert_eq!(parse_head(b"\x16\x03\x01garbage\r\n\r\n"), Some(None));
+        assert_eq!(summary(upgrade), Some(Some(("GET".into(), "/".into(), true))));
+        assert_eq!(summary(b"\x16\x03\x01garbage\r\n\r\n"), Some(None));
+        // The API (P12) reads headers and where the body starts.
+        let post = b"POST /v1/x HTTP/1.1\r\nContent-Length: 2\r\nAuthorization: Bearer k\r\n\r\n{}";
+        let parsed = parse_head(post).unwrap().unwrap();
+        assert_eq!(&post[parsed.body_start..], b"{}");
+        assert!(parsed.headers.iter().any(|(n, v)| n == "Authorization" && v == "Bearer k"));
     }
 
     #[tokio::test]
