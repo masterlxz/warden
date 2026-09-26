@@ -61,7 +61,9 @@
     depois fez o push;
   - com o `serve` subindo (a rodada inicial dele) e três `sync now` disparados juntos, não houve nenhum erro: um
     push, histórico linear no remoto e nada pendente no fim.
-- **P88** agora só tem os testes reais (item 4), o Warden Cloud (item 5) e o mobile aceitar IP.
+- **P88** agora só tem os testes reais (item 4) e o Warden Cloud (item 5). O "mobile aceitar IP" que eu tinha
+  registrado não existia: a tela Sync do mobile tem o campo desde a Fase 4.4. Só o texto de ajuda dele mudou,
+  para citar o hub num VPS.
 
 **Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, incluindo a seção nova da aba Sync) e o Gemini
 real; ou, em código, o P87.

@@ -317,8 +317,8 @@ class _SyncScreenState extends State<SyncScreen> {
                       controller: _joinHostController,
                       enabled: !_joining,
                       decoration: const InputDecoration(
-                        labelText: 'Host override (optional)',
-                        hintText: 'e.g. 10.0.2.2 — only needed when LAN discovery can\'t reach the other device',
+                        labelText: 'Other device\'s IP (optional)',
+                        hintText: 'e.g. a Tailscale IP for a hub on a VPS — without it, only the local network is searched',
                       ),
                     ),
                     const SizedBox(height: 12),
