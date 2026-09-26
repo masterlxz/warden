@@ -16,6 +16,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
+use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
 
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
@@ -25,6 +26,7 @@ use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
 use crate::web_ui::{self, Rewind, WebAssets};
 use warden_server_protocol::tls::DISCOVER_PATH;
@@ -64,7 +66,7 @@ pub struct Server {
     listener: TcpListener,
     auth_key: Arc<str>,
     server_name: Arc<str>,
-    orchestrator: Arc<Orchestrator>,
+    orchestrator: SharedOrchestrator,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
@@ -72,6 +74,7 @@ pub struct Server {
     tls: Option<HubTls>,
     web_ui: Option<Arc<dyn WebAssets>>,
     transcriber: Option<Arc<dyn Transcriber>>,
+    settings: Option<Arc<dyn SettingsHost>>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -82,7 +85,7 @@ impl Server {
         addr: SocketAddr,
         auth_key: impl Into<Arc<str>>,
         server_name: impl Into<Arc<str>>,
-        orchestrator: Arc<Orchestrator>,
+        orchestrator: impl Into<SharedOrchestrator>,
         conversations_dir: PathBuf,
         devices_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -91,7 +94,7 @@ impl Server {
             listener,
             auth_key: auth_key.into(),
             server_name: server_name.into(),
-            orchestrator,
+            orchestrator: orchestrator.into(),
             conversations_dir: Arc::new(conversations_dir),
             devices: Arc::new(Mutex::new(HashMap::new())),
             devices_path: Arc::new(devices_path),
@@ -99,6 +102,7 @@ impl Server {
             tls: None,
             web_ui: None,
             transcriber: None,
+            settings: None,
         })
     }
 
@@ -122,6 +126,13 @@ impl Server {
     /// gets a `TranscriptionError`.
     pub fn with_transcriber(mut self, transcriber: Arc<dyn Transcriber>) -> Self {
         self.transcriber = Some(transcriber);
+        self
+    }
+
+    /// Answers `RequestSettings`/`SaveSettings` (P78) through `host`, reloading this hub's
+    /// orchestrator on a save. Without it, both get a `SettingsError`.
+    pub fn with_settings(mut self, host: Arc<dyn SettingsHost>) -> Self {
+        self.settings = Some(host);
         self
     }
 
@@ -164,6 +175,8 @@ impl Server {
             revocation_check_interval: self.revocation_check_interval,
             secure_url,
             transcriber: self.transcriber,
+            settings: self.settings,
+            settings_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let tls = self.tls;
         let web_ui = self.web_ui;
@@ -193,7 +206,7 @@ impl Server {
 struct ConnectionContext {
     auth_key: Arc<str>,
     server_name: Arc<str>,
-    orchestrator: Arc<Orchestrator>,
+    orchestrator: SharedOrchestrator,
     conversations_dir: Arc<PathBuf>,
     devices: DeviceRegistry,
     devices_path: Arc<PathBuf>,
@@ -201,6 +214,9 @@ struct ConnectionContext {
     /// `DiscoverAck.secure_url` — set only on a TLS hub that knows its public name.
     secure_url: Option<Arc<str>>,
     transcriber: Option<Arc<dyn Transcriber>>,
+    settings: Option<Arc<dyn SettingsHost>>,
+    /// One settings save at a time on this hub.
+    settings_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Picks the transport for a fresh TCP connection. Without TLS, everything is plain `ws://` as
@@ -209,14 +225,15 @@ struct ConnectionContext {
 /// request that isn't a WebSocket upgrade gets a page instead (see `serve_web_or_ws`).
 async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTls>, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
     let Some(tls) = tls else {
-        return serve_web_or_ws(stream, peer, web_ui, ctx).await;
+        let secure = is_secure(false, peer.ip());
+        return serve_web_or_ws(stream, peer, secure, web_ui, ctx).await;
     };
 
     let mut first = [0u8; 1];
     let read = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, stream.peek(&mut first)).await??;
     if read == 1 && first[0] == TLS_HANDSHAKE_RECORD {
         let stream = tokio::time::timeout(TLS_ACCEPT_TIMEOUT, tls.acceptor.accept(stream)).await??;
-        return serve_web_or_ws(stream, peer, web_ui, ctx).await;
+        return serve_web_or_ws(stream, peer, true, web_ui, ctx).await;
     }
     if web_ui.is_none() {
         return serve_plain_discover(stream, ctx).await;
@@ -238,17 +255,18 @@ async fn route_connection(stream: TcpStream, peer: SocketAddr, tls: Option<HubTl
 /// The full protocol over `stream` — preceded, when this hub has a web UI, by a look at the request
 /// head: a WebSocket upgrade continues as before (its bytes handed back via `Rewind`), anything else
 /// is answered as a page request and the connection ends there.
-async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
+/// `secure` is whether this connection may carry a new API key (see `settings::is_secure`).
+async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, secure: bool, web_ui: Option<Arc<dyn WebAssets>>, ctx: ConnectionContext) -> anyhow::Result<()> {
     let Some(assets) = web_ui else {
         let ws = tokio_tungstenite::accept_async(stream).await?;
-        return handle_connection(ws, peer, ctx).await;
+        return handle_connection(ws, peer, secure, ctx).await;
     };
     let Some(head) = tokio::time::timeout(web_ui::HEAD_TIMEOUT, web_ui::read_request_head(&mut stream)).await?? else {
         return Ok(());
     };
     if head.is_websocket_upgrade {
         let ws = tokio_tungstenite::accept_async(Rewind::new(head.raw, stream)).await?;
-        handle_connection(ws, peer, ctx).await
+        handle_connection(ws, peer, secure, ctx).await
     } else {
         web_ui::serve(&mut stream, &head, assets.as_ref()).await?;
         Ok(())
@@ -286,18 +304,20 @@ fn discover_ack(ctx: &ConnectionContext) -> ServerMessage {
     ServerMessage::DiscoverAck { server_name: ctx.server_name.to_string(), secure_url: ctx.secure_url.as_deref().map(str::to_string) }
 }
 
-async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAddr, ctx: ConnectionContext) -> anyhow::Result<()> {
+async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAddr, secure: bool, ctx: ConnectionContext) -> anyhow::Result<()> {
     let discover_reply = discover_ack(&ctx);
     let ConnectionContext {
         auth_key,
         server_name,
-        orchestrator,
+        orchestrator: shared_orchestrator,
         conversations_dir,
         devices,
         devices_path,
         revocation_check_interval,
         secure_url: _,
         transcriber,
+        settings,
+        settings_lock,
     } = ctx;
     let (mut sink, mut stream) = ws.split();
 
@@ -405,37 +425,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     // Orchestrator is Arc-backed) with a RemoteTool proxy per advertised spec, so the model can
     // invoke a capability that only exists on *this* device (mobile's file access, to start). A
     // client with nothing to advertise (tools empty) just reuses the shared, server-wide instance.
+    // Name collisions are handled in `ConnectionOrchestrator::with_device_tools` (P42).
     //
-    // P42: a client's advertised name can collide with the shared Orchestrator's own tools (vault,
-    // shell, SSH, MCP servers) — the original real case was the phone's first `list_files`/
-    // `read_file` colliding with the vault's own tools of the same name, which broke the next model
-    // call with a provider-side "duplicate function" error rather than anything clear from Warden.
-    // Deduped the same way `warden-bootstrap::register_mcp_tools` dedupes an MCP server's tools
-    // (P46) — only renamed on a real collision, namespaced by this device's id, via the shared
-    // `warden_core::tool::dedupe_tool_name`/`rename_tool`. `RemoteTool::call` sends the request
-    // using its own internal spec, never what this wrapper reports, so the client is never told
-    // about the rename — it keeps answering to the name it always advertised.
-    let orchestrator: Arc<Orchestrator> = if tools.is_empty() {
-        orchestrator
-    } else {
-        let mut per_connection = (*orchestrator).clone();
-        for spec in tools {
-            let original = spec.name.clone();
-            let existing: Vec<String> = per_connection.tools().iter().map(|t| t.spec().name).collect();
-            let resolved = warden_core::tool::dedupe_tool_name(&existing, &device_id, &original);
-            let remote = Arc::new(RemoteTool::new(spec, tool_channel.clone(), REMOTE_TOOL_TIMEOUT));
-            if resolved == original {
-                per_connection.register_tool(remote);
-            } else {
-                eprintln!(
-                    "warden-server: {device_id}'s tool '{original}' collides with an already-registered tool — \
-                     renamed to '{resolved}'\n"
-                );
-                per_connection.register_tool(warden_core::tool::rename_tool(remote, resolved));
-            }
-        }
-        Arc::new(per_connection)
-    };
+    // P78: the hub's orchestrator can be swapped by a settings save, so this is rebuilt whenever the
+    // shared one changes (see `ConnectionOrchestrator`).
+    let mut orchestrator = ConnectionOrchestrator::new(shared_orchestrator.clone(), tools, tool_channel.clone(), device_id.clone());
 
     // P36: `revoke` must also end a connection that's already open — it happens in another
     // process (`warden-server devices revoke`, the desktop's Workspace screen), so the only signal
@@ -471,7 +465,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         }
                     };
                     // Spending limits (P4) are counted per connected device.
-                    let orchestrator = orchestrator.with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
+                    let orchestrator = orchestrator.current().with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
                     let conversations_dir = conversations_dir.clone();
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
@@ -539,7 +533,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(message @ (ClientMessage::ListSkills { .. } | ClientMessage::SaveSkill { .. } | ClientMessage::DeleteSkill { .. })) => {
                     // Short local file I/O, answered inline (no spawn) — P72.
-                    let store = SkillStore::new(orchestrator.vault().clone());
+                    let store = SkillStore::new(orchestrator.current().vault().clone());
                     if let Some(reply) = handle_skill_request(&store, message) {
                         let _ = tx.send(reply);
                     }
@@ -567,7 +561,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 ) => {
                     // P78 — listing and searching walk the whole vault, so this runs on the
                     // blocking pool instead of holding up this connection's reader loop.
-                    let vault = orchestrator.vault().clone();
+                    let vault = orchestrator.current().vault().clone();
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Some(reply) = handle_vault_request(&vault, message) {
@@ -579,17 +573,33 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     // P78 — reads every device's conversations, so off the reader loop.
                     let root = conversations_root.clone();
                     let pairing = PairingStore::new(devices_path.as_ref().clone());
-                    let guard = orchestrator.spend_guard().cloned();
+                    let guard = orchestrator.current().spend_guard().cloned();
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let _ = reply_tx.send(handle_usage_request(&root, &pairing, guard.as_deref(), request_id, tz_offset_minutes));
                     });
                 }
                 Ok(ClientMessage::ExtendLimit { request_id, limit_id }) => {
-                    let guard = orchestrator.spend_guard().cloned();
+                    let guard = orchestrator.current().spend_guard().cloned();
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let _ = reply_tx.send(handle_extend_limit(guard.as_deref(), request_id, &limit_id));
+                    });
+                }
+                Ok(ClientMessage::RequestSettings { request_id }) => {
+                    let access = SettingsAccess { host: settings.as_deref(), shared: &shared_orchestrator, lock: &settings_lock, auth_key: &auth_key, secure };
+                    let _ = tx.send(handle_request_settings(&access, request_id));
+                }
+                Ok(ClientMessage::SaveSettings { request_id, pairing_key, base_version, update }) => {
+                    // P78 — rebuilding the orchestrator starts MCP servers and can take seconds.
+                    let settings = settings.clone();
+                    let shared = shared_orchestrator.clone();
+                    let lock = settings_lock.clone();
+                    let auth_key = auth_key.clone();
+                    let reply_tx = tx.clone();
+                    tokio::spawn(async move {
+                        let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure };
+                        let _ = reply_tx.send(handle_save_settings(&access, request_id, &pairing_key, &base_version, update).await);
                     });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
@@ -626,6 +636,68 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     writer_task.await.ok();
 
     Ok(())
+}
+
+/// One connection's view of the hub's orchestrator: the shared one, plus a `RemoteTool` for every
+/// tool this device advertised in `Hello` (Fase 7.4). Built again only when a settings save has
+/// swapped the shared orchestrator (P78), so a turn costs a pointer comparison, not a rebuild.
+struct ConnectionOrchestrator {
+    shared: SharedOrchestrator,
+    tools: Vec<ToolSpec>,
+    channel: RemoteToolChannel,
+    device_id: String,
+    /// The shared orchestrator this was built from, and what was built.
+    built: Option<(Arc<Orchestrator>, Arc<Orchestrator>)>,
+}
+
+impl ConnectionOrchestrator {
+    fn new(shared: SharedOrchestrator, tools: Vec<ToolSpec>, channel: RemoteToolChannel, device_id: String) -> Self {
+        Self { shared, tools, channel, device_id, built: None }
+    }
+
+    fn current(&mut self) -> Arc<Orchestrator> {
+        let base = self.shared.current();
+        if self.tools.is_empty() {
+            return base;
+        }
+        if let Some((from, built)) = &self.built {
+            if Arc::ptr_eq(from, &base) {
+                return built.clone();
+            }
+        }
+        let built = Arc::new(self.with_device_tools(&base));
+        self.built = Some((base, built.clone()));
+        built
+    }
+
+    // P42: a client's advertised name can collide with the shared Orchestrator's own tools (vault,
+    // shell, SSH, MCP servers) — the original real case was the phone's first `list_files`/
+    // `read_file` colliding with the vault's own tools of the same name, which broke the next model
+    // call with a provider-side "duplicate function" error rather than anything clear from Warden.
+    // Deduped the same way `warden-bootstrap::register_mcp_tools` dedupes an MCP server's tools
+    // (P46) — only renamed on a real collision, namespaced by this device's id, via the shared
+    // `warden_core::tool::dedupe_tool_name`/`rename_tool`. `RemoteTool::call` sends the request
+    // using its own internal spec, never what this wrapper reports, so the client is never told
+    // about the rename — it keeps answering to the name it always advertised.
+    fn with_device_tools(&self, base: &Orchestrator) -> Orchestrator {
+        let mut per_connection = base.clone();
+        for spec in &self.tools {
+            let original = spec.name.clone();
+            let existing: Vec<String> = per_connection.tools().iter().map(|t| t.spec().name).collect();
+            let resolved = warden_core::tool::dedupe_tool_name(&existing, &self.device_id, &original);
+            let remote = Arc::new(RemoteTool::new(spec.clone(), self.channel.clone(), REMOTE_TOOL_TIMEOUT));
+            if resolved == original {
+                per_connection.register_tool(remote);
+            } else {
+                eprintln!(
+                    "warden-server: {}'s tool '{original}' collides with an already-registered tool — renamed to '{resolved}'\n",
+                    self.device_id
+                );
+                per_connection.register_tool(warden_core::tool::rename_tool(remote, resolved));
+            }
+        }
+        per_connection
+    }
 }
 
 /// Fase 9.3 gate on `CallDeviceTool`: the calling device must be `Approved` in the persistent

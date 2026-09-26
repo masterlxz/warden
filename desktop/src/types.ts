@@ -382,4 +382,7 @@ export interface Settings {
   limitsDisabledByEnv: boolean;
   /** What each model charges — nothing is built in, so a model with no entry has no `$` figure. */
   prices: PriceEntry[];
+  /** The config file's version when this was read, sent back on save: the hub's web settings (P78)
+   * write the same file, and a save over their change is refused instead of undoing it. */
+  version: string;
 }

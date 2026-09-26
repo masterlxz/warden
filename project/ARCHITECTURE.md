@@ -1732,3 +1732,44 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   arredondada e 2 px de espaço; tooltip por coluna no hover/foco e tabela alternativa. Nos medidores, o
   preenchimento muda de destaque para aviso (`#fab219`, só como preenchimento) e depois para perigo, sempre com
   ícone e rótulo.
+
+## Configurações na web, com orquestrador trocável no hub (P78, Sessão 101)
+
+- **Decisões do usuário**: a web edita **provedores, agentes, chaves Tavily/Whisper, limites e preços**. Shell,
+  servidores MCP, hosts SSH, armazenamento e caminhos ficam **fora**, porque dariam a qualquer device pareado um
+  jeito de executar comandos na máquina do hub. **Ler é livre para qualquer device; salvar pede a chave de
+  pareamento de novo**, então um token de device vazado sozinho não troca chaves de API. **Chave nova só por TLS ou
+  pela própria máquina** (`settings::is_secure`: conexão TLS ou peer loopback, incluindo `::ffff:127.0.0.1`).
+  Remover uma chave e o resto das configurações funcionam em http:// de LAN, porque nenhum segredo trafega.
+- **Segredos nunca voltam ao navegador**: a tela recebe `SecretStatusDto { set, hint }` (os 4 últimos caracteres,
+  só a partir de 16) e manda `SecretEdit` (`keep`/`set`/`clear`). Um provedor renomeado acha a chave salva pelo
+  `originalId`. Agentes também levam `originalId`, para que renomear ou apagar um agente atualize os hosts SSH que
+  a tela não mostra (apagar segue o `remove_agent_from`: um host sem agente é desligado, nunca aberto a todos).
+- **Uma validação, dois clientes**: `warden_bootstrap::settings` tem `check_providers`/`check_agents`/
+  `check_active_provider`/`limits_into_config`/`prices_into_config` e o `apply_hub_settings`. O `save_settings`
+  do desktop passou a usar as mesmas funções, e os payloads de limite/preço do `spend_cmds.rs` foram trocados
+  pelos DTOs do protocolo (`LimitSettingsDto`/`PriceSettingsDto`).
+- **Versão por conteúdo do `config.toml`** (`config_version`, o mesmo SHA-256 das notas do vault), nos dois
+  sentidos: a web recusa salvar sobre uma mudança do desktop (ou de alguém editando à mão), e o `save_settings`
+  do desktop agora também recusa salvar um formulário aberto antes de uma mudança da web. Antes, ele regravava
+  as chaves antigas.
+- **Salvar é tudo ou nada** (`handle_save_settings`, serializado por um `Mutex` do hub): chave de pareamento
+  (comparação sem atalho e 1 s de espera se errar) → segredo em conexão segura → versão → validação → grava o
+  arquivo (temporário + rename) → o host monta um orquestrador novo. **Se o `bootstrap` falhar, o arquivo antigo
+  volta** e o hub segue como estava. Com sucesso, o novo orquestrador substitui o antigo.
+- **Orquestrador trocável** (`SharedOrchestrator`, um `RwLock<Arc<Orchestrator>>`): cada turno pega o atual uma
+  vez e fica com ele até o fim, então um turno em andamento não é afetado. As `RemoteTool`s de um device que
+  anunciou tools (Fase 7.4) ficam no `ConnectionOrchestrator`, que remonta a cópia da conexão só quando o
+  compartilhado muda (`Arc::ptr_eq`). `Server::bind` aceita `impl Into<SharedOrchestrator>`, então quem passava
+  `Arc<Orchestrator>` não mudou.
+- **`SettingsHost`** (opt-in via `Server::with_settings`) diz onde está o config e como remontar o orquestrador do
+  jeito que aquele processo subiu. O `warden-server` repete os mesmos `--config`/`--provider`/`--model`/
+  `--vault-path` e avisa na tela quando uma flag vence o arquivo. O hub embutido do desktop usa o `bootstrap` do
+  desktop e, no `installed`, entrega o orquestrador novo também ao chat do desktop (`AppState.orchestrator` virou
+  `Arc<Mutex<…>>` para isso).
+- **Bug antigo corrigido junto**: salvar as Settings do desktop (ou conectar/desconectar OAuth de MCP) recriava o
+  orquestrador do chat, mas o hub embutido continuava com o que tinha subido até ser reiniciado. Agora
+  `reload_orchestrator` troca os dois.
+- **UI** (em português, como o resto da web): um rascunho só, com "Salvar" e "Descartar" num rodapé fixo. O
+  "Salvar" abre o campo da chave de pareamento, que não fica guardada. Um conflito oferece "Recarregar". O
+  "customizar" limites parte dos `defaultLimits` que o hub manda, então os números continuam num lugar só.

@@ -3,6 +3,7 @@ import "./App.css";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import LoginView from "./components/LoginView";
+import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
@@ -23,7 +24,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills";
+type View = "chat" | "vault" | "usage" | "skills" | "settings";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -350,6 +351,15 @@ export default function App() {
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
+          <button
+            type="button"
+            className={view === "settings" ? "tab tab--active" : "tab"}
+            onClick={() => setView("settings")}
+            aria-label="Configurações"
+            title="Configurações"
+          >
+            ⚙
+          </button>
         </nav>
         <button type="button" className="link-button" onClick={handleLogout}>
           Sair
@@ -394,6 +404,8 @@ export default function App() {
           <VaultView conn={conn} />
         ) : view === "usage" ? (
           <UsageView conn={conn} />
+        ) : view === "settings" ? (
+          <SettingsView conn={conn} />
         ) : (
           <SkillsView conn={conn} />
         )}

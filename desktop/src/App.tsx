@@ -31,6 +31,7 @@ const emptySettings: Settings = {
   defaultLimits: [],
   limitsDisabledByEnv: false,
   prices: [],
+  version: "",
 };
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),

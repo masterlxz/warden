@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use warden_core::model::{Attachment, Usage};
 use warden_core::skill::Skill;
-use warden_core::spend::{LimitStatus, SpendBreakdown, SpendBucket, SpendGuard};
+use warden_core::spend::{LimitStatus, Price, SpendBreakdown, SpendBucket, SpendGuard};
 use warden_core::tool::ToolSpec;
 
 /// A skill (P16) on the wire — what the browser extension's Skills screen lists and edits over
@@ -200,6 +200,157 @@ pub struct UsageReportDto {
     pub ledger_error: Option<String>,
 }
 
+/// Whether a secret (an API key) is saved, without the secret itself: the hub never sends one back
+/// (P78). `hint` is its last four characters, only for a secret long enough that they give nothing
+/// away, so the person can tell which key is there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretStatusDto {
+    pub set: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// What a settings save does to one secret. `Keep` is what an untouched field sends, since the
+/// client never had the value to send back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", content = "value", rename_all = "camelCase")]
+pub enum SecretEdit {
+    Keep,
+    Set(String),
+    Clear,
+}
+
+impl SecretEdit {
+    pub fn is_set(&self) -> bool {
+        matches!(self, SecretEdit::Set(_))
+    }
+}
+
+/// One model provider as the settings screen shows it. `kind` is the config's own spelling
+/// (`gemini`, `openai`, `anthropic`, `openai_compatible`); empty strings mean "not set".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSettingsDto {
+    pub id: String,
+    pub kind: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: SecretStatusDto,
+}
+
+/// One model provider as a save sends it. `original_id` is the id it had when the screen loaded
+/// (absent for a new one): that is how `SecretEdit::Keep` finds the saved key of a renamed provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderEditDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
+    pub id: String,
+    pub kind: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: SecretEdit,
+}
+
+/// One agent, both ways. `original_id` only matters in a save (see `ProviderEditDto`): it carries a
+/// rename into the SSH hosts that name the agent, which the web screen doesn't show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSettingsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
+    pub id: String,
+    pub persona: String,
+    /// Empty for "no default model".
+    pub provider_id: String,
+    pub can_delegate_to_agents: bool,
+    pub can_manage_agents: bool,
+    /// `None` keeps every tool.
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+/// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`
+/// or `user`; `target` is empty for a global limit; `warn_at`/`extend_step` are fractions (0–1),
+/// `None` meaning the default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitSettingsDto {
+    pub id: String,
+    pub scope: String,
+    pub target: String,
+    pub window_hours: u32,
+    pub max_tokens: Option<u64>,
+    pub max_cost_usd: Option<f64>,
+    pub warn_at: Option<f64>,
+    pub extend_step: Option<f64>,
+}
+
+/// One `[[prices]]` entry: dollars per million tokens for the model with exactly this id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceSettingsDto {
+    pub model: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+}
+
+impl From<Price> for PriceSettingsDto {
+    fn from(p: Price) -> Self {
+        Self { model: p.model, input_per_mtok: p.input_per_mtok, output_per_mtok: p.output_per_mtok }
+    }
+}
+
+/// The part of the hub's `config.toml` the web settings screen shows (P78): providers, agents, the
+/// Tavily/Whisper keys, spending limits and prices. Shell, MCP servers, SSH hosts, storage and paths
+/// stay off it on purpose, since they would let a paired device run commands on the hub's machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubSettingsDto {
+    pub providers: Vec<ProviderSettingsDto>,
+    /// Empty when none is picked.
+    pub active_provider: String,
+    pub agents: Vec<AgentSettingsDto>,
+    pub tavily_key: SecretStatusDto,
+    pub whisper_key: SecretStatusDto,
+    /// `None` means no `[[limits]]` in the file, so the built-in `default_limits` apply.
+    pub limits: Option<Vec<LimitSettingsDto>>,
+    pub default_limits: Vec<LimitSettingsDto>,
+    /// `WARDEN_SPEND_LIMITS=off` in the hub's environment beats whatever the file says.
+    pub limits_disabled_by_env: bool,
+    pub prices: Vec<PriceSettingsDto>,
+    /// Provider kind → the model used when a provider leaves `model` empty.
+    pub default_models: std::collections::BTreeMap<String, String>,
+    /// Every tool the hub's orchestrator has, for an agent's allowed-tools list.
+    pub tool_names: Vec<String>,
+    /// Things outside the file that change what it means on this hub (a `--provider` flag, a
+    /// providers list still empty, ...), one sentence each.
+    pub notes: Vec<String>,
+}
+
+/// A settings save: the whole editable part, replacing what the file has for it. Everything the
+/// screen doesn't show is kept as it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubSettingsUpdate {
+    pub providers: Vec<ProviderEditDto>,
+    pub active_provider: String,
+    pub agents: Vec<AgentSettingsDto>,
+    pub tavily_key: SecretEdit,
+    pub whisper_key: SecretEdit,
+    /// `None` goes back to the built-in limits, `Some(vec![])` turns every limit off.
+    pub limits: Option<Vec<LimitSettingsDto>>,
+    pub prices: Vec<PriceSettingsDto>,
+}
+
+impl HubSettingsUpdate {
+    /// Whether this save carries a new secret, which the hub only accepts over an encrypted or local
+    /// connection.
+    pub fn sets_a_secret(&self) -> bool {
+        self.tavily_key.is_set() || self.whisper_key.is_set() || self.providers.iter().any(|p| p.api_key.is_set())
+    }
+}
+
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -363,6 +514,20 @@ pub enum ClientMessage {
     ExtendLimit {
         request_id: u64,
         limit_id: String,
+    },
+    /// The hub's editable settings (P78), answered by `Settings`.
+    RequestSettings {
+        request_id: u64,
+    },
+    /// Replaces the editable settings and reloads the hub's orchestrator with them. `pairing_key` is
+    /// asked again on every save, so a leaked device token alone can't swap API keys.
+    /// `base_version` is the `Settings.version` the screen loaded; a file changed since then is a
+    /// conflict, not an overwrite.
+    SaveSettings {
+        request_id: u64,
+        pairing_key: String,
+        base_version: String,
+        update: HubSettingsUpdate,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -549,6 +714,31 @@ pub enum ServerMessage {
     UsageError {
         request_id: u64,
         message: String,
+    },
+    /// Reply to `ClientMessage::RequestSettings`. `version` goes back in `SaveSettings.base_version`.
+    /// `secrets_writable` is false on a plain `http://` connection from another machine, where the
+    /// hub refuses a new API key.
+    Settings {
+        request_id: u64,
+        settings: HubSettingsDto,
+        version: String,
+        secrets_writable: bool,
+    },
+    /// Reply to a successful `ClientMessage::SaveSettings`, with what the file holds now.
+    SettingsSaved {
+        request_id: u64,
+        settings: HubSettingsDto,
+        version: String,
+    },
+    /// A settings request failed. `conflict`: the file changed since it was loaded. `auth_rejected`:
+    /// the pairing key was wrong. Nothing was written in either case.
+    SettingsError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        conflict: bool,
+        #[serde(default)]
+        auth_rejected: bool,
     },
     /// Reply to `ClientMessage::Discover` — just enough for a sweeping client to show the operator
     /// "which machine is this" and let them pick it, never a secret.
@@ -1005,6 +1195,43 @@ mod tests {
         let extended = ServerMessage::LimitExtended { request_id: 2, limit };
         let json = serde_json::to_string(&extended).unwrap();
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), extended);
+    }
+
+    #[test]
+    fn settings_messages_round_trip_through_json() {
+        let update = HubSettingsUpdate {
+            providers: vec![ProviderEditDto {
+                original_id: Some("main".into()),
+                id: "primary".into(),
+                kind: "anthropic".into(),
+                base_url: String::new(),
+                model: String::new(),
+                api_key: SecretEdit::Set("sk".into()),
+            }],
+            active_provider: "primary".into(),
+            agents: Vec::new(),
+            tavily_key: SecretEdit::Keep,
+            whisper_key: SecretEdit::Clear,
+            limits: None,
+            prices: Vec::new(),
+        };
+        assert!(update.sets_a_secret());
+        let save = ClientMessage::SaveSettings { request_id: 1, pairing_key: "k".into(), base_version: "v".into(), update };
+        let json = serde_json::to_value(&save).unwrap();
+        assert_eq!(json["type"], "saveSettings");
+        assert_eq!(json["update"]["providers"][0]["originalId"], "main");
+        assert_eq!(json["update"]["providers"][0]["apiKey"], serde_json::json!({ "action": "set", "value": "sk" }));
+        assert_eq!(json["update"]["tavilyKey"], serde_json::json!({ "action": "keep" }));
+        assert_eq!(json["update"]["whisperKey"], serde_json::json!({ "action": "clear" }));
+        assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), save);
+
+        let request: ClientMessage = serde_json::from_str(r#"{"type":"requestSettings","requestId":3}"#).unwrap();
+        assert_eq!(request, ClientMessage::RequestSettings { request_id: 3 });
+
+        let error: ServerMessage = serde_json::from_str(r#"{"type":"settingsError","requestId":3,"message":"m"}"#).unwrap();
+        assert_eq!(error, ServerMessage::SettingsError { request_id: 3, message: "m".into(), conflict: false, auth_rejected: false });
+        let status = SecretStatusDto { set: true, hint: None };
+        assert_eq!(serde_json::to_string(&status).unwrap(), r#"{"set":true}"#);
     }
 
     #[test]

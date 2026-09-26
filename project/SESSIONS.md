@@ -2,7 +2,52 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-25 (Sessão 100, continuação)
+> Última atualização: 2026-09-26 (Sessão 101)
+
+---
+
+### 2026-09-26 — Sessão 101
+
+- **Objetivo**: a última fatia do P78, configurações/provedores na web. Decisões do usuário: provedores, agentes,
+  chaves e limites/preços (shell, MCP, SSH e armazenamento fora); ler livre, salvar pedindo a chave de pareamento;
+  chave nova só por TLS ou pela própria máquina.
+
+**O que foi feito**:
+
+- **Protocolo**: `RequestSettings` → `Settings { version, secretsWritable }`, `SaveSettings { pairingKey,
+  baseVersion, update }` → `SettingsSaved`/`SettingsError { conflict, authRejected }`, e os DTOs
+  (`HubSettingsDto`, `HubSettingsUpdate`, `SecretStatusDto`, `SecretEdit`, provedor/agente/limite/preço).
+- **`warden-bootstrap/src/settings.rs`**: a visão sem segredos, o `apply_hub_settings` (chaves mantidas pelo
+  `originalId`, hosts SSH acompanhando renomear/apagar agente, campos legados limpos) e as validações que o
+  desktop também passou a usar. `config_version`. `Overrides` ganhou `Clone`.
+- **Hub** (`warden-server/src/settings.rs`): `SharedOrchestrator`, `SettingsHost`, `is_secure`,
+  `handle_request_settings`/`handle_save_settings` (tudo ou nada, com rollback se o `bootstrap` falhar). No
+  `server.rs`, a conexão sabe se é segura, e o `ConnectionOrchestrator` remonta as tools do device quando o
+  orquestrador troca. O `warden-server` registra um `ServeSettings` com as mesmas flags da subida.
+- **Desktop**: o hub embutido usa `SharedOrchestrator` e um `DesktopHubSettings` que também atualiza o chat do
+  desktop. `reload_orchestrator` troca o orquestrador do chat e o do hub (antes o hub ficava com o antigo até
+  reiniciar). O `save_settings` usa as validações compartilhadas e recusa salvar sobre uma mudança feita pela web
+  (`version` no `Settings`). O `spend_cmds.rs` perdeu os payloads duplicados (os testes foram para o bootstrap).
+- **Web**: aba ⚙ (`SettingsView.tsx`) com rascunho único, campo de chave só de escrita, aviso de http, confirmação
+  com a chave de pareamento, conflito com "Recarregar"; `connection.ts` com `requestSettings`/`saveSettings`/
+  `SettingsError`.
+- **Verificação**:
+  - `cargo test --workspace`: 744 passando (eram 722), `cargo clippy --workspace --all-targets` limpo; desktop com
+    22 testes (6 de limites/preços migraram para o bootstrap) e clippy limpo; web e desktop com `tsc`/`build` limpos.
+  - Ponta a ponta com o `connection.ts` real contra um `warden-server` isolado (porta 7431) e um servidor
+    OpenAI-compatível falso em Node: 26 cenários, todos passando. Entre eles: nenhum segredo na resposta, chave
+    nova recusada pela LAN e aceita pelo loopback, chave de pareamento errada (com 1 s de espera), **troca a quente**
+    (a mesma conexão aberta passou de "Gemini 400" para a resposta do provedor falso, com a chave nova, e a outra
+    conexão também), conflito, rollback de um provedor que não sobe, validação e remover chave pela LAN.
+  - Brave headless por CDP: a tela pela LAN e pelo loopback, salvar com chave errada e depois certa, claro,
+    escuro e 390 px sem rolagem horizontal, sem erro no console. As capturas foram conferidas.
+- **Achados**: salvar reescreve o `config.toml` inteiro e apaga comentários (P82, já acontecia no desktop); a
+  chave de pareamento do `warden-server` avulso pode ser fraca e agora protege as configurações (P83).
+- **Processo**: uma edição do `server.rs` foi feita por script Python em vez de Edit/Write, contra a regra de mostrar
+  o diff; o resto foi feito pelo Edit.
+
+**Próximo passo**: o P78 está completo. Falta testar contra o hub de verdade (P80): reiniciar o hub do usuário
+com o binário novo, abrir ⚙ pelo HTTPS do Tailscale e trocar uma chave. Seguem abertos o P81, o P82 e o P83.
 
 ---
 

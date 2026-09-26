@@ -1322,3 +1322,179 @@ button:focus-visible {
     max-width: 92%;
   }
 }
+
+/* Settings (P78) */
+
+.settings-view {
+  padding-bottom: 0;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* A note, not an error: same shape as `.banner`, neutral colors. */
+.banner.settings-note {
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  line-height: 1.45;
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.7rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.settings-field--wide {
+  grid-column: 1 / -1;
+}
+
+.settings-view select {
+  font: inherit;
+  font-weight: 400;
+  color: inherit;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  width: 100%;
+}
+
+.settings-view select:focus-visible,
+.settings-view input[type="checkbox"]:focus-visible,
+.settings-view input[type="radio"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.settings-view input,
+.settings-view textarea {
+  font-weight: 400;
+}
+
+.settings-view textarea {
+  resize: vertical;
+}
+
+.settings-secret-label {
+  font-weight: 600;
+}
+
+.settings-secret-status {
+  font-weight: 400;
+  color: var(--color-text-muted);
+  padding: 0.55rem 0;
+}
+
+.settings-radio,
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.settings-radio {
+  font-weight: 600;
+}
+
+.settings-radio input,
+.settings-check input {
+  width: auto;
+  accent-color: var(--color-accent);
+}
+
+.settings-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings-tools {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.3rem 0.8rem;
+}
+
+.settings-tools legend {
+  padding: 0 0.25rem;
+}
+
+.settings-tools code {
+  overflow-wrap: anywhere;
+}
+
+.settings-price {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.settings-price-remove {
+  padding-bottom: 0.6rem;
+}
+
+.settings-add {
+  align-self: flex-start;
+}
+
+/* Stays in view while the long form scrolls under it. */
+.settings-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.8rem 0 1rem;
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 420px;
+}
+
+.settings-saved {
+  margin: 0;
+  color: var(--color-ok);
+  font-weight: 600;
+}
+
+@media (max-width: 560px) {
+  .settings-price {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .settings-price .settings-field:first-child {
+    grid-column: 1 / -1;
+  }
+}

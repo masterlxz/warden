@@ -30,6 +30,7 @@ use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod manage_agents;
+pub mod settings;
 pub mod skill_gen;
 pub mod spend;
 pub mod usage;
@@ -988,7 +989,7 @@ async fn register_mcp_tools<P: ToolProvider>(base_tools: &mut Vec<Arc<dyn Tool>>
 }
 
 /// Per-channel overrides (CLI flags today; a desktop settings UI later — see PHASE.md 6.5).
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Overrides {
     /// Legacy single-provider-kind override (the CLI's `--provider gemini|openai`) — only
     /// consulted by `resolve_model_provider`'s fallback path, when `config.providers` is empty.

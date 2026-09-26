@@ -12,7 +12,8 @@
 //! so editing those fields never silently turns the server on or off.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -21,6 +22,8 @@ use warden_bootstrap::{
     default_config_path, default_server_conversations_dir, default_server_devices_path, default_tls_dir, generate_auth_key, load_config_from_path, save_config,
     EmbeddedServerConfig,
 };
+use warden_core::orchestrator::Orchestrator;
+use warden_server::{SettingsHost, SharedOrchestrator};
 
 use crate::AppState;
 
@@ -34,6 +37,31 @@ pub struct EmbeddedServerHandle {
     secure_url: Option<String>,
     /// The daily `tailscale cert` renewal loop, aborted on stop so it doesn't outlive the hub.
     cert_renewal: Option<tokio::task::JoinHandle<()>>,
+    /// The hub's orchestrator — replaced when the desktop's own Settings save (P78), so the hub
+    /// runs on the new settings without a restart.
+    pub(crate) orchestrator: SharedOrchestrator,
+}
+
+/// The embedded hub's web settings (P78): the desktop's own config file, built the way the desktop
+/// builds its orchestrator, and handed to the desktop's chat as well once a save puts it in place.
+struct DesktopHubSettings {
+    config_path: PathBuf,
+    desktop: Arc<Mutex<Result<Orchestrator, String>>>,
+}
+
+#[async_trait::async_trait]
+impl SettingsHost for DesktopHubSettings {
+    fn config_path(&self) -> PathBuf {
+        self.config_path.clone()
+    }
+
+    async fn build(&self) -> anyhow::Result<Orchestrator> {
+        warden_bootstrap::bootstrap(None, warden_bootstrap::Overrides::default(), crate::desktop_default_vault_path()).await
+    }
+
+    fn installed(&self, orchestrator: &Orchestrator) {
+        *self.desktop.lock().unwrap() = Ok(orchestrator.clone());
+    }
 }
 
 impl EmbeddedServerHandle {
@@ -191,11 +219,15 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
         None
     };
 
-    let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path)
+    let shared = SharedOrchestrator::new(orchestrator);
+    let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), shared.clone(), conversations_dir, devices_path)
         .await?
         .with_web_ui(Arc::new(warden_server::EmbeddedWebUi))
         // P78 — voice input from the web UI, with the same Whisper key as the desktop's mic button.
         .with_transcriber(Arc::new(warden_server::chat_input::WhisperTranscriber::new(None)));
+    if let Some(config_path) = default_config_path() {
+        server = server.with_settings(Arc::new(DesktopHubSettings { config_path, desktop: state.orchestrator.clone() }));
+    }
     let bound_addr = server.local_addr()?;
     let (secure_url, cert_renewal) = match tailscale {
         Some((tls, cert)) => {
@@ -209,7 +241,7 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     tokio::spawn(server.serve_until(async {
         let _ = shutdown_rx.await;
     }));
-    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, cert_renewal })
+    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, cert_renewal, orchestrator: shared })
 }
 
 #[cfg(test)]
@@ -249,7 +281,7 @@ mod tests {
         let sync = warden_sync::SyncEngine::new(temp_dir.join("vault"), config_path, temp_dir.join("secrets.json"), temp_dir.join("manifest.json"));
 
         let state = crate::AppState {
-            orchestrator: std::sync::Mutex::new(Ok(orchestrator)),
+            orchestrator: Arc::new(std::sync::Mutex::new(Ok(orchestrator))),
             recording: std::sync::Mutex::new(None),
             sync,
             pending_push: std::sync::Mutex::new(None),

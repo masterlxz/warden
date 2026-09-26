@@ -15,9 +15,12 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use warden_bootstrap::settings::{
+    check_active_provider, check_agents, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
+};
 use warden_bootstrap::{
     aggregate_usage, bootstrap, build_live_delegate_to_agent_tool, build_model_provider, build_storage_provider, default_config_path,
-    default_conversations_dir, default_limit_configs, default_model_for, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
+    default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_storage_provider, resolve_vault_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, ManageAgentsTool, McpServerConfig,
     Overrides,
@@ -28,9 +31,12 @@ use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
+use warden_server_protocol::protocol::{LimitSettingsDto, PriceSettingsDto};
 
 struct AppState {
-    orchestrator: Mutex<Result<Orchestrator, String>>,
+    /// Shared (`Arc`) with the embedded hub's settings host, which puts the orchestrator a web
+    /// settings save builds here too (P78).
+    orchestrator: Arc<Mutex<Result<Orchestrator, String>>>,
     /// Set between a `start_recording`/`stop_recording` pair (P28) — `None` otherwise.
     recording: Mutex<Option<recording::ActiveRecording>>,
     /// P37 — the vault+config sync engine (Arweave via TruthID). No `Mutex` around the engine
@@ -403,7 +409,7 @@ struct SettingsSnapshot {
     /// Default model per provider kind, keyed by the same string the frontend uses for `kind`
     /// (`"gemini"`/`"openai"`/`"anthropic"`) — shown as the Model field's placeholder. No entry
     /// for `openai_compatible`, which has no universal default (see `default_model_for`).
-    default_models: std::collections::HashMap<String, String>,
+    default_models: std::collections::BTreeMap<String, String>,
     /// External MCP servers (Phase 5.2/P25) — `McpServerConfig`'s own fields, for either
     /// transport (`name`/`command`/`args`/`env` for stdio, `name`/`url`/`headers` for HTTP), are
     /// already single-word, so the untagged enum round-trips over IPC as-is with no dedicated
@@ -433,18 +439,22 @@ struct SettingsSnapshot {
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
     /// built-in safety net is in force (`default_limits`); `Some([])` = every limit switched off.
     /// The two are different on purpose, so they are different here too.
-    limits: Option<Vec<spend_cmds::LimitPayload>>,
+    limits: Option<Vec<LimitSettingsDto>>,
     /// The safety net as editable entries, for "customize" to start from — the numbers live in
     /// `warden_bootstrap::spend`, not in the frontend.
-    default_limits: Vec<spend_cmds::LimitPayload>,
+    default_limits: Vec<LimitSettingsDto>,
     /// `WARDEN_SPEND_LIMITS=off` in the environment beats whatever the file says; the screen says so.
     limits_disabled_by_env: bool,
     /// What each model charges per million tokens — nothing is built in.
-    prices: Vec<spend_cmds::PricePayload>,
+    prices: Vec<PriceSettingsDto>,
+    /// The config file's version (P78), sent back on save: the hub's web settings write the same
+    /// file, and a save over a change made there must be refused, not silently undo it.
+    version: String,
 }
 
 #[derive(Deserialize)]
 struct SettingsFormPayload {
+    version: String,
     providers: Vec<ProviderPayload>,
     active_provider: String,
     vault_path: String,
@@ -460,8 +470,8 @@ struct SettingsFormPayload {
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
-    limits: Option<Vec<spend_cmds::LimitPayload>>,
-    prices: Vec<spend_cmds::PricePayload>,
+    limits: Option<Vec<LimitSettingsDto>>,
+    prices: Vec<PriceSettingsDto>,
 }
 
 /// The wire-format string for a `StorageProviderKind` (P61 Settings UI) — the exact same four
@@ -488,16 +498,10 @@ fn storage_provider_kind_is_implemented(kind: StorageProviderKind) -> bool {
     matches!(kind, StorageProviderKind::Local | StorageProviderKind::DecentralizedVault | StorageProviderKind::RemoteNode)
 }
 
-fn default_models_by_kind() -> std::collections::HashMap<String, String> {
-    [("gemini", Provider::Gemini), ("openai", Provider::Openai), ("anthropic", Provider::Anthropic)]
-        .into_iter()
-        .filter_map(|(key, kind)| default_model_for(kind).map(|model| (key.to_string(), model.to_string())))
-        .collect()
-}
-
 #[tauri::command]
 fn get_settings() -> Result<SettingsSnapshot, String> {
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let version = config_version(&path).map_err(|e| format!("{e:#}"))?;
     let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
     Ok(SettingsSnapshot {
@@ -540,6 +544,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
         limits_disabled_by_env: env_switches_limits_off(std::env::var("WARDEN_SPEND_LIMITS").ok().as_deref()),
         prices: config.prices.into_iter().map(Into::into).collect(),
+        version,
     })
 }
 
@@ -563,20 +568,20 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
     // The Telegram bot token (Fase 2) and `delegate_max_depth` (P46/P60) have no Settings-screen
     // UI yet (see PENDING.md P11) — only hand-editable via config.toml. Loaded up front so every
     // "carry forward instead of wiping" field below can reference it.
+    // P78: the hub's web settings write this same file. A form loaded before such a save would
+    // otherwise put the old values (keys included) straight back.
+    if config_version(&path).map_err(|e| format!("{e:#}"))? != payload.version {
+        return Err("the settings changed since this screen loaded them (from the web settings or by hand) — reopen Settings to see them".to_string());
+    }
     let existing = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
 
-    let mut providers = Vec::with_capacity(payload.providers.len());
-    let mut seen_ids = std::collections::HashSet::new();
-    for p in payload.providers {
-        let id = p.id.trim().to_string();
-        if id.is_empty() {
-            return Err("every provider needs a name".to_string());
-        }
-        if !seen_ids.insert(id.clone()) {
-            return Err(format!("duplicate provider name: {id}"));
-        }
-        providers.push(ProviderConfig { id, kind: p.kind, api_key: non_empty(p.api_key), base_url: non_empty(p.base_url), model: non_empty(p.model) });
-    }
+    let providers = check_providers(
+        payload
+            .providers
+            .into_iter()
+            .map(|p| ProviderConfig { id: p.id, kind: p.kind, api_key: Some(p.api_key), base_url: Some(p.base_url), model: Some(p.model) })
+            .collect(),
+    )?;
 
     let mut mcp_servers = Vec::with_capacity(payload.mcp_servers.len());
     for s in payload.mcp_servers {
@@ -606,43 +611,28 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
         });
     }
 
-    let mut agents = Vec::with_capacity(payload.agents.len());
-    let mut seen_agent_ids = std::collections::HashSet::new();
-    for a in payload.agents {
-        let id = a.id.trim().to_string();
-        if id.is_empty() {
-            return Err("every agent needs a name".to_string());
-        }
-        if !seen_agent_ids.insert(id.clone()) {
-            return Err(format!("duplicate agent name: {id}"));
-        }
-        let provider_id = non_empty(a.provider_id);
-        if let Some(pid) = &provider_id {
-            if !providers.iter().any(|p| &p.id == pid) {
-                return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
-            }
-        }
-        agents.push(AgentConfig {
-            id,
-            persona: a.persona,
-            provider_id,
-            can_delegate_to_agents: a.can_delegate_to_agents,
-            can_manage_agents: a.can_manage_agents,
-            allowed_tools: a.allowed_tools,
-        });
-    }
+    let agents = check_agents(
+        payload
+            .agents
+            .into_iter()
+            .map(|a| AgentConfig {
+                id: a.id,
+                persona: a.persona,
+                provider_id: Some(a.provider_id),
+                can_delegate_to_agents: a.can_delegate_to_agents,
+                can_manage_agents: a.can_manage_agents,
+                allowed_tools: a.allowed_tools,
+            })
+            .collect(),
+        &providers,
+    )?;
 
     let ssh_hosts = ssh_cmds::hosts_into_config(payload.ssh_hosts, &agents)?;
 
-    let limits = payload.limits.map(spend_cmds::limits_into_config).transpose()?;
-    let prices = spend_cmds::prices_into_config(payload.prices)?;
+    let limits = payload.limits.map(limits_into_config).transpose()?;
+    let prices = prices_into_config(payload.prices)?;
 
-    let active_provider = non_empty(payload.active_provider);
-    if let Some(active_id) = &active_provider {
-        if !providers.iter().any(|p| &p.id == active_id) {
-            return Err(format!("active provider '{active_id}' is not one of the configured providers"));
-        }
-    }
+    let active_provider = check_active_provider(&payload.active_provider, &providers)?;
 
     // Reuses `resolve_storage_provider`'s own parsing (it already knows the exact four accepted
     // strings and errors clearly on anything else) by treating the form value as if it were an
@@ -776,9 +766,20 @@ async fn save_settings(app: AppHandle, state: State<'_, AppState>, payload: Sett
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
 
-    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
-    *state.orchestrator.lock().unwrap() = new_orchestrator;
+    reload_orchestrator(&state).await;
     Ok(())
+}
+
+/// Rebuilds the orchestrator from the config file for the desktop's chat and, when the embedded
+/// hub is running, for the hub too (P78) — before this, the hub kept the orchestrator it started
+/// with until it was restarted. A config the orchestrator can't start with leaves the hub on its
+/// current one; the desktop shows the error in its chat.
+async fn reload_orchestrator(state: &AppState) {
+    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
+    if let (Ok(orchestrator), Some(hub)) = (&new_orchestrator, state.embedded_server.lock().unwrap().as_ref()) {
+        hub.orchestrator.replace(orchestrator.clone());
+    }
+    *state.orchestrator.lock().unwrap() = new_orchestrator;
 }
 
 /// Whether an OAuth-authenticated MCP server (PENDING.md P26) already has a token on disk.
@@ -803,8 +804,7 @@ async fn mcp_oauth_connect(state: State<'_, AppState>, name: String, url: String
     .await
     .map_err(|e| format!("{e:#}"))?;
 
-    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
-    *state.orchestrator.lock().unwrap() = new_orchestrator;
+    reload_orchestrator(&state).await;
     Ok(())
 }
 
@@ -814,8 +814,7 @@ async fn mcp_oauth_connect(state: State<'_, AppState>, name: String, url: String
 async fn mcp_oauth_disconnect(state: State<'_, AppState>, name: String) -> Result<(), String> {
     warden_core::tool::mcp_oauth::forget_credentials(&oauth_credential_store_path(&name)).await.map_err(|e| format!("{e:#}"))?;
 
-    let new_orchestrator = bootstrap(None, Overrides::default(), desktop_default_vault_path()).await.map_err(|e| format!("{e:#}"));
-    *state.orchestrator.lock().unwrap() = new_orchestrator;
+    reload_orchestrator(&state).await;
     Ok(())
 }
 
@@ -882,7 +881,7 @@ pub fn run() {
     let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     let app_state = AppState {
-        orchestrator: Mutex::new(orchestrator),
+        orchestrator: Arc::new(Mutex::new(orchestrator)),
         recording: Mutex::new(None),
         sync,
         pending_push: Mutex::new(None),

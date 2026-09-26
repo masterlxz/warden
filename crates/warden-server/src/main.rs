@@ -126,6 +126,36 @@ fn default_vault_path() -> PathBuf {
 }
 
 
+/// Settings over the network (P78) for this process: the same config file and the same flags it
+/// started with, so a reload after a save builds exactly what a restart would.
+struct ServeSettings {
+    config_path: PathBuf,
+    explicit_config: Option<String>,
+    overrides: Overrides,
+}
+
+#[async_trait::async_trait]
+impl warden_server::SettingsHost for ServeSettings {
+    fn config_path(&self) -> PathBuf {
+        self.config_path.clone()
+    }
+
+    async fn build(&self) -> anyhow::Result<warden_core::orchestrator::Orchestrator> {
+        bootstrap(self.explicit_config.as_deref(), self.overrides.clone(), default_vault_path()).await
+    }
+
+    fn notes(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        if let Some(model) = &self.overrides.model {
+            notes.push(format!("This hub was started with --model {model}, which wins over the active provider's model."));
+        }
+        if let Some(provider) = self.overrides.provider {
+            notes.push(format!("This hub was started with --provider {provider:?}, which only applies while no providers are saved."));
+        }
+        notes
+    }
+}
+
 fn devices_path() -> anyhow::Result<PathBuf> {
     warden_bootstrap::default_server_devices_path().context("could not determine the OS config directory for the device registry")
 }
@@ -165,12 +195,13 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
             )
         })?;
 
-    let orchestrator = bootstrap(
-        args.config.as_deref(),
-        Overrides { provider: args.provider.map(Into::into), model: args.model.clone(), vault_path: args.vault_path.clone(), ..Default::default() },
-        default_vault_path(),
-    )
-    .await?;
+    let overrides = Overrides { provider: args.provider.map(Into::into), model: args.model.clone(), vault_path: args.vault_path.clone(), ..Default::default() };
+    let orchestrator = bootstrap(args.config.as_deref(), overrides.clone(), default_vault_path()).await?;
+    let settings = args.config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).map(|config_path| ServeSettings {
+        config_path,
+        explicit_config: args.config.clone(),
+        overrides,
+    });
 
     let conversations_dir = warden_bootstrap::default_server_conversations_dir()
         .context("could not determine the OS config directory for conversations")?;
@@ -182,6 +213,9 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .await?
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
         .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))));
+    if let Some(settings) = settings {
+        server = server.with_settings(Arc::new(settings));
+    }
     let addr = server.local_addr()?;
     let page_url = match tls.as_ref().and_then(|tls| tls.secure_url(addr.port())) {
         Some(url) => url.replacen("wss://", "https://", 1),

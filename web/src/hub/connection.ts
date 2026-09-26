@@ -14,6 +14,8 @@ import {
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
+  type HubSettings,
+  type HubSettingsUpdate,
   type LimitStatus,
   type ServerMessage,
   type UsageReport,
@@ -39,6 +41,26 @@ export class HandshakeError extends Error {
 
 /** A vault save/delete the hub refused because the note changed since it was opened (P78). */
 export class VaultConflictError extends Error {}
+
+/** A settings save the hub refused (P78). `conflict`: the file changed since it was loaded.
+ * `authRejected`: the pairing key was wrong. */
+export class SettingsError extends Error {
+  constructor(
+    message: string,
+    public readonly conflict: boolean,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** The hub's settings as loaded — `version` goes back with the save. */
+export interface LoadedSettings {
+  settings: HubSettings;
+  version: string;
+  /** False over plain http:// from another machine: the hub refuses a new API key there. */
+  secretsWritable: boolean;
+}
 
 /** A note as opened for editing — `version` goes back with the save. */
 export interface VaultNote {
@@ -77,6 +99,8 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const TRANSCRIBE_TIMEOUT_MS = 60_000;
+/** A settings save restarts the hub's orchestrator, which starts MCP servers (Tavily via `npx`). */
+const SAVE_SETTINGS_TIMEOUT_MS = 120_000;
 
 /** Where the hub is: the page's own origin (the hub serves this page on its WebSocket port), or
  * `VITE_HUB_URL` under `npm run dev`. */
@@ -268,7 +292,14 @@ export class ServerConnection {
       case "vaultSearchResults":
       case "usageReport":
       case "limitExtended":
+      case "settings":
+      case "settingsSaved":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "settingsError":
+        this.settleRequest(message.requestId, (pending) =>
+          pending.reject(new SettingsError(message.message, message.conflict, message.authRejected)),
+        );
         break;
       case "usageError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
@@ -383,6 +414,24 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "extendLimit", requestId, limitId }));
     if (reply.type !== "limitExtended") throw new Error("resposta inesperada do hub");
     return reply.limit;
+  }
+
+  /** The part of the hub's config the web edits (P78) — never any API key, only whether one is set. */
+  async requestSettings(): Promise<LoadedSettings> {
+    const reply = await this.request((requestId) => ({ type: "requestSettings", requestId }));
+    if (reply.type !== "settings") throw new Error("resposta inesperada do hub");
+    return { settings: reply.settings, version: reply.version, secretsWritable: reply.secretsWritable };
+  }
+
+  /** Replaces the editable settings and restarts the hub's orchestrator with them. Rejects with
+   * `SettingsError` on a wrong pairing key, a conflict, or settings the hub can't start with. */
+  async saveSettings(pairingKey: string, baseVersion: string, update: HubSettingsUpdate): Promise<{ settings: HubSettings; version: string }> {
+    const reply = await this.request(
+      (requestId) => ({ type: "saveSettings", requestId, pairingKey, baseVersion, update }),
+      SAVE_SETTINGS_TIMEOUT_MS,
+    );
+    if (reply.type !== "settingsSaved") throw new Error("resposta inesperada do hub");
+    return { settings: reply.settings, version: reply.version };
   }
 
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A

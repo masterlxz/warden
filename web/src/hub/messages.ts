@@ -99,6 +99,99 @@ export interface UsageReport {
   ledgerError?: string;
 }
 
+/** Mirrors `SecretStatusDto` (P78): whether an API key is saved, never the key itself. `hint` is its
+ * last four characters, only for a key long enough that they give nothing away. */
+export interface SecretStatus {
+  set: boolean;
+  hint?: string;
+}
+
+/** Mirrors `SecretEdit`: what a save does to one secret. `keep` is an untouched field. */
+export type SecretEdit = { action: "keep" } | { action: "set"; value: string } | { action: "clear" };
+
+export type ProviderKind = "gemini" | "openai" | "anthropic" | "openai_compatible";
+
+/** Mirrors `ProviderSettingsDto`. Empty strings mean "not set". */
+export interface ProviderSettings {
+  id: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  model: string;
+  apiKey: SecretStatus;
+}
+
+/** Mirrors `ProviderEditDto`. `originalId` is the id it had when loaded (absent for a new one), so a
+ * renamed provider keeps its saved key under `keep`. */
+export interface ProviderEdit {
+  originalId?: string;
+  id: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  model: string;
+  apiKey: SecretEdit;
+}
+
+/** Mirrors `AgentSettingsDto`. `providerId` is empty for "no default model"; `allowedTools: null`
+ * keeps every tool. `originalId` carries a rename on save. */
+export interface AgentSettings {
+  originalId?: string;
+  id: string;
+  persona: string;
+  providerId: string;
+  canDelegateToAgents: boolean;
+  canManageAgents: boolean;
+  allowedTools: string[] | null;
+}
+
+export type LimitScope = "global" | "agent" | "channel" | "user";
+
+/** Mirrors `LimitSettingsDto` (P4). `target` is empty for a global limit; `warnAt`/`extendStep` are
+ * fractions (0–1), `null` for the default. */
+export interface LimitSettings {
+  id: string;
+  scope: LimitScope;
+  target: string;
+  windowHours: number;
+  maxTokens: number | null;
+  maxCostUsd: number | null;
+  warnAt: number | null;
+  extendStep: number | null;
+}
+
+export interface PriceSettings {
+  model: string;
+  inputPerMtok: number;
+  outputPerMtok: number;
+}
+
+/** Mirrors `HubSettingsDto` (P78): the part of the hub's config the web edits. */
+export interface HubSettings {
+  providers: ProviderSettings[];
+  activeProvider: string;
+  agents: AgentSettings[];
+  tavilyKey: SecretStatus;
+  whisperKey: SecretStatus;
+  /** `null`: no limits written, the built-in ones apply. `[]`: every limit off. */
+  limits: LimitSettings[] | null;
+  defaultLimits: LimitSettings[];
+  limitsDisabledByEnv: boolean;
+  prices: PriceSettings[];
+  defaultModels: Record<string, string>;
+  toolNames: string[];
+  notes: string[];
+}
+
+/** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
+export interface HubSettingsUpdate {
+  providers: ProviderEdit[];
+  activeProvider: string;
+  agents: AgentSettings[];
+  tavilyKey: SecretEdit;
+  whisperKey: SecretEdit;
+  limits: LimitSettings[] | null;
+  prices: PriceSettings[];
+}
+
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
    * `deviceToken` from an earlier `helloAck`. */
@@ -134,6 +227,9 @@ export type ClientMessage =
   | { type: "requestUsage"; requestId: number; tzOffsetMinutes: number }
   /** P78 — one `extend_step` more for a spending limit, answered by `limitExtended`. */
   | { type: "extendLimit"; requestId: number; limitId: string }
+  /** P78 — the hub's settings. A save repeats the pairing key and sends the `version` it loaded. */
+  | { type: "requestSettings"; requestId: number }
+  | { type: "saveSettings"; requestId: number; pairingKey: string; baseVersion: string; update: HubSettingsUpdate }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -173,6 +269,10 @@ export type ServerMessage =
   | { type: "usageReport"; requestId: number; report: UsageReport }
   | { type: "limitExtended"; requestId: number; limit: LimitStatus }
   | { type: "usageError"; requestId: number; message: string }
+  /** `secretsWritable` is false on plain http:// from another machine, where the hub refuses a new key. */
+  | { type: "settings"; requestId: number; settings: HubSettings; version: string; secretsWritable: boolean }
+  | { type: "settingsSaved"; requestId: number; settings: HubSettings; version: string }
+  | { type: "settingsError"; requestId: number; message: string; conflict: boolean; authRejected: boolean }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -217,7 +317,13 @@ export function decode(text: string): ServerMessage {
     case "usageReport":
     case "limitExtended":
     case "usageError":
+    case "settings":
+    case "settingsSaved":
       return json as ServerMessage;
+    case "settingsError": {
+      const raw = json as { requestId: number; message: string; conflict?: boolean; authRejected?: boolean };
+      return { type: "settingsError", requestId: raw.requestId, message: raw.message, conflict: raw.conflict ?? false, authRejected: raw.authRejected ?? false };
+    }
     case "vaultError": {
       const raw = json as { requestId: number; message: string; conflict?: boolean };
       return { type: "vaultError", requestId: raw.requestId, message: raw.message, conflict: raw.conflict ?? false };

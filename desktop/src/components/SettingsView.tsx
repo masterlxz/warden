@@ -25,6 +25,7 @@ const emptySettings: Settings = {
   defaultLimits: [],
   limitsDisabledByEnv: false,
   prices: [],
+  version: "",
 };
 
 /** The four `StorageProviderKind` options (P61), in display order — the copy here is the
@@ -1172,6 +1173,7 @@ function SettingsView() {
     try {
       await invoke("save_settings", {
         payload: {
+          version: form.version,
           providers: form.providers,
           active_provider: form.activeProvider,
           vault_path: form.vaultPath,
