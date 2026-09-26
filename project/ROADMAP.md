@@ -388,6 +388,12 @@ multi-conta, OAuth de assinatura, tradução de formato). Três caminhos em deba
 
 Relaciona com a seção "9Router" acima (P51).
 
+**Decidido (Sessão 105)**: não embutir o 9Router (Node + Next.js dentro do hub em Rust) e não
+oferecer OAuth de assinatura de consumidor (esbarra nos termos dos provedores). Continua valendo
+usar um roteador externo como provedor `openai_compatible`. O que entra no Warden é o **fallback
+nativo entre os provedores já cadastrados**: um provedor falha (503, limite) e o turno tenta o
+próximo. Detalhes em `PENDING.md` P79.
+
 ### "Warden API" — chave de API própria, auto-hospedada, opcional
 
 Ideia central: uma chave de API do **Warden**, não do provedor de IA por trás.

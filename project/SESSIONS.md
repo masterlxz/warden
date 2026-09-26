@@ -72,6 +72,15 @@
   Node) deixou o arquivo sem as duas chaves e com o resto intacto.
 - **Não testado**: nenhuma tela do desktop aberta (a seção "Sync via Git" continua a mesma de antes).
 
+**Conversa no fim da sessão (só registro, sem código)**:
+
+- **P89 novo**: o usuário quer o Warden bom também para programar, estudando integrar um open source (ex.: opencode)
+  e torná-lo nativo.
+- **P79 decidido**: não embutir o 9Router e não fazer OAuth de assinatura; construir nativo só o fallback entre os
+  provedores já cadastrados; roteador externo continua valendo como `openai_compatible`. Registrado em
+  `PENDING.md`, `ROADMAP.md` e no registro de decisões do `ARCHITECTURE.md`.
+- Os testes com o usuário (telas, Gemini real) ficaram para uma rodada só, mais adiante.
+
 **Próximo passo**: o P80/P87/P88 abrindo as telas com o usuário (aba Sync da web, Aparelhos, agentes), e o teste
 do Gemini real que a Sessão 104 deixou pendente. Depois, P79.
 
