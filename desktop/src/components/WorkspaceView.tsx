@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApiKeyField } from "./SettingsView";
 import type { DiscoveredHub, EmbeddedServerConfig, EmbeddedServerStatus, HubPairingConfig, PairedDevice } from "../types";
 
-const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secureUrl: null, webUrl: null };
+const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secure: false, secureUrl: null, webUrl: null };
 
 const dateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 
@@ -17,14 +18,20 @@ function StatusBadge({ status }: { status: PairedDevice["status"] }) {
   return <span className={`storage-provider-badge workspace-status-badge workspace-status-badge--${status}`}>{label}</span>;
 }
 
+type HttpsMode = "none" | "tailscale" | "own";
+
+function newConfig(authKey: string): EmbeddedServerConfig {
+  return { port: 7420, listenHost: null, authKey, serverName: null, tailscaleCert: false, tlsCert: null, tlsKey: null, tlsHost: null, webUi: true };
+}
+
 /** Fase 9.1 follow-up ("virar o hub desta rede") — lets this same desktop app embed its own
- * `warden-server` instead of that always being a separate process. Host is deliberately not a
- * field here (always `0.0.0.0`, see `server_cmds.rs`'s module docs) — only port/auth key/name are
- * real choices. The port/name inputs lock while running, same reasoning `HubPairingQrSection`
- * doesn't need since it never has a "live" state to protect. */
+ * `warden-server` instead of that always being a separate process. Every `warden-server serve`
+ * flag has a field here (Sessão 103), so nothing needs the terminal. The inputs lock while
+ * running, since they only apply on the next start. */
 function EmbeddedServerSection() {
-  const [config, setConfig] = useState<EmbeddedServerConfig>({ port: 7420, authKey: "", serverName: null, tailscaleCert: false });
+  const [config, setConfig] = useState<EmbeddedServerConfig>(newConfig(""));
   const [serverNameInput, setServerNameInput] = useState("");
+  const [httpsMode, setHttpsMode] = useState<HttpsMode>("none");
   const [status, setStatus] = useState<EmbeddedServerStatus>(STOPPED_STATUS);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,9 +42,10 @@ function EmbeddedServerSection() {
         if (saved) {
           setConfig(saved);
           setServerNameInput(saved.serverName ?? "");
+          setHttpsMode(saved.tailscaleCert ? "tailscale" : saved.tlsCert ? "own" : "none");
         } else {
           const authKey = await invoke<string>("generate_embedded_server_auth_key");
-          setConfig({ port: 7420, authKey, serverName: null, tailscaleCert: false });
+          setConfig(newConfig(authKey));
         }
       })
       .catch((err) => setError(String(err)));
@@ -51,17 +59,27 @@ function EmbeddedServerSection() {
     setConfig((c) => ({ ...c, authKey }));
   }
 
+  async function handleBrowse(field: "tlsCert" | "tlsKey") {
+    const selected = await open({ multiple: false, directory: false });
+    if (typeof selected === "string") setConfig((c) => ({ ...c, [field]: selected }));
+  }
+
   async function handleStart() {
     setError(null);
     setBusy(true);
     try {
       // Always save first — `start_embedded_server` reads the config straight from disk, so a
       // field edited here but never saved would otherwise start the server with stale settings.
+      const ownCert = httpsMode === "own";
       await invoke("save_embedded_server_config", {
-        port: config.port,
-        authKey: config.authKey,
-        serverName: serverNameInput.trim() || null,
-        tailscaleCert: config.tailscaleCert,
+        config: {
+          ...config,
+          serverName: serverNameInput.trim() || null,
+          tailscaleCert: httpsMode === "tailscale",
+          tlsCert: ownCert ? config.tlsCert : null,
+          tlsKey: ownCert ? config.tlsKey : null,
+          tlsHost: ownCert ? config.tlsHost : null,
+        },
       });
       const next = await invoke<EmbeddedServerStatus>("start_embedded_server");
       setStatus(next);
@@ -105,6 +123,8 @@ function EmbeddedServerSection() {
                 {" "}
                 — só HTTPS, conecte em <code>{status.secureUrl}</code>
               </>
+            ) : status.secure ? (
+              " — só HTTPS, pelo nome do certificado"
             ) : (
               " — sem criptografia (ws://)"
             )}
@@ -151,20 +171,98 @@ function EmbeddedServerSection() {
           onChange={(e) => setServerNameInput(e.currentTarget.value)}
         />
       </label>
+      <label className="settings-field">
+        <span className="settings-label">Endereço (opcional)</span>
+        <span className="settings-hint">
+          Em branco, atende em todas as interfaces de rede (<code>0.0.0.0</code>). <code>127.0.0.1</code> deixa o hub acessível só
+          deste computador; o IP de uma interface (ex.: o do Tailscale) limita a ela.
+        </span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="0.0.0.0"
+          value={config.listenHost ?? ""}
+          disabled={status.running}
+          onChange={(e) => setConfig((c) => ({ ...c, listenHost: e.currentTarget.value || null }))}
+        />
+      </label>
+      <label className="settings-field">
+        <span className="settings-label">HTTPS</span>
+        <select
+          className="settings-select"
+          value={httpsMode}
+          disabled={status.running}
+          onChange={(e) => setHttpsMode(e.currentTarget.value as HttpsMode)}
+        >
+          <option value="none">Sem criptografia (ws://)</option>
+          <option value="tailscale">Via Tailscale</option>
+          <option value="own">Certificado próprio</option>
+        </select>
+        {httpsMode === "tailscale" && (
+          <span className="settings-hint">
+            Criptografa a conexão com o certificado do Tailscale deste computador (<code>tailscale cert</code>), renovado sozinho. Os
+            dispositivos passam a conectar pelo nome <code>*.ts.net</code>, só de dentro da tailnet. Precisa de MagicDNS e certificados
+            HTTPS ligados no painel do Tailscale e, sem root, <code>sudo tailscale set --operator=$USER</code>.
+          </span>
+        )}
+        {httpsMode === "own" && (
+          <span className="settings-hint">
+            Um certificado em PEM (a cadeia, começando pelo do site) e a chave privada dele, como os do Let's Encrypt. Os arquivos
+            são relidos quando mudam, então renovar não pede reiniciar.
+          </span>
+        )}
+      </label>
+      {httpsMode === "own" && (
+        <>
+          {(["tlsCert", "tlsKey"] as const).map((field) => (
+            <label className="settings-field" key={field}>
+              <span className="settings-label">{field === "tlsCert" ? "Certificado (.pem)" : "Chave privada (.pem)"}</span>
+              <div className="settings-key-field">
+                <input
+                  className="settings-input"
+                  type="text"
+                  value={config[field] ?? ""}
+                  disabled={status.running}
+                  onChange={(e) => setConfig((c) => ({ ...c, [field]: e.currentTarget.value || null }))}
+                />
+                {!status.running && (
+                  <button type="button" className="settings-browse-btn" onClick={() => void handleBrowse(field)}>
+                    Escolher…
+                  </button>
+                )}
+              </div>
+            </label>
+          ))}
+          <label className="settings-field">
+            <span className="settings-label">Nome do certificado (opcional)</span>
+            <span className="settings-hint">
+              O nome para o qual o certificado vale (ex.: <code>hub.meudominio.com</code>). Com ele, a descoberta na rede e o link da
+              interface web já apontam para o endereço certo.
+            </span>
+            <input
+              className="settings-input"
+              type="text"
+              placeholder="hub.meudominio.com"
+              value={config.tlsHost ?? ""}
+              disabled={status.running}
+              onChange={(e) => setConfig((c) => ({ ...c, tlsHost: e.currentTarget.value || null }))}
+            />
+          </label>
+        </>
+      )}
       <label className="settings-field settings-checkbox-field">
         <span className="settings-checkbox-row">
           <input
             type="checkbox"
-            checked={config.tailscaleCert}
+            checked={config.webUi}
             disabled={status.running}
-            onChange={(e) => setConfig((c) => ({ ...c, tailscaleCert: e.currentTarget.checked }))}
+            onChange={(e) => setConfig((c) => ({ ...c, webUi: e.currentTarget.checked }))}
           />
-          <span className="settings-label">HTTPS via Tailscale</span>
+          <span className="settings-label">Interface web</span>
         </span>
         <span className="settings-hint">
-          Criptografa a conexão com o certificado do Tailscale deste computador (<code>tailscale cert</code>), renovado sozinho. Os
-          dispositivos passam a conectar pelo nome <code>*.ts.net</code>, só de dentro da tailnet. Precisa de MagicDNS e certificados
-          HTTPS ligados no painel do Tailscale e, sem root, <code>sudo tailscale set --operator=$USER</code>.
+          Abrir o endereço do hub num navegador mostra o Warden completo, que pareia como mais um dispositivo. Desligada, a porta
+          atende só os apps.
         </span>
       </label>
       <ApiKeyField label="Auth key" value={config.authKey} onChange={(authKey) => setConfig((c) => ({ ...c, authKey }))} />

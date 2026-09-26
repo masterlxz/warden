@@ -11,7 +11,7 @@
 //! `stop_embedded_server` — `save_embedded_server_config` (port/auth key/name) never touches it,
 //! so editing those fields never silently turns the server on or off.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -33,8 +33,11 @@ pub struct EmbeddedServerHandle {
     shutdown_tx: oneshot::Sender<()>,
     pub(crate) bound_addr: SocketAddr,
     server_name: String,
-    /// `wss://` URL clients should use — `Some` only when started with the Tailscale cert (P36).
+    /// `wss://` URL clients should use — `Some` when started with TLS and a known host name (P36).
     secure_url: Option<String>,
+    /// TLS without a known host name (a certificate with no `tls_host`): the web link can't be built.
+    tls_without_host: bool,
+    web_ui: bool,
     /// The daily `tailscale cert` renewal loop, aborted on stop so it doesn't outlive the hub.
     cert_renewal: Option<tokio::task::JoinHandle<()>>,
     /// The hub's orchestrator — replaced when the desktop's own Settings save (P78), so the hub
@@ -77,15 +80,85 @@ impl EmbeddedServerHandle {
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddedServerConfigPayload {
     port: u16,
+    listen_host: Option<String>,
     auth_key: String,
     server_name: Option<String>,
     tailscale_cert: bool,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    tls_host: Option<String>,
+    web_ui: bool,
 }
 
 impl From<EmbeddedServerConfig> for EmbeddedServerConfigPayload {
     fn from(c: EmbeddedServerConfig) -> Self {
-        Self { port: c.port, auth_key: c.auth_key, server_name: c.server_name, tailscale_cert: c.tailscale_cert }
+        Self {
+            port: c.port,
+            listen_host: c.listen_host,
+            auth_key: c.auth_key,
+            server_name: c.server_name,
+            tailscale_cert: c.tailscale_cert,
+            tls_cert: c.tls_cert,
+            tls_key: c.tls_key,
+            tls_host: c.tls_host,
+            web_ui: c.web_ui,
+        }
     }
+}
+
+fn non_blank(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+impl EmbeddedServerConfigPayload {
+    /// The form as it would be saved: blanks become `None`, then the same rules `warden-server
+    /// serve`'s flags have (a valid address, TLS files together and not with Tailscale, a strong key).
+    fn into_config(self, enabled: bool) -> Result<EmbeddedServerConfig, String> {
+        let config = EmbeddedServerConfig {
+            enabled,
+            port: self.port,
+            listen_host: non_blank(self.listen_host),
+            auth_key: self.auth_key.trim().to_string(),
+            server_name: non_blank(self.server_name),
+            tailscale_cert: self.tailscale_cert,
+            tls_cert: non_blank(self.tls_cert),
+            tls_key: non_blank(self.tls_key),
+            tls_host: non_blank(self.tls_host),
+            web_ui: self.web_ui,
+        };
+        if config.port == 0 {
+            return Err("Escolha uma porta válida".to_string());
+        }
+        check_embedded_server_config(&config)?;
+        Ok(config)
+    }
+}
+
+/// Also run on every start, so a `config.toml` edited by hand fails with the same message.
+fn check_embedded_server_config(config: &EmbeddedServerConfig) -> Result<(), String> {
+    if config.auth_key.is_empty() {
+        return Err("Auth key não pode ficar em branco".to_string());
+    }
+    if !is_strong_auth_key(&config.auth_key) {
+        return Err(weak_auth_key_message());
+    }
+    if let Some(host) = &config.listen_host {
+        host.parse::<IpAddr>().map_err(|_| format!("\"{host}\" não é um endereço IP (ex.: 0.0.0.0, 127.0.0.1 ou 192.168.1.10)"))?;
+    }
+    match (&config.tls_cert, &config.tls_key) {
+        (Some(_), None) | (None, Some(_)) => return Err("Informe o certificado e a chave privada juntos".to_string()),
+        (Some(_), Some(_)) if config.tailscale_cert => {
+            return Err("Escolha um só: HTTPS via Tailscale ou certificado próprio".to_string());
+        }
+        (None, None) if config.tls_host.is_some() => return Err("O nome do certificado só vale com um certificado próprio".to_string()),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn listen_addr(config: &EmbeddedServerConfig) -> anyhow::Result<SocketAddr> {
+    let host: IpAddr = config.listen_host.as_deref().unwrap_or("0.0.0.0").parse()?;
+    Ok(SocketAddr::new(host, config.port))
 }
 
 #[derive(Serialize)]
@@ -94,15 +167,18 @@ pub struct EmbeddedServerStatusPayload {
     running: bool,
     bound_addr: Option<String>,
     server_name: Option<String>,
+    /// TLS-only, whether or not `secure_url` could be built.
+    secure: bool,
     secure_url: Option<String>,
-    /// Where to open the hub's web interface (P78) from this machine — `None` when this build has
-    /// no web UI compiled in (`web/` never built).
+    /// Where to open the hub's web interface (P78) from this machine — `None` when it's turned
+    /// off, this build has no web UI compiled in (`web/` never built), or TLS runs with no known
+    /// host name to put in the link.
     web_url: Option<String>,
 }
 
 impl EmbeddedServerStatusPayload {
     fn stopped() -> Self {
-        Self { running: false, bound_addr: None, server_name: None, secure_url: None, web_url: None }
+        Self { running: false, bound_addr: None, server_name: None, secure: false, secure_url: None, web_url: None }
     }
 
     fn running(handle: &EmbeddedServerHandle) -> Self {
@@ -110,10 +186,12 @@ impl EmbeddedServerStatusPayload {
             running: true,
             bound_addr: Some(handle.bound_addr.to_string()),
             server_name: Some(handle.server_name.clone()),
+            secure: handle.secure_url.is_some() || handle.tls_without_host,
             secure_url: handle.secure_url.clone(),
-            web_url: web_ui_built().then(|| match &handle.secure_url {
+            web_url: (handle.web_ui && web_ui_built() && !handle.tls_without_host).then(|| match &handle.secure_url {
                 Some(url) => url.replacen("wss://", "https://", 1),
-                None => format!("http://localhost:{}", handle.bound_addr.port()),
+                None if handle.bound_addr.ip().is_unspecified() => format!("http://localhost:{}", handle.bound_addr.port()),
+                None => format!("http://{}", handle.bound_addr),
             }),
         }
     }
@@ -149,23 +227,12 @@ fn weak_auth_key_message() -> String {
 }
 
 #[tauri::command]
-pub fn save_embedded_server_config(port: u16, auth_key: String, server_name: Option<String>, tailscale_cert: bool) -> Result<(), String> {
-    let auth_key = auth_key.trim().to_string();
-    if auth_key.is_empty() {
-        return Err("Auth key não pode ficar em branco".to_string());
-    }
-    if !is_strong_auth_key(&auth_key) {
-        return Err(weak_auth_key_message());
-    }
-    if port == 0 {
-        return Err("Escolha uma porta válida".to_string());
-    }
+pub fn save_embedded_server_config(config: EmbeddedServerConfigPayload) -> Result<(), String> {
     let path = config_path()?;
-    let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
-    let enabled = config.embedded_server.as_ref().is_some_and(|c| c.enabled);
-    config.embedded_server =
-        Some(EmbeddedServerConfig { enabled, port, auth_key, server_name: server_name.filter(|n| !n.trim().is_empty()), tailscale_cert });
-    save_config(&path, &config).map_err(|e| format!("{e:#}"))
+    let mut file = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    let enabled = file.embedded_server.as_ref().is_some_and(|c| c.enabled);
+    file.embedded_server = Some(config.into_config(enabled)?);
+    save_config(&path, &file).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -211,48 +278,51 @@ pub fn embedded_server_status(state: State<'_, AppState>) -> EmbeddedServerStatu
 /// builds and spawns the real `warden_server::Server`, wired to `serve_until` so the returned
 /// handle's `shutdown_tx` actually stops it and frees the port later.
 pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &EmbeddedServerConfig) -> anyhow::Result<EmbeddedServerHandle> {
-    // P83 — also catches a short key saved before this check existed, on start and on auto-start.
-    if !is_strong_auth_key(&config.auth_key) {
-        anyhow::bail!(weak_auth_key_message());
-    }
+    // P83 — also catches a short key saved before this check existed, on start and on auto-start;
+    // the rest catches a config.toml edited by hand into something the form wouldn't save.
+    check_embedded_server_config(config).map_err(|message| anyhow::anyhow!(message))?;
     let orchestrator = state.orchestrator.lock().unwrap().clone().map_err(|e| anyhow::anyhow!(e))?;
     let conversations_dir = default_server_conversations_dir().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
     let devices_path = default_server_devices_path().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
     let server_name = warden_server::resolve_server_name(config.server_name.clone());
-    let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    let addr = listen_addr(config)?;
 
-    // P36: fetched before binding, so a Tailscale problem (not installed, HTTPS certs off) fails
-    // the start with its own message instead of leaving a half-configured hub running.
-    let tailscale = if config.tailscale_cert {
+    // P36: fetched/loaded before binding, so a Tailscale problem (not installed, HTTPS certs off)
+    // or a bad certificate file fails the start with its own message instead of leaving a
+    // half-configured hub running. Same two sources as `warden-server serve`'s `resolve_tls`.
+    let (tls, tailscale_cert) = if config.tailscale_cert {
         let dir = default_tls_dir().ok_or_else(|| anyhow::anyhow!("could not determine the OS config directory"))?;
-        Some(warden_server::HubTls::from_tailscale(&dir).await?)
+        let (tls, cert) = warden_server::HubTls::from_tailscale(&dir).await?;
+        (Some(tls), Some(cert))
+    } else if let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) {
+        (Some(warden_server::HubTls::from_pem_files(cert, key, config.tls_host.clone())?), None)
     } else {
-        None
+        (None, None)
     };
 
     let shared = SharedOrchestrator::new(orchestrator);
     let mut server = warden_server::Server::bind(addr, config.auth_key.clone(), server_name.clone(), shared.clone(), conversations_dir, devices_path)
         .await?
-        .with_web_ui(Arc::new(warden_server::EmbeddedWebUi))
         // P78 — voice input from the web UI, with the same Whisper key as the desktop's mic button.
         .with_transcriber(Arc::new(warden_server::chat_input::WhisperTranscriber::new(None)));
+    if config.web_ui {
+        server = server.with_web_ui(Arc::new(warden_server::EmbeddedWebUi));
+    }
     if let Some(config_path) = default_config_path() {
         server = server.with_settings(Arc::new(DesktopHubSettings { config_path, desktop: state.orchestrator.clone() }));
     }
     let bound_addr = server.local_addr()?;
-    let (secure_url, cert_renewal) = match tailscale {
-        Some((tls, cert)) => {
-            let secure_url = tls.secure_url(bound_addr.port());
-            server = server.with_tls(tls);
-            (secure_url, Some(tokio::spawn(cert.renewal())))
-        }
-        None => (None, None),
-    };
+    let secure_url = tls.as_ref().and_then(|tls| tls.secure_url(bound_addr.port()));
+    let tls_without_host = tls.is_some() && secure_url.is_none();
+    if let Some(tls) = tls {
+        server = server.with_tls(tls);
+    }
+    let cert_renewal = tailscale_cert.map(|cert| tokio::spawn(cert.renewal()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     tokio::spawn(server.serve_until(async {
         let _ = shutdown_rx.await;
     }));
-    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, cert_renewal, orchestrator: shared })
+    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, tls_without_host, web_ui: config.web_ui, cert_renewal, orchestrator: shared })
 }
 
 #[cfg(test)]
@@ -302,7 +372,7 @@ mod tests {
         };
 
         let server_config =
-            EmbeddedServerConfig { enabled: true, port: 0, auth_key: "test-auth-key-long-enough-for-p83-check".to_string(), server_name: Some("Test Desktop".to_string()), tailscale_cert: false };
+            EmbeddedServerConfig { enabled: true, server_name: Some("Test Desktop".to_string()), ..EmbeddedServerConfig::new(0, "test-auth-key-long-enough-for-p83-check") };
 
         let handle = start_embedded_server_inner(&state, &server_config).await.unwrap();
         // `bound_addr` reflects the `0.0.0.0` bind host `local_addr()` reports — not a connectable
@@ -327,21 +397,56 @@ mod tests {
     // Locks in the exact camelCase JSON shape `desktop/src/types.ts` expects.
     #[test]
     fn embedded_server_config_payload_serializes_as_camel_case() {
-        let payload = EmbeddedServerConfigPayload::from(EmbeddedServerConfig {
-            enabled: true,
-            port: 7420,
-            auth_key: "secret".to_string(),
-            server_name: None,
-            tailscale_cert: true,
-        });
-        assert_eq!(serde_json::to_string(&payload).unwrap(), r#"{"port":7420,"authKey":"secret","serverName":null,"tailscaleCert":true}"#);
+        let payload = EmbeddedServerConfigPayload::from(EmbeddedServerConfig { enabled: true, tailscale_cert: true, ..EmbeddedServerConfig::new(7420, "secret") });
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"port":7420,"listenHost":null,"authKey":"secret","serverName":null,"tailscaleCert":true,"tlsCert":null,"tlsKey":null,"tlsHost":null,"webUi":true}"#
+        );
+    }
+
+    fn form() -> EmbeddedServerConfigPayload {
+        EmbeddedServerConfig::new(7420, "k".repeat(64)).into()
+    }
+
+    #[test]
+    fn saving_the_form_trims_blanks_and_keeps_every_serve_flag() {
+        let payload = EmbeddedServerConfigPayload {
+            listen_host: Some(" 127.0.0.1 ".into()),
+            server_name: Some("  ".into()),
+            tls_cert: Some("/etc/hub/cert.pem".into()),
+            tls_key: Some("/etc/hub/key.pem".into()),
+            tls_host: Some("".into()),
+            web_ui: false,
+            ..form()
+        };
+        let config = payload.into_config(true).unwrap();
+        assert_eq!(config.listen_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!((config.server_name.as_deref(), config.tls_host.as_deref()), (None, None));
+        assert!(config.enabled && !config.web_ui);
+        assert_eq!(listen_addr(&config).unwrap(), "127.0.0.1:7420".parse().unwrap());
+        assert_eq!(listen_addr(&EmbeddedServerConfig::new(7420, "k")).unwrap(), "0.0.0.0:7420".parse().unwrap());
+    }
+
+    #[test]
+    fn the_form_refuses_what_serve_would_refuse() {
+        let cases = [
+            EmbeddedServerConfigPayload { port: 0, ..form() },
+            EmbeddedServerConfigPayload { auth_key: "curta".into(), ..form() },
+            EmbeddedServerConfigPayload { listen_host: Some("minha-maquina".into()), ..form() },
+            EmbeddedServerConfigPayload { tls_cert: Some("/c.pem".into()), ..form() },
+            EmbeddedServerConfigPayload { tls_cert: Some("/c.pem".into()), tls_key: Some("/k.pem".into()), tailscale_cert: true, ..form() },
+            EmbeddedServerConfigPayload { tls_host: Some("hub.example.com".into()), ..form() },
+        ];
+        for case in cases {
+            assert!(case.into_config(false).is_err());
+        }
     }
 
     #[test]
     fn stopped_status_serializes_as_camel_case() {
         assert_eq!(
             serde_json::to_string(&EmbeddedServerStatusPayload::stopped()).unwrap(),
-            r#"{"running":false,"boundAddr":null,"serverName":null,"secureUrl":null,"webUrl":null}"#
+            r#"{"running":false,"boundAddr":null,"serverName":null,"secure":false,"secureUrl":null,"webUrl":null}"#
         );
     }
 }

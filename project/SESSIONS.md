@@ -2,7 +2,42 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 102)
+> Última atualização: 2026-09-26 (Sessão 103)
+
+---
+
+### 2026-09-26 — Sessão 103
+
+- **Objetivo**: pedido do usuário: o desktop pode ou não ser o hub, e tudo o que o terminal faz deve dar para fazer
+  pela interface, sem deixar de funcionar pelo terminal num servidor sem tela. Ficou combinado: levar as flags que
+  faltavam do `warden-server serve` para o desktop e colocar a gestão de aparelhos na web, com a troca da chave de
+  pareamento fora da web.
+
+**O que foi feito**:
+
+- **Hub do desktop com todas as flags do `serve`**: `EmbeddedServerConfig` ganhou `listen_host` (`--listen`),
+  `tls_cert`/`tls_key`/`tls_host` (`--tls-*`) e `web_ui` (`--no-web-ui`), todos com default para configs antigos,
+  e um `EmbeddedServerConfig::new`. `server_cmds.rs`: o `save_embedded_server_config` recebe o formulário inteiro
+  (`EmbeddedServerConfigPayload::into_config`), com as mesmas regras do `serve` (IP válido, certificado e chave
+  juntos, não junto com o Tailscale, chave forte); a mesma checagem roda ao ligar. O status ganhou `secure`, e o
+  link da web some quando ela está desligada ou quando não há nome de certificado. `WorkspaceView.tsx`: campo de
+  endereço, HTTPS com três opções (nenhum, Tailscale, certificado próprio com "Escolher…") e a caixa "Interface web".
+- **Aparelhos na web**: protocolo `ListDevices` → `DeviceList { devices, you }` e `SetDeviceStatus { pairingKey,
+  deviceId, action }` → a lista atualizada ou `DeviceError { authRejected }`. `warden-server/src/devices.rs` usa o
+  `PairingStore`, a mesma comparação de chave, a espera de 1 s e o mesmo lock do salvar configurações. Aba
+  "Aparelhos" na web (`DevicesView.tsx`): lista com status, "este navegador", aprovar/revogar pedindo a chave, e
+  aviso ao revogar o próprio navegador.
+- **Verificação**: `cargo test --workspace` com 759 passando, clippy limpo, `tsc`/`build` da web e do desktop limpos.
+  Ponta a ponta com WebSocket do Node contra um `warden-server` isolado (`XDG_CONFIG_HOME` no scratchpad, o
+  `devices.json` real não foi tocado): 8 cenários passaram (lista sem token, chave errada com 1 s, aprovar, device
+  desconhecido, revogar, a conexão do revogado cai sozinha, revogado não pareia de novo).
+- **Não testado**: nenhuma tela foi aberta (o usuário deixou os testes para depois, ver P80); ligar o hub do
+  desktop com certificado próprio só é coberto pelos testes do `HubTls` do `warden-server`.
+- **Processo**: os estilos da aba "Aparelhos" foram acrescentados ao `App.css` com um heredoc no Bash, contra a
+  regra de editar pelo Edit/Write; o resto foi feito pelo Edit/Write.
+
+**Próximo passo**: o P80 com o usuário, agora incluindo a aba "Aparelhos" e as opções novas do hub do desktop.
+Depois, as decisões em aberto: P79, P46 e P61.
 
 ---
 

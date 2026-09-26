@@ -22,6 +22,7 @@ use warden_core::spend::SpendContext;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
+use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
@@ -600,6 +601,22 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     tokio::spawn(async move {
                         let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure };
                         let _ = reply_tx.send(handle_save_settings(&access, request_id, &pairing_key, &base_version, update).await);
+                    });
+                }
+                Ok(ClientMessage::ListDevices { request_id }) => {
+                    let store = PairingStore::new(devices_path.as_ref().clone());
+                    let _ = tx.send(handle_list_devices(&store, &device_id, request_id));
+                }
+                Ok(ClientMessage::SetDeviceStatus { request_id, pairing_key, device_id: target, action }) => {
+                    // Off the reader loop: a wrong key waits a second under the settings lock.
+                    let store = PairingStore::new(devices_path.as_ref().clone());
+                    let lock = settings_lock.clone();
+                    let auth_key = auth_key.clone();
+                    let you = device_id.clone();
+                    let reply_tx = tx.clone();
+                    tokio::spawn(async move {
+                        let reply = handle_set_device_status(&store, &lock, &auth_key, &you, request_id, &pairing_key, &target, action).await;
+                        let _ = reply_tx.send(reply);
                     });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
+import DevicesView from "./components/DevicesView";
 import LoginView from "./components/LoginView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
@@ -24,7 +25,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "settings";
+type View = "chat" | "vault" | "usage" | "skills" | "devices" | "settings";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -351,6 +352,9 @@ export default function App() {
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
+          <button type="button" className={view === "devices" ? "tab tab--active" : "tab"} onClick={() => setView("devices")}>
+            Aparelhos
+          </button>
           <button
             type="button"
             className={view === "settings" ? "tab tab--active" : "tab"}
@@ -404,6 +408,8 @@ export default function App() {
           <VaultView conn={conn} />
         ) : view === "usage" ? (
           <UsageView conn={conn} />
+        ) : view === "devices" ? (
+          <DevicesView conn={conn} />
         ) : view === "settings" ? (
           <SettingsView conn={conn} />
         ) : (

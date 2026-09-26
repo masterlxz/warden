@@ -14,6 +14,7 @@ import {
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
+  type HubDevice,
   type HubSettings,
   type HubSettingsUpdate,
   type LimitStatus,
@@ -52,6 +53,22 @@ export class SettingsError extends Error {
   ) {
     super(message);
   }
+}
+
+/** An approve/revoke the hub refused. `authRejected`: the pairing key was wrong. */
+export class DeviceError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** The hub's paired devices, and which one is this browser. */
+export interface DeviceList {
+  devices: HubDevice[];
+  you: string;
 }
 
 /** The hub's settings as loaded — `version` goes back with the save. */
@@ -294,7 +311,11 @@ export class ServerConnection {
       case "limitExtended":
       case "settings":
       case "settingsSaved":
+      case "deviceList":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "deviceError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new DeviceError(message.message, message.authRejected)));
         break;
       case "settingsError":
         this.settleRequest(message.requestId, (pending) =>
@@ -432,6 +453,20 @@ export class ServerConnection {
     );
     if (reply.type !== "settingsSaved") throw new Error("resposta inesperada do hub");
     return { settings: reply.settings, version: reply.version };
+  }
+
+  /** Every device that has ever connected to the hub (Sessão 103). */
+  async listDevices(): Promise<DeviceList> {
+    const reply = await this.request((requestId) => ({ type: "listDevices", requestId }));
+    if (reply.type !== "deviceList") throw new Error("resposta inesperada do hub");
+    return { devices: reply.devices, you: reply.you };
+  }
+
+  /** Approves or revokes a device; rejects with `DeviceError` on a wrong pairing key. */
+  async setDeviceStatus(pairingKey: string, deviceId: string, action: "approve" | "revoke"): Promise<DeviceList> {
+    const reply = await this.request((requestId) => ({ type: "setDeviceStatus", requestId, pairingKey, deviceId, action }));
+    if (reply.type !== "deviceList") throw new Error("resposta inesperada do hub");
+    return { devices: reply.devices, you: reply.you };
   }
 
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A

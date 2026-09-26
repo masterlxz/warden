@@ -250,10 +250,18 @@ export interface DiscoveredHub {
  * `EmbeddedServerStatus.running`, driven by the start/stop commands, not this form. */
 export interface EmbeddedServerConfig {
   port: number;
+  /** `serve --listen`'s host — null is 0.0.0.0 (every interface). */
+  listenHost: string | null;
   authKey: string;
   serverName: string | null;
   /** P36 — serve only wss://, with this machine's Tailscale certificate. */
   tailscaleCert: boolean;
+  /** Or with a certificate of the user's own (`serve --tls-cert`/`--tls-key`/`--tls-host`). */
+  tlsCert: string | null;
+  tlsKey: string | null;
+  tlsHost: string | null;
+  /** false is `serve --no-web-ui`. */
+  webUi: boolean;
 }
 
 /** Mirrors `server_cmds::EmbeddedServerStatusPayload` — whether the embedded server is currently
@@ -262,9 +270,12 @@ export interface EmbeddedServerStatus {
   running: boolean;
   boundAddr: string | null;
   serverName: string | null;
-  /** The wss:// URL clients must use — set only when running with the Tailscale certificate. */
+  /** Running TLS-only (Tailscale or an own certificate). */
+  secure: boolean;
+  /** The wss:// URL clients must use — set when running with TLS and a known host name. */
   secureUrl: string | null;
-  /** Where to open the hub's web interface (P78) — null when this build has none compiled in. */
+  /** Where to open the hub's web interface (P78) — null when it's off, this build has none
+   * compiled in, or TLS runs without a host name for the link. */
   webUrl: string | null;
 }
 

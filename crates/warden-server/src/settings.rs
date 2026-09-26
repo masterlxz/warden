@@ -78,7 +78,7 @@ pub fn is_secure(tls: bool, peer: std::net::IpAddr) -> bool {
 }
 
 /// Compares every byte, so how long a wrong key takes says nothing about how much of it was right.
-fn keys_match(provided: &str, expected: &str) -> bool {
+pub(crate) fn keys_match(provided: &str, expected: &str) -> bool {
     let (a, b) = (provided.as_bytes(), expected.as_bytes());
     if a.is_empty() || a.len() != b.len() {
         return false;

@@ -1790,3 +1790,19 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   101 ela também protege o salvar configurações, onde um erro custa só 1 s. Escolha do usuário: recusar ao subir,
   não só avisar. Vale para o `warden-server serve` (com `warden-server gen-key` para gerar) e para o hub embutido
   do desktop (salvar o campo e ligar). Devices já pareados não são afetados, porque usam o token deles.
+
+## Tudo pela interface e tudo pelo terminal (Sessão 103)
+
+- **Princípio, pedido do usuário**: o desktop pode ou não ser o hub, e o que o `warden-server` faz pelo terminal
+  (para um servidor sem tela) também tem que dar para fazer por uma interface. Os dois caminhos chamam o mesmo
+  código (`PairingStore`, `HubTls`, `generate_auth_key`, `is_strong_auth_key`), e cada tela só traduz um formulário
+  para ele.
+- **Hub do desktop = `serve` inteiro**: cada flag do `serve` tem um campo no `EmbeddedServerConfig` (`listen_host`,
+  `tailscale_cert` ou `tls_cert`/`tls_key`/`tls_host`, `web_ui`), com as mesmas regras de validação, checadas ao
+  salvar e de novo ao ligar (um `config.toml` editado à mão falha com a mesma mensagem). Campos novos têm default,
+  então configs antigos continuam sendo lidos.
+- **Um hub sem tela se gerencia pela web**: a aba "Aparelhos" lista, aprova e revoga, como o `warden-server
+  devices`. Listar é livre para quem está logado; aprovar e revogar pedem a chave de pareamento a cada vez, com a
+  mesma espera de 1 s e o mesmo lock do salvar configurações, então as duas telas dividem o mesmo ritmo de
+  tentativas. **A troca da chave de pareamento fica fora da web** de propósito: quem descobrisse a chave poderia
+  trocá-la e deixar o dono sem acesso. Ela fica no terminal (`gen-key` + reiniciar) e no desktop da máquina do hub.

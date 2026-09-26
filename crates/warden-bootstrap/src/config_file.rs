@@ -284,13 +284,7 @@ model = "gemini-3.5-pro"
         assert_eq!(render_config(Some(&existing), &config).unwrap(), existing);
 
         config.providers.push(provider("spare", "gemini-3.5-flash"));
-        config.embedded_server = Some(crate::EmbeddedServerConfig {
-            enabled: false,
-            port: 7420,
-            auth_key: "k".repeat(64),
-            server_name: None,
-            tailscale_cert: false,
-        });
+        config.embedded_server = Some(crate::EmbeddedServerConfig::new(7420, "k".repeat(64)));
         let text = render_config(Some(&existing), &config).unwrap();
         let spare = text.find("id = \"spare\"").expect(&text);
         let api_keys = text.find("# segredos\n[api_keys]").expect(&text);

@@ -181,6 +181,15 @@ export interface HubSettings {
   notes: string[];
 }
 
+/** Mirrors `DeviceDto`: one device in the hub's pairing registry, never its token. */
+export interface HubDevice {
+  deviceId: string;
+  deviceName: string;
+  status: "pending" | "approved" | "revoked";
+  firstSeenMs: number;
+  lastSeenMs: number;
+}
+
 /** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
 export interface HubSettingsUpdate {
   providers: ProviderEdit[];
@@ -230,6 +239,9 @@ export type ClientMessage =
   /** P78 — the hub's settings. A save repeats the pairing key and sends the `version` it loaded. */
   | { type: "requestSettings"; requestId: number }
   | { type: "saveSettings"; requestId: number; pairingKey: string; baseVersion: string; update: HubSettingsUpdate }
+  /** Sessão 103 — the hub's paired devices; approving or revoking repeats the pairing key. */
+  | { type: "listDevices"; requestId: number }
+  | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -273,6 +285,9 @@ export type ServerMessage =
   | { type: "settings"; requestId: number; settings: HubSettings; version: string; secretsWritable: boolean }
   | { type: "settingsSaved"; requestId: number; settings: HubSettings; version: string }
   | { type: "settingsError"; requestId: number; message: string; conflict: boolean; authRejected: boolean }
+  /** `you` is this browser's own device id. */
+  | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
+  | { type: "deviceError"; requestId: number; message: string; authRejected: boolean }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -319,7 +334,12 @@ export function decode(text: string): ServerMessage {
     case "usageError":
     case "settings":
     case "settingsSaved":
+    case "deviceList":
       return json as ServerMessage;
+    case "deviceError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "deviceError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
+    }
     case "settingsError": {
       const raw = json as { requestId: number; message: string; conflict?: boolean; authRejected?: boolean };
       return { type: "settingsError", requestId: raw.requestId, message: raw.message, conflict: raw.conflict ?? false, authRejected: raw.authRejected ?? false };

@@ -33,6 +33,7 @@
 pub mod chat_input;
 pub mod conversations;
 pub mod device_registry;
+pub mod devices;
 pub mod remote_tool;
 pub mod server;
 pub mod settings;

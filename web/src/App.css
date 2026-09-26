@@ -1498,3 +1498,37 @@ button:focus-visible {
     grid-column: 1 / -1;
   }
 }
+
+/* Devices (Sessão 103) */
+
+.devices-you {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.devices-status {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+}
+
+.devices-status--pending {
+  background: var(--color-warn-soft);
+  color: var(--color-text);
+}
+
+.devices-status--approved {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.devices-status--revoked {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.devices-view .skills-item .skills-actions,
+.devices-confirm {
+  margin-top: 0.6rem;
+}

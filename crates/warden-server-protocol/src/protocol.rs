@@ -211,6 +211,36 @@ pub struct SecretStatusDto {
     pub hint: Option<String>,
 }
 
+/// A device's standing in the hub's pairing registry (Fase 9.3) — mirrors `warden-server`'s
+/// `PairingStatus`, which this crate can't see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceStatusDto {
+    Pending,
+    Approved,
+    Revoked,
+}
+
+/// One device that has ever said `Hello` to the hub, for the web's device list (Sessão 103).
+/// Never its token or token hash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceDto {
+    pub device_id: String,
+    pub device_name: String,
+    pub status: DeviceStatusDto,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+}
+
+/// What `SetDeviceStatus` does — the same two actions as `warden-server devices approve|revoke`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceAction {
+    Approve,
+    Revoke,
+}
+
 /// What a settings save does to one secret. `Keep` is what an untouched field sends, since the
 /// client never had the value to send back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -529,6 +559,20 @@ pub enum ClientMessage {
         base_version: String,
         update: HubSettingsUpdate,
     },
+    /// Every device in the hub's pairing registry, answered by `DeviceList` — what
+    /// `warden-server devices list` prints, so a hub with no screen can be managed from a browser.
+    ListDevices {
+        request_id: u64,
+    },
+    /// Approves or revokes a device, answered by the updated `DeviceList`. `pairing_key` is asked
+    /// every time, as in `SaveSettings`, so a leaked device token alone can't let a new device in
+    /// or lock the owner's out.
+    SetDeviceStatus {
+        request_id: u64,
+        pairing_key: String,
+        device_id: String,
+        action: DeviceAction,
+    },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
     /// point is finding a hub *before* knowing its credential. Answered by `DiscoverAck` and the
@@ -737,6 +781,20 @@ pub enum ServerMessage {
         message: String,
         #[serde(default)]
         conflict: bool,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
+    /// Reply to `ListDevices` and to a successful `SetDeviceStatus`, sorted by id. `you` is the
+    /// asking connection's own device id, so the screen can mark it.
+    DeviceList {
+        request_id: u64,
+        devices: Vec<DeviceDto>,
+        you: String,
+    },
+    /// A device request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
+    DeviceError {
+        request_id: u64,
+        message: String,
         #[serde(default)]
         auth_rejected: bool,
     },
@@ -1232,6 +1290,25 @@ mod tests {
         assert_eq!(error, ServerMessage::SettingsError { request_id: 3, message: "m".into(), conflict: false, auth_rejected: false });
         let status = SecretStatusDto { set: true, hint: None };
         assert_eq!(serde_json::to_string(&status).unwrap(), r#"{"set":true}"#);
+    }
+
+    #[test]
+    fn device_messages_use_the_web_shapes() {
+        let set: ClientMessage =
+            serde_json::from_str(r#"{"type":"setDeviceStatus","requestId":4,"pairingKey":"k","deviceId":"phone","action":"revoke"}"#).unwrap();
+        assert_eq!(set, ClientMessage::SetDeviceStatus { request_id: 4, pairing_key: "k".into(), device_id: "phone".into(), action: DeviceAction::Revoke });
+
+        let list = ServerMessage::DeviceList {
+            request_id: 4,
+            devices: vec![DeviceDto { device_id: "phone".into(), device_name: "Phone".into(), status: DeviceStatusDto::Pending, first_seen_ms: 1, last_seen_ms: 2 }],
+            you: "web-1".into(),
+        };
+        let json = serde_json::to_value(&list).unwrap();
+        assert_eq!(json["type"], "deviceList");
+        assert_eq!(json["devices"][0], serde_json::json!({ "deviceId": "phone", "deviceName": "Phone", "status": "pending", "firstSeenMs": 1, "lastSeenMs": 2 }));
+
+        let error: ServerMessage = serde_json::from_str(r#"{"type":"deviceError","requestId":4,"message":"m"}"#).unwrap();
+        assert_eq!(error, ServerMessage::DeviceError { request_id: 4, message: "m".into(), auth_rejected: false });
     }
 
     #[test]
