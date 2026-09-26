@@ -45,8 +45,26 @@
 - **Não testado**: as telas (web e desktop) não foram abertas (P80); o pareamento real hub-num-VPS ↔ desktop
   pelo Tailscale.
 
+**Itens (2) e (3) do P88**, pedidos em seguida (plano aprovado em Plan mode):
+
+- **`warden_sync::lock::SyncLock`** (`crates/warden-sync/src/lock.rs`): trava de arquivo do SO
+  (`File::try_lock`) em `sync_manifest.lock`, com espera assíncrona e desistência em 10 minutos. Os motores a pegam
+  sozinhos: `GitSyncEngine::push`/`pull` e `SyncEngine::pull`/`finish_push*`. Isso cobre os botões de git do
+  desktop, o `warden-server sync now` com o `serve` no ar, o `/sync` do CLI e o mobile, sem mudar nenhum chamador.
+  A ajuda do `warden-server sync` deixou de mandar usar a web enquanto o `serve` roda.
+- **Verificação**: `cargo test --workspace` com 772 passando, 0 falhas; clippy limpo; desktop com clippy limpo e 20
+  testes passando. Testes novos: 4 da trava (espera o primeiro, desiste no prazo, sai no `Drop` e vale **entre
+  processos**, com o próprio binário de teste como filho segurando a trava) e 1 do `GitSyncEngine` (push e pull
+  esperam uma trava presa por fora; um push e um pull ao mesmo tempo terminam os dois). **Ponta a ponta** com o
+  binário real e um remoto git bare local no scratchpad:
+  - com um `flock` do shell segurando a trava por 3 s, o `warden-server sync now` esperou cerca de 2,8 s e
+    depois fez o push;
+  - com o `serve` subindo (a rodada inicial dele) e três `sync now` disparados juntos, não houve nenhum erro: um
+    push, histórico linear no remoto e nada pendente no fim.
+- **P88** agora só tem os testes reais (item 4), o Warden Cloud (item 5) e o mobile aceitar IP.
+
 **Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, incluindo a seção nova da aba Sync) e o Gemini
-real; ou, em código, os itens (2)/(3) do P88 ou o P87.
+real; ou, em código, o P87.
 
 ---
 

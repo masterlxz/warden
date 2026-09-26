@@ -1880,7 +1880,8 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   termina (`AbortOnDrop`). Uma rodada que traz `config.toml` novo recarrega o orquestrador pelo mesmo caminho do
   salvar configurações (`SettingsHost::build` + `installed` + `SharedOrchestrator::replace`); um config com que o
   hub não sobe deixa o orquestrador atual. Sem tela: `warden-server sync status|now|init|pair <código> [--host IP]`
-  (o `now` do CLI é outro processo, sem o lock do `serve`; a ajuda manda usar a web enquanto o `serve` roda).
+  (o `now` do CLI é outro processo; desde a Sessão 106 ele espera a rodada do `serve` pela trava de arquivo, ver
+  "Uma sincronização por vez na máquina").
 - **Hub do desktop**: recebe o `Arc<SyncRunner>` do próprio desktop com `loop_every = None` — quem faz o loop é o
   desktop (`sync_cmds::spawn_auto_sync`, que emite os mesmos eventos `auto-sync-pulled`/`auto-sync-pushed` de antes
   e agora também recarrega o orquestrador quando chega config novo). Um lock só para o loop e para o "Sincronizar
@@ -1898,8 +1899,8 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   chave, "Parear com outro aparelho" (código + IP opcional) ou "Este é o primeiro aparelho". Arweave pela web fica
   só no pull automático: o push precisa do QR no celular.
 - **Limitações**: ~~o hub só entra num grupo de sync (join); não mostra código para outro aparelho parear com
-  ele~~ (resolvido na Sessão 106, ver "O hub mostra um código de pareamento"). Os comandos manuais de git do desktop
-  (`git_sync_cmds.rs`) não pegam o lock do runner.
+  ele~~ (resolvido na Sessão 106, ver "O hub mostra um código de pareamento"). ~~Os comandos manuais de git do desktop
+  (`git_sync_cmds.rs`) não pegam o lock do runner~~ (resolvido na Sessão 106 pela trava de arquivo nos motores).
 
 ### Fatia 2: a camada de Storage Provider saiu (Sessão 105)
 
@@ -1975,4 +1976,22 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   `serve` no ar, porque não mexe no disco; se a web já estiver hospedando, ele pega a próxima porta livre da faixa.
 - **Quem digita o código aceita um IP**: `pairing_join` do desktop (`host?`, campo "IP (opcional)" na tela Sync) e
   `/sync pair <código> [ip]` no CLI usam `pairing_join_with_hosts`, como já faziam a web e o `sync pair --host`.
+
+## Uma sincronização por vez na máquina, entre processos (P88 itens 2 e 3, Sessão 106)
+
+- **Problema**: o mutex do `SyncRunner` só vale dentro de um processo. Os botões de git do desktop, o
+  `warden-server sync now` com o `serve` no ar e o `/sync` do CLI montam motores próprios sobre o mesmo vault, o
+  mesmo `sync_manifest.json` e o mesmo clone git, e podiam cruzar com uma rodada automática.
+- **Decisão**: a trava fica **nos motores**, não em cada chamador. `warden_sync::lock::SyncLock` é uma trava de
+  arquivo do SO (`std::fs::File::try_lock`, sem crate novo, igual em Linux/macOS/Windows) em
+  `sync_manifest.lock`, ao lado do manifest que os dois motores dividem. Ela tenta a cada 250 ms, com espera
+  assíncrona, desiste em 10 minutos e sai quando o arquivo fecha. Assim qualquer processo, incluindo o mobile, se
+  serializa sem saber dos outros.
+- **Quem pega a trava**: `GitSyncEngine::push`/`pull` e `SyncEngine::pull`/`finish_push`/
+  `finish_push_with_hosts`. O `begin_push` não pega, porque só lê e depois espera o QR no celular. O `finish_push`
+  segura a trava enquanto espera o celular fixar o bundle, o que pode atrasar uma rodada automática por alguns
+  minutos, mas nunca cruzar com ela. `init_fresh`, a adoção da chave no pareamento e o `status()` ficam fora.
+- **Nunca aninhar**: no Linux, uma segunda trava por outro descritor do mesmo arquivo espera a primeira, mesmo no
+  mesmo processo. Nenhum método que trava chama outro que trava. O `SyncRunner` mantém o mutex em memória por
+  cima, que continua cobrindo `init`/`pair` e o último relatório.
 

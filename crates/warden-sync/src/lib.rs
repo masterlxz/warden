@@ -18,6 +18,7 @@ pub mod arweave;
 pub mod bundle;
 pub mod diff;
 pub mod git;
+pub mod lock;
 pub mod manifest;
 pub mod pairing;
 pub mod paths;
@@ -124,6 +125,7 @@ impl SyncEngine {
     /// Step 2 of Send: waits for the TruthID phone to pin the bundle, then persists the updated
     /// manifest.
     pub async fn finish_push(&self, begin: push::BeginPushResult) -> anyhow::Result<push::PushOutcome> {
+        let _one_sync_at_a_time = self.sync_lock().await?;
         let manifest = manifest::load_manifest(&self.manifest_path)?;
         let (outcome, new_manifest) = push::run_push(begin, &self.arweave, manifest).await?;
         manifest::save_manifest(&self.manifest_path, &new_manifest)?;
@@ -138,6 +140,7 @@ impl SyncEngine {
         begin: push::BeginPushResult,
         hosts: Vec<Ipv4Addr>,
     ) -> anyhow::Result<push::PushOutcome> {
+        let _one_sync_at_a_time = self.sync_lock().await?;
         let manifest = manifest::load_manifest(&self.manifest_path)?;
         let (outcome, new_manifest) = push::run_push_with_hosts(begin, &self.arweave, manifest, hosts).await?;
         manifest::save_manifest(&self.manifest_path, &new_manifest)?;
@@ -145,6 +148,7 @@ impl SyncEngine {
     }
 
     pub async fn pull(&self) -> anyhow::Result<pull::PullOutcome> {
+        let _one_sync_at_a_time = self.sync_lock().await?;
         let secrets = self.load_secrets()?;
         let manifest = manifest::load_manifest(&self.manifest_path)?;
         let (outcome, new_manifest) = pull::pull(&self.arweave, &self.vault, &self.config_path, &secrets, manifest).await?;
@@ -170,6 +174,11 @@ impl SyncEngine {
     /// Same as `pairing_join`, but sweeps only `hosts` — used by tests.
     pub async fn pairing_join_with_hosts(&self, code: &str, hosts: Vec<Ipv4Addr>) -> anyhow::Result<()> {
         self.adopt_joined_material(pairing::join_with_hosts(code, hosts).await?)
+    }
+
+    /// Waits out any other process syncing this vault (`lock`).
+    async fn sync_lock(&self) -> anyhow::Result<lock::SyncLock> {
+        lock::SyncLock::acquire(&lock::lock_path_for(&self.manifest_path)).await
     }
 
     fn load_secrets(&self) -> anyhow::Result<manifest::SyncSecrets> {

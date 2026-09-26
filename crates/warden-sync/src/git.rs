@@ -99,6 +99,7 @@ impl GitSyncEngine {
     /// early-out as `push::begin_push`. On a non-fast-forward rejection, returns a clear error
     /// pointing at `pull()` instead of attempting any merge.
     pub async fn push(&self) -> anyhow::Result<Option<GitPushOutcome>> {
+        let _one_sync_at_a_time = crate::lock::SyncLock::acquire(&crate::lock::lock_path_for(&self.manifest_path)).await?;
         let secrets = self.load_secrets()?;
         let manifest = manifest::load_manifest(&self.manifest_path)?;
 
@@ -161,6 +162,7 @@ impl GitSyncEngine {
     /// before), otherwise just the commits after it. See module docs for why this — not "just the
     /// latest" — is what resolves the new-device gap Arweave's owner-based discovery has.
     pub async fn pull(&self) -> anyhow::Result<GitPullOutcome> {
+        let _one_sync_at_a_time = crate::lock::SyncLock::acquire(&crate::lock::lock_path_for(&self.manifest_path)).await?;
         let secrets = self.load_secrets()?;
         let manifest = manifest::load_manifest(&self.manifest_path)?;
 
@@ -405,6 +407,34 @@ mod tests {
             remote.to_string_lossy().to_string(),
             String::new(),
         )
+    }
+
+    #[tokio::test]
+    async fn push_and_pull_wait_for_another_process_syncing_the_same_vault() {
+        let remote = bare_remote("locked");
+        let (engine, _, manifest_path) = engine(&remote, "locked");
+        engine.vault.write("a.md", "hello").unwrap();
+        // Another process (a desktop button, `warden-server sync now`) mid-round.
+        let held = crate::lock::SyncLock::acquire(&crate::lock::lock_path_for(&manifest_path)).await.unwrap();
+
+        let push = engine.push();
+        tokio::pin!(push);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(400), &mut push).await.is_err(), "push ran under someone else's round");
+        drop(held);
+        assert!(push.await.unwrap().is_some());
+
+        let held = crate::lock::SyncLock::acquire(&crate::lock::lock_path_for(&manifest_path)).await.unwrap();
+        let pull = engine.pull();
+        tokio::pin!(pull);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(400), &mut pull).await.is_err(), "pull ran under someone else's round");
+        drop(held);
+        pull.await.unwrap();
+
+        // A push and a pull at once (the loop and a button): one after the other, both fine.
+        engine.vault.write("b.md", "again").unwrap();
+        let (pushed, pulled) = tokio::join!(engine.push(), engine.pull());
+        assert!(pushed.unwrap().is_some());
+        pulled.unwrap();
     }
 
     #[tokio::test]

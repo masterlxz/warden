@@ -46,8 +46,8 @@ enum Command {
     /// WARDEN_SERVER_AUTH_KEY.
     GenKey,
     /// Vault sync (P61) — what `serve` does every 5 minutes on its own, and how a hub with no
-    /// screen gets its vault key. While `serve` runs, the web's Sync screen does the same without
-    /// two processes syncing at once.
+    /// screen gets its vault key. Safe while `serve` runs: a round started here waits for the
+    /// hub's to finish (one sync at a time per vault, across processes).
     Sync(SyncArgs),
 }
 
