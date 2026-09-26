@@ -171,6 +171,8 @@ export interface PriceSettings {
 export interface HubSettings {
   providers: ProviderSettings[];
   activeProvider: string;
+  /** Reserves tried in order when a turn's provider is down (P79) — provider ids. */
+  fallbackProviders: string[];
   agents: AgentSettings[];
   tavilyKey: SecretStatus;
   whisperKey: SecretStatus;
@@ -204,8 +206,18 @@ export interface HubSettingsUpdate {
   whisperKey: SecretEdit;
   limits: LimitSettings[] | null;
   prices: PriceSettings[];
+  /** Omitted: the reserve list stays, minus any provider this save removed. */
+  fallbackProviders?: string[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
+}
+
+/** Mirrors `ProviderFallbackDto` (P79): `from` failed with `reason`, `to` answered with `model`. */
+export interface ProviderFallback {
+  from: string;
+  to: string;
+  model: string;
+  reason: string;
 }
 
 /** Mirrors `SyncRoundDto` (P61): one round the hub ran; `pulled`/`pushed` only when something moved. */
@@ -291,7 +303,8 @@ export type ServerMessage =
   | { type: "authError"; reason: string }
   | { type: "pong"; nonce: number }
   /** `conversationId` (P78) — which conversation this answers; `chat` has no `requestId`. */
-  | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[]; conversationId?: string }
+  /** `fallbacks` (P79): the turn's provider was down and a reserve answered — empty almost always. */
+  | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[]; conversationId?: string; fallbacks: ProviderFallback[] }
   /** `spendLimitId` (P4/P78): the turn stopped on that spending limit — offer `extendLimit`. */
   | { type: "chatError"; message: string; conversationId?: string; spendLimitId?: string }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
@@ -350,8 +363,15 @@ export function decode(text: string): ServerMessage {
     case "goodbye":
       return json as ServerMessage;
     case "chatResponse": {
-      const raw = json as { content: string; usage: Usage | null; attachments?: Attachment[]; conversationId?: string };
-      return { type: "chatResponse", content: raw.content, usage: raw.usage, attachments: raw.attachments ?? [], conversationId: raw.conversationId };
+      const raw = json as { content: string; usage: Usage | null; attachments?: Attachment[]; conversationId?: string; fallbacks?: ProviderFallback[] };
+      return {
+        type: "chatResponse",
+        content: raw.content,
+        usage: raw.usage,
+        attachments: raw.attachments ?? [],
+        conversationId: raw.conversationId,
+        fallbacks: raw.fallbacks ?? [],
+      };
     }
     case "skillList": {
       const raw = json as { requestId: number; skills: Array<Omit<SkillDto, "agents"> & { agents?: string[] }> };

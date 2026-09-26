@@ -16,10 +16,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use warden_bootstrap::settings::{
-    check_active_provider, check_agents, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
+    check_active_provider, check_agents, check_fallback_providers, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
 };
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_model_provider, default_config_path, scope_to_agent, AgentExtras,
+    aggregate_usage, bootstrap, build_model_with_fallback, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
     save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
@@ -158,6 +158,9 @@ struct SendMessageResult {
     /// result, or oversized MCP media spilled to disk. Feeds the chat UI's "Open" affordance via
     /// `open_generated_file`.
     generated_files: Vec<String>,
+    /// The turn's provider failed and a reserve answered (P79) — the chat shows a discreet line
+    /// above the answer. Not saved with the conversation.
+    fallbacks: Vec<warden_server_protocol::protocol::ProviderFallbackDto>,
 }
 
 /// `agent_id`/`provider_id` are the per-conversation selectors (closes P3) — the frontend sends
@@ -203,7 +206,7 @@ async fn send_message(
         }
         if let Some(id) = &provider_id {
             let provider = config.providers.iter().find(|p| &p.id == id).ok_or_else(|| format!("model provider '{id}' not found"))?;
-            let model = build_model_provider(provider, None).map_err(|e| format!("{e:#}"))?;
+            let model = build_model_with_fallback(&config, provider, None).map_err(|e| format!("{e:#}"))?;
             orchestrator = orchestrator.with_model(model);
         }
     }
@@ -218,6 +221,7 @@ async fn send_message(
         usage: outcome.usage,
         attachments: outcome.attachments.into_iter().map(Into::into).collect(),
         generated_files: outcome.generated_files,
+        fallbacks: outcome.fallbacks.into_iter().map(Into::into).collect(),
     })
 }
 
@@ -393,6 +397,8 @@ struct SettingsSnapshot {
     /// form on the "Sync via Git" section. The transport the Sync screen's manual push/pull and the
     /// auto-sync loop use.
     git_sync: Option<GitSyncConfigPayload>,
+    /// Reserves tried in order when a turn's provider is down (P79) — provider ids.
+    fallback_providers: Vec<String>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
@@ -424,6 +430,7 @@ struct SettingsFormPayload {
     mcp_servers: Vec<McpServerConfig>,
     agents: Vec<AgentPayload>,
     git_sync: Option<GitSyncConfigPayload>,
+    fallback_providers: Vec<String>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
@@ -471,6 +478,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
+        fallback_providers: config.fallback_providers,
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
         limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
@@ -557,6 +565,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     let prices = prices_into_config(payload.prices)?;
 
     let active_provider = check_active_provider(&payload.active_provider, &providers)?;
+    let fallback_providers = check_fallback_providers(payload.fallback_providers, &providers)?;
 
     // All-or-nothing (P63/P71): a URL without a token (or the reverse) can't sync anything, so it's
     // rejected here rather than silently written half-formed.
@@ -600,6 +609,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         },
         providers,
         active_provider,
+        fallback_providers,
         mcp_servers,
         agents,
         // Read and dropped (Sessão 105): the vault always lives locally now.

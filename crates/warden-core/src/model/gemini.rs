@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
+use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage};
 #[cfg(test)]
 use super::ToolCall;
 use crate::tool::ToolSpec;
@@ -280,7 +280,7 @@ impl ModelProvider for GeminiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Gemini API error ({status}): {body}");
+            return Err(ProviderHttpError { provider: "Gemini", status: status.as_u16(), reason: status.to_string(), body }.into());
         }
 
         Ok(Box::pin(try_stream! {

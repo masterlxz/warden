@@ -59,7 +59,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_model_provider, default_limit_configs, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
+    build_model_with_fallback, default_limit_configs, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
     rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, scope_to_agent, AgentConfig, AgentExtras, FileConfig,
     LimitConfig, LimitScope, Overrides, Provider, ProviderConfig, SshHostConfig,
 };
@@ -897,6 +897,10 @@ async fn run_turn(
             // `read_line`, whether this turn ended in success or failure.
             ensure_preview_height(terminal, &mut current_height, 0)?;
             let outcome = result??;
+            // P79 — the turn's provider was down and a reserve answered.
+            for switch in &outcome.fallbacks {
+                insert_history_line(terminal, &format!("respondido por {} ({} falhou: {})", switch.to, switch.from, switch.reason), dim_style)?;
+            }
             let footer = outcome.usage.as_ref().map(|usage| {
                 vec![(format!("{} prompt + {} completion = {} tokens", usage.prompt_tokens, usage.completion_tokens, usage.total_tokens), dim_style)]
             });
@@ -1119,7 +1123,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
                 .iter()
                 .find(|p| p.id == provider_id)
                 .ok_or_else(|| anyhow::anyhow!("provider '{provider_id}' não existe mais na configuração"))?;
-            Some(build_model_provider(provider_config, None)?)
+            Some(build_model_with_fallback(&config, provider_config, None)?)
         }
         None => None,
     };

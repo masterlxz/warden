@@ -10,8 +10,11 @@ use serde_json::Value;
 use crate::tool::ToolSpec;
 
 pub mod anthropic;
+pub mod fallback;
 pub mod gemini;
 pub mod openai;
+
+pub use fallback::{FallbackProvider, ProviderFallback};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -151,7 +154,31 @@ pub enum StreamEvent {
     /// Token accounting for the whole turn. Providers that report it emit this once, at or near
     /// the end of the stream.
     Usage(Usage),
+    /// The provider this call was meant for failed and another one answered (P79) — emitted
+    /// first, by `FallbackProvider`, only when that happened. Carries no content.
+    ProviderFallback(ProviderFallback),
 }
+
+/// A provider's API answered with an HTTP error status. Its `Display` is the message the
+/// providers always bailed with; the fields let `FallbackProvider` tell a busy provider (429,
+/// 5xx) from a request that would fail anywhere (400, a bad key).
+#[derive(Debug, Clone)]
+pub struct ProviderHttpError {
+    /// "Gemini", "OpenAI", "Anthropic".
+    pub provider: &'static str,
+    pub status: u16,
+    /// The status line, e.g. "503 Service Unavailable".
+    pub reason: String,
+    pub body: String,
+}
+
+impl std::fmt::Display for ProviderHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} API error ({}): {}", self.provider, self.reason, self.body)
+    }
+}
+
+impl std::error::Error for ProviderHttpError {}
 
 pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>;
 
@@ -194,6 +221,8 @@ impl ResponseAccumulator {
                 }
             }
             StreamEvent::Usage(usage) => self.usage = Some(usage),
+            // Who answered is the orchestrator's concern (it sees every event), not the response's.
+            StreamEvent::ProviderFallback(_) => {}
         }
     }
 

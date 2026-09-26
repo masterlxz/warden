@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use warden_bootstrap::{build_model_provider, default_config_path, load_config_from_path};
+use warden_bootstrap::{build_model_with_fallback, default_config_path, load_config_from_path};
 use warden_core::skill::{Skill, SkillStore};
 
 use crate::AppState;
@@ -110,7 +110,7 @@ pub async fn generate_skill_draft(
             let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
             let provider =
                 config.providers.iter().find(|p| p.id == id).ok_or_else(|| format!("model provider '{id}' not found"))?;
-            build_model_provider(provider, None).map_err(|e| format!("{e:#}"))?
+            build_model_with_fallback(&config, provider, None).map_err(|e| format!("{e:#}"))?
         }
         None => orchestrator.model().clone(),
     };

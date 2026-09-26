@@ -129,6 +129,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
           <LogoMark size={18} />
         </div>
         <div className="message-assistant-body">
+          {message.fallbacks?.map((f, index) => (
+            <p key={index} className="message-bubble-fallback">
+              Answered by {f.to} — {f.from} failed ({f.reason})
+            </p>
+          ))}
           {message.attachments && message.attachments.length > 0 && (
             <div className="message-bubble-attachments">
               {message.attachments.map((attachment, index) => (

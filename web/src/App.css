@@ -335,6 +335,35 @@ button:focus-visible {
   white-space: pre-wrap;
 }
 
+/* Fallback providers in Settings (P79). */
+.fallback-list {
+  margin: 0;
+  padding-left: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.fallback-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A reserve answered in place of the turn's provider (P79). */
+.bubble-fallback {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
 .bubble-markdown > :first-child {
   margin-top: 0;
 }

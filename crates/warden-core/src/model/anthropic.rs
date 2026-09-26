@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage, PDF_MIME_TYPE};
+use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -251,7 +251,7 @@ impl ModelProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Anthropic API error ({status}): {body}");
+            return Err(ProviderHttpError { provider: "Anthropic", status: status.as_u16(), reason: status.to_string(), body }.into());
         }
 
         Ok(Box::pin(try_stream! {

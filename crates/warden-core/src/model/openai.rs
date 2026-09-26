@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Attachment, ChatStream, Message, ModelProvider, Role, StreamEvent, Usage, PDF_MIME_TYPE};
+use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -308,7 +308,7 @@ impl ModelProvider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI API error ({status}): {body}");
+            return Err(ProviderHttpError { provider: "OpenAI", status: status.as_u16(), reason: status.to_string(), body }.into());
         }
 
         Ok(Box::pin(try_stream! {

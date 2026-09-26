@@ -14,7 +14,7 @@ use warden_core::memory::{FIXED_VAULT_FILES, Vault};
 use warden_core::model::anthropic::AnthropicProvider;
 use warden_core::model::gemini::GeminiProvider;
 use warden_core::model::openai::OpenAiProvider;
-use warden_core::model::{Attachment, Message, ModelProvider, Usage};
+use warden_core::model::{Attachment, FallbackProvider, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, NamedSubAgent};
@@ -324,6 +324,10 @@ pub struct FileConfig {
     /// `id` of the `providers` entry to use. Ignored (and unnecessary) while `providers` is
     /// empty and the legacy fallback is in play.
     pub active_provider: Option<String>,
+    /// Reserves, in order, for when a turn's provider is down (P79): ids from `providers`, tried
+    /// after the turn's own provider on a 429/5xx or a connection failure. Empty = no fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_providers: Vec<String>,
     /// External MCP servers to connect to on startup (Phase 5.2) — empty by default, same
     /// "off unless configured" spirit as the shell tool. Each entry is spawned as a local child
     /// process (stdio transport, the standard for local MCP servers); whatever tools it
@@ -490,6 +494,11 @@ pub fn rename_provider_cascade(config: &mut FileConfig, old_id: &str, new_id: &s
             agent.provider_id = Some(new_id.to_string());
         }
     }
+    for id in &mut config.fallback_providers {
+        if id == old_id {
+            *id = new_id.to_string();
+        }
+    }
 }
 
 /// Clears every reference to a provider id that's about to be removed from `config` — same
@@ -503,6 +512,7 @@ pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
             agent.provider_id = None;
         }
     }
+    config.fallback_providers.retain(|id| id != removed_id);
 }
 
 /// What removing an agent did to one SSH host that named it (P46, `manage_agents` delete).
@@ -1114,6 +1124,37 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
     })
 }
 
+/// `primary` as `build_model_provider` builds it, plus `config.fallback_providers` as reserves
+/// (P79) when there are any: a `FallbackProvider` that tries them in order when `primary` is down.
+/// `model_override` only applies to `primary`. A reserve that can't be built (no key, an id that
+/// no longer exists) is left out with a note, never failing the turn it's only a backup for.
+pub fn build_model_with_fallback(config: &FileConfig, primary: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
+    let mut chain = fallback_chain(config, primary, model_override)?;
+    if chain.len() == 1 {
+        return Ok(chain.remove(0).1);
+    }
+    Ok(Arc::new(FallbackProvider::new(chain)))
+}
+
+/// `primary` then the reserves that could be built, in order, without repeats.
+fn fallback_chain(config: &FileConfig, primary: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Vec<(String, Arc<dyn ModelProvider>)>> {
+    let mut chain = vec![(primary.id.clone(), build_model_provider(primary, model_override)?)];
+    for id in &config.fallback_providers {
+        if id == &primary.id || chain.iter().any(|(seen, _)| seen == id) {
+            continue;
+        }
+        let Some(reserve) = config.providers.iter().find(|p| &p.id == id) else {
+            eprintln!("note: fallback provider '{id}' isn't among the configured providers — skipped\n");
+            continue;
+        };
+        match build_model_provider(reserve, None) {
+            Ok(model) => chain.push((id.clone(), model)),
+            Err(err) => eprintln!("note: fallback provider '{id}' can't be used — skipped: {err:#}\n"),
+        }
+    }
+    Ok(chain)
+}
+
 /// Builds the `delegate_to_agent` tool (P46's opt-in "chief" mechanism) from every configured
 /// agent — call once per turn, after resolving which model/persona is active, only when the
 /// active agent has `can_delegate_to_agents: true` (a caller attaches the result via
@@ -1145,7 +1186,7 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<Nam
                     );
                     continue;
                 };
-                match build_model_provider(provider, None) {
+                match build_model_with_fallback(config, provider, None) {
                     Ok(model) => orchestrator.with_model(model),
                     Err(err) => {
                         eprintln!("note: agent '{}' has an invalid provider — delegate_to_agent won't be able to reach it: {err:#}\n", agent.id);
@@ -1219,7 +1260,7 @@ fn resolve_model_provider(config: &FileConfig, overrides: &Overrides) -> anyhow:
             .iter()
             .find(|p| p.id == active_id)
             .ok_or_else(|| anyhow::anyhow!("active_provider '{active_id}' not found among configured providers"))?;
-        return build_model_provider(provider, overrides.model.clone());
+        return build_model_with_fallback(config, provider, overrides.model.clone());
     }
 
     let kind = overrides.provider.or(config.provider).unwrap_or(Provider::Gemini);
@@ -1715,6 +1756,7 @@ oauth = true
                 can_message_agents: true,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
+            fallback_providers: vec!["ollama-local".to_string()],
             legacy_storage_provider: None,
             legacy_remote_node: None,
             git_sync: Some(GitSyncConfig { remote_url: "https://gitea.example.com/user/vault.git".to_string(), token: "pat-secret".to_string() }),
@@ -2114,6 +2156,33 @@ oauth = true
 
     fn provider_entry(id: &str, kind: Provider) -> ProviderConfig {
         ProviderConfig { id: id.to_string(), kind, api_key: Some("a-key".to_string()), base_url: None, model: Some("a-model".to_string()) }
+    }
+
+    #[test]
+    fn the_fallback_chain_follows_the_list_and_skips_the_primary_and_what_cant_be_built() {
+        let mut no_key = provider_entry("no-key", Provider::Openai);
+        no_key.api_key = None;
+        let config = FileConfig {
+            providers: vec![provider_entry("main", Provider::Gemini), provider_entry("spare", Provider::Anthropic), no_key],
+            fallback_providers: vec!["main".into(), "no-key".into(), "ghost".into(), "spare".into(), "spare".into()],
+            ..Default::default()
+        };
+        let chain = fallback_chain(&config, &config.providers[0], None).unwrap();
+        assert_eq!(chain.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["main", "spare"]);
+
+        // Nothing listed: the plain provider, no wrapper.
+        let plain = FileConfig { fallback_providers: Vec::new(), ..config };
+        assert_eq!(fallback_chain(&plain, &plain.providers[0], None).unwrap().len(), 1);
+        assert_eq!(build_model_with_fallback(&plain, &plain.providers[0], None).unwrap().model_id(), "a-model");
+    }
+
+    #[test]
+    fn renaming_or_removing_a_provider_updates_the_fallback_list() {
+        let mut config = FileConfig { fallback_providers: vec!["a".into(), "b".into()], ..Default::default() };
+        rename_provider_cascade(&mut config, "a", "a2");
+        assert_eq!(config.fallback_providers, vec!["a2".to_string(), "b".to_string()]);
+        remove_provider_references(&mut config, "b");
+        assert_eq!(config.fallback_providers, vec!["a2".to_string()]);
     }
 
     #[test]

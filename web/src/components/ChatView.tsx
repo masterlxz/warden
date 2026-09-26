@@ -191,6 +191,11 @@ export default function ChatView({ entries, pending, disabled, onSend, onTranscr
           <ul className="chat-list">
             {entries.map((entry, i) => (
               <li key={i} className={`bubble bubble--${entry.role}`}>
+                {entry.fallbacks?.map((f, j) => (
+                  <p key={j} className="bubble-fallback">
+                    Respondido por {f.to} — {f.from} falhou ({f.reason})
+                  </p>
+                ))}
                 {entry.content !== "" &&
                   (entry.role === "user" ? (
                     <p className="bubble-plain">{entry.content}</p>

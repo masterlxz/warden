@@ -191,3 +191,45 @@ async fn a_ping_sent_during_a_slow_chat_call_is_answered_immediately() {
     let second = conn.recv().await.unwrap();
     assert!(matches!(second, Some(ServerMessage::ChatResponse { .. })), "expected ChatResponse second, got {second:?}");
 }
+
+/// Always answers 503, like the Gemini outage of Sessão 104.
+struct Busy;
+
+#[async_trait::async_trait]
+impl warden_core::model::ModelProvider for Busy {
+    async fn chat_stream(&self, _messages: Vec<warden_core::model::Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+        Err(warden_core::model::ProviderHttpError { provider: "Gemini", status: 503, reason: "503 Service Unavailable".into(), body: "high demand".into() }.into())
+    }
+}
+
+#[tokio::test]
+async fn a_down_provider_hands_the_turn_to_a_reserve_and_the_reply_says_so() {
+    use std::sync::Arc;
+    use warden_core::model::{FallbackProvider, ModelProvider};
+
+    let dir = std::env::temp_dir().join(format!(
+        "warden-server-fallback-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let model = FallbackProvider::new(vec![
+        ("gemini".to_string(), Arc::new(Busy) as Arc<dyn ModelProvider>),
+        ("anthropic".to_string(), Arc::new(MockProvider::replying("from the reserve")) as Arc<dyn ModelProvider>),
+    ]);
+    let orchestrator = warden_core::orchestrator::Orchestrator::new(Arc::new(model), Arc::new(warden_core::memory::Vault::new(dir.join("vault"))));
+    let server = warden_server::Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
+        .await
+        .unwrap();
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+
+    let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
+    conn.send(&ClientMessage::chat("hello")).await.unwrap();
+    match conn.recv().await.unwrap() {
+        Some(ServerMessage::ChatResponse { content, fallbacks, .. }) => {
+            assert_eq!(content, "from the reserve");
+            assert_eq!(fallbacks.len(), 1);
+            assert_eq!((fallbacks[0].from.as_str(), fallbacks[0].to.as_str(), fallbacks[0].reason.as_str()), ("gemini", "anthropic", "503 Service Unavailable"));
+        }
+        other => panic!("expected ChatResponse, got {other:?}"),
+    }
+}

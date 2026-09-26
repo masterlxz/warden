@@ -81,6 +81,25 @@
   `PENDING.md`, `ROADMAP.md` e no registro de decisões do `ARCHITECTURE.md`.
 - Os testes com o usuário (telas, Gemini real) ficaram para uma rodada só, mais adiante.
 
+**Fallback entre provedores (P79)**, implementado logo depois (plano aprovado em Plan mode; decisões do usuário: uma
+lista de reserva no config e um aviso discreto no chat):
+
+- `ProviderHttpError` tipado nos três providers; `FallbackProvider` (troca antes do stream em 408/429/5xx ou falha
+  de conexão, nunca em 400/401); `StreamEvent::ProviderFallback`; o orquestrador grava o gasto no modelo que
+  respondeu e devolve `MessageOutcome.fallbacks`.
+- `fallback_providers` no `config.toml`, `build_model_with_fallback` em todos os pontos que montam um provedor a
+  partir do config, validação e cascata de rename/remoção; telas de reservas no desktop e na web; aviso no chat do
+  desktop, da web e do CLI.
+- **Verificação**: `cargo test --workspace` com 758 passando, 0 falhas; clippy limpo; `tsc`/`build` do desktop e da
+  web limpos. Testes novos: 6 do `FallbackProvider` (inclusive uma conexão recusada de verdade), 1 do orquestrador
+  (gasto no modelo do reserva, uma troca só num turno com tool), 3 do bootstrap/settings e 1 de integração do hub.
+  **Ponta a ponta** com HTTP de verdade: dois servidores falsos em Node (um sempre 503, um respondendo SSE no
+  formato da OpenAI) cadastrados como `openai_compatible`, `warden-server` isolado no scratchpad: o chat voltou com
+  a resposta do reserva e `fallbacks: [{from: busy, to: spare, reason: "503 Service Unavailable"}]`, o uso ficou em
+  `spare-model`, um reserva desconhecido foi recusado nas settings e, sem reservas, o mesmo chat voltou a falhar com
+  o 503.
+- **Não testado**: nenhuma tela aberta (fica para a rodada de testes).
+
 **Próximo passo**: o P80/P87/P88 abrindo as telas com o usuário (aba Sync da web, Aparelhos, agentes), e o teste
 do Gemini real que a Sessão 104 deixou pendente. Depois, P79.
 

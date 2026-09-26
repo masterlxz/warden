@@ -26,6 +26,17 @@ export interface ChatMessage {
   /** Paths of files actually written to disk this turn (P64) — `generate_document`'s own
    * result, or oversized MCP media spilled to disk. Feeds the "Open" button in `MessageBubble`. */
   generatedFiles?: string[];
+  /** The turn's provider was down and a reserve answered (P79). Shown above the answer, not
+   * saved with the conversation. */
+  fallbacks?: ProviderFallback[];
+}
+
+/** Mirrors `ProviderFallbackDto` (P79): `from` failed with `reason`, `to` answered with `model`. */
+export interface ProviderFallback {
+  from: string;
+  to: string;
+  model: string;
+  reason: string;
 }
 
 export interface Conversation {
@@ -341,6 +352,8 @@ export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
   activeProvider: string;
+  /** Reserves tried in order when a turn's provider is down (P79) — provider ids. */
+  fallbackProviders: string[];
   vaultPath: string;
   /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
    * means "unset", resolving at bootstrap time to a sibling of the vault path. */

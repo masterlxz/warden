@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::budget::{SpendTurn, TurnBudget};
 use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
-use crate::model::{Attachment, Message, ModelProvider, StreamEvent, ToolCall, Usage};
+use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
 use crate::tool::{Approver, Tool, ToolProvider};
 
@@ -38,6 +38,9 @@ pub struct MessageOutcome {
     /// inline. Lets a caller (the desktop's "Open" affordance) offer to open the file without
     /// having to scrape a path out of the model's free-text answer.
     pub generated_files: Vec<String>,
+    /// Every time this turn's provider failed and a reserve answered instead (P79), once per
+    /// switch even if the turn's tool loop hit it on several calls. Empty almost always.
+    pub fallbacks: Vec<ProviderFallback>,
 }
 
 #[derive(Clone)]
@@ -441,6 +444,7 @@ impl Orchestrator {
         let mut has_usage = false;
         let mut attachments: Vec<Attachment> = Vec::new();
         let mut generated_files: Vec<String> = Vec::new();
+        let mut fallbacks: Vec<ProviderFallback> = Vec::new();
 
         // Only sub-agents spend from the turn's budget (see `TurnBudget`).
         let sub_agent_budget = self.budget.as_ref().filter(|_| self.charged);
@@ -467,13 +471,27 @@ impl Orchestrator {
                 call_messages.push(Message::system(notice));
             }
             let stream = self.model.chat_stream(call_messages, tool_specs).await?;
-            let response = crate::model::drain_chat_stream(stream, &mut on_event).await?;
+            // A reserve that answered in place of the turn's provider (P79) says so first.
+            let mut switched: Option<ProviderFallback> = None;
+            let response = crate::model::drain_chat_stream(stream, |event| {
+                if let StreamEvent::ProviderFallback(switch) = event {
+                    switched = Some(switch.clone());
+                }
+                on_event(event)
+            })
+            .await?;
+            let served_model = switched.as_ref().map_or_else(|| self.model.model_id().to_string(), |s| s.model.clone());
+            if let Some(switch) = switched {
+                if !fallbacks.iter().any(|f| f.from == switch.from && f.to == switch.to) {
+                    fallbacks.push(switch);
+                }
+            }
 
             if let Some(budget) = sub_agent_budget {
                 budget.record(response.usage.as_ref());
             }
             if let (Some(spend), Some(u)) = (spend, response.usage.as_ref()) {
-                spend.record(self.model.model_id(), u);
+                spend.record(&served_model, u);
             }
             if let Some(u) = response.usage {
                 usage.prompt_tokens += u.prompt_tokens;
@@ -488,7 +506,7 @@ impl Orchestrator {
                     usage += &sub_agents;
                     has_usage = true;
                 }
-                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments, generated_files });
+                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments, generated_files, fallbacks });
             }
 
             messages.push(Message::assistant_tool_calls(response.tool_calls.clone()));
@@ -1798,6 +1816,57 @@ mod tests {
 
         fn day(max_tokens: u64) -> Limit {
             Limit::new("day", Scope::Global, 24).with_max_tokens(max_tokens)
+        }
+
+        /// Down on every call — the turn's provider in the fallback test.
+        struct Down;
+
+        #[async_trait]
+        impl ModelProvider for Down {
+            fn model_id(&self) -> &str {
+                "down-model"
+            }
+
+            async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                Err(crate::model::ProviderHttpError { provider: "Test", status: 503, reason: "503 Service Unavailable".into(), body: String::new() }.into())
+            }
+        }
+
+        /// Calls `noop` once, then answers.
+        struct Reserve(AtomicUsize);
+
+        #[async_trait]
+        impl ModelProvider for Reserve {
+            fn model_id(&self) -> &str {
+                "reserve-model"
+            }
+
+            async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+                let tool_calls = if first { vec![ToolCall { id: "c".into(), name: "noop".into(), arguments: json!({}), thought_signature: None }] } else { Vec::new() };
+                Ok(response_stream(Response { content: "from the reserve".into(), tool_calls, usage: Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }) }))
+            }
+        }
+
+        #[tokio::test]
+        async fn a_fallback_is_booked_to_the_model_that_answered_and_reported_once() {
+            let model = crate::model::FallbackProvider::new(vec![
+                ("main".to_string(), Arc::new(Down) as Arc<dyn ModelProvider>),
+                ("spare".to_string(), Arc::new(Reserve(AtomicUsize::new(0))) as Arc<dyn ModelProvider>),
+            ]);
+            let guard = guard(vec![day(1_000)], vec![]);
+            let mut root = Orchestrator::new(Arc::new(model), temp_vault());
+            root.register_tool(Arc::new(NamedTool("noop")));
+            let root = root.with_spend_guard(guard.clone()).with_spend_context(SpendContext::new("cli"));
+
+            let outcome = root.handle_message(&[], "go").await.unwrap();
+
+            assert_eq!(outcome.content, "from the reserve");
+            // Two calls went through the reserve (the tool call and the answer), one switch reported.
+            assert_eq!(outcome.fallbacks.len(), 1);
+            assert_eq!((outcome.fallbacks[0].from.as_str(), outcome.fallbacks[0].to.as_str()), ("main", "spare"));
+            let by_model = guard.breakdown().by_model;
+            assert_eq!(by_model.iter().map(|b| (b.key.as_str(), b.calls)).collect::<Vec<_>>(), vec![("reserve-model", 2)]);
         }
 
         #[tokio::test]

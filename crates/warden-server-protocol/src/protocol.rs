@@ -337,6 +337,22 @@ impl From<Price> for PriceSettingsDto {
     }
 }
 
+/// One provider switch in a turn (P79): `from` failed with `reason`, `to` answered with `model`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFallbackDto {
+    pub from: String,
+    pub to: String,
+    pub model: String,
+    pub reason: String,
+}
+
+impl From<warden_core::model::ProviderFallback> for ProviderFallbackDto {
+    fn from(f: warden_core::model::ProviderFallback) -> Self {
+        Self { from: f.from, to: f.to, model: f.model, reason: f.reason }
+    }
+}
+
 /// `[git_sync]` as the settings screen shows it (P61): the remote's URL (empty = no git sync) and
 /// whether a token is saved, never the token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -436,6 +452,9 @@ pub struct HubSettingsDto {
     pub providers: Vec<ProviderSettingsDto>,
     /// Empty when none is picked.
     pub active_provider: String,
+    /// Reserves tried in order when a turn's provider is down (P79).
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
     pub agents: Vec<AgentSettingsDto>,
     pub tavily_key: SecretStatusDto,
     pub whisper_key: SecretStatusDto,
@@ -471,6 +490,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) leaves `[git_sync]` as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_sync: Option<GitSyncEditDto>,
+    /// `None` (or absent) keeps the list, dropping any provider this save removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_providers: Option<Vec<String>>,
 }
 
 impl HubSettingsUpdate {
@@ -749,6 +771,10 @@ pub enum ServerMessage {
         /// id, so this is what lets a client with several conversations route a late answer.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation_id: Option<String>,
+        /// The turn's provider failed and a reserve answered (P79) — for the discreet line above
+        /// the answer. Absent almost always; clients that don't know it ignore it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fallbacks: Vec<ProviderFallbackDto>,
     },
     /// A `Chat` message failed (missing API key, rate limit, provider error, ...) — the raw error
     /// text, since this protocol has no untrusted-public-bot audience to hide it from.
@@ -1105,6 +1131,7 @@ mod tests {
             usage: None,
             attachments: vec![Attachment { mime_type: "image/png".into(), data: "aGVsbG8=".into() }],
             conversation_id: Some("c1".into()),
+            fallbacks: Vec::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1452,6 +1479,7 @@ mod tests {
             limits: None,
             prices: Vec::new(),
             git_sync: None,
+            fallback_providers: None,
         };
         assert!(update.sets_a_secret());
         let token_only = HubSettingsUpdate {

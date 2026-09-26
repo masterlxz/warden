@@ -1278,6 +1278,37 @@ body {
   color: var(--color-danger);
 }
 
+/* Fallback providers (P79) */
+
+.fallback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.fallback-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fallback-order {
+  color: var(--color-text-muted);
+  min-width: 1.5em;
+}
+
+.fallback-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.message-bubble-fallback {
+  margin: 0 0 0.3rem;
+  font-size: 0.8em;
+  color: var(--color-text-muted);
+}
+
 /* Git sync form in Settings (P63) */
 
 .git-sync-form {

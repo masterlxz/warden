@@ -15,6 +15,7 @@ import {
   type ConversationSummary,
   type HistoryMessage,
   type HubDevice,
+  type ProviderFallback,
   type SyncAction,
   type SyncStatus,
   type HubSettings,
@@ -104,6 +105,8 @@ export interface ChatEntry {
   attachments: Attachment[];
   /** On an `error` entry: the spending limit the turn stopped on (P4), which can be extended. */
   spendLimitId?: string;
+  /** On an `assistant` entry: a reserve answered in place of the turn's provider (P79). */
+  fallbacks?: ProviderFallback[];
 }
 
 export function historyToEntries(messages: HistoryMessage[]): ChatEntry[] {
@@ -324,7 +327,10 @@ export class ServerConnection {
         break;
       case "chatResponse":
         for (const listener of this.chatListeners) {
-          listener({ role: "assistant", content: message.content, attachments: message.attachments }, message.conversationId);
+          listener(
+            { role: "assistant", content: message.content, attachments: message.attachments, ...(message.fallbacks.length > 0 && { fallbacks: message.fallbacks }) },
+            message.conversationId,
+          );
         }
         break;
       case "chatError":

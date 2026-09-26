@@ -11,11 +11,12 @@ import ApprovalModal from "./components/ApprovalModal";
 import SyncView from "./components/SyncView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
-import type { Attachment, ChatMessage, Conversation, Settings, Usage } from "./types";
+import type { Attachment, ChatMessage, Conversation, ProviderFallback, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
+  fallbackProviders: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -165,7 +166,13 @@ function App() {
     setSendError(null);
     setIsSending(true);
     try {
-      const reply = await invoke<{ content: string; usage?: Usage; attachments?: Attachment[]; generatedFiles?: string[] }>("send_message", {
+      const reply = await invoke<{
+        content: string;
+        usage?: Usage;
+        attachments?: Attachment[];
+        generatedFiles?: string[];
+        fallbacks?: ProviderFallback[];
+      }>("send_message", {
         history,
         content,
         attachments,
@@ -185,6 +192,8 @@ function App() {
         ...(reply.attachments && reply.attachments.length > 0 ? { attachments: reply.attachments } : {}),
         // Files actually written to disk this turn (P64) — same omit-when-empty convention.
         ...(reply.generatedFiles && reply.generatedFiles.length > 0 ? { generatedFiles: reply.generatedFiles } : {}),
+        // A reserve answered in place of the conversation's provider (P79) — same convention.
+        ...(reply.fallbacks && reply.fallbacks.length > 0 ? { fallbacks: reply.fallbacks } : {}),
       });
     } catch (err) {
       setSendError(String(err));

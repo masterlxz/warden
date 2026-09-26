@@ -47,6 +47,7 @@ type LimitsMode = "default" | "custom" | "off";
 interface Draft {
   providers: ProviderDraft[];
   activeProvider: string;
+  fallbackProviders: string[];
   agents: Keyed<AgentSettings>[];
   tavilyKey: SecretDraft;
   whisperKey: SecretDraft;
@@ -71,6 +72,7 @@ function toDraft(s: HubSettings): Draft {
   return {
     providers: s.providers.map((p) => keyed({ originalId: p.id, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: { saved: p.apiKey, edit: KEEP } })),
     activeProvider: s.activeProvider,
+    fallbackProviders: s.fallbackProviders ?? [],
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
     tavilyKey: { saved: s.tavilyKey, edit: KEEP },
     whisperKey: { saved: s.whisperKey, edit: KEEP },
@@ -91,6 +93,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
   return {
     providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit })),
     activeProvider: d.activeProvider,
+    fallbackProviders: d.fallbackProviders,
     agents: d.agents.map(strip),
     tavilyKey: d.tavilyKey.edit,
     whisperKey: d.whisperKey.edit,
@@ -100,6 +103,14 @@ function toUpdate(d: Draft): HubSettingsUpdate {
       gitSync: { remoteUrl: d.gitRemoteUrl, token: d.gitRemoteUrl.trim() === "" ? { action: "clear" } : d.gitToken.edit },
     }),
   };
+}
+
+/** `list` with the item at `index` moved one place up (`-1`) or down (`1`). */
+function moved(list: string[], index: number, delta: number): string[] {
+  const next = [...list];
+  const [item] = next.splice(index, 1);
+  next.splice(index + delta, 0, item);
+  return next;
 }
 
 function message(err: unknown): string {
@@ -231,6 +242,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           providers,
           activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
           agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
+          fallbackProviders: d.fallbackProviders.map((id) => (id === before.id ? patch.id! : id)),
         };
       }
       return { ...d, providers };
@@ -245,6 +257,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         providers: d.providers.filter((p) => p.key !== key),
         activeProvider: d.activeProvider === removed?.id ? "" : d.activeProvider,
         agents: d.agents.map((a) => (a.providerId === removed?.id ? { ...a, providerId: "" } : a)),
+        fallbackProviders: d.fallbackProviders.filter((id) => id !== removed?.id),
       };
     });
   }
@@ -391,6 +404,65 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             </li>
           ))}
         </ul>
+      </Section>
+
+      <Section
+        title="Provedores de reserva"
+        hint="Se o provedor de uma conversa cair (ocupado, limite de uso ou sem conexão), o Warden tenta estes, nesta ordem, e avisa acima da resposta. Chave recusada ou pedido inválido nunca trocam."
+      >
+        {draft.fallbackProviders.length === 0 && <p className="skills-hint">Nenhuma reserva: se o provedor falhar, o turno falha, como antes.</p>}
+        {draft.fallbackProviders.length > 0 && (
+          <ol className="fallback-list">
+            {draft.fallbackProviders.map((id, index) => (
+              <li key={id} className="fallback-row">
+                <span className="fallback-name">{id}</span>
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={index === 0}
+                  onClick={() => update((d) => ({ ...d, fallbackProviders: moved(d.fallbackProviders, index, -1) }))}
+                >
+                  Subir
+                </button>
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={index === draft.fallbackProviders.length - 1}
+                  onClick={() => update((d) => ({ ...d, fallbackProviders: moved(d.fallbackProviders, index, 1) }))}
+                >
+                  Descer
+                </button>
+                <button
+                  type="button"
+                  className="link-button skills-danger"
+                  onClick={() => update((d) => ({ ...d, fallbackProviders: d.fallbackProviders.filter((v) => v !== id) }))}
+                >
+                  Remover
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+        {providerIds.some((id) => !draft.fallbackProviders.includes(id)) && (
+          <Field label="Adicionar reserva">
+            <select
+              value=""
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id) update((d) => ({ ...d, fallbackProviders: [...d.fallbackProviders, id] }));
+              }}
+            >
+              <option value="">Escolha um provedor…</option>
+              {providerIds
+                .filter((id) => !draft.fallbackProviders.includes(id))
+                .map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+            </select>
+          </Field>
+        )}
       </Section>
 
       <Section

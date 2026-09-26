@@ -8,6 +8,7 @@ import SpendingSection, { validateSpending } from "./SpendingSection";
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
+  fallbackProviders: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -24,6 +25,71 @@ const emptySettings: Settings = {
   prices: [],
   version: "",
 };
+
+/** The reserve list (P79): providers tried in order when a turn's own provider is down (429, 5xx,
+ * no connection). Each entry is a provider id; the picker only offers ones not already listed. */
+function FallbackProvidersEditor({
+  value,
+  providers,
+  onChange,
+}: {
+  value: string[];
+  providers: ProviderEntry[];
+  onChange: (next: string[]) => void;
+}) {
+  const available = providers.map((p) => p.id).filter((id) => id !== "" && !value.includes(id));
+
+  function move(index: number, delta: number) {
+    const next = [...value];
+    const [item] = next.splice(index, 1);
+    next.splice(index + delta, 0, item);
+    onChange(next);
+  }
+
+  return (
+    <div className="fallback-list">
+      {value.length === 0 && <p className="settings-hint">No reserves — a failing provider fails the turn, as before.</p>}
+      {value.map((id, index) => (
+        <div key={id} className="fallback-row">
+          <span className="fallback-order">{index + 1}.</span>
+          <span className="fallback-name">{id}</span>
+          <button type="button" className="provider-delete-btn" disabled={index === 0} onClick={() => move(index, -1)} title="Move up" aria-label={`Move ${id} up`}>
+            ↑
+          </button>
+          <button
+            type="button"
+            className="provider-delete-btn"
+            disabled={index === value.length - 1}
+            onClick={() => move(index, 1)}
+            title="Move down"
+            aria-label={`Move ${id} down`}
+          >
+            ↓
+          </button>
+          <button type="button" className="provider-delete-btn" onClick={() => onChange(value.filter((v) => v !== id))} title="Remove" aria-label={`Remove ${id}`}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {available.length > 0 && (
+        <select
+          className="settings-select"
+          value=""
+          onChange={(e) => {
+            if (e.currentTarget.value) onChange([...value, e.currentTarget.value]);
+          }}
+        >
+          <option value="">+ Add a reserve…</option>
+          {available.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
 
 const emptyGitSync: GitSyncConfig = { remoteUrl: "", token: "" };
 
@@ -869,7 +935,8 @@ function SettingsView() {
       // longer exists, and resolving it later fails with a raw "not found" error.
       const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
       const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
-      return { ...f, providers, activeProvider, agents };
+      const fallbackProviders = f.fallbackProviders.map((id) => (id === prevId ? next.id : id));
+      return { ...f, providers, activeProvider, agents, fallbackProviders };
     });
   }
 
@@ -882,7 +949,8 @@ function SettingsView() {
       // default model was this provider must fall back to "no default" instead of keeping a
       // providerId that no longer resolves to anything.
       const agents = f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a));
-      return { ...f, providers, activeProvider, agents };
+      const fallbackProviders = f.fallbackProviders.filter((id) => id !== removed.id);
+      return { ...f, providers, activeProvider, agents, fallbackProviders };
     });
   }
 
@@ -1028,6 +1096,7 @@ function SettingsView() {
           version: form.version,
           providers: form.providers,
           active_provider: form.activeProvider,
+          fallback_providers: form.fallbackProviders,
           vault_path: form.vaultPath,
           generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
@@ -1087,6 +1156,21 @@ function SettingsView() {
               />
             ))}
           </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Fallback providers</h3>
+          </div>
+          <p className="settings-hint">
+            When the provider a conversation uses is down (busy, rate-limited or unreachable), Warden tries these instead,
+            in this order, and says so above the answer. A rejected key or a bad request never switches.
+          </p>
+          <FallbackProvidersEditor
+            value={form.fallbackProviders}
+            providers={form.providers}
+            onChange={(fallbackProviders) => setForm((f) => ({ ...f, fallbackProviders }))}
+          />
         </section>
 
         <section className="settings-section">

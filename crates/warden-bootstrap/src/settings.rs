@@ -219,6 +219,25 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig]) -> R
     Ok(checked)
 }
 
+/// The reserve list (P79), trimmed: every id must be one of `providers`, none twice.
+pub fn check_fallback_providers(ids: Vec<String>, providers: &[ProviderConfig]) -> Result<Vec<String>, String> {
+    let mut checked: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        if !providers.iter().any(|p| p.id == id) {
+            return Err(format!("fallback provider '{id}' is not one of the configured providers"));
+        }
+        if checked.contains(&id) {
+            return Err(format!("fallback provider '{id}' is listed twice"));
+        }
+        checked.push(id);
+    }
+    Ok(checked)
+}
+
 /// An empty `active` means none; anything else must be one of `providers`.
 pub fn check_active_provider(active: &str, providers: &[ProviderConfig]) -> Result<Option<String>, String> {
     let active = non_empty(active);
@@ -259,6 +278,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             })
             .collect(),
         active_provider: config.active_provider.clone().unwrap_or_default(),
+        fallback_providers: config.fallback_providers.clone(),
         agents: config
             .agents
             .iter()
@@ -327,6 +347,12 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     }
     let providers = check_providers(providers)?;
     let active_provider = check_active_provider(&update.active_provider, &providers)?;
+    if let Some(ids) = update.fallback_providers {
+        config.fallback_providers = check_fallback_providers(ids, &providers)?;
+    } else {
+        // Untouched by this screen: a reserve whose provider this save removed goes with it.
+        config.fallback_providers.retain(|id| providers.iter().any(|p| &p.id == id));
+    }
 
     let mut renames = Vec::new();
     let mut agents = Vec::with_capacity(update.agents.len());
@@ -452,6 +478,7 @@ mod tests {
             limits: view.limits,
             prices: view.prices,
             git_sync: None,
+            fallback_providers: None,
         }
     }
 
@@ -747,5 +774,29 @@ mod tests {
         let mut update = untouched(&sample());
         update.git_sync = Some(GitSyncEditDto { remote_url: "https://git.example/v.git".into(), token: SecretEdit::Keep });
         assert!(apply_hub_settings(sample(), update).unwrap_err().contains("token"));
+    }
+
+    #[test]
+    fn fallback_providers_are_shown_checked_and_follow_a_removed_provider() {
+        let mut config = sample();
+        config.fallback_providers = vec!["spare".into()];
+        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).fallback_providers, vec!["spare".to_string()]);
+
+        let mut update = untouched(&config);
+        update.fallback_providers = Some(vec![" main ".into(), "spare".into()]);
+        assert_eq!(apply_hub_settings(sample(), update).unwrap().fallback_providers, vec!["main".to_string(), "spare".to_string()]);
+
+        for bad in [vec!["ghost".to_string()], vec!["spare".to_string(), "spare".to_string()]] {
+            let mut update = untouched(&config);
+            update.fallback_providers = Some(bad);
+            assert!(apply_hub_settings(sample(), update).is_err());
+        }
+
+        // Not sent: kept, minus a provider the same save removed.
+        let mut update = untouched(&config);
+        update.providers.retain(|p| p.id != "spare");
+        let mut with_spare = sample();
+        with_spare.fallback_providers = vec!["spare".into()];
+        assert!(apply_hub_settings(with_spare, update).unwrap().fallback_providers.is_empty());
     }
 }
