@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AgentEntry, Attachment, Conversation, ProviderEntry } from "../types";
+import type { AgentEntry, Attachment, Combo, Conversation, ProviderEntry } from "../types";
 import { LogoMark } from "./Icons";
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
@@ -11,6 +11,8 @@ interface ChatAreaProps {
   sendError: string | null;
   agents: AgentEntry[];
   providers: ProviderEntry[];
+  /** Combos (P90) are picked here like providers. */
+  combos: Combo[];
   selectedAgentId: string;
   selectedProviderId: string;
   onSelectAgent: (agentId: string) => void;
@@ -45,6 +47,7 @@ function ChatArea({
   sendError,
   agents,
   providers,
+  combos,
   selectedAgentId,
   selectedProviderId,
   onSelectAgent,
@@ -82,6 +85,11 @@ function ChatArea({
           {providers.map((p) => (
             <option key={p.id} value={p.id}>
               {p.id}
+            </option>
+          ))}
+          {combos.map((c) => (
+            <option key={c.id} value={c.id} title={c.providers.join(" → ")}>
+              {c.id} (combo)
             </option>
           ))}
         </select>

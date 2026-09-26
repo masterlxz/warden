@@ -376,8 +376,8 @@ fn check_persona(persona: &str) -> anyhow::Result<()> {
 
 fn check_provider(config: &FileConfig, provider_id: Option<&str>) -> anyhow::Result<()> {
     match provider_id {
-        Some(id) if !config.providers.iter().any(|p| p.id == id) => {
-            let known: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
+        Some(id) if !config.providers.iter().any(|p| p.id == id) && !config.combos.iter().any(|c| c.id == id) => {
+            let known: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).chain(config.combos.iter().map(|c| c.id.as_str())).collect();
             anyhow::bail!("unknown provider_id '{id}' (available: {}) — or leave it out to use the default", known.join(", "))
         }
         _ => Ok(()),

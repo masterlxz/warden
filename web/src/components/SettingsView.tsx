@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { SettingsError, type LoadedSettings, type ServerConnection } from "../hub/connection";
 import type {
   AgentSettings,
+  Combo,
   HubSettings,
   HubSettingsUpdate,
   LimitScope,
@@ -47,7 +48,7 @@ type LimitsMode = "default" | "custom" | "off";
 interface Draft {
   providers: ProviderDraft[];
   activeProvider: string;
-  fallbackProviders: string[];
+  combos: Keyed<Combo>[];
   agents: Keyed<AgentSettings>[];
   tavilyKey: SecretDraft;
   whisperKey: SecretDraft;
@@ -72,7 +73,7 @@ function toDraft(s: HubSettings): Draft {
   return {
     providers: s.providers.map((p) => keyed({ originalId: p.id, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: { saved: p.apiKey, edit: KEEP } })),
     activeProvider: s.activeProvider,
-    fallbackProviders: s.fallbackProviders ?? [],
+    combos: (s.combos ?? []).map((c) => keyed({ ...c })),
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
     tavilyKey: { saved: s.tavilyKey, edit: KEEP },
     whisperKey: { saved: s.whisperKey, edit: KEEP },
@@ -93,7 +94,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
   return {
     providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit })),
     activeProvider: d.activeProvider,
-    fallbackProviders: d.fallbackProviders,
+    combos: d.combos.map(strip),
     agents: d.agents.map(strip),
     tavilyKey: d.tavilyKey.edit,
     whisperKey: d.whisperKey.edit,
@@ -242,7 +243,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           providers,
           activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
           agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
-          fallbackProviders: d.fallbackProviders.map((id) => (id === before.id ? patch.id! : id)),
+          combos: d.combos.map((c) => ({ ...c, providers: c.providers.map((id) => (id === before.id ? patch.id! : id)) })),
         };
       }
       return { ...d, providers };
@@ -257,7 +258,37 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         providers: d.providers.filter((p) => p.key !== key),
         activeProvider: d.activeProvider === removed?.id ? "" : d.activeProvider,
         agents: d.agents.map((a) => (a.providerId === removed?.id ? { ...a, providerId: "" } : a)),
-        fallbackProviders: d.fallbackProviders.filter((id) => id !== removed?.id),
+        // A combo loses it too (the hub refuses an empty combo, so the screen says so before saving).
+        combos: d.combos.map((c) => ({ ...c, providers: c.providers.filter((id) => id !== removed?.id) })),
+      };
+    });
+  }
+
+  function patchCombo(key: number, patch: Partial<Combo>) {
+    update((d) => {
+      const before = d.combos.find((c) => c.key === key);
+      const combos = d.combos.map((c) => (c.key === key ? { ...c, ...patch } : c));
+      // A renamed combo stays the active model and every agent's default, like a provider.
+      if (before && patch.id !== undefined && patch.id !== before.id) {
+        return {
+          ...d,
+          combos,
+          activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
+          agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
+        };
+      }
+      return { ...d, combos };
+    });
+  }
+
+  function removeCombo(key: number) {
+    update((d) => {
+      const removed = d.combos.find((c) => c.key === key);
+      return {
+        ...d,
+        combos: d.combos.filter((c) => c.key !== key),
+        activeProvider: d.activeProvider === removed?.id ? "" : d.activeProvider,
+        agents: d.agents.map((a) => (a.providerId === removed?.id ? { ...a, providerId: "" } : a)),
       };
     });
   }
@@ -309,6 +340,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   }
 
   const providerIds = draft.providers.map((p) => p.id.trim()).filter((id) => id !== "");
+  const comboIds = draft.combos.map((c) => c.id.trim()).filter((id) => id !== "");
 
   return (
     <div className="usage-view settings-view">
@@ -407,62 +439,83 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       </Section>
 
       <Section
-        title="Provedores de reserva"
-        hint="Se o provedor de uma conversa cair (ocupado, limite de uso ou sem conexão), o Warden tenta estes, nesta ordem, e avisa acima da resposta. Chave recusada ou pedido inválido nunca trocam."
+        title="Combos"
+        hint="Um combo se escolhe como um provedor (modelo ativo, padrão de um agente) e tenta os provedores dele na ordem: se um cair (ocupado, limite de uso ou sem conexão), o próximo responde, e o chat avisa acima da resposta. Chave recusada ou pedido inválido nunca trocam."
+        action={
+          <button type="button" className="link-button" onClick={() => update((d) => ({ ...d, combos: [...d.combos, keyed({ id: "", providers: [] })] }))}>
+            + Combo
+          </button>
+        }
       >
-        {draft.fallbackProviders.length === 0 && <p className="skills-hint">Nenhuma reserva: se o provedor falhar, o turno falha, como antes.</p>}
-        {draft.fallbackProviders.length > 0 && (
-          <ol className="fallback-list">
-            {draft.fallbackProviders.map((id, index) => (
-              <li key={id} className="fallback-row">
-                <span className="fallback-name">{id}</span>
-                <button
-                  type="button"
-                  className="link-button"
-                  disabled={index === 0}
-                  onClick={() => update((d) => ({ ...d, fallbackProviders: moved(d.fallbackProviders, index, -1) }))}
-                >
-                  Subir
-                </button>
-                <button
-                  type="button"
-                  className="link-button"
-                  disabled={index === draft.fallbackProviders.length - 1}
-                  onClick={() => update((d) => ({ ...d, fallbackProviders: moved(d.fallbackProviders, index, 1) }))}
-                >
-                  Descer
-                </button>
-                <button
-                  type="button"
-                  className="link-button skills-danger"
-                  onClick={() => update((d) => ({ ...d, fallbackProviders: d.fallbackProviders.filter((v) => v !== id) }))}
-                >
+        {draft.combos.length === 0 && <p className="skills-hint">Nenhum combo.</p>}
+        <ul className="skills-list">
+          {draft.combos.map((c) => (
+            <li key={c.key} className="skills-item settings-card">
+              <div className="skills-item-header">
+                <label className="settings-radio">
+                  <input
+                    type="radio"
+                    name="active-provider"
+                    checked={c.id.trim() !== "" && draft.activeProvider === c.id}
+                    disabled={c.id.trim() === ""}
+                    onChange={() => update((d) => ({ ...d, activeProvider: c.id }))}
+                  />
+                  {draft.activeProvider === c.id && c.id.trim() !== "" ? "Ativo" : "Usar este"}
+                </label>
+                <button type="button" className="link-button skills-danger" onClick={() => removeCombo(c.key)}>
                   Remover
                 </button>
-              </li>
-            ))}
-          </ol>
-        )}
-        {providerIds.some((id) => !draft.fallbackProviders.includes(id)) && (
-          <Field label="Adicionar reserva">
-            <select
-              value=""
-              onChange={(e) => {
-                const id = e.target.value;
-                if (id) update((d) => ({ ...d, fallbackProviders: [...d.fallbackProviders, id] }));
-              }}
-            >
-              <option value="">Escolha um provedor…</option>
-              {providerIds
-                .filter((id) => !draft.fallbackProviders.includes(id))
-                .map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-            </select>
-          </Field>
-        )}
+              </div>
+              <Field label="Nome">
+                <input value={c.id} onChange={(e) => patchCombo(c.key, { id: e.target.value })} />
+              </Field>
+              {c.providers.length === 0 && <p className="error-banner">Um combo precisa de pelo menos um provedor.</p>}
+              {c.providers.length > 0 && (
+                <ol className="fallback-list">
+                  {c.providers.map((id, index) => (
+                    <li key={id} className="fallback-row">
+                      <span className="fallback-name">{id}</span>
+                      <button type="button" className="link-button" disabled={index === 0} onClick={() => patchCombo(c.key, { providers: moved(c.providers, index, -1) })}>
+                        Subir
+                      </button>
+                      <button
+                        type="button"
+                        className="link-button"
+                        disabled={index === c.providers.length - 1}
+                        onClick={() => patchCombo(c.key, { providers: moved(c.providers, index, 1) })}
+                      >
+                        Descer
+                      </button>
+                      <button type="button" className="link-button skills-danger" onClick={() => patchCombo(c.key, { providers: c.providers.filter((v) => v !== id) })}>
+                        Remover
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {providerIds.some((id) => !c.providers.includes(id)) && (
+                <Field label="Adicionar provedor">
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (id) patchCombo(c.key, { providers: [...c.providers, id] });
+                    }}
+                  >
+                    <option value="">Escolha um provedor…</option>
+                    {providerIds
+                      .filter((id) => !c.providers.includes(id))
+                      .map((id) => (
+                        <option key={id} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                  </select>
+                </Field>
+              )}
+            </li>
+          ))}
+        </ul>
       </Section>
 
       <Section
@@ -500,6 +553,11 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     {providerIds.map((id) => (
                       <option key={id} value={id}>
                         {id}
+                      </option>
+                    ))}
+                    {comboIds.map((id) => (
+                      <option key={id} value={id}>
+                        {id} (combo)
                       </option>
                     ))}
                   </select>

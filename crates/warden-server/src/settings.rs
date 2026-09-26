@@ -322,7 +322,7 @@ api_key = "sk-ant-original-secret-9999"
             limits: settings.limits.clone(),
             prices: settings.prices.clone(),
             git_sync: None,
-            fallback_providers: None,
+            combos: None,
         }
     }
 

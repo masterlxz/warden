@@ -337,6 +337,14 @@ impl From<Price> for PriceSettingsDto {
     }
 }
 
+/// One named combo (P90): provider ids, tried in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComboDto {
+    pub id: String,
+    pub providers: Vec<String>,
+}
+
 /// One provider switch in a turn (P79): `from` failed with `reason`, `to` answered with `model`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -452,9 +460,10 @@ pub struct HubSettingsDto {
     pub providers: Vec<ProviderSettingsDto>,
     /// Empty when none is picked.
     pub active_provider: String,
-    /// Reserves tried in order when a turn's provider is down (P79).
+    /// Named routing combos (P90): each one's providers are tried in order when one is down.
+    /// A combo id can be the active model or an agent's default, like a provider id.
     #[serde(default)]
-    pub fallback_providers: Vec<String>,
+    pub combos: Vec<ComboDto>,
     pub agents: Vec<AgentSettingsDto>,
     pub tavily_key: SecretStatusDto,
     pub whisper_key: SecretStatusDto,
@@ -490,9 +499,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) leaves `[git_sync]` as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_sync: Option<GitSyncEditDto>,
-    /// `None` (or absent) keeps the list, dropping any provider this save removed.
+    /// `None` (or absent) keeps the combos, dropping any provider this save removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback_providers: Option<Vec<String>>,
+    pub combos: Option<Vec<ComboDto>>,
 }
 
 impl HubSettingsUpdate {
@@ -1479,7 +1488,7 @@ mod tests {
             limits: None,
             prices: Vec::new(),
             git_sync: None,
-            fallback_providers: None,
+            combos: None,
         };
         assert!(update.sets_a_secret());
         let token_only = HubSettingsUpdate {

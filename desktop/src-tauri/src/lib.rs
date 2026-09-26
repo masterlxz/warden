@@ -16,13 +16,13 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use warden_bootstrap::settings::{
-    check_active_provider, check_agents, check_fallback_providers, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
+    check_active_provider, check_agents, check_combos, check_providers, config_version, default_models_by_kind, limits_into_config, prices_into_config,
 };
 use warden_bootstrap::{
-    aggregate_usage, bootstrap, build_model_with_fallback, default_config_path, scope_to_agent, AgentExtras,
+    aggregate_usage, bootstrap, build_model_for, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
-    save_conversation as write_conversation, AgentConfig, ApiKeys, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
+    save_conversation as write_conversation, AgentConfig, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
     Overrides,
     Provider, ProviderConfig, UsageSummary,
 };
@@ -205,8 +205,7 @@ async fn send_message(
             }
         }
         if let Some(id) = &provider_id {
-            let provider = config.providers.iter().find(|p| &p.id == id).ok_or_else(|| format!("model provider '{id}' not found"))?;
-            let model = build_model_with_fallback(&config, provider, None).map_err(|e| format!("{e:#}"))?;
+            let model = build_model_for(&config, id, None).map_err(|e| format!("{e:#}"))?;
             orchestrator = orchestrator.with_model(model);
         }
     }
@@ -397,8 +396,8 @@ struct SettingsSnapshot {
     /// form on the "Sync via Git" section. The transport the Sync screen's manual push/pull and the
     /// auto-sync loop use.
     git_sync: Option<GitSyncConfigPayload>,
-    /// Reserves tried in order when a turn's provider is down (P79) — provider ids.
-    fallback_providers: Vec<String>,
+    /// Named routing combos (P90) — `ComboConfig` as is: its fields are already single words.
+    combos: Vec<ComboConfig>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
@@ -430,7 +429,7 @@ struct SettingsFormPayload {
     mcp_servers: Vec<McpServerConfig>,
     agents: Vec<AgentPayload>,
     git_sync: Option<GitSyncConfigPayload>,
-    fallback_providers: Vec<String>,
+    combos: Vec<ComboConfig>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
@@ -478,7 +477,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
-        fallback_providers: config.fallback_providers,
+        combos: config.combos,
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
         limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
@@ -542,6 +541,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         });
     }
 
+    let combos = check_combos(payload.combos, &providers)?;
     let agents = check_agents(
         payload
             .agents
@@ -557,6 +557,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
             })
             .collect(),
         &providers,
+        &combos,
     )?;
 
     let ssh_hosts = ssh_cmds::hosts_into_config(payload.ssh_hosts, &agents)?;
@@ -564,8 +565,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     let limits = payload.limits.map(limits_into_config).transpose()?;
     let prices = prices_into_config(payload.prices)?;
 
-    let active_provider = check_active_provider(&payload.active_provider, &providers)?;
-    let fallback_providers = check_fallback_providers(payload.fallback_providers, &providers)?;
+    let active_provider = check_active_provider(&payload.active_provider, &providers, &combos)?;
 
     // All-or-nothing (P63/P71): a URL without a token (or the reverse) can't sync anything, so it's
     // rejected here rather than silently written half-formed.
@@ -609,7 +609,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         },
         providers,
         active_provider,
-        fallback_providers,
+        combos,
+        legacy_fallback_providers: Vec::new(),
         mcp_servers,
         agents,
         // Read and dropped (Sessão 105): the vault always lives locally now.

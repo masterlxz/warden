@@ -29,6 +29,10 @@ pub enum Command {
     ModelsAdd,
     ModelsEdit(String),
     ModelsRemove(String),
+    CombosList,
+    /// `/combos add <id> <provider>...` — the providers in order (P90).
+    CombosAdd(String, Vec<String>),
+    CombosRemove(String),
     AgentsList,
     /// `None` is `/agents use none` — clears the session's active agent.
     AgentsUse(Option<String>),
@@ -106,6 +110,11 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("models", ["add"]) => Command::ModelsAdd,
         ("models", ["edit", id]) => Command::ModelsEdit(id.to_string()),
         ("models", ["remove", id]) => Command::ModelsRemove(id.to_string()),
+        ("combos", []) => Command::CombosList,
+        ("combos", ["add", id, members @ ..]) if !members.is_empty() => {
+            Command::CombosAdd(id.to_string(), members.iter().map(|m| m.to_string()).collect())
+        }
+        ("combos", ["remove", id]) => Command::CombosRemove(id.to_string()),
         ("agents", []) => Command::AgentsList,
         ("agents", ["use", "none"]) => Command::AgentsUse(None),
         ("agents", ["use", id]) => Command::AgentsUse(Some(id.to_string())),
@@ -168,10 +177,11 @@ pub fn kind_label(kind: Provider) -> &'static str {
     }
 }
 
-const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "limits", "extend", "prices", "models", "agents", "skills", "ssh", "sync"];
+const TOP_LEVEL_COMMANDS: &[&str] = &["exit", "quit", "help", "usage", "limits", "extend", "prices", "models", "combos", "agents", "skills", "ssh", "sync"];
 const LIMITS_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "off", "reset"];
 const PRICES_SUBCOMMANDS: &[&str] = &["add", "edit", "remove"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
+const COMBOS_SUBCOMMANDS: &[&str] = &["add", "remove"];
 const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
 const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
 const SSH_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "on", "off", "test"];
@@ -196,6 +206,7 @@ fn current_word(input: &str) -> Option<(&str, Vec<&'static str>)> {
             "limits" => LIMITS_SUBCOMMANDS,
             "prices" => PRICES_SUBCOMMANDS,
             "models" => MODELS_SUBCOMMANDS,
+            "combos" => COMBOS_SUBCOMMANDS,
             "agents" => AGENTS_SUBCOMMANDS,
             "skills" => SKILLS_SUBCOMMANDS,
             "ssh" => SSH_SUBCOMMANDS,
@@ -310,6 +321,9 @@ mod tests {
         assert!(matches!(assert_recognized("/models use my-id"), Command::ModelsUse(id) if id == "my-id"));
         assert!(matches!(assert_recognized("/models edit my-id"), Command::ModelsEdit(id) if id == "my-id"));
         assert!(matches!(assert_recognized("/models remove my-id"), Command::ModelsRemove(id) if id == "my-id"));
+        assert!(matches!(assert_recognized("/combos"), Command::CombosList));
+        assert!(matches!(assert_recognized("/combos add fast gemini ollama"), Command::CombosAdd(id, m) if id == "fast" && m == ["gemini", "ollama"]));
+        assert!(matches!(assert_recognized("/combos remove fast"), Command::CombosRemove(id) if id == "fast"));
     }
 
     #[test]

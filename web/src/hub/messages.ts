@@ -171,8 +171,8 @@ export interface PriceSettings {
 export interface HubSettings {
   providers: ProviderSettings[];
   activeProvider: string;
-  /** Reserves tried in order when a turn's provider is down (P79) — provider ids. */
-  fallbackProviders: string[];
+  /** Named routing combos (P90): picked like a provider; tries its providers in order when one is down. */
+  combos: Combo[];
   agents: AgentSettings[];
   tavilyKey: SecretStatus;
   whisperKey: SecretStatus;
@@ -206,10 +206,16 @@ export interface HubSettingsUpdate {
   whisperKey: SecretEdit;
   limits: LimitSettings[] | null;
   prices: PriceSettings[];
-  /** Omitted: the reserve list stays, minus any provider this save removed. */
-  fallbackProviders?: string[];
+  /** Omitted: the combos stay, minus any provider this save removed. */
+  combos?: Combo[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
+}
+
+/** Mirrors `ComboDto` (P90): provider ids, in order. Its id shares one namespace with the providers'. */
+export interface Combo {
+  id: string;
+  providers: string[];
 }
 
 /** Mirrors `ProviderFallbackDto` (P79): `from` failed with `reason`, `to` answered with `model`. */

@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
+import type { AgentEntry, Combo, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
-  fallbackProviders: [],
+  combos: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -26,9 +26,9 @@ const emptySettings: Settings = {
   version: "",
 };
 
-/** The reserve list (P79): providers tried in order when a turn's own provider is down (429, 5xx,
- * no connection). Each entry is a provider id; the picker only offers ones not already listed. */
-function FallbackProvidersEditor({
+/** A combo's providers (P90), in the order they're tried when one is down (429, 5xx, no
+ * connection). Each entry is a provider id; the picker only offers ones not already listed. */
+function ProviderOrderEditor({
   value,
   providers,
   onChange,
@@ -48,7 +48,7 @@ function FallbackProvidersEditor({
 
   return (
     <div className="fallback-list">
-      {value.length === 0 && <p className="settings-hint">No reserves — a failing provider fails the turn, as before.</p>}
+      {value.length === 0 && <p className="settings-hint">No providers yet — a combo needs at least one.</p>}
       {value.map((id, index) => (
         <div key={id} className="fallback-row">
           <span className="fallback-order">{index + 1}.</span>
@@ -79,7 +79,7 @@ function FallbackProvidersEditor({
             if (e.currentTarget.value) onChange([...value, e.currentTarget.value]);
           }}
         >
-          <option value="">+ Add a reserve…</option>
+          <option value="">+ Add a provider…</option>
           {available.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -465,15 +465,57 @@ function SshHostCard({
   );
 }
 
+/** One combo (P90): its name (also its id), whether it's the active model, and its providers. */
+function ComboCard({
+  combo,
+  providers,
+  isActive,
+  onChange,
+  onDelete,
+  onSetActive,
+}: {
+  combo: Combo;
+  providers: ProviderEntry[];
+  isActive: boolean;
+  onChange: (next: Combo) => void;
+  onDelete: () => void;
+  onSetActive: () => void;
+}) {
+  return (
+    <div className="provider-card">
+      <div className="provider-card-header">
+        <label className="provider-active-toggle" title="Use this combo for new messages">
+          <input type="radio" name="active-provider" checked={isActive} onChange={onSetActive} />
+          <span>Active</span>
+        </label>
+        <input
+          className="settings-input provider-name-input"
+          type="text"
+          value={combo.id}
+          placeholder="combo name"
+          aria-label="Combo name"
+          onChange={(e) => onChange({ ...combo, id: e.currentTarget.value })}
+        />
+        <button type="button" className="provider-delete-btn" onClick={onDelete} aria-label={`Delete ${combo.id || "this combo"}`} title="Delete this combo">
+          ✕
+        </button>
+      </div>
+      <ProviderOrderEditor value={combo.providers} providers={providers} onChange={(members) => onChange({ ...combo, providers: members })} />
+    </div>
+  );
+}
+
 function AgentCard({
   agent,
   providers,
+  combos,
   toolNames,
   onChange,
   onDelete,
 }: {
   agent: AgentEntry;
   providers: ProviderEntry[];
+  combos: Combo[];
   /** Every tool the running app has, for the "Restrict tools" list. */
   toolNames: string[];
   onChange: (next: AgentEntry) => void;
@@ -522,6 +564,11 @@ function AgentCard({
           {providers.map((p) => (
             <option key={p.id} value={p.id}>
               {p.id}
+            </option>
+          ))}
+          {combos.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.id} (combo)
             </option>
           ))}
         </select>
@@ -935,8 +982,8 @@ function SettingsView() {
       // longer exists, and resolving it later fails with a raw "not found" error.
       const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
       const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
-      const fallbackProviders = f.fallbackProviders.map((id) => (id === prevId ? next.id : id));
-      return { ...f, providers, activeProvider, agents, fallbackProviders };
+      const combos = f.combos.map((c) => ({ ...c, providers: c.providers.map((id) => (id === prevId ? next.id : id)) }));
+      return { ...f, providers, activeProvider, agents, combos };
     });
   }
 
@@ -949,8 +996,50 @@ function SettingsView() {
       // default model was this provider must fall back to "no default" instead of keeping a
       // providerId that no longer resolves to anything.
       const agents = f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a));
-      const fallbackProviders = f.fallbackProviders.filter((id) => id !== removed.id);
-      return { ...f, providers, activeProvider, agents, fallbackProviders };
+      // A combo loses it too; one left with nothing to try goes, with whatever pointed at it.
+      const kept = f.combos.map((c) => ({ ...c, providers: c.providers.filter((id) => id !== removed.id) }));
+      const emptied = kept.filter((c) => c.providers.length === 0).map((c) => c.id);
+      return {
+        ...f,
+        providers,
+        activeProvider: emptied.includes(activeProvider) ? (providers[0]?.id ?? "") : activeProvider,
+        agents: agents.map((a) => (emptied.includes(a.providerId) ? { ...a, providerId: "" } : a)),
+        combos: kept.filter((c) => c.providers.length > 0),
+      };
+    });
+  }
+
+  function addCombo() {
+    setForm((f) => {
+      let n = f.combos.length + 1;
+      while (f.combos.some((c) => c.id === `combo-${n}`) || f.providers.some((p) => p.id === `combo-${n}`)) n += 1;
+      return { ...f, combos: [...f.combos, { id: `combo-${n}`, providers: [] }] };
+    });
+  }
+
+  function updateCombo(index: number, next: Combo) {
+    setForm((f) => {
+      const prevId = f.combos[index]?.id;
+      const combos = f.combos.map((c, i) => (i === index ? next : c));
+      if (prevId === undefined || prevId === next.id) {
+        return { ...f, combos };
+      }
+      // Same rename cascade as a provider's: the active model and every agent that named it.
+      const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
+      const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
+      return { ...f, combos, activeProvider, agents };
+    });
+  }
+
+  function deleteCombo(index: number) {
+    setForm((f) => {
+      const removed = f.combos[index];
+      return {
+        ...f,
+        combos: f.combos.filter((_, i) => i !== index),
+        activeProvider: f.activeProvider === removed.id ? (f.providers[0]?.id ?? "") : f.activeProvider,
+        agents: f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a)),
+      };
     });
   }
 
@@ -1096,7 +1185,7 @@ function SettingsView() {
           version: form.version,
           providers: form.providers,
           active_provider: form.activeProvider,
-          fallback_providers: form.fallbackProviders,
+          combos: form.combos,
           vault_path: form.vaultPath,
           generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
@@ -1160,17 +1249,30 @@ function SettingsView() {
 
         <section className="settings-section">
           <div className="settings-section-header">
-            <h3 className="settings-section-title">Fallback providers</h3>
+            <h3 className="settings-section-title">Combos</h3>
+            <button type="button" className="settings-browse-btn" onClick={addCombo}>
+              + Add combo
+            </button>
           </div>
           <p className="settings-hint">
-            When the provider a conversation uses is down (busy, rate-limited or unreachable), Warden tries these instead,
-            in this order, and says so above the answer. A rejected key or a bad request never switches.
+            A combo is picked like a provider — as the active model, an agent's default or a conversation's model — and
+            tries its providers in order: when one is down (busy, rate-limited or unreachable), the next answers, and the
+            chat says so above the answer. A rejected key or a bad request never switches.
           </p>
-          <FallbackProvidersEditor
-            value={form.fallbackProviders}
-            providers={form.providers}
-            onChange={(fallbackProviders) => setForm((f) => ({ ...f, fallbackProviders }))}
-          />
+          {form.combos.length === 0 && <p className="settings-hint">No combos yet.</p>}
+          <div className="provider-list">
+            {form.combos.map((c, i) => (
+              <ComboCard
+                key={i}
+                combo={c}
+                providers={form.providers}
+                isActive={form.activeProvider === c.id && c.id !== ""}
+                onChange={(next) => updateCombo(i, next)}
+                onDelete={() => deleteCombo(i)}
+                onSetActive={() => setForm((f) => ({ ...f, activeProvider: c.id }))}
+              />
+            ))}
+          </div>
         </section>
 
         <section className="settings-section">
@@ -1189,7 +1291,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} providers={form.providers} toolNames={toolNames} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} providers={form.providers} combos={form.combos} toolNames={toolNames} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

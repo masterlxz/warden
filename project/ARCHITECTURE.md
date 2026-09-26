@@ -4,7 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
-| Roteador de APIs de IA (P79, Sessão 105) | Construir um roteador próprio vs embutir o 9Router (Node + Next.js, MIT) vs recomendar instalar por fora | **Fallback nativo entre provedores cadastrados + roteador externo opcional** ✓ (escolha do usuário). Embutir descartado (runtime Node inteiro no hub em Rust, dependência de outro projeto). Um roteador externo continua funcionando como provedor `openai_compatible`. OAuth de assinatura de consumidor fica fora do Warden (termos dos provedores). Implementado na mesma sessão — ver "Fallback entre provedores" |
+| Roteador de APIs de IA (P79, Sessão 105) | Construir um roteador próprio vs embutir o 9Router (Node + Next.js, MIT) vs recomendar instalar por fora | **Fallback nativo entre provedores cadastrados + roteador externo opcional** ✓ (escolha do usuário). Embutir descartado (runtime Node inteiro no hub em Rust, dependência de outro projeto). Um roteador externo continua funcionando como provedor `openai_compatible`. OAuth de assinatura de consumidor fica fora do Warden (termos dos provedores). Implementado na mesma sessão, e o roteamento virou **combos com nome** (P90) — ver "Fallback entre provedores (P79) e combos (P90)" |
 | Onde a memória mora vs sync (P61, Sessão 105) | Provider escolhido como fonte de leitura/escrita do agente (`Orchestrator` sobre `dyn StorageProvider`) vs disco local sempre + provider como destino de sync vs híbrido cache+fonte remota | **Disco local sempre + sync** ✓ (escolha do usuário: "local deixa mais rápido"). O agente nunca lê pela rede; o "storage" vira para onde o vault sincroniza (git ou Arweave). Consequência: o seletor de 4 cartões do desktop e a migração entre providers perdem o sentido, e `remote_node`/`RemoteNodeProvider`/`warden-node` saem (fatia 2, decisão do usuário: sem código morto). Fatia 1: o auto-sync sai do desktop para `warden_bootstrap::auto_sync::SyncRunner` e passa a rodar também no hub standalone, com tela na web |
 | Framework desktop | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
 | TLS do hub (P36 fatia 2, Sessão 96) | Cert autoassinado + fingerprint no QR (extensão não consegue fixar) vs certs do Tailscale (`tailscale cert`, Let's Encrypt pro nome MagicDNS) vs `ws://` só em loopback/LAN pra extensão; com TLS ligado: mesma porta aceitando `ws://` só pro `Discover` vs TLS sem exceção | **Certs do Tailscale + mesma porta, `ws://` só pro Discover** ✓ (escolha do usuário). `warden-server serve --tailscale-cert` (nome via `tailscale status --json`, `tailscale cert` na subida + renovação diária) ou `--tls-cert/--tls-key[/--tls-host]` genérico; `ReloadingCertResolver` relê os PEM quando o mtime muda (renovação sem restart). O hub olha o 1º byte (`0x16` = TLS): TLS segue o protocolo completo; `ws://` puro só faz upgrade no path `/discover` (`warden_server_protocol::tls::DISCOVER_PATH`) e só responde `DiscoverAck{secureUrl}` — qualquer outro path leva `426 Upgrade Required` **antes** do `Hello`, então um cliente mal configurado nunca manda a chave em texto puro. Clientes Rust verificam contra `webpki-roots` (sem pinning). Provider do rustls escolhido explicitamente (`ring`): o workspace compila `ring` e `aws-lc-rs` juntos (via `reqwest`/`rmcp`) e aí o rustls entra em pânico se tiver que escolher sozinho. Sem TLS configurado, nada muda (`ws://` como antes). **Fatia 3 (Sessão 96, continuação)**: no desktop, só o toggle do Tailscale (cert manual fica na CLI); mobile e extensão mantêm host + porta + um switch "Use TLS" (em vez de virar um campo de URL único), com o token por device ainda indexado por `host:port` — num hub TLS o host é o nome `.ts.net`. |
@@ -1918,13 +1918,22 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   ignorados, nunca escritos; como o merge do `render_config` tira chaves que o struct não serializa, o próximo save
   limpa o arquivo (um comentário colado na chave removida sai junto). `WARDEN_STORAGE_PROVIDER` deixou de ser lido.
 
-## Fallback entre provedores (P79, Sessão 105)
+## Fallback entre provedores (P79) e combos (P90), Sessão 105
 
-- **Config**: `FileConfig.fallback_providers: Vec<String>` (ids do registro, na ordem; vazio = sem fallback, e aí
-  nada muda). Editado no desktop ("Fallback providers") e na web ("Provedores de reserva",
-  `HubSettingsDto/HubSettingsUpdate.fallbackProviders`; ausente no update = mantém, tirando provedores que o mesmo
-  save removeu). `check_fallback_providers` recusa id desconhecido ou repetido; renomear/remover um provedor
-  atualiza a lista (`rename_provider_cascade`/`remove_provider_references` e as cascatas das duas telas).
+- **Config**: `[[combos]]` (`ComboConfig { id, providers }`) no `config.toml`, no mesmo espaço de nomes dos
+  provedores: onde se escolhe um provedor (`active_provider`, `AgentConfig.provider_id`, o modelo da conversa no
+  desktop, `/models use` no CLI, o gerador de skills) também se escolhe um combo. `check_combos` recusa nome vazio,
+  repetido ou igual ao de um provedor, combo sem provedor, provedor desconhecido ou repetido;
+  `check_active_provider`/`check_agents` aceitam os dois. Cascatas: renomear provedor atualiza os combos; remover
+  provedor o tira dos combos, e um combo esvaziado sai junto com o ativo/agentes que o citavam; `rename_combo`/
+  `remove_combo` fazem o mesmo com o ativo e os agentes. As duas telas repetem essas cascatas no rascunho.
+- **Primeira versão (substituída na mesma sessão)**: uma lista global `fallback_providers`, aplicada depois do
+  provedor de qualquer turno. Saiu por decisão do usuário, porque um combo é essa lista com nome. Um config antigo
+  a lê como campo legado (`legacy_fallback_providers`, só leitura) e, na carga (`migrate_legacy_fallbacks`), ela
+  vira o combo `"<ativo>-reserva"` = [ativo, ...lista], que passa a ser o ativo; o próximo save grava o combo.
+- **Resolução**: `build_model_for(config, id, model_override)` — provedor → `build_model_provider`; combo →
+  `FallbackProvider` sobre os provedores dele (`combo_chain` pula, com um aviso, o que não constrói; sobrando um,
+  devolve ele puro; nenhum, erro). `model_override` (a flag `--model`) só vale para provedor.
 - **`warden_core::model::FallbackProvider`**: o provedor do turno primeiro, depois os reservas. Só troca **antes** de
   o stream começar e só num erro que diz "tente em outro lugar": `ProviderHttpError` (novo, tipado, com o mesmo
   `Display` do antigo `bail!` dos três providers) com 408/429/5xx, ou um `reqwest::Error` de conexão/timeout. Um
@@ -1936,11 +1945,9 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   O orquestrador o intercepta ao drenar o stream: grava o gasto no `model` do reserva (não no `model_id()` do
   turno) e junta as trocas em `MessageOutcome.fallbacks`, uma por par de provedores mesmo com várias voltas de
   tools. O `Response` não mudou (evitou mexer nas dezenas de literais dele nos testes).
-- **Onde vale**: `build_model_with_fallback(config, primary, model_override)` substituiu `build_model_provider` em
-  todo lugar que parte do config: o provedor ativo (`resolve_model_provider`, só o caminho do registro), agentes com
-  provedor próprio no hub, no desktop e nos alvos de delegação, o seletor de modelo do CLI e o gerador de skills. Um
-  reserva que não constrói (sem chave, id sumido) é pulado com um aviso no log. Sem lista, devolve o provedor puro,
-  sem invólucro.
+- **Onde vale**: `build_model_for` em todo lugar que parte do config: o modelo ativo (`resolve_model_provider`, só o
+  caminho do registro), agentes com modelo próprio no hub, no desktop e nos alvos de delegação, o seletor de modelo
+  do CLI e o gerador de skills.
 - **Aviso**: `ChatResponse.fallbacks: Vec<ProviderFallbackDto>` (omitido quando vazio; mobile e extensão ignoram) →
   linha "Respondido por X — Y falhou (motivo)" acima da resposta na web; o `send_message` do desktop devolve o
   mesmo e o `MessageBubble` mostra (não é gravado na conversa); o CLI imprime uma linha esmaecida. Telegram e

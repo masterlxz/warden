@@ -16,7 +16,7 @@ import type { Attachment, ChatMessage, Conversation, ProviderFallback, Settings,
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
-  fallbackProviders: [],
+  combos: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -33,6 +33,11 @@ const emptySettings: Settings = {
   prices: [],
   version: "",
 };
+
+/** Whether `id` is a model a conversation can use: a provider or a combo (P90). */
+function isModel(settings: Settings, id: string): boolean {
+  return settings.providers.some((p) => p.id === id) || settings.combos.some((c) => c.id === id);
+}
 
 // Purely a per-device UI preference (not something another device/channel needs to know about),
 // so localStorage rather than config.toml is the right home for it.
@@ -99,7 +104,7 @@ function App() {
     setSelectedAgentId(settings.agents.some((a) => a.id === storedAgentId) ? storedAgentId : "");
 
     const storedProviderId = activeConversation?.providerId ?? "";
-    setSelectedProviderId(settings.providers.some((p) => p.id === storedProviderId) ? storedProviderId : settings.activeProvider);
+    setSelectedProviderId(isModel(settings, storedProviderId) ? storedProviderId : settings.activeProvider);
   }, [activeConversationId, settings]);
 
   function handleToggleSidebarCollapsed() {
@@ -115,7 +120,7 @@ function App() {
     // Pre-fills the model selector with the agent's default, if it has one — the user can still
     // change it afterward, this is just a convenience.
     const agent = settings.agents.find((a) => a.id === agentId);
-    if (agent?.providerId && settings.providers.some((p) => p.id === agent.providerId)) {
+    if (agent?.providerId && isModel(settings, agent.providerId)) {
       setSelectedProviderId(agent.providerId);
     }
   }
@@ -251,6 +256,7 @@ function App() {
           sendError={sendError}
           agents={settings.agents}
           providers={settings.providers}
+          combos={settings.combos}
           selectedAgentId={selectedAgentId}
           selectedProviderId={selectedProviderId}
           onSelectAgent={handleSelectAgent}

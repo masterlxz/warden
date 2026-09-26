@@ -31,6 +31,13 @@ export interface ChatMessage {
   fallbacks?: ProviderFallback[];
 }
 
+/** Mirrors `warden_bootstrap::ComboConfig` (P90): provider ids, in order. Its id shares one
+ * namespace with the providers'. */
+export interface Combo {
+  id: string;
+  providers: string[];
+}
+
 /** Mirrors `ProviderFallbackDto` (P79): `from` failed with `reason`, `to` answered with `model`. */
 export interface ProviderFallback {
   from: string;
@@ -352,8 +359,9 @@ export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
   activeProvider: string;
-  /** Reserves tried in order when a turn's provider is down (P79) — provider ids. */
-  fallbackProviders: string[];
+  /** Named routing combos (P90): picked like a provider (active model, an agent's default, a
+   * conversation's model); tries its providers in order when one is down. */
+  combos: Combo[];
   vaultPath: string;
   /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
    * means "unset", resolving at bootstrap time to a sibling of the vault path. */

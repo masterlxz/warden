@@ -175,6 +175,15 @@ impl SshHostConfig {
     }
 }
 
+/// One named combo (P90): `providers` are ids from `FileConfig::providers`, tried in order — the
+/// first that isn't down answers.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ComboConfig {
+    pub id: String,
+    pub providers: Vec<String>,
+}
+
 /// Config for `warden_sync::GitSyncEngine` (P63, v1) — a self-hosted/remote git repo (Gitea,
 /// GitHub, ...) as an alternative to Arweave/TruthID for syncing the vault, for whoever doesn't
 /// want that dependency. HTTPS + token only in v1 (SSH/deploy-key is v2); the token is only ever
@@ -321,13 +330,18 @@ pub struct FileConfig {
     /// `bootstrap()` falls back to `provider`/`api_keys.gemini`/`api_keys.openai` in that case.
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
-    /// `id` of the `providers` entry to use. Ignored (and unnecessary) while `providers` is
-    /// empty and the legacy fallback is in play.
+    /// `id` of the `providers` entry — or of a `combos` entry (P90) — to use. Ignored (and
+    /// unnecessary) while `providers` is empty and the legacy fallback is in play.
     pub active_provider: Option<String>,
-    /// Reserves, in order, for when a turn's provider is down (P79): ids from `providers`, tried
-    /// after the turn's own provider on a 429/5xx or a connection failure. Empty = no fallback.
+    /// Named routing combos (P90): pick one wherever a provider can be picked, and it tries its
+    /// providers in order when one is down (P79's `FallbackProvider`). Ids share one namespace
+    /// with `providers`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fallback_providers: Vec<String>,
+    pub combos: Vec<ComboConfig>,
+    /// P79's global reserve list, from before the combos replaced it (Sessão 105). Read and
+    /// turned into a combo on load (`migrate_legacy_fallbacks`), never written back.
+    #[serde(default, skip_serializing, rename = "fallback_providers")]
+    pub legacy_fallback_providers: Vec<String>,
     /// External MCP servers to connect to on startup (Phase 5.2) — empty by default, same
     /// "off unless configured" spirit as the shell tool. Each entry is spawned as a local child
     /// process (stdio transport, the standard for local MCP servers); whatever tools it
@@ -494,9 +508,11 @@ pub fn rename_provider_cascade(config: &mut FileConfig, old_id: &str, new_id: &s
             agent.provider_id = Some(new_id.to_string());
         }
     }
-    for id in &mut config.fallback_providers {
-        if id == old_id {
-            *id = new_id.to_string();
+    for combo in &mut config.combos {
+        for id in &mut combo.providers {
+            if id == old_id {
+                *id = new_id.to_string();
+            }
         }
     }
 }
@@ -512,7 +528,69 @@ pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
             agent.provider_id = None;
         }
     }
-    config.fallback_providers.retain(|id| id != removed_id);
+    for combo in &mut config.combos {
+        combo.providers.retain(|id| id != removed_id);
+    }
+    // A combo left with nothing to try goes too, and so does whatever pointed at it.
+    let emptied: Vec<String> = config.combos.iter().filter(|c| c.providers.is_empty()).map(|c| c.id.clone()).collect();
+    for id in emptied {
+        remove_combo(config, &id);
+    }
+}
+
+/// `rename_provider_cascade` for a combo (P90): the active model and every agent that named it.
+pub fn rename_combo(config: &mut FileConfig, old_id: &str, new_id: &str) {
+    for combo in &mut config.combos {
+        if combo.id == old_id {
+            combo.id = new_id.to_string();
+        }
+    }
+    if config.active_provider.as_deref() == Some(old_id) {
+        config.active_provider = Some(new_id.to_string());
+    }
+    for agent in &mut config.agents {
+        if agent.provider_id.as_deref() == Some(old_id) {
+            agent.provider_id = Some(new_id.to_string());
+        }
+    }
+}
+
+/// Removes a combo and every reference to it (P90).
+pub fn remove_combo(config: &mut FileConfig, id: &str) {
+    config.combos.retain(|c| c.id != id);
+    if config.active_provider.as_deref() == Some(id) {
+        config.active_provider = None;
+    }
+    for agent in &mut config.agents {
+        if agent.provider_id.as_deref() == Some(id) {
+            agent.provider_id = None;
+        }
+    }
+}
+
+/// P79's global reserve list (`fallback_providers`) as the combo that replaced it (P90): with a
+/// provider active, `"<active>-reserva"` = the active one then the list, and it becomes the
+/// active model — so the file keeps doing what it did. The next save writes the combo instead.
+fn migrate_legacy_fallbacks(config: &mut FileConfig) {
+    let legacy = std::mem::take(&mut config.legacy_fallback_providers);
+    let Some(active) = config.active_provider.clone().filter(|id| config.providers.iter().any(|p| &p.id == id)) else {
+        return;
+    };
+    if legacy.is_empty() {
+        return;
+    }
+    let mut providers = vec![active.clone()];
+    for id in legacy {
+        if !providers.contains(&id) && config.providers.iter().any(|p| p.id == id) {
+            providers.push(id);
+        }
+    }
+    let mut combo_id = format!("{active}-reserva");
+    while config.providers.iter().any(|p| p.id == combo_id) || config.combos.iter().any(|c| c.id == combo_id) {
+        combo_id.push('-');
+    }
+    config.combos.push(ComboConfig { id: combo_id.clone(), providers });
+    config.active_provider = Some(combo_id);
 }
 
 /// What removing an agent did to one SSH host that named it (P46, `manage_agents` delete).
@@ -955,7 +1033,9 @@ pub fn load_config(explicit_path: Option<&str>) -> anyhow::Result<FileConfig> {
 pub fn load_config_from_path(path: &Path, required: bool) -> anyhow::Result<FileConfig> {
     match std::fs::read_to_string(path) {
         Ok(contents) => {
-            toml::from_str(&contents).with_context(|| format!("failed to parse config file at {}", path.display()))
+            let mut config: FileConfig = toml::from_str(&contents).with_context(|| format!("failed to parse config file at {}", path.display()))?;
+            migrate_legacy_fallbacks(&mut config);
+            Ok(config)
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound && !required => Ok(FileConfig::default()),
         Err(err) => Err(err).with_context(|| format!("failed to read config file at {}", path.display())),
@@ -1124,35 +1204,43 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
     })
 }
 
-/// `primary` as `build_model_provider` builds it, plus `config.fallback_providers` as reserves
-/// (P79) when there are any: a `FallbackProvider` that tries them in order when `primary` is down.
-/// `model_override` only applies to `primary`. A reserve that can't be built (no key, an id that
-/// no longer exists) is left out with a note, never failing the turn it's only a backup for.
-pub fn build_model_with_fallback(config: &FileConfig, primary: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
-    let mut chain = fallback_chain(config, primary, model_override)?;
-    if chain.len() == 1 {
-        return Ok(chain.remove(0).1);
+/// The model a provider or combo id names (P90) — what every place that lets someone pick a
+/// model builds from: a provider is `build_model_provider`, a combo a `FallbackProvider` over its
+/// providers in order (P79). `model_override` (a `--model` flag) only applies to a provider. A
+/// combo member that can't be built (no key, an id that's gone) is left out with a note; a combo
+/// with one usable member is just that member.
+pub fn build_model_for(config: &FileConfig, id: &str, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
+    if let Some(provider) = config.providers.iter().find(|p| p.id == id) {
+        return build_model_provider(provider, model_override);
     }
-    Ok(Arc::new(FallbackProvider::new(chain)))
+    let Some(combo) = config.combos.iter().find(|c| c.id == id) else {
+        anyhow::bail!("model '{id}' is neither a configured provider nor a combo");
+    };
+    let mut chain = combo_chain(config, combo);
+    match chain.len() {
+        0 => anyhow::bail!("none of combo '{id}'s providers can be used ({})", combo.providers.join(", ")),
+        1 => Ok(chain.remove(0).1),
+        _ => Ok(Arc::new(FallbackProvider::new(chain))),
+    }
 }
 
-/// `primary` then the reserves that could be built, in order, without repeats.
-fn fallback_chain(config: &FileConfig, primary: &ProviderConfig, model_override: Option<String>) -> anyhow::Result<Vec<(String, Arc<dyn ModelProvider>)>> {
-    let mut chain = vec![(primary.id.clone(), build_model_provider(primary, model_override)?)];
-    for id in &config.fallback_providers {
-        if id == &primary.id || chain.iter().any(|(seen, _)| seen == id) {
+/// A combo's providers that could be built, in order, without repeats.
+fn combo_chain(config: &FileConfig, combo: &ComboConfig) -> Vec<(String, Arc<dyn ModelProvider>)> {
+    let mut chain: Vec<(String, Arc<dyn ModelProvider>)> = Vec::new();
+    for id in &combo.providers {
+        if chain.iter().any(|(seen, _)| seen == id) {
             continue;
         }
-        let Some(reserve) = config.providers.iter().find(|p| &p.id == id) else {
-            eprintln!("note: fallback provider '{id}' isn't among the configured providers — skipped\n");
+        let Some(provider) = config.providers.iter().find(|p| &p.id == id) else {
+            eprintln!("note: combo '{}' names '{id}', which isn't a configured provider — skipped\n", combo.id);
             continue;
         };
-        match build_model_provider(reserve, None) {
+        match build_model_provider(provider, None) {
             Ok(model) => chain.push((id.clone(), model)),
-            Err(err) => eprintln!("note: fallback provider '{id}' can't be used — skipped: {err:#}\n"),
+            Err(err) => eprintln!("note: combo '{}' can't use '{id}' — skipped: {err:#}\n", combo.id),
         }
     }
-    Ok(chain)
+    chain
 }
 
 /// Builds the `delegate_to_agent` tool (P46's opt-in "chief" mechanism) from every configured
@@ -1179,14 +1267,7 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<Nam
     for agent in &config.agents {
         let target_orchestrator = match &agent.provider_id {
             Some(provider_id) => {
-                let Some(provider) = config.providers.iter().find(|p| &p.id == provider_id) else {
-                    eprintln!(
-                        "note: agent '{}' references unknown provider '{provider_id}' — delegate_to_agent won't be able to reach it\n",
-                        agent.id
-                    );
-                    continue;
-                };
-                match build_model_with_fallback(config, provider, None) {
+                match build_model_for(config, provider_id, None) {
                     Ok(model) => orchestrator.with_model(model),
                     Err(err) => {
                         eprintln!("note: agent '{}' has an invalid provider — delegate_to_agent won't be able to reach it: {err:#}\n", agent.id);
@@ -1255,12 +1336,7 @@ fn resolve_model_provider(config: &FileConfig, overrides: &Overrides) -> anyhow:
             .clone()
             .or_else(|| config.active_provider.clone())
             .ok_or_else(|| anyhow::anyhow!("providers are configured but no `active_provider` is set — pick one of: {}", config.providers.iter().map(|p| p.id.as_str()).collect::<Vec<_>>().join(", ")))?;
-        let provider = config
-            .providers
-            .iter()
-            .find(|p| p.id == active_id)
-            .ok_or_else(|| anyhow::anyhow!("active_provider '{active_id}' not found among configured providers"))?;
-        return build_model_with_fallback(config, provider, overrides.model.clone());
+        return build_model_for(config, &active_id, overrides.model.clone());
     }
 
     let kind = overrides.provider.or(config.provider).unwrap_or(Provider::Gemini);
@@ -1756,7 +1832,8 @@ oauth = true
                 can_message_agents: true,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
-            fallback_providers: vec!["ollama-local".to_string()],
+            combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
+            legacy_fallback_providers: Vec::new(),
             legacy_storage_provider: None,
             legacy_remote_node: None,
             git_sync: Some(GitSyncConfig { remote_url: "https://gitea.example.com/user/vault.git".to_string(), token: "pat-secret".to_string() }),
@@ -2158,31 +2235,89 @@ oauth = true
         ProviderConfig { id: id.to_string(), kind, api_key: Some("a-key".to_string()), base_url: None, model: Some("a-model".to_string()) }
     }
 
+    fn combo(id: &str, members: &[&str]) -> ComboConfig {
+        ComboConfig { id: id.to_string(), providers: members.iter().map(|m| m.to_string()).collect() }
+    }
+
     #[test]
-    fn the_fallback_chain_follows_the_list_and_skips_the_primary_and_what_cant_be_built() {
+    fn a_model_id_is_a_provider_or_a_combo_and_a_combo_keeps_what_can_be_built() {
         let mut no_key = provider_entry("no-key", Provider::Openai);
         no_key.api_key = None;
         let config = FileConfig {
             providers: vec![provider_entry("main", Provider::Gemini), provider_entry("spare", Provider::Anthropic), no_key],
-            fallback_providers: vec!["main".into(), "no-key".into(), "ghost".into(), "spare".into(), "spare".into()],
+            combos: vec![combo("fast", &["main", "no-key", "ghost", "spare", "spare"]), combo("lonely", &["no-key", "spare"]), combo("dead", &["no-key"])],
             ..Default::default()
         };
-        let chain = fallback_chain(&config, &config.providers[0], None).unwrap();
+        let chain = combo_chain(&config, &config.combos[0]);
         assert_eq!(chain.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["main", "spare"]);
 
-        // Nothing listed: the plain provider, no wrapper.
-        let plain = FileConfig { fallback_providers: Vec::new(), ..config };
-        assert_eq!(fallback_chain(&plain, &plain.providers[0], None).unwrap().len(), 1);
-        assert_eq!(build_model_with_fallback(&plain, &plain.providers[0], None).unwrap().model_id(), "a-model");
+        assert_eq!(build_model_for(&config, "main", Some("override".into())).unwrap().model_id(), "override");
+        assert_eq!(build_model_for(&config, "fast", None).unwrap().model_id(), "a-model");
+        // One usable member: that provider itself, no wrapper needed.
+        assert_eq!(build_model_for(&config, "lonely", None).unwrap().model_id(), "a-model");
+        assert!(expect_err(build_model_for(&config, "dead", None)).contains("none of combo 'dead'"));
+        assert!(expect_err(build_model_for(&config, "nope", None)).contains("neither"));
     }
 
     #[test]
-    fn renaming_or_removing_a_provider_updates_the_fallback_list() {
-        let mut config = FileConfig { fallback_providers: vec!["a".into(), "b".into()], ..Default::default() };
+    fn a_combo_can_be_the_active_model() {
+        let config = FileConfig {
+            providers: vec![provider_entry("main", Provider::Gemini), provider_entry("spare", Provider::Anthropic)],
+            combos: vec![combo("fast", &["main", "spare"])],
+            active_provider: Some("fast".into()),
+            ..Default::default()
+        };
+        assert!(resolve_model_provider(&config, &Overrides::default()).is_ok());
+    }
+
+    #[test]
+    fn the_old_reserve_list_becomes_the_active_combo_and_a_save_writes_it_that_way() {
+        let path = temp_toml_path("legacy-fallbacks");
+        std::fs::write(
+            &path,
+            "active_provider = \"main\"\nfallback_providers = [\"spare\", \"ghost\", \"main\"]\n\n[[providers]]\nid = \"main\"\nkind = \"gemini\"\n\n[[providers]]\nid = \"spare\"\nkind = \"anthropic\"\n",
+        )
+        .unwrap();
+        let config = load_config_from_path(&path, true).unwrap();
+        assert_eq!(config.combos, vec![combo("main-reserva", &["main", "spare"])]);
+        assert_eq!(config.active_provider.as_deref(), Some("main-reserva"));
+
+        save_config(&path, &config).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("fallback_providers") && saved.contains("[[combos]]"), "{saved}");
+        assert_eq!(load_config_from_path(&path, true).unwrap().combos, config.combos, "migrates once");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn renaming_or_removing_providers_and_combos_keeps_every_reference_whole() {
+        let mut config = FileConfig {
+            combos: vec![combo("fast", &["a", "b"]), combo("solo", &["b"])],
+            active_provider: Some("solo".into()),
+            agents: vec![AgentConfig {
+                id: "pirate".into(),
+                persona: "p".into(),
+                provider_id: Some("fast".into()),
+                can_delegate_to_agents: false,
+                can_manage_agents: false,
+                can_message_agents: false,
+                allowed_tools: None,
+            }],
+            ..Default::default()
+        };
         rename_provider_cascade(&mut config, "a", "a2");
-        assert_eq!(config.fallback_providers, vec!["a2".to_string(), "b".to_string()]);
+        assert_eq!(config.combos[0].providers, vec!["a2".to_string(), "b".to_string()]);
+
+        // "solo" empties and goes, and the active model that named it with it.
         remove_provider_references(&mut config, "b");
-        assert_eq!(config.fallback_providers, vec!["a2".to_string()]);
+        assert_eq!(config.combos, vec![combo("fast", &["a2"])]);
+        assert_eq!(config.active_provider, None);
+
+        rename_combo(&mut config, "fast", "quick");
+        assert_eq!(config.agents[0].provider_id.as_deref(), Some("quick"));
+        remove_combo(&mut config, "quick");
+        assert!(config.combos.is_empty());
+        assert_eq!(config.agents[0].provider_id, None);
     }
 
     #[test]

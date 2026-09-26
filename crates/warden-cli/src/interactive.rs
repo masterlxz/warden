@@ -59,8 +59,8 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use unicode_width::UnicodeWidthStr;
 use warden_bootstrap::{
-    build_model_with_fallback, default_limit_configs, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
-    rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, scope_to_agent, AgentConfig, AgentExtras, FileConfig,
+    build_model_for, default_limit_configs, default_model_for, load_config_from_path, remove_agent_references, remove_provider_references,
+    remove_combo, rename_provider_cascade, resolve_vault_path as bootstrap_resolve_vault_path, save_config, scope_to_agent, AgentConfig, AgentExtras, ComboConfig, FileConfig,
     LimitConfig, LimitScope, Overrides, Provider, ProviderConfig, SshHostConfig,
 };
 use warden_core::model::{Message, ModelProvider, StreamEvent, Usage};
@@ -1117,14 +1117,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
     let effective_provider_id = session.provider_id.clone().or(agent_provider_id);
 
     let model_override = match effective_provider_id {
-        Some(provider_id) => {
-            let provider_config = config
-                .providers
-                .iter()
-                .find(|p| p.id == provider_id)
-                .ok_or_else(|| anyhow::anyhow!("provider '{provider_id}' não existe mais na configuração"))?;
-            Some(build_model_with_fallback(&config, provider_config, None)?)
-        }
+        Some(provider_id) => Some(build_model_for(&config, &provider_id, None)?),
         None => None,
     };
 
@@ -1154,6 +1147,9 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/models add — cadastrar um novo modelo",
         "/models edit <id> — editar um modelo",
         "/models remove <id> — remover um modelo",
+        "/combos — listar os combos (roteamento: tenta os provedores na ordem se um cair)",
+        "/combos add <nome> <provedor> [<provedor>...] — criar ou substituir um combo (use com /models use <nome>)",
+        "/combos remove <nome> — remover um combo",
         "/agents — listar os agentes configurados",
         "/agents use <id> | none — usar um agente (ou nenhum) pro resto da sessão",
         "/agents create — criar um agente novo",
@@ -1742,21 +1738,21 @@ async fn cmd_models_list(terminal: &mut CliTerminal, session: &CliSession) -> an
         return render_message_card(terminal, "modelos", accent_style(), vec![("nenhum provider configurado ainda — use /models add".to_string(), Style::default())]);
     }
     let active = session.provider_id.clone().or_else(|| config.active_provider.clone());
-    let lines = config
+    let marker = |id: &str| if active.as_deref() == Some(id) { " [ativo]" } else { "" };
+    let mut lines: Vec<(String, Style)> = config
         .providers
         .iter()
-        .map(|p| {
-            let marker = if active.as_deref() == Some(p.id.as_str()) { " [ativo]" } else { "" };
-            (format!("{} ({}) — {}{}", p.id, commands::kind_label(p.kind), provider_display_model(p), marker), Style::default())
-        })
+        .map(|p| (format!("{} ({}) — {}{}", p.id, commands::kind_label(p.kind), provider_display_model(p), marker(&p.id)), Style::default()))
         .collect();
+    // Combos (P90) are picked the same way, with /models use.
+    lines.extend(config.combos.iter().map(|c| (format!("{} (combo) — {}{}", c.id, c.providers.join(" → "), marker(&c.id)), Style::default())));
     render_message_card(terminal, "modelos", accent_style(), lines)
 }
 
 async fn cmd_models_use(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
     let config = load_fresh_config(session.config_path.as_deref())?;
-    if !config.providers.iter().any(|p| p.id == id) {
-        return render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{id}' não encontrado — use /models pra ver a lista"), Style::default())]);
+    if !config.providers.iter().any(|p| p.id == id) && !config.combos.iter().any(|c| c.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("modelo ou combo '{id}' não encontrado — use /models pra ver a lista"), Style::default())]);
     }
     session.provider_id = Some(id.clone());
     render_message_card(terminal, "modelos", accent_style(), vec![(format!("modelo ativo agora: {id}"), Style::default())])
@@ -1884,12 +1880,54 @@ async fn cmd_models_remove(terminal: &mut CliTerminal, session: &mut CliSession,
         return render_message_card(terminal, "erro", error_style(), vec![(format!("provider '{id}' não encontrado"), Style::default())]);
     }
     remove_provider_references(&mut config, &id);
-    if session.provider_id.as_deref() == Some(id.as_str()) {
+    // Also a combo this removal emptied (and so deleted).
+    if session.provider_id.as_deref().is_some_and(|sid| sid == id || (!config.providers.iter().any(|p| p.id == sid) && !config.combos.iter().any(|c| c.id == sid))) {
         session.provider_id = None;
     }
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "modelos", accent_style(), vec![(format!("provider '{id}' removido"), Style::default())])
+}
+
+async fn cmd_combos_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    if config.combos.is_empty() {
+        return render_message_card(
+            terminal,
+            "combos",
+            accent_style(),
+            vec![("nenhum combo ainda — /combos add <nome> <provedor> [<provedor>...]".to_string(), Style::default())],
+        );
+    }
+    let lines = config.combos.iter().map(|c| (format!("{} — {}", c.id, c.providers.join(" → ")), Style::default())).collect();
+    render_message_card(terminal, "combos", accent_style(), lines)
+}
+
+/// `/combos add` creates the combo, or replaces the providers of one that already has this name.
+async fn cmd_combos_add(terminal: &mut CliTerminal, session: &mut CliSession, id: String, members: Vec<String>) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    let mut combos: Vec<ComboConfig> = config.combos.iter().filter(|c| c.id != id).cloned().collect();
+    combos.push(ComboConfig { id: id.clone(), providers: members });
+    match warden_bootstrap::settings::check_combos(combos, &config.providers) {
+        Ok(checked) => config.combos = checked,
+        Err(message) => return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]),
+    }
+    save_config_or_report(session, &config).await?;
+    let combo = config.combos.iter().find(|c| c.id == id).map(|c| c.providers.join(" → ")).unwrap_or_default();
+    render_message_card(terminal, "combos", accent_style(), vec![(format!("combo '{id}': {combo} — use /models use {id}"), Style::default())])
+}
+
+async fn cmd_combos_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
+    let mut config = load_fresh_config(session.config_path.as_deref())?;
+    if !config.combos.iter().any(|c| c.id == id) {
+        return render_message_card(terminal, "erro", error_style(), vec![(format!("combo '{id}' não encontrado"), Style::default())]);
+    }
+    remove_combo(&mut config, &id);
+    if session.provider_id.as_deref() == Some(id.as_str()) {
+        session.provider_id = None;
+    }
+    save_config_or_report(session, &config).await?;
+    render_message_card(terminal, "combos", accent_style(), vec![(format!("combo '{id}' removido"), Style::default())])
 }
 
 async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
@@ -2727,6 +2765,9 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::PricesRemove(model) => cmd_prices_remove(terminal, session, model).await,
         Command::ModelsList => cmd_models_list(terminal, session).await,
         Command::ModelsUse(id) => cmd_models_use(terminal, session, id).await,
+        Command::CombosList => cmd_combos_list(terminal, session).await,
+        Command::CombosAdd(id, members) => cmd_combos_add(terminal, session, id, members).await,
+        Command::CombosRemove(id) => cmd_combos_remove(terminal, session, id).await,
         Command::ModelsReset => cmd_models_reset(terminal, session).await,
         Command::ModelsAdd => wizard_models_add(terminal, session).await,
         Command::ModelsEdit(id) => wizard_models_edit(terminal, session, id).await,

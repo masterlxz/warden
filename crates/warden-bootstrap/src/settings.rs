@@ -14,12 +14,12 @@ use anyhow::Context;
 use warden_core::memory::content_version;
 use warden_core::spend::Price;
 use warden_server_protocol::protocol::{
-    AgentSettingsDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
+    AgentSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
     SecretEdit, SecretStatusDto,
 };
 
 use crate::{
-    default_limit_configs, default_model_for, env_switches_limits_off, remove_agent_from, AgentConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
+    default_limit_configs, default_model_for, env_switches_limits_off, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
     Provider, ProviderConfig,
 };
 
@@ -195,9 +195,14 @@ pub fn check_providers(providers: Vec<ProviderConfig>) -> Result<Vec<ProviderCon
     Ok(checked)
 }
 
-/// Trims each agent and refuses a nameless or repeated one, or one whose default model names a
-/// provider that isn't in `providers`.
-pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig]) -> Result<Vec<AgentConfig>, String> {
+/// Whether `id` names a model someone can pick: a provider or a combo (P90).
+fn is_model(id: &str, providers: &[ProviderConfig], combos: &[ComboConfig]) -> bool {
+    providers.iter().any(|p| p.id == id) || combos.iter().any(|c| c.id == id)
+}
+
+/// Trims each agent and refuses a nameless or repeated one, or one whose default model names
+/// neither a provider nor a combo.
+pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], combos: &[ComboConfig]) -> Result<Vec<AgentConfig>, String> {
     let mut seen = HashSet::new();
     let mut checked = Vec::with_capacity(agents.len());
     for a in agents {
@@ -210,7 +215,7 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig]) -> R
         }
         let provider_id = a.provider_id.as_deref().and_then(non_empty);
         if let Some(pid) = &provider_id {
-            if !providers.iter().any(|p| &p.id == pid) {
+            if !is_model(pid, providers, combos) {
                 return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
             }
         }
@@ -219,31 +224,49 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig]) -> R
     Ok(checked)
 }
 
-/// The reserve list (P79), trimmed: every id must be one of `providers`, none twice.
-pub fn check_fallback_providers(ids: Vec<String>, providers: &[ProviderConfig]) -> Result<Vec<String>, String> {
-    let mut checked: Vec<String> = Vec::with_capacity(ids.len());
-    for id in ids {
-        let id = id.trim().to_string();
+/// The combos (P90), trimmed: a unique name that isn't also a provider's, and at least one
+/// provider, each one configured and none twice.
+pub fn check_combos(combos: Vec<ComboConfig>, providers: &[ProviderConfig]) -> Result<Vec<ComboConfig>, String> {
+    let mut checked: Vec<ComboConfig> = Vec::with_capacity(combos.len());
+    for combo in combos {
+        let id = combo.id.trim().to_string();
         if id.is_empty() {
-            continue;
+            return Err("every combo needs a name".to_string());
         }
-        if !providers.iter().any(|p| p.id == id) {
-            return Err(format!("fallback provider '{id}' is not one of the configured providers"));
+        if providers.iter().any(|p| p.id == id) {
+            return Err(format!("combo '{id}' has the same name as a provider"));
         }
-        if checked.contains(&id) {
-            return Err(format!("fallback provider '{id}' is listed twice"));
+        if checked.iter().any(|c| c.id == id) {
+            return Err(format!("duplicate combo name: {id}"));
         }
-        checked.push(id);
+        let mut members: Vec<String> = Vec::with_capacity(combo.providers.len());
+        for member in combo.providers {
+            let member = member.trim().to_string();
+            if member.is_empty() {
+                continue;
+            }
+            if !providers.iter().any(|p| p.id == member) {
+                return Err(format!("combo '{id}' names '{member}', which is not one of the configured providers"));
+            }
+            if members.contains(&member) {
+                return Err(format!("combo '{id}' lists '{member}' twice"));
+            }
+            members.push(member);
+        }
+        if members.is_empty() {
+            return Err(format!("combo '{id}' needs at least one provider"));
+        }
+        checked.push(ComboConfig { id, providers: members });
     }
     Ok(checked)
 }
 
-/// An empty `active` means none; anything else must be one of `providers`.
-pub fn check_active_provider(active: &str, providers: &[ProviderConfig]) -> Result<Option<String>, String> {
+/// An empty `active` means none; anything else must be a provider or a combo.
+pub fn check_active_provider(active: &str, providers: &[ProviderConfig], combos: &[ComboConfig]) -> Result<Option<String>, String> {
     let active = non_empty(active);
     if let Some(id) = &active {
-        if !providers.iter().any(|p| &p.id == id) {
-            return Err(format!("active provider '{id}' is not one of the configured providers"));
+        if !is_model(id, providers, combos) {
+            return Err(format!("active model '{id}' is neither a configured provider nor a combo"));
         }
     }
     Ok(active)
@@ -278,7 +301,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             })
             .collect(),
         active_provider: config.active_provider.clone().unwrap_or_default(),
-        fallback_providers: config.fallback_providers.clone(),
+        combos: config.combos.iter().map(|c| ComboDto { id: c.id.clone(), providers: c.providers.clone() }).collect(),
         agents: config
             .agents
             .iter()
@@ -346,13 +369,21 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
         });
     }
     let providers = check_providers(providers)?;
-    let active_provider = check_active_provider(&update.active_provider, &providers)?;
-    if let Some(ids) = update.fallback_providers {
-        config.fallback_providers = check_fallback_providers(ids, &providers)?;
-    } else {
-        // Untouched by this screen: a reserve whose provider this save removed goes with it.
-        config.fallback_providers.retain(|id| providers.iter().any(|p| &p.id == id));
-    }
+    let combos = match update.combos {
+        Some(dtos) => check_combos(dtos.into_iter().map(|c| ComboConfig { id: c.id, providers: c.providers }).collect(), &providers)?,
+        // Untouched by this screen: a provider this save removed leaves its combos, and a combo
+        // left empty goes (the active model and the agents are checked against what remains).
+        None => config
+            .combos
+            .drain(..)
+            .map(|mut c| {
+                c.providers.retain(|id| providers.iter().any(|p| &p.id == id));
+                c
+            })
+            .filter(|c| !c.providers.is_empty())
+            .collect(),
+    };
+    let active_provider = check_active_provider(&update.active_provider, &providers, &combos)?;
 
     let mut renames = Vec::new();
     let mut agents = Vec::with_capacity(update.agents.len());
@@ -373,7 +404,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
         });
     }
     let kept: HashSet<String> = renames.iter().map(|(original, _)| original.clone()).chain(agents.iter().map(|a| a.id.trim().to_string())).collect();
-    let agents = check_agents(agents, &providers)?;
+    let agents = check_agents(agents, &providers, &combos)?;
 
     let removed: Vec<String> = config.agents.iter().map(|a| a.id.clone()).filter(|id| !kept.contains(id)).collect();
     let mut scratch = config.agents.clone();
@@ -406,6 +437,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     }
     config.providers = providers;
     config.active_provider = active_provider;
+    config.combos = combos;
     config.agents = agents;
     Ok(config)
 }
@@ -478,7 +510,7 @@ mod tests {
             limits: view.limits,
             prices: view.prices,
             git_sync: None,
-            fallback_providers: None,
+            combos: None,
         }
     }
 
@@ -630,7 +662,7 @@ mod tests {
         assert!(refuse(|u| u.providers[1].id = " main ".into()).contains("duplicate provider name: main"));
         assert!(refuse(|u| u.providers[0].id = "  ".into()).contains("needs a name"));
         assert!(refuse(|u| u.providers[0].kind = "llama".into()).contains("unknown provider kind"));
-        assert!(refuse(|u| u.active_provider = "ghost".into()).contains("active provider 'ghost'"));
+        assert!(refuse(|u| u.active_provider = "ghost".into()).contains("active model 'ghost'"));
         assert!(refuse(|u| u.agents[0].provider_id = "ghost".into()).contains("unknown default provider"));
         assert!(refuse(|u| u.agents[1].id = "pirate".into()).contains("duplicate agent name"));
         assert!(refuse(|u| u.limits = Some(vec![limit("a"), limit(" a ")])).contains("duplicate limit name: a"));
@@ -777,26 +809,46 @@ mod tests {
     }
 
     #[test]
-    fn fallback_providers_are_shown_checked_and_follow_a_removed_provider() {
+    fn combos_are_shown_checked_usable_as_the_active_model_and_follow_a_removed_provider() {
+        let combo = |id: &str, members: &[&str]| ComboDto { id: id.into(), providers: members.iter().map(|m| m.to_string()).collect() };
         let mut config = sample();
-        config.fallback_providers = vec!["spare".into()];
-        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).fallback_providers, vec!["spare".to_string()]);
+        config.combos = vec![ComboConfig { id: "fast".into(), providers: vec!["main".into(), "spare".into()] }];
+        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).combos, vec![combo("fast", &["main", "spare"])]);
 
+        // A combo can be the active model and an agent's default.
         let mut update = untouched(&config);
-        update.fallback_providers = Some(vec![" main ".into(), "spare".into()]);
-        assert_eq!(apply_hub_settings(sample(), update).unwrap().fallback_providers, vec!["main".to_string(), "spare".to_string()]);
+        update.combos = Some(vec![combo(" fast ", &[" spare ", "main"])]);
+        update.active_provider = "fast".into();
+        update.agents[0].provider_id = "fast".into();
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.combos, vec![ComboConfig { id: "fast".into(), providers: vec!["spare".into(), "main".into()] }]);
+        assert_eq!(saved.active_provider.as_deref(), Some("fast"));
 
-        for bad in [vec!["ghost".to_string()], vec!["spare".to_string(), "spare".to_string()]] {
+        for bad in [
+            vec![combo("main", &["spare"])],
+            vec![combo("x", &[])],
+            vec![combo("x", &["ghost"])],
+            vec![combo("x", &["main", "main"])],
+            vec![combo("x", &["main"]), combo("x", &["spare"])],
+            vec![combo(" ", &["main"])],
+        ] {
             let mut update = untouched(&config);
-            update.fallback_providers = Some(bad);
-            assert!(apply_hub_settings(sample(), update).is_err());
+            update.combos = Some(bad.clone());
+            assert!(apply_hub_settings(sample(), update).is_err(), "{bad:?}");
         }
+        let mut update = untouched(&config);
+        update.active_provider = "nope".into();
+        assert!(apply_hub_settings(sample(), update).is_err());
 
-        // Not sent: kept, minus a provider the same save removed.
+        // Not sent: kept, minus a provider the same save removed; a combo left empty goes.
+        let with = |members: Vec<String>| {
+            let mut c = sample();
+            c.combos = vec![ComboConfig { id: "fast".into(), providers: members }];
+            c
+        };
         let mut update = untouched(&config);
         update.providers.retain(|p| p.id != "spare");
-        let mut with_spare = sample();
-        with_spare.fallback_providers = vec!["spare".into()];
-        assert!(apply_hub_settings(with_spare, update).unwrap().fallback_providers.is_empty());
+        assert_eq!(apply_hub_settings(with(vec!["main".into(), "spare".into()]), update.clone()).unwrap().combos[0].providers, vec!["main".to_string()]);
+        assert!(apply_hub_settings(with(vec!["spare".into()]), update).unwrap().combos.is_empty());
     }
 }

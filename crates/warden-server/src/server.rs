@@ -19,7 +19,7 @@ use warden_core::skill::SkillStore;
 use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
 use warden_bootstrap::auto_sync::SyncRunner;
-use warden_bootstrap::{build_model_with_fallback, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
+use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
 use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
@@ -772,12 +772,8 @@ fn scope_chat_agent(
     let scoped = scope_to_agent(base, &config, Some(&path), agent_id, extras).ok_or_else(|| format!("agent '{agent_id}' not found"))?;
     let mut orchestrator = scoped.orchestrator;
     if let Some(provider_id) = &scoped.provider_id {
-        let provider = config
-            .providers
-            .iter()
-            .find(|p| &p.id == provider_id)
-            .ok_or_else(|| format!("agent '{agent_id}' uses the model provider '{provider_id}', which no longer exists"))?;
-        orchestrator = orchestrator.with_model(build_model_with_fallback(&config, provider, None).map_err(|e| format!("{e:#}"))?);
+        let model = build_model_for(&config, provider_id, None).map_err(|e| format!("agent '{agent_id}' can't use its model '{provider_id}': {e:#}"))?;
+        orchestrator = orchestrator.with_model(model);
     }
     Ok((orchestrator, scoped.persona))
 }

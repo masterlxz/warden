@@ -100,6 +100,24 @@ lista de reserva no config e um aviso discreto no chat):
   o 503.
 - **Não testado**: nenhuma tela aberta (fica para a rodada de testes).
 
+**Combos de modelos (P90)**, pedido do usuário logo em seguida (plano aprovado em Plan mode; decisões dele: combos
+no `config.toml` e a lista de reserva global substituída por eles):
+
+- `[[combos]]` no config, `build_model_for` (provedor ou combo) em todos os pontos que montam o modelo a partir do
+  config, migração do `fallback_providers` antigo para um combo ativo, `check_combos` e cascatas; `ComboDto` no
+  protocolo no lugar do `fallbackProviders`; telas "Combos" no desktop e na web, combos nos seletores de modelo
+  (conversa no desktop, padrão do agente nas duas telas, "Ativo" nos cards); `/combos`, `/combos add`, `/combos
+  remove` e `/models` listando combos no CLI.
+- **Verificação**: `cargo test --workspace` com 761 passando, 0 falhas; clippy limpo; `tsc`/`build` do desktop e da
+  web limpos. Testes novos: resolução de provedor/combo (incluindo combo com um só membro usável e combo sem
+  nenhum), combo como modelo ativo, migração do config antigo (e só uma vez), cascatas de provedor e de combo,
+  settings do hub com combos, parsing dos comandos do CLI, e um teste de integração do hub com **HTTP de verdade**
+  (dois servidores TCP locais, 503 e SSE, como provedores `openai_compatible`) em que um agente com combo recebe a
+  resposta do segundo com o aviso. **Ponta a ponta** com o `warden-server` isolado: um config antigo com
+  `fallback_providers` apareceu como o combo `busy-reserva` ativo e respondeu pelo reserva; um combo novo salvo pela
+  web virou o ativo; um combo com o nome de um provedor foi recusado; o arquivo final ficou sem `fallback_providers`.
+- **Não testado**: nenhuma tela aberta.
+
 **Próximo passo**: o P80/P87/P88 abrindo as telas com o usuário (aba Sync da web, Aparelhos, agentes), e o teste
 do Gemini real que a Sessão 104 deixou pendente. Depois, P79.
 
