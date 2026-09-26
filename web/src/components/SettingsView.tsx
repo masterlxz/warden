@@ -12,7 +12,8 @@ import type {
   SecretStatus,
 } from "../hub/messages";
 
-// The hub's settings (P78): providers, agents, the Tavily/Whisper keys, spending limits and prices.
+// The hub's settings (P78): providers, agents, the Tavily/Whisper keys, spending limits, prices and
+// the git remote the vault syncs to (P61; the Sync tab runs it).
 // Everything is edited as one draft and saved at once; the hub asks for the pairing key again on
 // every save, checks the file wasn't changed meanwhile, and restarts its orchestrator with the new
 // settings (or keeps the old ones if it can't start with them). API keys never come back from the
@@ -52,6 +53,11 @@ interface Draft {
   limitsMode: LimitsMode;
   limits: Keyed<LimitSettings>[];
   prices: Keyed<PriceSettings>[];
+  gitRemoteUrl: string;
+  /** As loaded: an untouched git section isn't sent, so a remote set by hand in the file (a local
+   * path, which the web can't save) never blocks saving the rest. */
+  gitRemoteLoaded: string;
+  gitToken: SecretDraft;
 }
 
 let nextKey = 1;
@@ -71,6 +77,9 @@ function toDraft(s: HubSettings): Draft {
     limitsMode: s.limits === null ? "default" : s.limits.length === 0 ? "off" : "custom",
     limits: (s.limits ?? []).map(keyed),
     prices: s.prices.map(keyed),
+    gitRemoteUrl: s.gitSync.remoteUrl,
+    gitRemoteLoaded: s.gitSync.remoteUrl,
+    gitToken: { saved: s.gitSync.token, edit: KEEP },
   };
 }
 
@@ -87,6 +96,9 @@ function toUpdate(d: Draft): HubSettingsUpdate {
     whisperKey: d.whisperKey.edit,
     limits: d.limitsMode === "default" ? null : d.limitsMode === "off" ? [] : d.limits.map(strip),
     prices: d.prices.map(strip),
+    ...((d.gitRemoteUrl !== d.gitRemoteLoaded || d.gitToken.edit.action !== "keep") && {
+      gitSync: { remoteUrl: d.gitRemoteUrl, token: d.gitRemoteUrl.trim() === "" ? { action: "clear" } : d.gitToken.edit },
+    }),
   };
 }
 
@@ -488,6 +500,30 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             value={draft.whisperKey}
             writable={secretsWritable}
             onChange={(edit) => update((d) => ({ ...d, whisperKey: { ...d.whisperKey, edit } }))}
+          />
+        </div>
+      </Section>
+
+      <Section
+        title="Sincronização (git)"
+        hint="Um repositório seu (Gitea, GitHub…) por onde este hub troca o vault e as configurações com os outros aparelhos, a cada 5 minutos. Tudo vai cifrado. Deixe a URL vazia para não usar git. O andamento fica na aba Sync."
+      >
+        <div className="settings-grid">
+          <Field label="URL do repositório" hint="Só https://.">
+            <input
+              value={draft.gitRemoteUrl}
+              placeholder="https://git.exemplo.com/voce/vault.git"
+              onChange={(e) => {
+                const gitRemoteUrl = e.target.value;
+                update((d) => ({ ...d, gitRemoteUrl }));
+              }}
+            />
+          </Field>
+          <SecretField
+            label="Token de acesso"
+            value={draft.gitToken}
+            writable={secretsWritable}
+            onChange={(edit) => update((d) => ({ ...d, gitToken: { ...d.gitToken, edit } }))}
           />
         </div>
       </Section>

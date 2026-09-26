@@ -39,6 +39,7 @@ pub mod remote_tool;
 pub mod server;
 pub mod settings;
 pub mod skills;
+pub mod sync;
 pub mod tls;
 pub mod usage;
 pub mod vault;

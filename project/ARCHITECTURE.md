@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Onde a memória mora vs sync (P61, Sessão 105) | Provider escolhido como fonte de leitura/escrita do agente (`Orchestrator` sobre `dyn StorageProvider`) vs disco local sempre + provider como destino de sync vs híbrido cache+fonte remota | **Disco local sempre + sync** ✓ (escolha do usuário: "local deixa mais rápido"). O agente nunca lê pela rede; o "storage" vira para onde o vault sincroniza (git ou Arweave). Consequência: o seletor de 4 cartões do desktop e a migração entre providers perdem o sentido, e `remote_node`/`RemoteNodeProvider`/`warden-node` saem (fatia 2, decisão do usuário: sem código morto). Fatia 1: o auto-sync sai do desktop para `warden_bootstrap::auto_sync::SyncRunner` e passa a rodar também no hub standalone, com tela na web |
 | Framework desktop | Tauri vs Electron vs nativo | **Tauri** ✓ — reaproveita stack Rust/TS já usada no TruthID |
 | TLS do hub (P36 fatia 2, Sessão 96) | Cert autoassinado + fingerprint no QR (extensão não consegue fixar) vs certs do Tailscale (`tailscale cert`, Let's Encrypt pro nome MagicDNS) vs `ws://` só em loopback/LAN pra extensão; com TLS ligado: mesma porta aceitando `ws://` só pro `Discover` vs TLS sem exceção | **Certs do Tailscale + mesma porta, `ws://` só pro Discover** ✓ (escolha do usuário). `warden-server serve --tailscale-cert` (nome via `tailscale status --json`, `tailscale cert` na subida + renovação diária) ou `--tls-cert/--tls-key[/--tls-host]` genérico; `ReloadingCertResolver` relê os PEM quando o mtime muda (renovação sem restart). O hub olha o 1º byte (`0x16` = TLS): TLS segue o protocolo completo; `ws://` puro só faz upgrade no path `/discover` (`warden_server_protocol::tls::DISCOVER_PATH`) e só responde `DiscoverAck{secureUrl}` — qualquer outro path leva `426 Upgrade Required` **antes** do `Hello`, então um cliente mal configurado nunca manda a chave em texto puro. Clientes Rust verificam contra `webpki-roots` (sem pinning). Provider do rustls escolhido explicitamente (`ring`): o workspace compila `ring` e `aws-lc-rs` juntos (via `reqwest`/`rmcp`) e aí o rustls entra em pânico se tiver que escolher sozinho. Sem TLS configurado, nada muda (`ws://` como antes). **Fatia 3 (Sessão 96, continuação)**: no desktop, só o toggle do Tailscale (cert manual fica na CLI); mobile e extensão mantêm host + porta + um switch "Use TLS" (em vez de virar um campo de URL único), com o token por device ainda indexado por `host:port` — num hub TLS o host é o nome `.ts.net`. |
 | Auth do hub: token por device (P36 fatia 1, Sessão 94) | Só bloquear `Revoked` no `Hello` (contornável trocando o `device_id`, que é escolhido pelo cliente) vs token por device emitido no pareamento; TLS antes ou depois | **Token por device, TLS depois** ✓ (escolha do usuário). A `auth_key` compartilhada virou **chave de pareamento**: `Hello{deviceToken?}` / `HelloAck{deviceToken?}` (campos opcionais, wire antigo continua parseando). `PairingStore::authenticate` decide em ordem: `Revoked` → sempre recusa; token bate com o hash guardado → aceita, status intacto; senão, chave de pareamento certa → emite token novo — **e, se aquele `device_id` já tinha token, volta pra `Pending`** (quem só tem a chave não herda o `Approved` de outro device alegando o id dele; um registro de antes dos tokens mantém o status, pra o upgrade não desaprovar todo mundo); senão `AuthError`. Só o SHA-256 do token vai pro `devices.json`. Revogar agora **derruba a conexão aberta**: cada conexão relê o registro a cada 5s (`DEFAULT_REVOCATION_CHECK_INTERVAL`; o revoke vem de outro processo — CLI ou Workspace do desktop — então o arquivo é o único sinal), manda `AuthError{"device revoked"}` e fecha. Rotacionar a chave (`--auth-key`/"Gerar nova chave" + reiniciar) só afeta pareamentos novos. Cliente: `DeviceTokenStore` (`device_tokens.json` no config dir, chave `url\|device_id`) pra `warden-node`/`RemoteNodeProvider`; `shared_preferences` por `host:port` no mobile; `chrome.storage.local.deviceTokens` por `host:port` na extensão. **Achado no caminho**: `handle_connection` nunca terminava — `tool_channel`/o `Orchestrator` da conexão seguravam clones do `tx`, então o `writer_task.await` final esperava pra sempre e o socket não fechava do lado do servidor; corrigido soltando os clones antes do await |
@@ -1860,3 +1861,41 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   desktop, o frontend grava conversas sem o lock do bootstrap, então se a pessoa escrever na conversa "A → B"
   exatamente enquanto B grava a resposta, um dos dois pode sobrescrever o outro (janela pequena, mesma classe do P78).
   O approver da web vale para qualquer aparelho que já pode conversar (inclusive `Pending`), igual ao chat.
+
+## Auto-sync no hub e na web (P61 fatia 1, Sessão 105)
+
+- **Decisão**: o agente trabalha sempre no disco local; o que o P61 chamava de "storage" é para onde esse disco
+  sincroniza. Ver a linha "Onde a memória mora vs sync" no registro de decisões.
+- **`warden_bootstrap::auto_sync::SyncRunner`**: o corpo do antigo `spawn_auto_sync` do desktop, agora num lugar
+  só. Uma rodada relê o `config.toml`: com `[git_sync]` faz pull e depois push (`GitSyncEngine`); sem ele, só pull
+  do Arweave (`SyncEngine`), e só se o manifest estiver pareado com o TruthID (sem dono não há de onde puxar, e isso
+  não é erro a repetir a cada 5 min). Sem `sync_secrets.json`, nada. Um `tokio::Mutex` serializa rodada, `init` e
+  pareamento; o último relatório (`SyncReport`) fica em memória para a tela. `run_loop(interval, on_report)` é um
+  future que o chamador roda no próprio runtime (Tauri no desktop, tokio no hub); o callback devolve um future
+  (o hub e o desktop recarregam o orquestrador ali). `pair_join(code, host)` usa `join_with_hosts` quando vem um
+  IPv4, porque um hub num VPS não está na /24 do aparelho que mostra o código (Tailscale resolve).
+- **Hub standalone** (`warden-server serve`): cria o runner com o mesmo config/vault do `bootstrap()` e chama
+  `Server::with_sync(runner, Some(AUTO_SYNC_INTERVAL))`. O loop roda numa task abortada quando o `serve_until`
+  termina (`AbortOnDrop`). Uma rodada que traz `config.toml` novo recarrega o orquestrador pelo mesmo caminho do
+  salvar configurações (`SettingsHost::build` + `installed` + `SharedOrchestrator::replace`); um config com que o
+  hub não sobe deixa o orquestrador atual. Sem tela: `warden-server sync status|now|init|pair <código> [--host IP]`
+  (o `now` do CLI é outro processo, sem o lock do `serve`; a ajuda manda usar a web enquanto o `serve` roda).
+- **Hub do desktop**: recebe o `Arc<SyncRunner>` do próprio desktop com `loop_every = None` — quem faz o loop é o
+  desktop (`sync_cmds::spawn_auto_sync`, que emite os mesmos eventos `auto-sync-pulled`/`auto-sync-pushed` de antes
+  e agora também recarrega o orquestrador quando chega config novo). Um lock só para o loop e para o "Sincronizar
+  agora" da web.
+- **Protocolo**: `RequestSyncStatus` → `SyncStatus { status: SyncStatusDto }` (aberto a qualquer aparelho
+  pareado); `SyncAction { pairingKey, action: syncNow | init | pairJoin{code, host?} }` → `SyncStatus` ou
+  `SyncError { authRejected }`. A chave é conferida sob o lock das configurações, com a espera de 1 s, mas o lock é
+  solto antes da rodada (um push ou pareamento demora e não pode travar um save). `warden-server/src/sync.rs`.
+- **Remoto git nas configurações da web**: `HubSettingsDto.gitSync { remoteUrl, token: SecretStatusDto }` e
+  `HubSettingsUpdate.gitSync?: { remoteUrl, token: SecretEdit }` (ausente = intocado). O token é segredo como as
+  chaves de API (só por conexão segura, nunca volta). Pela web **só `https://`**: um caminho ou `file://` deixaria
+  um aparelho pareado apontar os pushes do hub para qualquer diretório da máquina. Remoto não-https continua possível
+  à mão no arquivo; a web só manda a seção quando ela foi mexida, para esse caso não travar os outros saves.
+- **Web**: aba "Sync" (`SyncView.tsx`) com destino, pendências, última rodada e "Sincronizar agora"; num hub sem
+  chave, "Parear com outro aparelho" (código + IP opcional) ou "Este é o primeiro aparelho". Arweave pela web fica
+  só no pull automático: o push precisa do QR no celular.
+- **Limitações**: o hub só entra num grupo de sync (join); não mostra código para outro aparelho parear com ele. Os
+  comandos manuais de git do desktop (`git_sync_cmds.rs`) não pegam o lock do runner.
+

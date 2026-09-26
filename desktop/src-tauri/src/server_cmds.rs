@@ -311,6 +311,8 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     if let Some(config_path) = default_config_path() {
         server = server.with_settings(Arc::new(DesktopHubSettings { config_path, desktop: state.orchestrator.clone() }));
     }
+    // P61 — the web's Sync screen drives the desktop's own runner; the desktop already loops it.
+    server = server.with_sync(state.sync_runner.clone(), None);
     let bound_addr = server.local_addr()?;
     let secure_url = tls.as_ref().and_then(|tls| tls.secure_url(bound_addr.port()));
     let tls_without_host = tls.is_some() && secure_url.is_none();
@@ -369,6 +371,13 @@ mod tests {
             generated_files_root: temp_dir.join("generated"),
             embedded_server: std::sync::Mutex::new(None),
             approvals: std::sync::Arc::new(crate::approval::ApprovalBroker::default()),
+            sync_runner: Arc::new(warden_bootstrap::auto_sync::SyncRunner::new(
+                temp_dir.join("vault"),
+                temp_dir.join("config.toml"),
+                temp_dir.join("secrets.json"),
+                temp_dir.join("manifest.json"),
+                temp_dir.join("git-sync-repo"),
+            )),
         };
 
         let server_config =

@@ -1,14 +1,14 @@
 //! Tauri commands backing the "Sync" screen's Git section (P63/P71) — manual push/pull of the
 //! vault + `config.toml` via a self-hosted/remote git repo, the fully-automatable alternative to
 //! the Arweave/TruthID backend in `sync_cmds.rs` (that one always blocks push on a real phone
-//! approval, by design — this one doesn't, see `sync_cmds::spawn_auto_sync`). Stateless, same
+//! approval, by design — this one doesn't, see `warden_bootstrap::auto_sync`). Stateless, same
 //! precedent as `workspace_cmds.rs`: no `AppState` needed, every command reads `config.toml` fresh
 //! and builds its own `GitSyncEngine` per call.
 
 use std::path::PathBuf;
 
 use serde::Serialize;
-use warden_bootstrap::{default_config_path, load_config_from_path, resolve_vault_path, GitSyncConfig, Overrides};
+use warden_bootstrap::{default_config_path, load_config_from_path, resolve_vault_path, Overrides};
 use warden_sync::{GitPullOutcome, GitPushOutcome, GitSyncEngine};
 
 fn fresh_config() -> Result<(PathBuf, warden_bootstrap::FileConfig), String> {
@@ -25,28 +25,6 @@ pub fn git_sync_configured() -> Result<bool, String> {
     Ok(config.git_sync.is_some())
 }
 
-/// Builds a `GitSyncEngine` — takes `secrets_path`/`manifest_path`/`git_repo_path` as explicit
-/// parameters (rather than resolving `warden_sync::paths::default_*` internally) so a caller that
-/// already has them at hand (`spawn_auto_sync`, whose args come straight from `lib.rs::run()`)
-/// never re-derives them, and so tests can point this at a temp dir instead of this machine's real
-/// `~/.config/warden/{sync_secrets.json,sync_manifest.json,git-sync-repo}` — pointing a test at the
-/// real `git_repo_path` in particular would leave a stale local git clone behind on this machine's
-/// actual config dir, and reusing it across separate test runs is exactly what caused a real
-/// `git checkout --orphan main` failure ("a branch named 'main' already exists") the first time
-/// this was tried with `git_repo_path` still resolved internally. Reused by this module's own
-/// commands and by `sync_cmds::spawn_auto_sync`'s git branch, so the two never drift apart on how
-/// the engine is assembled.
-pub(crate) fn build_git_sync_engine(
-    vault_path: PathBuf,
-    config_path: PathBuf,
-    secrets_path: PathBuf,
-    manifest_path: PathBuf,
-    git_repo_path: PathBuf,
-    git_sync: &GitSyncConfig,
-) -> GitSyncEngine {
-    GitSyncEngine::new(vault_path, config_path, secrets_path, manifest_path, git_repo_path, git_sync.remote_url.clone(), git_sync.token.clone())
-}
-
 fn build_engine_from_fresh_config() -> Result<GitSyncEngine, String> {
     let (config_path, config) = fresh_config()?;
     let vault_path = resolve_vault_path(&Overrides::default(), &config, crate::desktop_default_vault_path());
@@ -54,7 +32,7 @@ fn build_engine_from_fresh_config() -> Result<GitSyncEngine, String> {
     let secrets_path = warden_sync::paths::default_sync_secrets_path().unwrap_or_else(|| PathBuf::from("sync_secrets.json"));
     let manifest_path = warden_sync::paths::default_sync_manifest_path().unwrap_or_else(|| PathBuf::from("sync_manifest.json"));
     let git_repo_path = warden_sync::paths::default_git_sync_repo_path().unwrap_or_else(|| PathBuf::from("git-sync-repo"));
-    Ok(build_git_sync_engine(vault_path, config_path, secrets_path, manifest_path, git_repo_path, &git_sync))
+    Ok(GitSyncEngine::new(vault_path, config_path, secrets_path, manifest_path, git_repo_path, git_sync.remote_url, git_sync.token))
 }
 
 #[derive(Serialize)]

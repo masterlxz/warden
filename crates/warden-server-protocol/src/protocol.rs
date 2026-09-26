@@ -337,8 +337,98 @@ impl From<Price> for PriceSettingsDto {
     }
 }
 
+/// `[git_sync]` as the settings screen shows it (P61): the remote's URL (empty = no git sync) and
+/// whether a token is saved, never the token.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSyncSettingsDto {
+    pub remote_url: String,
+    pub token: SecretStatusDto,
+}
+
+/// `[git_sync]` as a save sends it. An empty `remote_url` turns git sync off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSyncEditDto {
+    pub remote_url: String,
+    pub token: SecretEdit,
+}
+
+/// Where the hub's vault syncs to (P61): nowhere until it has a vault key, then git when
+/// `[git_sync]` is set, Arweave otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncBackendDto {
+    NotSetUp,
+    Git,
+    Arweave,
+}
+
+/// One sync round the hub ran (its 5-minute loop or a "sync now"). `pulled`/`pushed` are only
+/// there when something moved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRoundDto {
+    pub at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulled: Option<SyncPulledDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed: Option<SyncPushedDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPulledDto {
+    pub files_written: usize,
+    pub files_deleted: usize,
+    pub config_updated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPushedDto {
+    pub commit_sha: String,
+    pub files_changed: usize,
+}
+
+/// The hub's sync state for the web's Sync screen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusDto {
+    pub backend: SyncBackendDto,
+    /// `[git_sync]`'s URL, never its token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_synced_at_ms: Option<i64>,
+    pub pending_vault_changes: usize,
+    pub pending_config_changed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_round: Option<SyncRoundDto>,
+}
+
+/// What `SyncAction` asks the hub to do — the same as `warden-server sync now|init|pair`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SyncActionDto {
+    /// Runs a round now instead of waiting for the loop.
+    SyncNow,
+    /// Makes the hub the first device of a sync group, with a fresh vault key.
+    Init,
+    /// Receives the vault key from a device showing `code`. `host` (an IPv4 address) is the only
+    /// place tried when given — how a hub reaches a device over Tailscale; otherwise the hub's LAN
+    /// is swept.
+    PairJoin {
+        code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
+}
+
 /// The part of the hub's `config.toml` the web settings screen shows (P78): providers, agents, the
-/// Tavily/Whisper keys, spending limits and prices. Shell, MCP servers, SSH hosts, storage and paths
+/// Tavily/Whisper keys, spending limits, prices and the git sync remote (P61). Shell, MCP servers, SSH hosts, storage and paths
 /// stay off it on purpose, since they would let a paired device run commands on the hub's machine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -359,6 +449,7 @@ pub struct HubSettingsDto {
     pub default_models: std::collections::BTreeMap<String, String>,
     /// Every tool the hub's orchestrator has, for an agent's allowed-tools list.
     pub tool_names: Vec<String>,
+    pub git_sync: GitSyncSettingsDto,
     /// Things outside the file that change what it means on this hub (a `--provider` flag, a
     /// providers list still empty, ...), one sentence each.
     pub notes: Vec<String>,
@@ -377,13 +468,19 @@ pub struct HubSettingsUpdate {
     /// `None` goes back to the built-in limits, `Some(vec![])` turns every limit off.
     pub limits: Option<Vec<LimitSettingsDto>>,
     pub prices: Vec<PriceSettingsDto>,
+    /// `None` (or absent) leaves `[git_sync]` as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sync: Option<GitSyncEditDto>,
 }
 
 impl HubSettingsUpdate {
     /// Whether this save carries a new secret, which the hub only accepts over an encrypted or local
     /// connection.
     pub fn sets_a_secret(&self) -> bool {
-        self.tavily_key.is_set() || self.whisper_key.is_set() || self.providers.iter().any(|p| p.api_key.is_set())
+        self.tavily_key.is_set()
+            || self.whisper_key.is_set()
+            || self.providers.iter().any(|p| p.api_key.is_set())
+            || self.git_sync.as_ref().is_some_and(|g| g.token.is_set())
     }
 }
 
@@ -589,6 +686,18 @@ pub enum ClientMessage {
         pairing_key: String,
         device_id: String,
         action: DeviceAction,
+    },
+    /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
+    /// reading settings.
+    RequestSyncStatus {
+        request_id: u64,
+    },
+    /// Runs a sync round, or sets up the hub's vault key, answered by the updated `SyncStatus` or
+    /// a `SyncError`. `pairing_key` is asked every time, as in `SaveSettings`.
+    SyncAction {
+        request_id: u64,
+        pairing_key: String,
+        action: SyncActionDto,
     },
     /// An unauthenticated presence probe (Fase 9.1 redefined — LAN discovery, not the
     /// authenticated connection Hello starts). No `auth_key`/`device_id` on purpose: the whole
@@ -810,6 +919,19 @@ pub enum ServerMessage {
     },
     /// A device request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     DeviceError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
+    /// Reply to `RequestSyncStatus` and to a successful `SyncAction`. `last_round` is how the
+    /// round a "sync now" ran went — an error there is the round's, not the request's.
+    SyncStatus {
+        request_id: u64,
+        status: SyncStatusDto,
+    },
+    /// A sync request failed. `auth_rejected`: the pairing key was wrong; nothing ran.
+    SyncError {
         request_id: u64,
         message: String,
         #[serde(default)]
@@ -1329,8 +1451,17 @@ mod tests {
             whisper_key: SecretEdit::Clear,
             limits: None,
             prices: Vec::new(),
+            git_sync: None,
         };
         assert!(update.sets_a_secret());
+        let token_only = HubSettingsUpdate {
+            providers: Vec::new(),
+            tavily_key: SecretEdit::Keep,
+            whisper_key: SecretEdit::Keep,
+            git_sync: Some(GitSyncEditDto { remote_url: "https://g/v.git".into(), token: SecretEdit::Set("t".into()) }),
+            ..update.clone()
+        };
+        assert!(token_only.sets_a_secret(), "a git token is a secret too");
         let save = ClientMessage::SaveSettings { request_id: 1, pairing_key: "k".into(), base_version: "v".into(), update };
         let json = serde_json::to_value(&save).unwrap();
         assert_eq!(json["type"], "saveSettings");
@@ -1366,6 +1497,51 @@ mod tests {
 
         let error: ServerMessage = serde_json::from_str(r#"{"type":"deviceError","requestId":4,"message":"m"}"#).unwrap();
         assert_eq!(error, ServerMessage::DeviceError { request_id: 4, message: "m".into(), auth_rejected: false });
+    }
+
+    #[test]
+    fn sync_messages_use_the_web_shapes() {
+        let action: ClientMessage = serde_json::from_str(
+            r#"{"type":"syncAction","requestId":5,"pairingKey":"k","action":{"kind":"pairJoin","code":"AB12","host":"100.64.0.2"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            action,
+            ClientMessage::SyncAction {
+                request_id: 5,
+                pairing_key: "k".into(),
+                action: SyncActionDto::PairJoin { code: "AB12".into(), host: Some("100.64.0.2".into()) },
+            }
+        );
+        let now: ClientMessage = serde_json::from_str(r#"{"type":"syncAction","requestId":6,"pairingKey":"k","action":{"kind":"syncNow"}}"#).unwrap();
+        assert!(matches!(now, ClientMessage::SyncAction { action: SyncActionDto::SyncNow, .. }));
+
+        let status = ServerMessage::SyncStatus {
+            request_id: 5,
+            status: SyncStatusDto {
+                backend: SyncBackendDto::Git,
+                git_remote: Some("https://git.example/v.git".into()),
+                last_synced_at_ms: None,
+                pending_vault_changes: 2,
+                pending_config_changed: false,
+                last_round: Some(SyncRoundDto { at_ms: 9, pulled: None, pushed: Some(SyncPushedDto { commit_sha: "abc".into(), files_changed: 2 }), error: None }),
+            },
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["type"], "syncStatus");
+        assert_eq!(
+            json["status"],
+            serde_json::json!({
+                "backend": "git",
+                "gitRemote": "https://git.example/v.git",
+                "pendingVaultChanges": 2,
+                "pendingConfigChanged": false,
+                "lastRound": { "atMs": 9, "pushed": { "commitSha": "abc", "filesChanged": 2 } }
+            })
+        );
+
+        let error: ServerMessage = serde_json::from_str(r#"{"type":"syncError","requestId":5,"message":"m","authRejected":true}"#).unwrap();
+        assert_eq!(error, ServerMessage::SyncError { request_id: 5, message: "m".into(), auth_rejected: true });
     }
 
     #[test]

@@ -2,7 +2,51 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 104)
+> Última atualização: 2026-09-26 (Sessão 105)
+
+---
+
+### 2026-09-26 — Sessão 105
+
+- **Objetivo**: conversar sobre o P61. Decisão do usuário: o agente trabalha sempre no disco local ("local deixa
+  mais rápido") e o storage vira sincronização, usando o git sync que já existe. Duas fatias, nessa ordem: (1) o
+  auto-sync no hub e na web; (2) limpar a tela do desktop e remover `remote_node`/`RemoteNodeProvider`/`warden-node`
+  ("não gosto de código morto também"). Plano da fatia 1 aprovado em Plan mode.
+
+**O que foi feito**:
+
+- **`SyncRunner`** (`warden-bootstrap/src/auto_sync.rs`): a rodada do desktop virou código compartilhado (git = pull
+  e push; Arweave = só pull, e só pareado), com lock, último relatório, `init_fresh` e `pair_join` com IP explícito.
+- **Hub**: `Server::with_sync(runner, loop_every)`, loop próprio no `serve` com recarga do orquestrador quando chega
+  `config.toml` novo, mensagens `RequestSyncStatus`/`SyncAction`/`SyncStatus`/`SyncError` (`warden-server/src/sync.rs`)
+  e o subcomando `warden-server sync status|now|init|pair`.
+- **Settings**: `[git_sync]` na tela da web (só `https://`, token como segredo, seção só enviada quando mexida).
+- **Web**: aba "Sync" e a seção "Sincronização (git)" nas Configurações.
+- **Desktop**: o loop passou a usar o runner (mesmos eventos) e recarrega o orquestrador quando chega config novo;
+  o hub embutido recebe o mesmo runner, sem segundo loop. Saíram os testes que só espelhavam o corpo do loop antigo
+  (a rodada agora é testada no `warden-bootstrap`), o `build_git_sync_engine` e a dev-dependency `axum`.
+- Docs: `ARCHITECTURE.md` (linha no registro + seção nova), `PENDING.md` (P61).
+
+**Verificação**:
+
+- `cargo test --workspace`: 783 passando, 0 falhas. `cargo clippy` limpo no workspace e no desktop (20 testes do
+  desktop passando). `tsc`/`build` da web limpos.
+- **Testes novos**: 5 do `SyncRunner` contra um remoto git bare de verdade (sem chave = nada; nota e config indo de
+  um aparelho para o outro; Arweave sem par = rodada quieta; duas rodadas simultâneas não se atropelam; pareamento
+  com IP explícito adota a mesma chave), 3 dos handlers do hub, 1 de protocolo, 1 das settings e 2 de integração
+  (`tests/sync.rs`: a web configura o hub e a nota chega em outro aparelho; o loop do hub puxa config novo e recarrega
+  uma vez só).
+- **Ponta a ponta** com o binário real, `XDG_CONFIG_HOME` no scratchpad (nada do `~/.config/warden` foi tocado) e um
+  remoto bare local: `sync status`/`init` pelo CLI; `serve` fez a primeira rodada sozinho ao subir; pelo WebSocket do
+  Node: status, chave errada (1 s, `authRejected`), "sincronizar agora" enviando a nota nova, segundo `init` recusado,
+  IP inválido recusado, token nunca aparece nas settings, remoto local recusado pela web e save sem mexer no git
+  passando; um segundo "aparelho" com a mesma chave rodou `warden-server sync now` e recebeu as 5 notas e o config.
+- **Não testado**: nenhuma tela foi aberta (P80); o pareamento real entre um hub num VPS e o desktop pelo Tailscale;
+  o recarregamento do orquestrador no desktop quando chega config novo (só compila).
+
+**Próximo passo**: fatia 2 do P61: tirar o seletor de 4 cartões e a migração da tela do desktop, levar a escolha
+"sincronizar com git / Arweave / nada" para lá no mesmo formato da web, e remover `remote_node`, `RemoteNodeProvider`,
+`warden-node`, `vault_node` e o que só existia para eles.
 
 ---
 

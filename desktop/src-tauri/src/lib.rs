@@ -53,6 +53,9 @@ struct AppState {
     embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
     /// Actions waiting for the user's yes/no (P47 SSH, P46 `manage_agents`) — see `approval::TauriApprover`.
     approvals: Arc<approval::ApprovalBroker>,
+    /// P61/P71 — the automatic vault sync: looped by `sync_cmds::spawn_auto_sync` and handed to the
+    /// embedded hub, which answers the web's Sync screen with it, so the two never sync at once.
+    sync_runner: Arc<warden_bootstrap::auto_sync::SyncRunner>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -864,10 +867,7 @@ pub fn run() {
     let generated_files_root = load_config(None)
         .map(|config| resolve_generated_path(&config, &sync_vault_path))
         .unwrap_or_else(|_| sync_vault_path.parent().unwrap_or(std::path::Path::new(".")).join("generated"));
-    // Cloned before `SyncEngine::new` below consumes the originals — `spawn_auto_pull` (P71,
-    // wired in `.setup()` further down) needs its own independent `SyncEngine` on the same paths,
-    // not a shared reference to `AppState.sync`.
-    let auto_pull_paths = (sync_vault_path.clone(), sync_config_path.clone(), sync_secrets_path(), sync_manifest_path());
+    let sync_runner = Arc::new(warden_bootstrap::auto_sync::SyncRunner::with_default_paths(sync_vault_path.clone(), sync_config_path.clone()));
     let sync = warden_sync::SyncEngine::new(sync_vault_path, sync_config_path, sync_secrets_path(), sync_manifest_path());
 
     let app_state = AppState {
@@ -878,6 +878,7 @@ pub fn run() {
         generated_files_root,
         embedded_server: Mutex::new(None),
         approvals: Arc::new(approval::ApprovalBroker::default()),
+        sync_runner: sync_runner.clone(),
     };
 
     // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
@@ -903,8 +904,7 @@ pub fn run() {
             // P71 — pulls (and, for the git backend, pushes) the vault automatically every few
             // minutes instead of requiring a manual click, for as long as the app stays open. See
             // `sync_cmds::spawn_auto_sync`'s own doc comment for what this does and doesn't cover.
-            let (vault_path, config_path, secrets_path, manifest_path) = auto_pull_paths;
-            sync_cmds::spawn_auto_sync(app.handle().clone(), vault_path, config_path, secrets_path, manifest_path);
+            sync_cmds::spawn_auto_sync(app.handle().clone(), sync_runner);
             Ok(())
         })
         .manage(app_state)

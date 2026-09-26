@@ -84,7 +84,7 @@ function SyncView() {
     };
   }, []);
 
-  // P71 — the background auto-pull (`sync_cmds::spawn_auto_pull`) emits this whenever it applies
+  // P71 — the background auto-pull (`sync_cmds::spawn_auto_sync`) emits this whenever it applies
   // a real change on its own, every few minutes, for as long as this view has ever been mounted
   // (the listener itself is cheap to keep registered — it's the pull that's throttled, not this).
   useEffect(() => {

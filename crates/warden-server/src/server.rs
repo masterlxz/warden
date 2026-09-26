@@ -18,6 +18,7 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::skill::SkillStore;
 use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
+use warden_bootstrap::auto_sync::SyncRunner;
 use warden_bootstrap::{build_model_provider, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
 use crate::approval::WsApprover;
@@ -29,6 +30,7 @@ use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
 use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
 use crate::web_ui::{self, Rewind, WebAssets};
@@ -78,6 +80,10 @@ pub struct Server {
     web_ui: Option<Arc<dyn WebAssets>>,
     transcriber: Option<Arc<dyn Transcriber>>,
     settings: Option<Arc<dyn SettingsHost>>,
+    sync: Option<Arc<SyncRunner>>,
+    /// Whether this server runs `sync`'s rounds on its own loop (the standalone hub), or only
+    /// answers for a runner someone else loops (the desktop's embedded hub).
+    sync_loop: Option<Duration>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -106,6 +112,8 @@ impl Server {
             web_ui: None,
             transcriber: None,
             settings: None,
+            sync: None,
+            sync_loop: None,
         })
     }
 
@@ -136,6 +144,16 @@ impl Server {
     /// orchestrator on a save. Without it, both get a `SettingsError`.
     pub fn with_settings(mut self, host: Arc<dyn SettingsHost>) -> Self {
         self.settings = Some(host);
+        self
+    }
+
+    /// Answers `RequestSyncStatus`/`SyncAction` (P61) with `runner`. With `loop_every`, this server
+    /// also runs a round every so often for as long as it serves, and reloads its orchestrator when
+    /// one brings a new `config.toml` — the standalone hub. The desktop's embedded hub passes `None`:
+    /// the desktop already loops the same runner.
+    pub fn with_sync(mut self, runner: Arc<SyncRunner>, loop_every: Option<Duration>) -> Self {
+        self.sync = Some(runner);
+        self.sync_loop = loop_every;
         self
     }
 
@@ -180,6 +198,11 @@ impl Server {
             transcriber: self.transcriber,
             settings: self.settings,
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
+            sync: self.sync,
+        };
+        let _sync_loop = match (&ctx.sync, self.sync_loop) {
+            (Some(runner), Some(every)) => Some(AbortOnDrop(tokio::spawn(sync_loop(runner.clone(), every, ctx.settings.clone(), ctx.orchestrator.clone())))),
+            _ => None,
         };
         let tls = self.tls;
         let web_ui = self.web_ui;
@@ -220,6 +243,32 @@ struct ConnectionContext {
     settings: Option<Arc<dyn SettingsHost>>,
     /// One settings save at a time on this hub.
     settings_lock: Arc<tokio::sync::Mutex<()>>,
+    sync: Option<Arc<SyncRunner>>,
+}
+
+/// Stops a task when the server that spawned it stops serving.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The standalone hub's sync loop (P61): `SyncRunner::run_loop`, plus a reload when a round
+/// brings another device's `config.toml`.
+async fn sync_loop(runner: Arc<SyncRunner>, every: Duration, settings: Option<Arc<dyn SettingsHost>>, shared: SharedOrchestrator) {
+    runner
+        .run_loop(every, |report| {
+            let reload = report.config_updated();
+            let (settings, shared) = (settings.clone(), shared.clone());
+            async move {
+                if reload {
+                    crate::sync::reload_orchestrator(settings.as_deref(), &shared).await;
+                }
+            }
+        })
+        .await
 }
 
 /// Picks the transport for a fresh TCP connection. Without TLS, everything is plain `ws://` as
@@ -321,6 +370,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         transcriber,
         settings,
         settings_lock,
+        sync,
     } = ctx;
     let (mut sink, mut stream) = ws.split();
 
@@ -638,6 +688,24 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     tokio::spawn(async move {
                         let reply = handle_set_device_status(&store, &lock, &auth_key, &you, request_id, &pairing_key, &target, action).await;
                         let _ = reply_tx.send(reply);
+                    });
+                }
+                Ok(ClientMessage::RequestSyncStatus { request_id }) => {
+                    // Computes the pending diff over the whole vault: off the reader loop.
+                    let sync = sync.clone();
+                    let reply_tx = tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = reply_tx.send(handle_sync_status(sync.as_deref(), request_id));
+                    });
+                }
+                Ok(ClientMessage::SyncAction { request_id, pairing_key, action }) => {
+                    // A round or a pairing takes seconds; a wrong key waits one under the settings lock.
+                    let (sync, settings, shared) = (sync.clone(), settings.clone(), shared_orchestrator.clone());
+                    let (lock, auth_key) = (settings_lock.clone(), auth_key.clone());
+                    let reply_tx = tx.clone();
+                    tokio::spawn(async move {
+                        let access = SyncAccess { runner: sync.as_deref(), lock: &lock, auth_key: &auth_key, settings: settings.as_deref(), shared: &shared };
+                        let _ = reply_tx.send(handle_sync_action(&access, request_id, &pairing_key, action).await);
                     });
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {

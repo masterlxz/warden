@@ -494,6 +494,11 @@ formal), `RemoteNodeProvider` (grátis, rede de nós própria do usuário — de
 MVP sugerido na própria spec, mas **explicitamente pendente de confirmação com o usuário antes de
 codar** — ver detalhes completos em `PENDING.md` P61.
 
+**Mudança de rumo (Sessão 105)**: o agente trabalha sempre no disco local, e o "storage" virou
+para onde o vault sincroniza (git ou Arweave, com o Warden Cloud como opção futura). O auto-sync
+já roda no hub e tem tela na web; o próximo passo é simplificar a tela do desktop e remover o
+`RemoteNodeProvider`/`warden-node`.
+
 ### Voz
 
 - ✅ Entrada por voz (Speech-to-Text) — feito (P28, Sessão 41), via Whisper da OpenAI

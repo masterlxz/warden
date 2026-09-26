@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL};
 use warden_bootstrap::{bootstrap, Overrides};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
@@ -44,6 +45,43 @@ enum Command {
     /// Prints a fresh random pairing key (64 hex chars) for `serve --auth-key` /
     /// WARDEN_SERVER_AUTH_KEY.
     GenKey,
+    /// Vault sync (P61) — what `serve` does every 5 minutes on its own, and how a hub with no
+    /// screen gets its vault key. While `serve` runs, the web's Sync screen does the same without
+    /// two processes syncing at once.
+    Sync(SyncArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct SyncArgs {
+    #[command(subcommand)]
+    action: SyncCommand,
+
+    /// Path to the config file (TOML), as in `serve`.
+    #[arg(long, global = true)]
+    config: Option<String>,
+
+    /// Path to the markdown vault, as in `serve`.
+    #[arg(long, global = true)]
+    vault_path: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum SyncCommand {
+    /// Where the vault syncs to, what's waiting to go, and when it last synced.
+    Status,
+    /// Runs one round now: git pulls then pushes, Arweave only pulls.
+    Now,
+    /// Makes this hub the first device of a sync group (a fresh vault key).
+    Init,
+    /// Receives the vault key from a device showing a pairing code (the desktop's Sync screen, or
+    /// `/sync pair` in the CLI).
+    Pair {
+        code: String,
+        /// That device's IPv4 address (a Tailscale one works) — needed whenever it isn't on this
+        /// hub's LAN, which the default sweep covers.
+        #[arg(long)]
+        host: Option<std::net::Ipv4Addr>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -128,6 +166,71 @@ fn default_vault_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join("Warden").join("vault")
 }
 
+
+/// The runner `serve` and `sync` share: this hub's config file and the vault it resolves to.
+fn sync_runner(config: Option<&str>, vault_path: Option<String>) -> anyhow::Result<SyncRunner> {
+    let config_path = config.map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let file = warden_bootstrap::load_config_from_path(&config_path, config.is_some())?;
+    let overrides = Overrides { vault_path, ..Default::default() };
+    let vault_path = warden_bootstrap::resolve_vault_path(&overrides, &file, default_vault_path());
+    Ok(SyncRunner::with_default_paths(vault_path, config_path))
+}
+
+async fn run_sync_command(args: SyncArgs) -> anyhow::Result<()> {
+    let runner = sync_runner(args.config.as_deref(), args.vault_path)?;
+    match args.action {
+        SyncCommand::Status => {}
+        SyncCommand::Now => {
+            let report = runner.run_once().await;
+            if let Some(p) = &report.pulled {
+                println!("pulled: {} written, {} removed{}", p.files_written, p.files_deleted, if p.config_updated { ", config.toml updated" } else { "" });
+            }
+            if let Some(p) = &report.pushed {
+                println!("pushed: commit {} ({} file(s))", &p.commit_sha[..12.min(p.commit_sha.len())], p.files_changed);
+            }
+            if let Some(err) = report.error {
+                anyhow::bail!(err);
+            }
+            if report.pulled.is_none() && report.pushed.is_none() {
+                println!("nothing to sync");
+            }
+        }
+        SyncCommand::Init => {
+            runner.init_fresh().await?;
+            println!("vault key created — other devices pair with this one to get it");
+        }
+        SyncCommand::Pair { code, host } => {
+            runner.pair_join(&code, host).await?;
+            println!("paired — this hub now has the vault key");
+        }
+    }
+    let state = runner.state()?;
+    let backend = match state.backend {
+        SyncBackend::NotSetUp => "not set up (no vault key yet: `warden-server sync init` or `sync pair <code>`)",
+        SyncBackend::Git => "git",
+        SyncBackend::Arweave => "Arweave (pull only here; pushing needs the TruthID phone)",
+    };
+    println!("backend: {backend}");
+    if let Some(remote) = &state.git_remote {
+        println!("git remote: {remote}");
+    }
+    println!(
+        "pending: {} file(s){}",
+        state.pending_vault_changes,
+        if state.pending_config_changed { " + config.toml" } else { "" }
+    );
+    match state.last_synced_at_ms {
+        Some(ms) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(ms);
+            println!("last synced: {} min ago", (now - ms).max(0) / 60_000);
+        }
+        None => println!("last synced: never"),
+    }
+    if state.backend == SyncBackend::Arweave {
+        println!("no [git_sync] in the config: set one to sync both ways from this hub");
+    }
+    Ok(())
+}
 
 /// Settings over the network (P78) for this process: the same config file and the same flags it
 /// started with, so a reload after a save builds exactly what a restart would.
@@ -214,6 +317,9 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         overrides,
     });
 
+    // P61 — the vault syncs on its own every few minutes, and the web's Sync screen drives it too.
+    let runner = Arc::new(sync_runner(args.config.as_deref(), args.vault_path.clone())?);
+
     let conversations_dir = warden_bootstrap::default_server_conversations_dir()
         .context("could not determine the OS config directory for conversations")?;
 
@@ -223,7 +329,8 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?)
         .await?
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
-        .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))));
+        .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))))
+        .with_sync(runner, Some(AUTO_SYNC_INTERVAL));
     if let Some(settings) = settings {
         server = server.with_settings(Arc::new(settings));
     }
@@ -275,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => run_serve(args).await,
         Command::Devices { action } => run_devices_command(action),
+        Command::Sync(args) => run_sync_command(args).await,
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

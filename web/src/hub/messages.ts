@@ -181,6 +181,8 @@ export interface HubSettings {
   prices: PriceSettings[];
   defaultModels: Record<string, string>;
   toolNames: string[];
+  /** `[git_sync]` (P61): `remoteUrl` empty = no git sync; the token is never sent. */
+  gitSync: { remoteUrl: string; token: SecretStatus };
   notes: string[];
 }
 
@@ -202,7 +204,30 @@ export interface HubSettingsUpdate {
   whisperKey: SecretEdit;
   limits: LimitSettings[] | null;
   prices: PriceSettings[];
+  /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
+  gitSync?: { remoteUrl: string; token: SecretEdit };
 }
+
+/** Mirrors `SyncRoundDto` (P61): one round the hub ran; `pulled`/`pushed` only when something moved. */
+export interface SyncRound {
+  atMs: number;
+  pulled?: { filesWritten: number; filesDeleted: number; configUpdated: boolean };
+  pushed?: { commitSha: string; filesChanged: number };
+  error?: string;
+}
+
+/** Mirrors `SyncStatusDto`: where the hub's vault syncs to and how the last round went. */
+export interface SyncStatus {
+  backend: "notSetUp" | "git" | "arweave";
+  gitRemote?: string;
+  lastSyncedAtMs?: number;
+  pendingVaultChanges: number;
+  pendingConfigChanged: boolean;
+  lastRound?: SyncRound;
+}
+
+/** Mirrors `SyncActionDto`. `host` is an IPv4 address (a Tailscale one works). */
+export type SyncAction = { kind: "syncNow" } | { kind: "init" } | { kind: "pairJoin"; code: string; host?: string };
 
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
@@ -247,6 +272,9 @@ export type ClientMessage =
   /** Sessão 103 — the hub's paired devices; approving or revoking repeats the pairing key. */
   | { type: "listDevices"; requestId: number }
   | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
+  /** P61 — the hub's vault sync; an action repeats the pairing key. */
+  | { type: "requestSyncStatus"; requestId: number }
+  | { type: "syncAction"; requestId: number; pairingKey: string; action: SyncAction }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -293,6 +321,8 @@ export type ServerMessage =
   /** `you` is this browser's own device id. */
   | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
   | { type: "deviceError"; requestId: number; message: string; authRejected: boolean }
+  | { type: "syncStatus"; requestId: number; status: SyncStatus }
+  | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
   | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }
   /** The hub stopped waiting (deadline): close the prompt. */
@@ -346,6 +376,7 @@ export function decode(text: string): ServerMessage {
     case "settings":
     case "settingsSaved":
     case "deviceList":
+    case "syncStatus":
     case "approvalRequest":
     case "approvalCancelled":
     case "conversationsChanged":
@@ -353,6 +384,10 @@ export function decode(text: string): ServerMessage {
     case "deviceError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };
       return { type: "deviceError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
+    }
+    case "syncError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "syncError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
     }
     case "settingsError": {
       const raw = json as { requestId: number; message: string; conflict?: boolean; authRejected?: boolean };

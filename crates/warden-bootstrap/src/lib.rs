@@ -30,6 +30,7 @@ use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod agent_scope;
+pub mod auto_sync;
 mod config_file;
 pub mod manage_agents;
 pub mod message_agent;

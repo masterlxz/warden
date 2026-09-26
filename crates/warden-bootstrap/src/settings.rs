@@ -1,7 +1,8 @@
 //! Settings saves (P78): the checks every save runs, shared by the desktop's Settings screen and
 //! the hub's web settings, and the slice of `config.toml` the web screen edits.
 //!
-//! The web slice is providers, agents, the Tavily/Whisper keys, spending limits and prices. Secrets
+//! The web slice is providers, agents, the Tavily/Whisper keys, spending limits, prices and the git
+//! sync remote (P61). Secrets
 //! never leave the hub: the screen gets a `SecretStatusDto` and sends back a `SecretEdit`.
 //! Everything the screen doesn't show (shell, MCP servers, SSH hosts, storage, paths, the embedded
 //! hub) is carried over from the file untouched.
@@ -13,11 +14,12 @@ use anyhow::Context;
 use warden_core::memory::content_version;
 use warden_core::spend::Price;
 use warden_server_protocol::protocol::{
-    AgentSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto, SecretEdit, SecretStatusDto,
+    AgentSettingsDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
+    SecretEdit, SecretStatusDto,
 };
 
 use crate::{
-    default_limit_configs, default_model_for, env_switches_limits_off, remove_agent_from, AgentConfig, FileConfig, LimitConfig, LimitScope,
+    default_limit_configs, default_model_for, env_switches_limits_off, remove_agent_from, AgentConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
     Provider, ProviderConfig,
 };
 
@@ -279,8 +281,27 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
         prices: config.prices.iter().cloned().map(Into::into).collect(),
         default_models: default_models_by_kind(),
         tool_names,
+        git_sync: GitSyncSettingsDto {
+            remote_url: config.git_sync.as_ref().map(|g| g.remote_url.clone()).unwrap_or_default(),
+            token: secret_status(config.git_sync.as_ref().map(|g| g.token.as_str()).filter(|t| !t.is_empty())),
+        },
         notes,
     }
+}
+
+/// `[git_sync]` after a web save. An empty URL turns git sync off. Only `https://` is accepted
+/// from the web: a path or `file://` would let a paired device point the hub's pushes at any
+/// directory on its machine.
+fn apply_git_sync(edit: GitSyncEditDto, current: Option<GitSyncConfig>) -> Result<Option<GitSyncConfig>, String> {
+    let Some(remote_url) = non_empty(&edit.remote_url) else {
+        return Ok(None);
+    };
+    if !remote_url.starts_with("https://") {
+        return Err("the git sync remote must be an https:// URL".to_string());
+    }
+    let token = apply_secret(edit.token, current.map(|g| g.token).filter(|t| !t.is_empty()))
+        .ok_or_else(|| "git sync needs an access token for its remote".to_string())?;
+    Ok(Some(GitSyncConfig { remote_url, token }))
 }
 
 /// `existing` with the web screen's slice replaced by `update`, checked the same way the desktop's
@@ -345,6 +366,9 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     config.prices = prices_into_config(update.prices)?;
     config.api_keys.tavily = apply_secret(update.tavily_key, config.api_keys.tavily.take());
     config.api_keys.whisper = apply_secret(update.whisper_key, config.api_keys.whisper.take());
+    if let Some(edit) = update.git_sync {
+        config.git_sync = apply_git_sync(edit, config.git_sync.take())?;
+    }
 
     // Same as the desktop's save: once the registry holds a provider, the legacy single-provider
     // fields are only stale duplicate secrets.
@@ -427,6 +451,7 @@ mod tests {
             whisper_key: SecretEdit::Keep,
             limits: view.limits,
             prices: view.prices,
+            git_sync: None,
         }
     }
 
@@ -683,5 +708,44 @@ mod tests {
         std::fs::write(&path, "a = 1").unwrap();
         assert_eq!(config_version(&path).unwrap(), one, "rewriting the same bytes keeps the version");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_sync_is_shown_without_its_token_and_saved_only_over_https() {
+        let with_git = || {
+            let mut config = sample();
+            config.git_sync = Some(GitSyncConfig { remote_url: "https://git.example/v.git".into(), token: "ghp_very-long-token-abcd".into() });
+            config
+        };
+        let config = with_git();
+        let view = hub_settings(&config, Vec::new(), Vec::new());
+        assert_eq!(view.git_sync.remote_url, "https://git.example/v.git");
+        assert_eq!(view.git_sync.token, SecretStatusDto { set: true, hint: Some("abcd".into()) });
+        assert!(!serde_json::to_string(&view).unwrap().contains("ghp_"));
+
+        // Absent: untouched.
+        let saved = apply_hub_settings(with_git(), untouched(&config)).unwrap();
+        assert_eq!(saved.git_sync, config.git_sync);
+
+        // A new URL keeps the saved token.
+        let mut update = untouched(&config);
+        update.git_sync = Some(GitSyncEditDto { remote_url: " https://other.example/v.git ".into(), token: SecretEdit::Keep });
+        let saved = apply_hub_settings(with_git(), update).unwrap();
+        assert_eq!(saved.git_sync, Some(GitSyncConfig { remote_url: "https://other.example/v.git".into(), token: "ghp_very-long-token-abcd".into() }));
+
+        // An empty URL turns it off.
+        let mut update = untouched(&config);
+        update.git_sync = Some(GitSyncEditDto { remote_url: String::new(), token: SecretEdit::Keep });
+        assert_eq!(apply_hub_settings(with_git(), update).unwrap().git_sync, None);
+
+        // Never a local path, and never without a token.
+        for url in ["/srv/vault.git", "file:///srv/vault.git", "ssh://git@host/v.git"] {
+            let mut update = untouched(&config);
+            update.git_sync = Some(GitSyncEditDto { remote_url: url.into(), token: SecretEdit::Keep });
+            assert!(apply_hub_settings(with_git(), update).unwrap_err().contains("https://"), "{url}");
+        }
+        let mut update = untouched(&sample());
+        update.git_sync = Some(GitSyncEditDto { remote_url: "https://git.example/v.git".into(), token: SecretEdit::Keep });
+        assert!(apply_hub_settings(sample(), update).unwrap_err().contains("token"));
     }
 }

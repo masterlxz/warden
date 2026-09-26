@@ -321,6 +321,7 @@ api_key = "sk-ant-original-secret-9999"
             whisper_key: SecretEdit::Keep,
             limits: settings.limits.clone(),
             prices: settings.prices.clone(),
+            git_sync: None,
         }
     }
 

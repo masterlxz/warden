@@ -15,6 +15,8 @@ import {
   type ConversationSummary,
   type HistoryMessage,
   type HubDevice,
+  type SyncAction,
+  type SyncStatus,
   type HubSettings,
   type HubSettingsUpdate,
   type LimitStatus,
@@ -57,6 +59,16 @@ export class SettingsError extends Error {
 
 /** An approve/revoke the hub refused. `authRejected`: the pairing key was wrong. */
 export class DeviceError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** A sync action the hub refused. `authRejected`: the pairing key was wrong. */
+export class SyncError extends Error {
   constructor(
     message: string,
     public readonly authRejected: boolean,
@@ -129,6 +141,8 @@ export interface ConnectOptions {
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Longer than the hub's own 5-minute pairing wait. */
+const SYNC_ACTION_TIMEOUT_MS = 330_000;
 const TRANSCRIBE_TIMEOUT_MS = 60_000;
 /** A settings save restarts the hub's orchestrator, which starts MCP servers (Tavily via `npx`). */
 const SAVE_SETTINGS_TIMEOUT_MS = 120_000;
@@ -349,7 +363,11 @@ export class ServerConnection {
       case "settings":
       case "settingsSaved":
       case "deviceList":
+      case "syncStatus":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "syncError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new SyncError(message.message, message.authRejected)));
         break;
       case "deviceError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new DeviceError(message.message, message.authRejected)));
@@ -512,6 +530,21 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "setDeviceStatus", requestId, pairingKey, deviceId, action }));
     if (reply.type !== "deviceList") throw new Error("resposta inesperada do hub");
     return { devices: reply.devices, you: reply.you };
+  }
+
+  /** Where the hub's vault syncs to and how its last round went (P61). */
+  async requestSyncStatus(): Promise<SyncStatus> {
+    const reply = await this.request((requestId) => ({ type: "requestSyncStatus", requestId }));
+    if (reply.type !== "syncStatus") throw new Error("resposta inesperada do hub");
+    return reply.status;
+  }
+
+  /** Runs a sync round or sets up the hub's vault key; rejects with `SyncError`. A round over the
+   * network or a pairing can take minutes, hence the longer wait. */
+  async syncAction(pairingKey: string, action: SyncAction): Promise<SyncStatus> {
+    const reply = await this.request((requestId) => ({ type: "syncAction", requestId, pairingKey, action }), SYNC_ACTION_TIMEOUT_MS);
+    if (reply.type !== "syncStatus") throw new Error("resposta inesperada do hub");
+    return reply.status;
   }
 
   /** One of this device's conversations on the hub, oldest first (the most recent `limit`). A
