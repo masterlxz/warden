@@ -479,13 +479,20 @@ aparelhos, não pessoas. Perguntas abertas (ver P84): o que é um usuário (cont
 de cada um e o que é compartilhado (conversas, vault, skills, agentes, chaves, limites), papéis e permissões (por
 tool, agente, pasta do vault), e relação com o tier pago (P50).
 
-### Vários servidores — failover e divisão de carga
+### Rede de nós no mesmo workspace
 
-Ideia do usuário (2026-09-26, Sessão 103), só registro: mais de um hub servindo o mesmo usuário, para que a falha
-ou a sobrecarga de um não derrube o Warden. Hoje cada cliente fala com um hub só e o estado mora no disco dele.
-Perguntas abertas (ver P86): ativo-passivo ou ativo-ativo, onde fica o estado compartilhado (o sync já replica o
-vault; conversas e devices não), como o cliente troca de hub, tools entre devices em hubs diferentes, e relação com
-o tier pago (P50).
+Ideia do usuário (Sessão 103), estudada na Sessão 107. O workspace é *o* Warden, e os nós são as máquinas que
+entraram nele. Qualquer nó atende, executa tarefas e oferece o que só ele tem (shell, arquivos, GPU, Ollama),
+sem centro: qualquer nó pode cair. O desenho de conflitos (CRDT por tipo de dado) está em `ARCHITECTURE.md`
+("Rede de nós"). Nas palavras do usuário, "uma ideia muito massa", e fica guardada para quando fizer sentido.
+
+A ordem combinada, do que entrega mais com menos risco para o mais caro:
+
+1. **Tarefas agendadas** (P92): o Warden fazendo coisas sozinho, num nó sempre de pé.
+2. **Nós como capacidades** (P93): outras máquinas emprestam o que têm, e o estado continua no hub.
+3. **Descentralizar só os dados fáceis**, se a queda do nó principal virar problema real: aparelhos e chaves,
+   conversas e gasto. Outro nó assume a API e as conversas continuam.
+4. **A rede completa** (P86): agentes e configuração, e por último o vault com junção de texto.
 
 ### Storage Provider plugável (desacoplar vault de TruthID)
 

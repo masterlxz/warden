@@ -54,8 +54,19 @@
   - o modelo recebeu as tools do agente mais o `get_weather`, e o `tool_call_id` com o id do hub.
 - **Não testado**: um harness de verdade (opencode, P89) e o Gemini real, que é onde a assinatura no id importa.
 
+**P86, conversa de desenho** pedida em seguida ("prefiro multiservidores, dá uma estudada"). Nada implementado:
+
+- Primeira leitura (failover entre hubs, com lista de hubs no cliente) corrigida pelo usuário: a ideia é uma
+  **rede de nós** no mesmo workspace, em que qualquer nó atende, executa tarefas e oferece o que só ele tem.
+- Preferência do usuário: **sem centro**, com cuidado grande nos conflitos. Desenho por tipo de dado (CRDT,
+  registro de operações com HLC, candidatas Automerge/Loro/yrs) registrado em `ARCHITECTURE.md` ("Rede de nós").
+- Perguntado "vale a pena?", recomendei não fazer a versão completa agora (custo, cenário indefinido, base sem
+  teste real, cruzamento com o P84), e sim tirar dela o que entrega mais. O usuário aceitou e pediu para registrar
+  tudo: P86 reescrito, **P92 (tarefas agendadas)** e **P93 (nós como capacidades)** novos, e `ROADMAP.md` com a
+  ordem combinada (P92 → P93 → dados fáceis descentralizados → rede completa).
+
 **Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, a Warden API nas telas), agora incluindo o
-opencode apontado para a Warden API e o Gemini real.
+opencode apontado para a Warden API e o Gemini real. Depois, P92.
 
 ---
 

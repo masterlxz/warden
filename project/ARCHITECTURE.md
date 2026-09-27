@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Rede de nós no mesmo workspace (P86, Sessão 107) | Failover entre hubs vs rede de nós; estado com um nó âncora vs serviço externo vs sem centro; fazer agora vs em etapas | **Rede de nós, sem centro (preferência do usuário), com CRDT por tipo de dado — mas adiada**: primeiro tarefas agendadas (P92) e nós como capacidades (P93), que não precisam de estado descentralizado. Ver "Rede de nós" |
 | Tools do cliente na Warden API (P91, Sessão 107) | Oferecer ao modelo só as tools do cliente vs as do cliente e todas as do agente vs as do cliente e só memória/skills; guardar a `thought_signature` do Gemini no hub vs dentro do id da chamada | **As do cliente e todas as do agente, e a do cliente vale em nome repetido** ✓ (escolha do usuário; para limitar, a chave fica presa a um agente com `allowed_tools`). **A assinatura vai dentro do id** (`call_<hex>__ts_<base64url>`), sem estado no hub. Ver "Warden API" |
 | Warden API (P12, Sessão 106) | Formato próprio vs compatível com a OpenAI; repassar as tools do cliente vs ignorar; salvar as chamadas como conversas vs só o gasto | **Compatível com a OpenAI (`/v1/models`, `/v1/chat/completions`, com stream) no mesmo porto do hub, tools do cliente ignoradas e nada salvo além do gasto no canal `api`** ✓ (escolhas do usuário). Chaves criadas no app (web, desktop, `warden-server api-keys`), só o hash no disco. O repasse de tools fica como pendência ligada ao P89 — ver "Warden API" |
 | Roteador de APIs de IA (P79, Sessão 105) | Construir um roteador próprio vs embutir o 9Router (Node + Next.js, MIT) vs recomendar instalar por fora | **Fallback nativo entre provedores cadastrados + roteador externo opcional** ✓ (escolha do usuário). Embutir descartado (runtime Node inteiro no hub em Rust, dependência de outro projeto). Um roteador externo continua funcionando como provedor `openai_compatible`. OAuth de assinatura de consumidor fica fora do Warden (termos dos provedores). Implementado na mesma sessão, e o roteamento virou **combos com nome** (P90) — ver "Fallback entre provedores (P79) e combos (P90)" |
@@ -2090,4 +2091,74 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
     `agent` vale para essas chamadas.
 - **Fica de fora**: imagens, `/v1/embeddings` e outros endpoints, e keep-alive. O repasse das tools do
   cliente entrou na Sessão 107 (P91, acima).
+
+## Rede de nós no mesmo workspace (P86, estudo da Sessão 107 — nada implementado)
+
+Registro de uma conversa de desenho com o usuário, para quando for construir. A ordem combinada está no
+`ROADMAP.md` ("Rede de nós no mesmo workspace"): P92 e P93 vêm antes.
+
+### O modelo
+
+- **Workspace** é *o* Warden: agentes, vault, skills, provedores, conversas, aparelhos, chaves da API e limites.
+  É uma coisa só, em quantas máquinas estiver.
+- **Nó** é uma máquina que entrou no workspace (VPS, desktop, mini-PC, outro VPS). Nenhum é "o servidor", e
+  qualquer um pode:
+  - **atender**: celular, web, extensão e a Warden API falam com o nó que estiver de pé;
+  - **executar**: tarefas agendadas (P92), jobs e agentes trabalhando sozinhos. Se o nó que ia rodar caiu, outro
+    assume;
+  - **oferecer o que só ele tem** (P93): o shell e os arquivos da máquina, uma GPU, um modelo local, uma rede
+    interna.
+- Primeira leitura errada, corrigida pelo usuário: não é *failover* (um servidor de reserva para a API). A API se
+  manter no ar é só uma consequência.
+- Não confundir com o `warden-node` removido na Sessão 105: aquele era só um nó de armazenamento do vault.
+
+### Onde fica o estado: sem centro
+
+Opções pesadas: (1) sem centro, cada nó com a sua cópia; (2) um nó âncora com a verdade; (3) um serviço externo
+(banco, Warden Cloud do P50). **Preferência do usuário: sem centro**, qualquer nó pode cair, inclusive o principal,
+"mas precisamos trabalhar bem na parte de conflitos".
+
+- **Como os nós trocam o estado**:
+  - cada nó guarda um **registro de operações** ("mensagem X adicionada", "aparelho Y revogado", "campo Z do
+    agente mudou"), não só o estado final, cada operação com um relógio **HLC**;
+  - quando dois nós se encontram, comparam o que cada um já viu e mandam só o que falta, pelo WebSocket que já
+    existe;
+  - um celular pode carregar mudanças de um nó para outro que nunca estão no ar ao mesmo tempo;
+  - o git e o Arweave de hoje continuam como mais um caminho para o registro (backup, ou nós que nunca se veem).
+- **CRDT**: estruturas cuja junção dá o mesmo resultado em qualquer ordem, porque nós separados (o notebook no
+  avião e o VPS) continuam funcionando e precisam se juntar sozinhos depois. Bibliotecas Rust a avaliar num
+  protótipo antes de escolher: **Automerge**, **Loro** e **yrs** (Yjs). Critérios: tamanho do histórico,
+  desempenho com um vault grande e compactação do registro antigo.
+- **Limite de base**: "rodar uma tarefa exatamente uma vez" é impossível sem centro. Cada lado de uma separação
+  pode achar que o outro caiu. É preciso escolher, por tarefa, qual erro é aceitável.
+
+### Conflitos, tipo por tipo
+
+| Dado | Regra de junção | Conflito que sobra |
+|---|---|---|
+| Conversas | Cada mensagem com id e HLC; junção = união dos conjuntos, ordenada. A escrita por anexo (P87, `append_messages`) já combina | Dois nós respondendo à mesma conversa ao mesmo tempo: as duas respostas ficam, em ordem |
+| Aparelhos e chaves da API | Conjunto com lápide; **revogar sempre vence** | Nenhum: um aparelho revogado nunca volta por uma cópia velha |
+| Gasto e limites (P4) | Contador por nó, total = soma | Numa separação, cada lado só vê o seu gasto e pode passar um pouco do limite. Mitigação: dividir o limite entre os nós enquanto separados |
+| Agentes, provedores, combos, skills | Mapa por id, e vence a mudança mais recente de cada campo | Dois nós no mesmo campo do mesmo agente: vence um, e o outro fica no histórico para ver e recuperar |
+| Vault (markdown) | O caso mais difícil. Hoje o sync é por arquivo inteiro e só se recusa a sobrescrever mudança não enviada, sem juntar. O certo é um CRDT de texto | Edições no mesmo trecho ficam lado a lado. Alternativa: juntar por parágrafo e marcar o conflito no arquivo, como o git |
+| Tarefas agendadas | Definição = mapa, como os agentes. Execução: dono calculado igual por todos a partir dos nós vivos, com reserva e prazo; se o dono cair, o próximo assume quando o prazo vence | Numa separação, a tarefa pode rodar duas vezes. Cada tarefa declara "pode repetir" (resumo diário) ou "no máximo uma vez" (na dúvida, não roda) |
+| `config.toml` com comentários (P82) | O arquivo escrito à mão não é um CRDT: a verdade passa a ser os dados estruturados, e o `.toml` é gerado e editável, com a edição virando operações no mapa | — |
+| OAuth de MCP, certificado TLS | Continuam por máquina, sem réplica | — |
+
+### Por que ficou para depois
+
+Avaliação feita a pedido do usuário ("na sua opinião, isso vale a pena?"), aceita por ele:
+
+- o custo de sistema distribuído é desproporcional para uma pessoa só: meses de trabalho e bugs difíceis de
+  reproduzir. Um VPS fica meses no ar, então a disponibilidade comprada é pequena para um usuário;
+- o cenário ainda não existe ("ainda não sei, vou usar em vários dispositivos"), e a arquitetura mais cara para
+  um uso imaginado costuma errar o alvo;
+- a base tem muita coisa sem teste real (P80);
+- cruza com o P84 (multiusuário): conflitos entre nós *e* entre pessoas é bem mais difícil que cada um separado.
+  Vale decidir antes se o Warden é de uma pessoa ou de várias.
+
+O que o usuário mais quer ("rodar tarefas a qualquer momento", usar vários aparelhos como parte do Warden) sai de
+**P92** e **P93**, sem estado descentralizado. Se a queda do nó principal virar problema real, descentraliza-se
+primeiro só os dados fáceis (aparelhos e chaves, conversas, gasto), que já bastam para outro nó assumir a API e as
+conversas; o vault fica no sync atual. O resto (agentes, configuração, vault com junção de texto) é o P86 completo.
 
