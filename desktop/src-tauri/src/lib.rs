@@ -3,6 +3,7 @@ mod approval;
 mod git_sync_cmds;
 mod lend_cmds;
 mod node_cmds;
+mod people_cmds;
 mod qr;
 mod recording;
 mod server_cmds;
@@ -861,6 +862,11 @@ pub fn run() {
             api_key_cmds::revoke_api_key,
             node_cmds::list_nodes,
             node_cmds::save_node_access,
+            people_cmds::list_people,
+            people_cmds::add_person,
+            people_cmds::rename_person,
+            people_cmds::reset_person_password,
+            people_cmds::remove_person,
             lend_cmds::get_lend_status,
             lend_cmds::lend_options,
             lend_cmds::start_lending,

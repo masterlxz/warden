@@ -34,6 +34,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   final _portController = TextEditingController(text: '${ConnectionSettingsStore.defaultPort}');
   final _authKeyController = TextEditingController();
   final _deviceNameController = TextEditingController();
+  // P84 — a member signs in with the username and password the owner created for them.
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _useAccount = false;
   bool _useTls = false;
 
   final _settingsStore = ConnectionSettingsStore();
@@ -83,18 +87,24 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   Future<void> _connect() async {
     final host = _hostController.text.trim();
     final port = int.tryParse(_portController.text.trim());
-    final authKey = _authKeyController.text;
+    final useAccount = _useAccount;
+    final authKey = useAccount ? '' : _authKeyController.text;
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text;
     final deviceName = _deviceNameController.text.trim();
     final useTls = _useTls;
+    final missing = useAccount ? 'Fill in host, port, username, password and device name' : 'Fill in host, port, auth key and device name';
 
     if (host.isEmpty || port == null || deviceName.isEmpty) {
-      setState(() => _status = const ConnectionFailure('Fill in host, port, auth key and device name'));
+      setState(() => _status = ConnectionFailure(missing));
       return;
     }
-    // P36 — once paired, the device token is enough; the auth key only matters for pairing.
+    // P36 — once paired, the device token is enough; the auth key (or a member's password, P84)
+    // only matters for pairing.
     final deviceToken = await _settingsStore.deviceTokenFor(host, port);
-    if (authKey.isEmpty && deviceToken == null) {
-      setState(() => _status = const ConnectionFailure('Fill in host, port, auth key and device name'));
+    final hasCredentials = useAccount ? username.isNotEmpty && password.isNotEmpty : authKey.isNotEmpty;
+    if (!hasCredentials && deviceToken == null) {
+      setState(() => _status = ConnectionFailure(missing));
       return;
     }
 
@@ -111,6 +121,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         deviceName: deviceName,
         authKey: authKey,
         deviceToken: deviceToken,
+        username: useAccount && hasCredentials ? username : null,
+        password: useAccount && hasCredentials ? password : null,
         // Opt-in, same spirit as the desktop's `enable_shell`: only advertise (and answer) the
         // file tools once the user has picked a root folder for them to operate in.
         toolSpecs: hasRootFolder ? const [MobileFileTool.listFilesSpec, MobileFileTool.readFileSpec] : const [],
@@ -127,6 +139,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         deviceName: deviceName,
         useTls: useTls,
       ));
+
+      _passwordController.clear();
+
+      // P84 — a member on the provisional password the owner gave them picks their own first:
+      // until then the hub turns everything else away.
+      if (connection.user?.mustChangePassword ?? false) {
+        final changed = mounted && await _askNewPassword(connection);
+        if (!changed) {
+          await connection.goodbye('password not changed');
+          if (mounted) setState(() => _status = const ConnectionFailure('Choose your own password to continue'));
+          return;
+        }
+      }
 
       await _statusSubscription?.cancel();
       _statusSubscription = connection.statusStream.listen((s) {
@@ -156,6 +181,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     } catch (e) {
       setState(() => _status = ConnectionFailure(e.toString()));
     }
+  }
+
+  /// P84 — the provisional password for one of the member's own. True once the hub took it.
+  Future<bool> _askNewPassword(ServerConnection connection) async {
+    final changed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _ChangePasswordDialog(connection: connection, name: connection.user?.name ?? ''),
+    );
+    return changed ?? false;
   }
 
   // Fase 9.1 (redefined) — sweeps the LAN instead of asking the user to already know the IP.
@@ -223,6 +258,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     _portController.dispose();
     _authKeyController.dispose();
     _deviceNameController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -291,12 +328,37 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               onChanged: _isConnected || _isBusy ? null : (value) => setState(() => _useTls = value),
             ),
             const SizedBox(height: 12),
-            TextField(
-              controller: _authKeyController,
-              enabled: !_isConnected && !_isBusy,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Auth key'),
+            // P84 — the owner pairs with the hub's key; everyone else with their own account.
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Pairing key')),
+                ButtonSegment(value: true, label: Text('Username')),
+              ],
+              selected: {_useAccount},
+              onSelectionChanged: _isConnected || _isBusy ? null : (selected) => setState(() => _useAccount = selected.first),
             ),
+            const SizedBox(height: 12),
+            if (_useAccount) ...[
+              TextField(
+                controller: _usernameController,
+                enabled: !_isConnected && !_isBusy,
+                autocorrect: false,
+                decoration: const InputDecoration(labelText: 'Username'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _passwordController,
+                enabled: !_isConnected && !_isBusy,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Password', helperText: 'Only needed the first time on this phone'),
+              ),
+            ] else
+              TextField(
+                controller: _authKeyController,
+                enabled: !_isConnected && !_isBusy,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Auth key'),
+              ),
             const SizedBox(height: 12),
             TextField(
               controller: _deviceNameController,
@@ -317,6 +379,83 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// P84 — swaps the provisional password for the member's own. Pops `true` once the hub took it.
+class _ChangePasswordDialog extends StatefulWidget {
+  const _ChangePasswordDialog({required this.connection, required this.name});
+
+  final ServerConnection connection;
+  final String name;
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  static const _minLength = 8;
+
+  final _current = TextEditingController();
+  final _next = TextEditingController();
+  final _again = TextEditingController();
+  String? _error;
+  bool _busy = false;
+
+  Future<void> _submit() async {
+    if (_next.text.length < _minLength) {
+      setState(() => _error = 'The new password needs at least $_minLength characters.');
+      return;
+    }
+    if (_next.text != _again.text) {
+      setState(() => _error = "The two new passwords don't match.");
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.connection.changePassword(_current.text, _next.text);
+      if (mounted) Navigator.of(context).pop(true);
+    } on PasswordException catch (e) {
+      if (mounted) setState(() => _error = e.wrongPassword ? 'The provisional password is wrong.' : e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _current.dispose();
+    _next.dispose();
+    _again.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Choose your password'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Hi ${widget.name}. Before you start, replace the provisional password with one of your own.'),
+            TextField(controller: _current, obscureText: true, decoration: const InputDecoration(labelText: 'Provisional password')),
+            TextField(controller: _next, obscureText: true, decoration: const InputDecoration(labelText: 'New password')),
+            TextField(controller: _again, obscureText: true, decoration: const InputDecoration(labelText: 'New password again')),
+            if (_error != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: Colors.red))),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+        FilledButton(onPressed: _busy ? null : _submit, child: const Text('Save')),
+      ],
     );
   }
 }

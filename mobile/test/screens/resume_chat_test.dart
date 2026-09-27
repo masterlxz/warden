@@ -31,6 +31,8 @@ void main() {
     required String deviceName,
     required String authKey,
     String? deviceToken,
+    String? username,
+    String? password,
     Duration handshakeTimeout = ServerConnection.defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
@@ -69,7 +71,10 @@ void main() {
     await tester.pageBack();
     await tester.pumpAndSettle();
     expect(find.text('Resume chat'), findsOneWidget);
+    // The form grew with the sign-in choice (P84): the button sits below the test's 800x600 screen.
+    await tester.scrollUntilVisible(find.widgetWithText(OutlinedButton, 'Disconnect'), 100, scrollable: find.byType(Scrollable).first);
     expect(find.widgetWithText(OutlinedButton, 'Disconnect'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Resume chat'), -100, scrollable: find.byType(Scrollable).first);
 
     controller.local.sink.add(jsonEncode({'type': 'chatResponse', 'content': 'general kenobi'}));
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));

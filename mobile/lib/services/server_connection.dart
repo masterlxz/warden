@@ -108,13 +108,15 @@ typedef ServerConnector = Future<ServerConnection> Function({
   required String deviceName,
   required String authKey,
   String? deviceToken,
+  String? username,
+  String? password,
   Duration handshakeTimeout,
   List<Map<String, dynamic>> toolSpecs,
   Map<String, ToolHandler> toolHandlers,
 });
 
 class ServerConnection implements ConversationBackend {
-  ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this._toolHandlers) {
+  ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this.user, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
     _subscription
@@ -145,6 +147,9 @@ class ServerConnection implements ConversationBackend {
   /// The device token the hub issued in this connection's `HelloAck` (P36), if it issued one —
   /// the caller must persist it and pass it as `deviceToken` from then on.
   final String? issuedDeviceToken;
+
+  /// P84 — the member this device belongs to, as the hub said in `HelloAck`; null for the owner.
+  final UserInfo? user;
   final Map<String, ToolHandler> _toolHandlers;
 
   final _statusController = StreamController<ConnectionStatus>.broadcast();
@@ -192,6 +197,8 @@ class ServerConnection implements ConversationBackend {
     required String deviceName,
     required String authKey,
     String? deviceToken,
+    String? username,
+    String? password,
     Duration handshakeTimeout = defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
@@ -203,6 +210,8 @@ class ServerConnection implements ConversationBackend {
       deviceName: deviceName,
       authKey: authKey,
       deviceToken: deviceToken,
+      username: username,
+      password: password,
       handshakeTimeout: handshakeTimeout,
       toolSpecs: toolSpecs,
       toolHandlers: toolHandlers,
@@ -216,6 +225,8 @@ class ServerConnection implements ConversationBackend {
     required String deviceName,
     required String authKey,
     String? deviceToken,
+    String? username,
+    String? password,
     Duration handshakeTimeout = defaultHandshakeTimeout,
     List<Map<String, dynamic>> toolSpecs = const [],
     Map<String, ToolHandler> toolHandlers = const {},
@@ -226,6 +237,8 @@ class ServerConnection implements ConversationBackend {
         deviceName: deviceName,
         authKey: authKey,
         deviceToken: deviceToken,
+        username: username,
+        password: password,
         handshakeTimeout: handshakeTimeout,
         toolSpecs: toolSpecs,
         toolHandlers: toolHandlers,
@@ -237,6 +250,8 @@ class ServerConnection implements ConversationBackend {
     required String deviceName,
     required String authKey,
     required String? deviceToken,
+    String? username,
+    String? password,
     required Duration handshakeTimeout,
     required List<Map<String, dynamic>> toolSpecs,
     required Map<String, ToolHandler> toolHandlers,
@@ -279,13 +294,15 @@ class ServerConnection implements ConversationBackend {
       authKey: authKey,
       deviceToken: deviceToken,
       tools: toolSpecs,
+      username: username,
+      password: password,
     ).encode());
 
     try {
       final reply = await firstFrame.future;
       switch (reply) {
-        case HelloAckMessage(:final serverName, deviceToken: final issued):
-          return ServerConnection._(channel, subscription, serverName, issued, toolHandlers);
+        case HelloAckMessage(:final serverName, deviceToken: final issued, :final user):
+          return ServerConnection._(channel, subscription, serverName, issued, user, toolHandlers);
         case AuthErrorMessage(:final reason):
           await subscription.cancel();
           throw HandshakeException('authentication rejected: $reason');
@@ -304,6 +321,8 @@ class ServerConnection implements ConversationBackend {
               ApprovalCancelledMessage() ||
               ConversationsChangedMessage() ||
               UnknownServerMessage() ||
+              PasswordChangedMessage() ||
+              UserErrorMessage() ||
               ConversationErrorMessage():
           await subscription.cancel();
           throw HandshakeException('expected HelloAck, got $reply');
@@ -341,6 +360,8 @@ class ServerConnection implements ConversationBackend {
       case ApprovalCancelledMessage():
         _approvalController.add(msg);
       case SettingsMessage(:final requestId) || SettingsErrorMessage(:final requestId):
+        _pendingConversation.remove(requestId)?.complete(msg);
+      case PasswordChangedMessage(:final requestId) || UserErrorMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
       case UnknownServerMessage():
         break;
@@ -396,6 +417,15 @@ class ServerConnection implements ConversationBackend {
       SettingsErrorMessage(:final message) => throw ConversationException(message),
       _ => const [],
     };
+  }
+
+  /// P84 — the member on this connection picks their own password. Throws a [PasswordException]
+  /// (with `wrongPassword` when the current one didn't match) if the hub refuses.
+  Future<void> changePassword(String oldPassword, String newPassword) async {
+    final reply = await _conversationRequest((requestId) => ChangePasswordMessage(requestId, oldPassword, newPassword));
+    if (reply case UserErrorMessage(:final message, :final authRejected)) {
+      throw PasswordException(message, wrongPassword: authRejected);
+    }
   }
 
   /// P87 — the person's answer to an [ApprovalRequestMessage].
@@ -497,4 +527,15 @@ class ServerConnection implements ConversationBackend {
     _status = s;
     _statusController.add(s);
   }
+}
+
+/// P84 — the hub refused a password change. [wrongPassword]: the current password didn't match.
+class PasswordException implements Exception {
+  const PasswordException(this.message, {this.wrongPassword = false});
+
+  final String message;
+  final bool wrongPassword;
+
+  @override
+  String toString() => message;
 }

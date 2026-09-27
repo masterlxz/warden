@@ -21,6 +21,8 @@ final class HelloMessage extends ClientMessage {
     required this.authKey,
     this.deviceToken,
     this.tools = const [],
+    this.username,
+    this.password,
   });
 
   final String deviceId;
@@ -39,6 +41,11 @@ final class HelloMessage extends ClientMessage {
   /// when this is non-empty.
   final List<Map<String, dynamic>> tools;
 
+  /// P84 — pairs as this member (with [password]) instead of with the pairing key. Like the key,
+  /// only needed until the hub issues a token.
+  final String? username;
+  final String? password;
+
   @override
   Map<String, dynamic> toJson() => {
         'type': 'hello',
@@ -47,7 +54,22 @@ final class HelloMessage extends ClientMessage {
         'authKey': authKey,
         if (deviceToken != null) 'deviceToken': deviceToken,
         'tools': tools,
+        if (username != null) 'username': username,
+        if (username != null) 'password': password ?? '',
       };
+}
+
+/// P84 — the member on this connection picks their own password. Answered by
+/// [PasswordChangedMessage] or [UserErrorMessage].
+final class ChangePasswordMessage extends ClientMessage {
+  const ChangePasswordMessage(this.requestId, this.oldPassword, this.newPassword);
+
+  final int requestId;
+  final String oldPassword;
+  final String newPassword;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'changePassword', 'requestId': requestId, 'oldPassword': oldPassword, 'newPassword': newPassword};
 }
 
 final class PingMessage extends ClientMessage {
@@ -275,7 +297,13 @@ sealed class ServerMessage {
 
   static ServerMessage fromJson(Map<String, dynamic> json) {
     return switch (json['type']) {
-      'helloAck' => HelloAckMessage(json['serverName'] as String, deviceToken: json['deviceToken'] as String?),
+      'helloAck' => HelloAckMessage(
+          json['serverName'] as String,
+          deviceToken: json['deviceToken'] as String?,
+          user: json['user'] == null ? null : UserInfo.fromJson(json['user'] as Map<String, dynamic>),
+        ),
+      'passwordChanged' => PasswordChangedMessage(json['requestId'] as int),
+      'userError' => UserErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'authError' => AuthErrorMessage(json['reason'] as String),
       'pong' => PongMessage(json['nonce'] as int),
       'chatResponse' => ChatResponseMessage(
@@ -329,13 +357,52 @@ sealed class ServerMessage {
 }
 
 final class HelloAckMessage extends ServerMessage {
-  const HelloAckMessage(this.serverName, {this.deviceToken});
+  const HelloAckMessage(this.serverName, {this.deviceToken, this.user});
 
   final String serverName;
 
   /// A newly issued device token (P36) — present when this Hello paired with the pairing key.
   /// Replaces whatever token this device held for the hub, which no longer works.
   final String? deviceToken;
+
+  /// P84 — the member this device belongs to; null for the workspace's owner.
+  final UserInfo? user;
+}
+
+/// Mirrors `UserInfoDto` (P84): a member of the workspace, never their password.
+final class UserInfo {
+  const UserInfo({required this.id, required this.name, required this.mustChangePassword});
+
+  /// The username.
+  final String id;
+  final String name;
+
+  /// Still on the provisional password the owner gave them: the hub only lets them change it.
+  final bool mustChangePassword;
+
+  static UserInfo fromJson(Map<String, dynamic> json) => UserInfo(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        mustChangePassword: json['mustChangePassword'] as bool? ?? false,
+      );
+
+  UserInfo withOwnPassword() => UserInfo(id: id, name: name, mustChangePassword: false);
+}
+
+/// P84 — the password change went through.
+final class PasswordChangedMessage extends ServerMessage {
+  const PasswordChangedMessage(this.requestId);
+
+  final int requestId;
+}
+
+/// P84 — a people request failed. [authRejected]: the current password was wrong.
+final class UserErrorMessage extends ServerMessage {
+  const UserErrorMessage(this.requestId, this.message, {this.authRejected = false});
+
+  final int requestId;
+  final String message;
+  final bool authRejected;
 }
 
 final class AuthErrorMessage extends ServerMessage {

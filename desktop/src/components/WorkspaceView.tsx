@@ -424,6 +424,167 @@ function HubPairingQrSection() {
   );
 }
 
+/** Mirrors `UserInfoDto` (P84). */
+interface Person {
+  id: string;
+  name: string;
+  role: string;
+  mustChangePassword: boolean;
+}
+
+interface PeoplePayload {
+  users: Person[];
+  tempPassword: string | null;
+}
+
+type PeopleDraft = { kind: "add"; id: string; name: string } | { kind: "rename"; id: string; name: string };
+
+/**
+ * P84 — the members of this workspace besides you: `[[users]]` in config.toml, which syncs, so someone
+ * added here can sign in on the hub on your VPS too once the file gets there. Each signs in on the web
+ * or the phone with a username and password, and has their own vault and conversations. A provisional
+ * password is shown once; they pick their own on first sign-in.
+ */
+function PeopleSection() {
+  const [people, setPeople] = useState<Person[] | null>(null);
+  const [draft, setDraft] = useState<PeopleDraft | null>(null);
+  const [shown, setShown] = useState<{ id: string; password: string } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<PeoplePayload>("list_people")
+      .then((p) => setPeople(p.users))
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  async function run(command: string, args: Record<string, string>, shownFor?: string) {
+    setError(null);
+    try {
+      const payload = await invoke<PeoplePayload>(command, args);
+      setPeople(payload.users);
+      if (payload.tempPassword && shownFor) setShown({ id: shownFor, password: payload.tempPassword });
+      setDraft(null);
+      setConfirmRemove(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function save() {
+    if (!draft) return;
+    if (draft.kind === "add") {
+      const id = draft.id.trim().toLowerCase();
+      await run("add_person", { id, name: draft.name }, id);
+    } else {
+      await run("rename_person", { id: draft.id, name: draft.name });
+    }
+  }
+
+  return (
+    <section className="settings-section">
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">People</h3>
+        <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ kind: "add", id: "", name: "" })}>
+          + Add a person
+        </button>
+      </div>
+      <p className="settings-hint">
+        Others who use this Warden. Each signs in on the web or the phone with their own username and password, and has their own vault and
+        conversations, which you don&apos;t see. For now they talk to your agents with their own memory, without the shell, nodes or your
+        integrations.
+      </p>
+      {error && <p className="settings-error-banner">{error}</p>}
+      {shown && (
+        <div className="provider-card">
+          <p className="settings-hint">
+            Provisional password for <strong>{shown.id}</strong> (shown only now): <code>{shown.password}</code>
+          </p>
+          <p className="settings-hint">Give it to them with the username. They choose their own the first time they sign in.</p>
+          <button type="button" className="settings-browse-btn" onClick={() => setShown(null)}>
+            Done
+          </button>
+        </div>
+      )}
+
+      {draft && (
+        <div className="provider-card skill-editor">
+          {draft.kind === "add" && (
+            <label className="settings-field">
+              <span className="settings-label">Username</span>
+              <input className="settings-input" type="text" placeholder="ana" value={draft.id} onChange={(e) => setDraft({ ...draft, id: e.currentTarget.value })} />
+              <span className="settings-hint">Lowercase letters, digits, - or _. It&apos;s how they sign in.</span>
+            </label>
+          )}
+          <label className="settings-field">
+            <span className="settings-label">Name</span>
+            <input className="settings-input" type="text" placeholder="Ana Souza" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })} />
+          </label>
+          <div className="skill-editor-actions">
+            <button type="button" className="settings-save-btn" disabled={draft.name.trim() === "" || (draft.kind === "add" && draft.id.trim() === "")} onClick={() => void save()}>
+              {draft.kind === "add" ? "Add" : "Save"}
+            </button>
+            <button type="button" className="settings-browse-btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {people === null ? (
+        <p className="settings-hint">Loading…</p>
+      ) : people.length === 0 ? (
+        <p className="settings-hint">Just you for now.</p>
+      ) : (
+        <div className="workspace-device-list">
+          {people.map((person) => (
+            <div className="workspace-device-row" key={person.id}>
+              <div className="workspace-device-info">
+                <div className="workspace-device-name-row">
+                  <span className="workspace-device-name">{person.name}</span>
+                  <span className={`storage-provider-badge workspace-status-badge workspace-status-badge--${person.mustChangePassword ? "pending" : "approved"}`}>
+                    {person.mustChangePassword ? "provisional password" : "active"}
+                  </span>
+                </div>
+                <span className="workspace-device-meta">{person.id}</span>
+                {confirmRemove === person.id && (
+                  <span className="settings-hint">
+                    {person.name} leaves the workspace and their devices are disconnected. Their vault and conversations stay on disk.
+                  </span>
+                )}
+              </div>
+              <div className="workspace-device-actions">
+                {confirmRemove === person.id ? (
+                  <>
+                    <button type="button" className="provider-delete-btn" onClick={() => void run("remove_person", { id: person.id })}>
+                      Remove
+                    </button>
+                    <button type="button" className="settings-browse-btn" onClick={() => setConfirmRemove(null)}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ kind: "rename", id: person.id, name: person.name })}>
+                      Rename
+                    </button>
+                    <button type="button" className="settings-browse-btn" onClick={() => void run("reset_person_password", { id: person.id }, person.id)}>
+                      New password
+                    </button>
+                    <button type="button" className="provider-delete-btn" onClick={() => setConfirmRemove(person.id)}>
+                      Remove
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** Mirrors `LendConfigPayload` (P97). */
 interface LendConfig {
   hubUrl: string;
@@ -988,6 +1149,7 @@ function WorkspaceView() {
         </div>
       )}
 
+      <PeopleSection />
       <LendSection />
       <NodesSection refreshKey={refreshKey} />
     </div>

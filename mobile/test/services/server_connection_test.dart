@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:async/async.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,6 +42,50 @@ void main() {
     final conn = await future;
     expect(conn.status, isA<Connected>());
     expect((conn.status as Connected).serverName, 'warden-server');
+  });
+
+  test('a member pairs with username and password and changes the provisional one (P84)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'ana-phone',
+      deviceName: 'Ana phone',
+      authKey: '',
+      username: 'ana',
+      password: 'provisional-1',
+    );
+
+    final hello = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect((hello['username'], hello['password'], hello['authKey']), ('ana', 'provisional-1', ''));
+    controller.local.sink.add(
+      '{"type":"helloAck","serverName":"hub","deviceToken":"tok","user":{"id":"ana","name":"Ana","role":"member","mustChangePassword":true}}',
+    );
+    final conn = await future;
+    expect((conn.user?.id, conn.user?.mustChangePassword, conn.issuedDeviceToken), ('ana', true, 'tok'));
+
+    // A wrong provisional password comes back as a PasswordException.
+    final wrong = conn.changePassword('nope', 'her-own-pass');
+    final first = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect((first['type'], first['oldPassword'], first['newPassword']), ('changePassword', 'nope', 'her-own-pass'));
+    controller.local.sink.add('{"type":"userError","requestId":${first['requestId']},"message":"the current password is wrong","authRejected":true}');
+    await expectLater(wrong, throwsA(isA<PasswordException>().having((e) => e.wrongPassword, 'wrongPassword', true)));
+
+    final right = conn.changePassword('provisional-1', 'her-own-pass');
+    final second = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    controller.local.sink.add('{"type":"passwordChanged","requestId":${second['requestId']}}');
+    await right;
+  });
+
+  test('the owner has no user in HelloAck', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+    final future = ServerConnection.connectOverChannel(channel: controller.foreign, deviceId: 'dev-1', deviceName: 'D', authKey: 'k');
+    final hello = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect(hello.containsKey('username'), false);
+    controller.local.sink.add('{"type":"helloAck","serverName":"hub"}');
+    expect((await future).user, isNull);
   });
 
   test('wrong auth key surfaces as a HandshakeException', () async {
