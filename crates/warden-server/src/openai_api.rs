@@ -16,6 +16,8 @@
 //!   (`call_<hex>__ts_<base64url>`), so the hub keeps no state between requests;
 //! - nothing is saved as a conversation; the spend goes to the `api` channel, per key, so spending
 //!   limits (P4) apply;
+//! - a key of a workspace member (P84 fatia 2) speaks as them: their vault, the tools the owner
+//!   allows them, only the agents they see, and their spending as a person;
 //! - plain HTTP/1.1 written by hand like `web_ui.rs`: one request per connection, `Content-Length`
 //!   bodies only, `Connection: close`.
 
@@ -25,13 +27,15 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras};
+use warden_bootstrap::users::agent_visible_to;
+use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, FileConfig};
 use warden_core::model::{Message, StreamEvent, ToolCall, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::spend::SpendContext;
 use warden_core::tool::ToolSpec;
 
 use crate::api_keys::{ApiKey, ApiKeyStore};
+use crate::people::{member_orchestrator, tools_for, MemberSpace};
 use crate::settings::{SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
 use crate::usage::spend_limit_id;
 use crate::web_ui::{write_response, RequestHead};
@@ -55,6 +59,10 @@ pub(crate) struct ApiContext {
     pub settings: Option<Arc<dyn SettingsHost>>,
     /// `None`: this hub has no API (the routes answer 404).
     pub keys_path: Option<Arc<PathBuf>>,
+    /// Where members' vaults live (P84); `None`: a member's key is refused.
+    pub users_dir: Option<Arc<PathBuf>>,
+    /// The hub's conversations directory — only to describe a member's space; the API saves none.
+    pub conversations_root: Arc<PathBuf>,
 }
 
 /// A failure, answered in OpenAI's error format.
@@ -163,7 +171,8 @@ fn model_ids(api: &ApiContext, key: &ApiKey) -> Vec<String> {
     let mut ids = vec![DEFAULT_MODEL.to_string()];
     if let Some(host) = &api.settings {
         if let Ok(config) = load_config_from_path(&host.config_path(), false) {
-            ids.extend(config.agents.iter().map(|a| format!("{DEFAULT_MODEL}/{}", a.id)));
+            // P84: the agents this key's person sees.
+            ids.extend(config.agents.iter().filter(|a| agent_visible_to(a, key.user.as_deref())).map(|a| format!("{DEFAULT_MODEL}/{}", a.id)));
         }
     }
     ids
@@ -351,8 +360,28 @@ fn effective_model(key: &ApiKey, requested: Option<&str>) -> Result<String, ApiE
     }
 }
 
-/// The orchestrator and persona for `model`: the hub's own, or a configured agent's.
+/// The orchestrator and persona for `model`: the hub's own, or a configured agent's — narrowed to
+/// the member's space when the key is a member's (P84).
 fn scope_model(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestrator, Option<String>), ApiError> {
+    let (orchestrator, persona) = scope_agent(api, key, model)?;
+    let Some(user) = &key.user else {
+        return Ok((orchestrator, persona));
+    };
+    let gone = || {
+        let mut err = ApiError::new("403 Forbidden", "permission_error", "the person this key belongs to is no longer part of the workspace");
+        err.code = Some("user_gone".into());
+        err
+    };
+    let host = api.settings.as_ref().ok_or_else(gone)?;
+    let users_dir = api.users_dir.as_ref().ok_or_else(gone)?;
+    let config: FileConfig = load_config_from_path(&host.config_path(), false).map_err(|e| ApiError::new("500 Internal Server Error", "server_error", format!("{e:#}")))?;
+    let member = config.users.iter().find(|u| &u.id == user).ok_or_else(gone)?;
+    let space = MemberSpace::new(member, users_dir, &api.conversations_root);
+    let tools = tools_for(&orchestrator, &config, user);
+    Ok((member_orchestrator(&orchestrator, &space, &tools, "api", &key.name), persona))
+}
+
+fn scope_agent(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestrator, Option<String>), ApiError> {
     let base = api.orchestrator.current().with_spend_context(SpendContext::new("api").with_user(key.name.clone()));
     if model == DEFAULT_MODEL {
         return Ok((base, None));
@@ -374,6 +403,10 @@ fn scope_model(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestra
     let host = api.settings.as_ref().ok_or_else(unknown)?;
     let path = host.config_path();
     let config = load_config_from_path(&path, false).map_err(|e| ApiError::new("500 Internal Server Error", "server_error", format!("{e:#}")))?;
+    // P84: only an agent this key's person sees.
+    if !config.agents.iter().any(|a| a.id == agent_id && agent_visible_to(a, key.user.as_deref())) {
+        return Err(unknown());
+    }
     // No conversations directory (nothing is saved) and no approver: `message_agent` isn't there,
     // and a tool that needs a person's yes is refused.
     let scoped = scope_to_agent(&base, &config, Some(&path), agent_id, AgentExtras::default()).ok_or_else(unknown)?;

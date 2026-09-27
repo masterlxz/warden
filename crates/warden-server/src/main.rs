@@ -718,7 +718,7 @@ fn run_api_keys_command(action: ApiKeysAction) -> anyhow::Result<()> {
         ApiKeysAction::Create { name, agent, config } => {
             if agent.as_deref().is_some_and(|a| !a.trim().is_empty()) {
                 let config_path = config.map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
-                warden_server::api_key_admin::check_agent_exists(&config_path, agent.as_deref())?;
+                warden_server::api_key_admin::check_agent_exists(&config_path, agent.as_deref(), None)?;
             }
             let created = store.create(&name, agent.as_deref())?;
             println!("{}", created.key);

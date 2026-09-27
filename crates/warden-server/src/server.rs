@@ -26,7 +26,7 @@ use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
-use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, password_gate, user_info, MemberSpace, Person};
+use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, password_gate, tools_for, user_info, MemberSpace, Person};
 use crate::user_admin::{handle_change_password, handle_list_users, handle_user_change, UserChange};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
@@ -376,7 +376,13 @@ struct ConnectionContext {
 
 impl ConnectionContext {
     fn api(&self) -> ApiContext {
-        ApiContext { orchestrator: self.orchestrator.clone(), settings: self.settings.clone(), keys_path: self.api_keys.clone() }
+        ApiContext {
+            orchestrator: self.orchestrator.clone(),
+            settings: self.settings.clone(),
+            keys_path: self.api_keys.clone(),
+            users_dir: self.users_dir.clone(),
+            conversations_root: self.conversations_dir.clone(),
+        }
     }
 }
 
@@ -387,6 +393,7 @@ fn spawn_api_key_change(
     settings: &Option<Arc<dyn SettingsHost>>,
     lock: &Arc<tokio::sync::Mutex<()>>,
     auth_key: &Arc<str>,
+    member: Option<String>,
     tx: &mpsc::UnboundedSender<ServerMessage>,
     request_id: u64,
     pairing_key: String,
@@ -395,7 +402,7 @@ fn spawn_api_key_change(
     let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
     let (settings, lock, auth_key, reply_tx) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
     tokio::spawn(async move {
-        let reply = handle_api_key_change(store.as_ref(), settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, change).await;
+        let reply = handle_api_key_change(store.as_ref(), settings.as_deref(), &lock, &auth_key, member.as_deref(), request_id, &pairing_key, change).await;
         let _ = reply_tx.send(reply);
     });
 }
@@ -428,11 +435,71 @@ fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> Str
     }
 }
 
+/// A member's `SaveOwnAgent`/`DeleteOwnAgent` (P84 fatia 2), answered with their settings view.
+/// The owner edits agents on the Settings screen instead.
+async fn handle_own_agent(
+    settings: Option<&dyn SettingsHost>,
+    shared: &SharedOrchestrator,
+    lock: &tokio::sync::Mutex<()>,
+    auth_key: &Arc<str>,
+    secure: bool,
+    member: Option<&MemberSpace>,
+    message: ClientMessage,
+) -> ServerMessage {
+    let request_id = match &message {
+        ClientMessage::SaveOwnAgent { request_id, .. } | ClientMessage::DeleteOwnAgent { request_id, .. } => *request_id,
+        _ => 0,
+    };
+    let error = |message: String| ServerMessage::SettingsError { request_id, message, conflict: false, auth_rejected: false };
+    let Some(member) = member else {
+        return error("the owner edits agents on the Settings screen".to_string());
+    };
+    let Some(host) = settings else {
+        return error("this hub has no settings file, so it has no agents".to_string());
+    };
+    let _serialized = lock.lock().await;
+    let path = host.config_path();
+    let available: Vec<String> = shared.current().tools().iter().map(|t| t.spec().name).collect();
+    let result = (|| -> anyhow::Result<()> {
+        let mut config = load_config_from_path(&path, false)?;
+        match message {
+            ClientMessage::SaveOwnAgent { original_id, agent, .. } => {
+                let agent = warden_bootstrap::AgentConfig {
+                    id: agent.id,
+                    persona: agent.persona,
+                    provider_id: Some(agent.provider_id).filter(|p| !p.trim().is_empty()),
+                    can_delegate_to_agents: false,
+                    can_manage_agents: false,
+                    can_message_agents: false,
+                    can_manage_tasks: false,
+                    allowed_tools: agent.allowed_tools,
+                    owner: None,
+                    shared_with: Vec::new(),
+                };
+                warden_bootstrap::users::save_member_agent(&mut config, &member.id, original_id.as_deref(), agent, &available)?;
+            }
+            ClientMessage::DeleteOwnAgent { id, .. } => warden_bootstrap::users::delete_member_agent(&mut config, &member.id, &id)?,
+            _ => {}
+        }
+        warden_bootstrap::save_config(&path, &config)
+    })();
+    if let Err(err) = result {
+        return error(format!("{err:#}"));
+    }
+    drop(_serialized);
+    let access = SettingsAccess { host: Some(host), shared, lock, auth_key, secure };
+    let reply = handle_request_settings(&access, request_id);
+    let config = load_config_from_path(&path, false).unwrap_or_default();
+    let tools = tools_for(&shared.current(), &config, &member.id);
+    member_settings_view(reply, &config, &member.id, tools)
+}
+
 /// Runs a people change (P84) off the reader loop: a wrong key waits a second under the settings lock.
 #[allow(clippy::too_many_arguments)]
 fn spawn_user_change(
     settings: &Option<Arc<dyn SettingsHost>>,
     devices_path: &Arc<PathBuf>,
+    api_keys: &Option<Arc<PathBuf>>,
     lock: &Arc<tokio::sync::Mutex<()>>,
     auth_key: &Arc<str>,
     tx: &mpsc::UnboundedSender<ServerMessage>,
@@ -442,8 +509,9 @@ fn spawn_user_change(
 ) {
     let (settings, lock, auth_key, reply_tx) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
     let pairing = PairingStore::new(devices_path.as_ref().clone());
+    let keys = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
     tokio::spawn(async move {
-        let reply = handle_user_change(settings.as_deref(), &pairing, &lock, &auth_key, request_id, &pairing_key, change).await;
+        let reply = handle_user_change(settings.as_deref(), &pairing, keys.as_ref(), &lock, &auth_key, request_id, &pairing_key, change).await;
         let _ = reply_tx.send(reply);
     });
 }
@@ -680,7 +748,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     let (person, mut must_change_password, user) = match (&owner, users_dir.as_deref()) {
         (None, _) => (Person::Root, false, None),
         (Some(id), Some(users_dir)) => match members.iter().find(|u| &u.id == id) {
-            Some(member) => (Person::Member(MemberSpace::new(member, users_dir, &conversations_dir)), member.must_change_password, Some(user_info(member))),
+            Some(member) => (Person::Member(MemberSpace::new(member, users_dir, &conversations_dir)), member.must_change_password, Some(user_info(member, &[]))),
             None => return reject(&mut sink, "this person is no longer part of the workspace").await,
         },
         (Some(_), None) => return reject(&mut sink, "this hub doesn't host other people any more").await,
@@ -843,13 +911,23 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::SaveUser { request_id, pairing_key, id, name, is_new }) => {
                     let change = if is_new { UserChange::Create { id, name } } else { UserChange::Rename { id, name } };
-                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, change);
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, change);
                 }
                 Ok(ClientMessage::ResetPassword { request_id, pairing_key, id }) => {
-                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::ResetPassword { id });
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::ResetPassword { id });
                 }
                 Ok(ClientMessage::RemoveUser { request_id, pairing_key, id }) => {
-                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::Remove { id });
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::Remove { id });
+                }
+                Ok(ClientMessage::SetUserTools { request_id, pairing_key, id, tools }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
+                }
+                Ok(message @ (ClientMessage::SaveOwnAgent { .. } | ClientMessage::DeleteOwnAgent { .. })) => {
+                    let (settings, shared, lock, auth_key, reply_tx, member) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone(), member.clone());
+                    tokio::spawn(async move {
+                        let reply = handle_own_agent(settings.as_deref(), &shared, &lock, &auth_key, secure, member.as_ref(), message).await;
+                        let _ = reply_tx.send(reply);
+                    });
                 }
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
@@ -866,9 +944,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     };
                     // Spending limits (P4) are counted per connected device.
                     let base = orchestrator.current().with_spend_context(SpendContext::new("server").with_user(device_id.clone()));
+                    let viewer = member.as_ref().map(|m| m.id.clone());
                     let (orchestrator, persona) = match &agent_id {
                         None => (base, None),
-                        Some(id) => match scope_chat_agent(&base, settings.as_deref(), id, &conversations_dir, &tx) {
+                        Some(id) => match scope_chat_agent(&base, settings.as_deref(), id, viewer.as_deref(), &conversations_dir, &tx) {
                             Ok((scoped, persona)) => (scoped, Some(persona)),
                             Err(message) => {
                                 let _ = tx.send(ServerMessage::ChatError { message, conversation_id: Some(conversation_id), spend_limit_id: None });
@@ -876,12 +955,18 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             }
                         },
                     };
-                    // `manage_agents` and SSH hosts that need a yes ask this device.
-                    let orchestrator = orchestrator.with_approver(Arc::new(approver.clone()));
-                    // P84: a member's turn runs in their own space, with only the tools that stay in it.
+                    // P84: a member's turn runs in their own space, with the tools the owner allows them —
+                    // read fresh, so a change the owner just made counts. It gets no approver: a
+                    // member can't say yes to going past the limit the owner set for them, nor to a
+                    // tool that waits for the owner's yes, so both simply stop.
                     let orchestrator = match &member {
-                        Some(member) => member_orchestrator(&orchestrator, member),
-                        None => orchestrator,
+                        Some(member) => {
+                            let config = settings.as_deref().and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
+                            let tools = tools_for(&orchestrator, &config, &member.id);
+                            member_orchestrator(&orchestrator, member, &tools, "server", &format!("user-{}", member.id))
+                        }
+                        // `manage_agents`, SSH hosts and spending limits that need a yes ask this device.
+                        None => orchestrator.with_approver(Arc::new(approver.clone())),
                     };
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
@@ -1015,8 +1100,15 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RequestSettings { request_id }) => {
                     let access = SettingsAccess { host: settings.as_deref(), shared: &shared_orchestrator, lock: &settings_lock, auth_key: &auth_key, secure };
                     let reply = handle_request_settings(&access, request_id);
-                    // P84: a member only sees the agents they can pick.
-                    let _ = tx.send(if member.is_some() { member_settings_view(reply) } else { reply });
+                    // P84: a member only sees the agents they can pick, and their own tools.
+                    let _ = tx.send(match &member {
+                        Some(member) => {
+                            let config = settings.as_deref().and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
+                            let tools = tools_for(&orchestrator.current(), &config, &member.id);
+                            member_settings_view(reply, &config, &member.id, tools)
+                        }
+                        None => reply,
+                    });
                 }
                 Ok(ClientMessage::SaveSettings { request_id, pairing_key, base_version, update }) => {
                     // P78 — rebuilding the orchestrator starts MCP servers and can take seconds.
@@ -1048,13 +1140,13 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::ListApiKeys { request_id }) => {
                     let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
-                    let _ = tx.send(handle_list_api_keys(store.as_ref(), request_id));
+                    let _ = tx.send(handle_list_api_keys(store.as_ref(), member.as_ref().map(|m| m.id.as_str()), request_id));
                 }
                 Ok(ClientMessage::CreateApiKey { request_id, pairing_key, name, agent_id }) => {
-                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Create { name, agent_id });
+                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, member.as_ref().map(|m| m.id.clone()), &tx, request_id, pairing_key, ApiKeyChange::Create { name, agent_id });
                 }
                 Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
-                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
+                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, member.as_ref().map(|m| m.id.clone()), &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
                 }
                 Ok(ClientMessage::ModelEvent { request_id, event }) => {
                     if let Some(models) = &node_models {
@@ -1172,12 +1264,17 @@ fn scope_chat_agent(
     base: &Orchestrator,
     settings: Option<&dyn SettingsHost>,
     agent_id: &str,
+    viewer: Option<&str>,
     conversations_dir: &Path,
     tx: &mpsc::UnboundedSender<ServerMessage>,
 ) -> Result<(Orchestrator, String), String> {
     let host = settings.ok_or_else(|| "this hub has no settings file, so it has no agents".to_string())?;
     let path = host.config_path();
     let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    // P84: only an agent this person sees — the owner their own, a member theirs and the shared ones.
+    if !config.agents.iter().any(|a| a.id == agent_id && warden_bootstrap::users::agent_visible_to(a, viewer)) {
+        return Err(format!("agent '{agent_id}' not found"));
+    }
     let notify_tx = tx.downgrade();
     let extras = AgentExtras {
         conversations_dir: Some(conversations_dir.to_path_buf()),

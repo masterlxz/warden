@@ -1,7 +1,8 @@
-//! P84, fatia 1 — who is on a connection, and what that changes. The root is whoever paired with
-//! the hub's pairing key; a member paired with their own username and password (`[[users]]`,
-//! `warden_bootstrap::users`). A member gets their own vault and conversations, only the tools
-//! that can't reach what's the root's, and none of the hub's administration.
+//! P84 — who is on a connection, and what that changes. The root is whoever paired with the hub's
+//! pairing key; a member paired with their own username and password (`[[users]]`,
+//! `warden_bootstrap::users`). A member gets their own vault and conversations, the agents they own
+//! or the root shared with them, the tools the root allows them (fatia 2), and none of the hub's
+//! administration.
 //!
 //! Pure functions over the orchestrator, the messages and the conversations directory, kept out of
 //! `server.rs` so they're testable without a socket — same split as `conversations.rs`.
@@ -9,12 +10,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use warden_bootstrap::users::{root_conversations_dir, user_conversations_dir, user_generated_path, user_vault_path, UserConfig, UserRole, ROOT_ID};
-use warden_bootstrap::{load_conversation, save_conversation, Conversation};
+use warden_bootstrap::users::{agent_visible_to, root_conversations_dir, user_conversations_dir, user_generated_path, user_vault_path, UserConfig, UserRole, ROOT_ID};
+use warden_bootstrap::{load_conversation, save_conversation, AgentConfig, Conversation, FileConfig};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
-use warden_server_protocol::protocol::UserInfoDto;
+use warden_server_protocol::protocol::{AgentSettingsDto, UserInfoDto};
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
 use crate::conversations::is_valid_id;
@@ -49,7 +50,8 @@ pub enum Person {
     Member(MemberSpace),
 }
 
-pub fn user_info(user: &UserConfig) -> UserInfoDto {
+/// `agents`: the config's, for the member's own agents' ids.
+pub fn user_info(user: &UserConfig, agents: &[AgentConfig]) -> UserInfoDto {
     UserInfoDto {
         id: user.id.clone(),
         name: user.name.clone(),
@@ -57,29 +59,26 @@ pub fn user_info(user: &UserConfig) -> UserInfoDto {
             UserRole::Member => "member".to_string(),
         },
         must_change_password: user.must_change_password,
+        tools: user.tools.clone(),
+        agents: agents.iter().filter(|a| a.owner.as_deref() == Some(user.id.as_str())).map(|a| a.id.clone()).collect(),
     }
 }
 
-/// Whether a member may have tool `name` in this fatia: their own vault's files and skills, a
-/// sub-agent (rebound to their vault too), background jobs, their spending, documents, and web
-/// search. Everything else reaches what's the root's (the hub's shell, SSH hosts, nodes, the MCP
-/// servers set up with the root's accounts, other agents' conversations, usage, the agents and
-/// tasks themselves), so it's out until per-person permissions (fatia 2) can grant it. An
-/// allowlist on purpose: a tool added later stays away from members until someone decides.
-pub fn member_may_use(name: &str) -> bool {
-    matches!(name, "read_file" | "write_file" | "use_skill" | "read_skill_file" | "manage_skill" | "delegate_task" | "jobs" | "budget" | "generate_document")
-        || name.starts_with("tavily")
+/// The tools member `id` may use on this hub right now (`warden_bootstrap::users::member_tools`
+/// over `base`'s), or none when they're no longer in `config`.
+pub fn tools_for(base: &Orchestrator, config: &FileConfig, id: &str) -> Vec<String> {
+    let available: Vec<String> = base.tools().iter().map(|t| t.spec().name).collect();
+    config.users.iter().find(|u| u.id == id).map(|user| warden_bootstrap::users::member_tools(user, &available)).unwrap_or_default()
 }
 
 /// The orchestrator a member's turn runs on: `base` (already scoped to the chosen agent) with only
-/// the tools `member_may_use`, reading and writing the member's vault, saving files in their
-/// folder, and spending as them.
-pub fn member_orchestrator(base: &Orchestrator, member: &MemberSpace) -> Orchestrator {
-    let allowed: Vec<String> = base.tools().iter().map(|t| t.spec().name).filter(|name| member_may_use(name)).collect();
-    base.with_allowed_tools(Some(&allowed))
+/// `tools` (what the owner allows them, `tools_for`), reading and writing the member's vault,
+/// saving files in their folder, and spending as them on `channel` (`server`, `api`) as `user`.
+pub fn member_orchestrator(base: &Orchestrator, member: &MemberSpace, tools: &[String], channel: &str, user: &str) -> Orchestrator {
+    base.with_allowed_tools(Some(tools))
         .with_vault(member.vault.clone())
         .with_media_root(member.generated.clone())
-        .with_spend_context(SpendContext::new("server").with_user(format!("user-{}", member.id)))
+        .with_spend_context(SpendContext::new(channel).with_user(user).with_person(member.id.clone()))
 }
 
 const ROOT_ONLY: &str = "only the workspace's owner can do this";
@@ -95,9 +94,6 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListDevices { request_id } | ClientMessage::SetDeviceStatus { request_id, .. } => {
             ServerMessage::DeviceError { request_id: *request_id, message: message_text, auth_rejected: true }
         }
-        ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
-            ServerMessage::ApiKeyError { request_id: *request_id, message: message_text, auth_rejected: true }
-        }
         ClientMessage::ListNodes { request_id } | ClientMessage::SetNodeAccess { request_id, .. } => {
             ServerMessage::NodeError { request_id: *request_id, message: message_text, auth_rejected: true }
         }
@@ -112,7 +108,11 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::RequestUsage { request_id, .. } | ClientMessage::ExtendLimit { request_id, .. } => {
             ServerMessage::UsageError { request_id: *request_id, message: message_text }
         }
-        ClientMessage::ListUsers { request_id } | ClientMessage::SaveUser { request_id, .. } | ClientMessage::ResetPassword { request_id, .. } | ClientMessage::RemoveUser { request_id, .. } => {
+        ClientMessage::ListUsers { request_id }
+        | ClientMessage::SaveUser { request_id, .. }
+        | ClientMessage::ResetPassword { request_id, .. }
+        | ClientMessage::RemoveUser { request_id, .. }
+        | ClientMessage::SetUserTools { request_id, .. } => {
             ServerMessage::UserError { request_id: *request_id, message: message_text, auth_rejected: true }
         }
         ClientMessage::CallDeviceTool { call_id, .. } => ServerMessage::DeviceToolError { call_id: *call_id, message: message_text },
@@ -142,14 +142,20 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::DeleteVaultNote { request_id, .. }
         | ClientMessage::SearchVault { request_id, .. } => ServerMessage::VaultError { request_id: *request_id, message: text, conflict: false },
         ClientMessage::Transcribe { request_id, .. } => ServerMessage::TranscriptionError { request_id: *request_id, message: text },
-        ClientMessage::RequestSettings { request_id } => ServerMessage::SettingsError { request_id: *request_id, message: text, conflict: false, auth_rejected: true },
+        ClientMessage::RequestSettings { request_id } | ClientMessage::SaveOwnAgent { request_id, .. } | ClientMessage::DeleteOwnAgent { request_id, .. } => {
+            ServerMessage::SettingsError { request_id: *request_id, message: text, conflict: false, auth_rejected: true }
+        }
+        ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
+            ServerMessage::ApiKeyError { request_id: *request_id, message: text, auth_rejected: true }
+        }
         other => return member_refusal(other),
     })
 }
 
-/// What a member's `RequestSettings` shows: the agents they can pick, nothing about providers,
-/// keys, limits or tools.
-pub fn member_settings_view(message: ServerMessage) -> ServerMessage {
+/// What a member's `RequestSettings` shows: the agents they see (their own in full, with `owner`
+/// set; the shared ones by name only) and, as `tool_names`, the tools they have — for their own
+/// agents' editor. Nothing about providers, keys, limits or the owner's agents' instructions.
+pub fn member_settings_view(message: ServerMessage, config: &FileConfig, member: &str, tools: Vec<String>) -> ServerMessage {
     match message {
         ServerMessage::Settings { request_id, mut settings, version, .. } => {
             settings.providers.clear();
@@ -159,16 +165,39 @@ pub fn member_settings_view(message: ServerMessage) -> ServerMessage {
             settings.default_limits.clear();
             settings.prices.clear();
             settings.default_models.clear();
-            settings.tool_names.clear();
             settings.notes.clear();
             settings.git_sync.remote_url.clear();
-            for agent in &mut settings.agents {
-                agent.allowed_tools = None;
-            }
+            settings.tool_names = tools;
+            settings.agents = member_agents_view(config, member);
             ServerMessage::Settings { request_id, settings, version, secrets_writable: false }
         }
         other => other,
     }
+}
+
+/// The agents member `member` sees, as their settings show them.
+pub fn member_agents_view(config: &FileConfig, member: &str) -> Vec<AgentSettingsDto> {
+    config
+        .agents
+        .iter()
+        .filter(|a| agent_visible_to(a, Some(member)))
+        .map(|a| {
+            let mine = a.owner.as_deref() == Some(member);
+            AgentSettingsDto {
+                original_id: None,
+                id: a.id.clone(),
+                persona: if mine { a.persona.clone() } else { String::new() },
+                provider_id: String::new(),
+                can_delegate_to_agents: false,
+                can_manage_agents: false,
+                can_message_agents: false,
+                can_manage_tasks: false,
+                allowed_tools: if mine { a.allowed_tools.clone() } else { None },
+                shared_with: Vec::new(),
+                owner: mine.then(|| member.to_string()),
+            }
+        })
+        .collect()
 }
 
 /// Moves every device's conversations (P78: `<root>/<device>/`, and the older `<root>/<device>.json`)
@@ -302,12 +331,16 @@ mod tests {
     }
 
     #[test]
-    fn members_only_get_the_tools_that_stay_in_their_space() {
+    fn members_only_get_the_tools_that_stay_in_their_space_by_default() {
+        use warden_bootstrap::users::{default_member_tool, NEVER_FOR_MEMBERS};
         for ok in ["read_file", "write_file", "use_skill", "manage_skill", "delegate_task", "tavily-search", "generate_document"] {
-            assert!(member_may_use(ok), "{ok}");
+            assert!(default_member_tool(ok), "{ok}");
         }
         for no in ["shell", "ssh_exec", "list_nodes", "node_shell", "home-pc__query", "manage_agents", "manage_tasks", "message_agent", "usage_stats", "delegate_to_agent", "github__create_issue"] {
-            assert!(!member_may_use(no), "{no}");
+            assert!(!default_member_tool(no), "{no}");
+        }
+        for never in ["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats"] {
+            assert!(NEVER_FOR_MEMBERS.contains(&never), "{never}");
         }
     }
 

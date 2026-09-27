@@ -333,6 +333,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools.clone(),
                 shared_with: a.shared_with.clone(),
+                owner: None,
             })
             .collect(),
         tavily_key: secret_status(config.api_keys.tavily.as_deref()),

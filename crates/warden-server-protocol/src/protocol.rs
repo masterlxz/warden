@@ -299,6 +299,9 @@ pub struct ApiKeyDto {
     /// The only agent this key speaks as; absent for a general key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// P84: the member the key belongs to (calls with it run as them); absent for the owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 /// One scheduled task (P92), as `[[tasks]]` keeps it. Exactly one of `every`, `cron` and `once`.
@@ -333,6 +336,12 @@ pub struct UserInfoDto {
     /// Still on the provisional password the root set: the hub only lets them change it.
     #[serde(default)]
     pub must_change_password: bool,
+    /// P84 fatia 2: the tools the owner set for them; `None` is the safe default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
+    /// Their own agents' ids — the owner sees that they exist, not what they say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
 }
 
 /// A task and where it stands on this hub.
@@ -437,6 +446,10 @@ pub struct AgentSettingsDto {
     /// P84: members this agent is shared with, by username, or `"*"` for everyone. Empty: the owner's alone.
     #[serde(default)]
     pub shared_with: Vec<String>,
+    /// P84: in a member's view, their username on their own agents; absent on the ones shared with
+    /// them (and on every agent in the owner's view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`
@@ -998,6 +1011,28 @@ pub enum ClientMessage {
     RemoveUser {
         request_id: u64,
         pairing_key: String,
+        id: String,
+    },
+    /// P84 fatia 2: the tools a member may use (`None`: the safe default). Answered by `UserList`.
+    SetUserTools {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        #[serde(default)]
+        tools: Option<Vec<String>>,
+    },
+    /// A member creates (`original_id` absent) or edits one of their own agents. Answered by
+    /// `Settings` (the member's view) or `SettingsError`. Whatever it asks, the agent stays theirs,
+    /// unshared, without the `can_*` powers, and within their tools.
+    SaveOwnAgent {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_id: Option<String>,
+        agent: AgentSettingsDto,
+    },
+    /// A member deletes one of their own agents. Answered like `SaveOwnAgent`.
+    DeleteOwnAgent {
+        request_id: u64,
         id: String,
     },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
@@ -1919,7 +1954,7 @@ mod tests {
         let created = ServerMessage::ApiKeyCreated {
             request_id: 2,
             key: "wdn_x".into(),
-            keys: vec![ApiKeyDto { id: "abc".into(), name: "n8n".into(), shown: "wdn_12345678".into(), created_at_ms: 5, last_used_at_ms: None, agent_id: None }],
+            keys: vec![ApiKeyDto { id: "abc".into(), name: "n8n".into(), shown: "wdn_12345678".into(), created_at_ms: 5, last_used_at_ms: None, agent_id: None , user: None }],
         };
         assert_eq!(
             serde_json::to_value(&created).unwrap(),

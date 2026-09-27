@@ -39,6 +39,10 @@ pub struct ApiKey {
     /// a file from before this existed, so those keys stay general.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// P84: the workspace member this key belongs to — a call with it runs as them. `None` (and
+    /// every key from before) is the owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     hash: String,
 }
 
@@ -106,6 +110,11 @@ impl ApiKeyStore {
     /// `agent_id` when given (blank = general). The store doesn't read the config: the caller checks
     /// that the agent exists.
     pub fn create(&self, name: &str, agent_id: Option<&str>) -> anyhow::Result<CreatedApiKey> {
+        self.create_for(name, agent_id, None)
+    }
+
+    /// `create`, for member `user` (P84) when given.
+    pub fn create_for(&self, name: &str, agent_id: Option<&str>, user: Option<&str>) -> anyhow::Result<CreatedApiKey> {
         let agent_id = agent_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string);
         let name = name.trim();
         anyhow::ensure!(!name.is_empty(), "the key needs a name");
@@ -123,6 +132,7 @@ impl ApiKeyStore {
             created_at_ms: now_millis(),
             last_used_at_ms: None,
             agent_id,
+            user: user.map(str::to_string),
             hash: hash_key(&key),
         };
         file.keys.push(info.clone());
@@ -141,6 +151,19 @@ impl ApiKeyStore {
         }
         self.save(&file)?;
         Ok(true)
+    }
+
+    /// Revokes every key of member `user` (P84: removing them). Returns how many.
+    pub fn revoke_user_keys(&self, user: &str) -> anyhow::Result<usize> {
+        let _guard = WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut file = self.load()?;
+        let before = file.keys.len();
+        file.keys.retain(|k| k.user.as_deref() != Some(user));
+        let removed = before - file.keys.len();
+        if removed > 0 {
+            self.save(&file)?;
+        }
+        Ok(removed)
     }
 
     /// The key `presented` belongs to, if any, noting that it was used.

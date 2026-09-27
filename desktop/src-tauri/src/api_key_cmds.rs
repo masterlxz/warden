@@ -52,7 +52,7 @@ pub fn list_api_keys() -> Result<Vec<ApiKeyInfo>, String> {
 pub fn create_api_key(name: String, agent_id: Option<String>) -> Result<CreatedApiKeyInfo, String> {
     if agent_id.as_deref().is_some_and(|a| !a.trim().is_empty()) {
         let config_path = warden_bootstrap::default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-        warden_server::api_key_admin::check_agent_exists(&config_path, agent_id.as_deref()).map_err(|e| format!("{e:#}"))?;
+        warden_server::api_key_admin::check_agent_exists(&config_path, agent_id.as_deref(), None).map_err(|e| format!("{e:#}"))?;
     }
     let created = store()?.create(&name, agent_id.as_deref()).map_err(|e| format!("{e:#}"))?;
     Ok(CreatedApiKeyInfo { key: created.key, info: created.info.into() })

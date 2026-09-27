@@ -30,13 +30,13 @@ fn change(apply: impl FnOnce(&mut warden_bootstrap::FileConfig) -> anyhow::Resul
     let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
     let temp_password = apply(&mut config).map_err(|e| format!("{e:#}"))?;
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
-    Ok(PeoplePayload { users: config.users.iter().map(user_info).collect(), temp_password })
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password })
 }
 
 #[tauri::command]
 pub fn list_people() -> Result<PeoplePayload, String> {
     let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
-    Ok(PeoplePayload { users: config.users.iter().map(user_info).collect(), temp_password: None })
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password: None })
 }
 
 #[tauri::command]
@@ -62,13 +62,17 @@ pub fn reset_person_password(id: String) -> Result<PeoplePayload, String> {
     })
 }
 
-/// Removes the member and revokes their devices on this machine's hub. A hub elsewhere (the VPS)
-/// turns them away once the file syncs there: a device whose member is gone can't sign in.
+/// Removes the member (and their own agents) and revokes their devices and Warden API keys on this
+/// machine's hub. A hub elsewhere (the VPS) turns them away once the file syncs there: a device or
+/// key whose member is gone can't get in.
 #[tauri::command]
 pub fn remove_person(id: String) -> Result<PeoplePayload, String> {
     let payload = change(|config| remove_user(config, &id).map(|()| None))?;
     if let Some(devices) = warden_bootstrap::default_server_devices_path() {
         PairingStore::new(devices).revoke_user_devices(&id).map_err(|e| format!("{e:#}"))?;
+    }
+    if let Some(keys) = warden_bootstrap::default_api_keys_path() {
+        warden_server::api_keys::ApiKeyStore::new(keys).revoke_user_keys(&id).map_err(|e| format!("{e:#}"))?;
     }
     Ok(payload)
 }

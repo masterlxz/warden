@@ -5,10 +5,11 @@
 //!
 //! `ChangePassword` is the member's own: checked against their current password instead of the key.
 
-use warden_bootstrap::users::{add_user, change_password, generate_temp_password, remove_user, rename_user, reset_password};
+use warden_bootstrap::users::{add_user, change_password, generate_temp_password, remove_user, rename_user, reset_password, set_user_tools};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server_protocol::ServerMessage;
 
+use crate::api_keys::ApiKeyStore;
 use crate::device_registry::PairingStore;
 use crate::people::user_info;
 use crate::settings::{keys_match, SettingsHost, WRONG_KEY_DELAY};
@@ -21,7 +22,7 @@ const NO_SETTINGS: &str = "this hub has no settings file, so it has no people be
 
 fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<String>) -> anyhow::Result<ServerMessage> {
     let config = load_config_from_path(&settings.config_path(), false)?;
-    Ok(ServerMessage::UserList { request_id, users: config.users.iter().map(user_info).collect(), temp_password })
+    Ok(ServerMessage::UserList { request_id, users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password })
 }
 
 /// Answers `ListUsers` (the root's connection only — `people::member_refusal` stops a member first).
@@ -38,13 +39,18 @@ pub enum UserChange {
     Rename { id: String, name: String },
     ResetPassword { id: String },
     Remove { id: String },
+    /// Fatia 2: the tools they may use; `None` is the safe default.
+    SetTools { id: String, tools: Option<Vec<String>> },
 }
 
 /// Answers a change with the updated `UserList` — carrying the provisional password after a create
-/// or a reset. Removing a member also revokes every device of theirs, which closes its connection.
+/// or a reset. Removing a member also revokes every device and Warden API key of theirs (closing
+/// their connections) and takes their own agents along.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_user_change(
     settings: Option<&dyn SettingsHost>,
     pairing: &PairingStore,
+    api_keys: Option<&ApiKeyStore>,
     lock: &tokio::sync::Mutex<()>,
     auth_key: &str,
     request_id: u64,
@@ -78,10 +84,14 @@ pub async fn handle_user_change(
                 remove_user(&mut config, &id)?;
                 removed = Some(id);
             }
+            UserChange::SetTools { id, tools } => set_user_tools(&mut config, &id, tools)?,
         }
         save_config(&config_path, &config)?;
         if let Some(id) = removed {
             pairing.revoke_user_devices(&id)?;
+            if let Some(keys) = api_keys {
+                keys.revoke_user_keys(&id)?;
+            }
         }
         Ok(temp)
     })();
