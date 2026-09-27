@@ -32,17 +32,25 @@ pub struct LocalNode {
     shell: Option<ShellTool>,
     /// The shared folder, when files are on.
     files: Option<Arc<Vault>>,
+    /// Tools of the MCP servers lent with `--mcp` (fatia 2), already named uniquely.
+    mcp: Vec<Arc<dyn Tool>>,
 }
 
 impl LocalNode {
     /// `shell`: run commands (in `files`' folder, or the home directory). `files`: the folder shared.
     pub fn new(shell: bool, files: Option<PathBuf>) -> Self {
         let base = files.clone().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."));
-        Self { shell: shell.then(|| ShellTool::new(Arc::new(Vault::new(base)))), files: files.map(|dir| Arc::new(Vault::new(dir))) }
+        Self { shell: shell.then(|| ShellTool::new(Arc::new(Vault::new(base)))), files: files.map(|dir| Arc::new(Vault::new(dir))), mcp: Vec::new() }
+    }
+
+    /// Also lends these MCP tools (from `warden_bootstrap::connect_mcp_server`, names already unique).
+    pub fn with_mcp_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
+        self.mcp = tools;
+        self
     }
 
     pub fn offer(&self, description: String, tags: Vec<String>) -> NodeOfferDto {
-        NodeOfferDto { description, tags, shell: self.shell.is_some(), files: self.files.is_some() }
+        NodeOfferDto { description, tags, shell: self.shell.is_some(), files: self.files.is_some(), mcp_tools: self.mcp.iter().map(|t| t.spec()).collect() }
     }
 
     /// Runs one call from the hub: `shell`, `read_file`, `write_file` or `list_files`.
@@ -64,6 +72,11 @@ impl LocalNode {
                     }
                     _ => list_files(vault, path),
                 }
+            }
+            "mcp" => {
+                let name = args.get("tool").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'tool' argument"))?;
+                let tool = self.mcp.iter().find(|t| t.spec().name == name).ok_or_else(|| anyhow::anyhow!("this node doesn't lend an MCP tool named '{name}'"))?;
+                tool.call(args.get("arguments").cloned().unwrap_or_else(|| json!({}))).await
             }
             other => anyhow::bail!("this node has no '{other}'"),
         }
@@ -262,6 +275,30 @@ mod tests {
         let out = shell_only.run("shell", json!({ "command": "echo hello" })).await.unwrap();
         assert!(out["stdout"].as_str().unwrap().contains("hello"), "{out}");
         assert_eq!(shell_only.offer(String::new(), Vec::new()), NodeOfferDto { shell: true, files: false, ..NodeOfferDto::default() });
+    }
+
+    /// Stands in for an MCP server's tool: echoes its `text`.
+    struct Echo;
+
+    #[async_trait::async_trait]
+    impl Tool for Echo {
+        fn spec(&self) -> warden_core::tool::ToolSpec {
+            warden_core::tool::ToolSpec { name: "echo_text".into(), description: "Echoes text".into(), parameters: json!({ "type": "object", "properties": { "text": { "type": "string" } } }) }
+        }
+
+        async fn call(&self, args: Value) -> anyhow::Result<Value> {
+            Ok(json!({ "echoed": args["text"] }))
+        }
+    }
+
+    #[tokio::test]
+    async fn lent_mcp_tools_run_and_others_are_refused() {
+        let node = LocalNode::new(false, None).with_mcp_tools(vec![Arc::new(Echo)]);
+        assert_eq!(node.offer(String::new(), vec![]).mcp_tools[0].name, "echo_text");
+        let out = node.run("mcp", json!({ "tool": "echo_text", "arguments": { "text": "hi" } })).await.unwrap();
+        assert_eq!(out["echoed"], "hi");
+        assert!(node.run("mcp", json!({ "tool": "rm_rf", "arguments": {} })).await.is_err());
+        assert!(node.run("shell", json!({ "command": "echo x" })).await.is_err());
     }
 
     #[test]

@@ -54,6 +54,9 @@ impl ModelProvider for Scripted {
         if text.contains("READ") {
             return call("node_read_file", json!({ "node": NODE, "path": "notes/hello.txt" }));
         }
+        if text.contains("MCP") {
+            return call("test-node__echo_text", json!({ "text": "hi from the hub" }));
+        }
         if text.contains("SLEEP") {
             return call("node_shell", json!({ "node": NODE, "command": "sleep 30", "timeout_ms": 60000 }));
         }
@@ -116,16 +119,34 @@ async fn spin_up() -> Hub {
     Hub { url: format!("ws://{addr}"), dir, offered }
 }
 
+/// Stands in for a tool of an MCP server on the node: echoes its `text`.
+struct EchoText;
+
+#[async_trait]
+impl warden_core::tool::Tool for EchoText {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "echo_text".into(),
+            description: "Echoes the text back".into(),
+            parameters: json!({ "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }),
+        }
+    }
+
+    async fn call(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Ok(json!({ "echoed": args["text"] }))
+    }
+}
+
 /// Starts the node in the background; aborting the handle drops its connection.
 fn start_node(hub: &Hub) -> tokio::task::JoinHandle<()> {
+    let local = Arc::new(LocalNode::new(true, Some(hub.dir.join("shared"))).with_mcp_tools(vec![Arc::new(EchoText)]));
     let session = NodeSession {
         hub_url: hub.url.clone(),
         name: "Test Node".into(),
         auth_key: "test-key".into(),
-        offer: LocalNode::new(true, Some(hub.dir.join("shared"))).offer("the test machine".into(), vec!["test".into()]),
+        offer: local.offer("the test machine".into(), vec!["test".into()]),
         identity_path: None,
     };
-    let local = Arc::new(LocalNode::new(true, Some(hub.dir.join("shared"))));
     tokio::spawn(async move {
         let mut identity = NodeIdentity { device_id: NODE.into(), device_token: None };
         let _ = serve_once(&session, &mut identity, local).await;
@@ -267,4 +288,40 @@ async fn a_node_that_drops_mid_command_fails_the_call_at_once() {
     let (reply, _) = tokio::time::timeout(Duration::from_secs(10), turn).await.expect("the call waited for its timeout").unwrap();
     assert!(reply.contains("disconnected in the middle of the call") && reply.contains("not retried"), "{reply}");
     assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn a_nodes_mcp_tools_come_and_go_with_it() {
+    let hub = spin_up().await;
+    let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    let node = start_node(&hub);
+    wait_online(&mut web, true).await;
+    let offer = nodes(&mut web).await.into_iter().find(|n| n.device_id == NODE).unwrap().offer.unwrap();
+    assert_eq!(offer.mcp_tools[0].name, "echo_text");
+
+    // Nothing before it's approved and allowed.
+    chat(&mut web, "hello", "ops", false).await;
+    assert!(!last_offered(&hub).iter().any(|t| t == "test-node__echo_text"));
+    PairingStore::new(hub.dir.join("devices.json")).approve(NODE).unwrap();
+    web.send(&set_access("test-key", &["ops"], false)).await.unwrap();
+    node_reply(&mut web).await;
+
+    let (reply, _) = chat(&mut web, "MCP please", "ops", false).await;
+    assert!(reply.contains("hi from the hub"), "{reply}");
+    assert!(last_offered(&hub).iter().any(|t| t == "test-node__echo_text"));
+    chat(&mut web, "hello", "other", false).await;
+    assert!(!last_offered(&hub).iter().any(|t| t == "test-node__echo_text"), "not for an agent off the list");
+
+    web.send(&set_access("test-key", &["ops"], true)).await.unwrap();
+    node_reply(&mut web).await;
+    let (reply, asked) = chat(&mut web, "MCP please", "ops", true).await;
+    assert_eq!(asked, 1);
+    assert!(reply.contains("hi from the hub"), "{reply}");
+
+    // The node leaves: its tool leaves with it.
+    node.abort();
+    wait_online(&mut web, false).await;
+    chat(&mut web, "hello", "ops", false).await;
+    assert!(!last_offered(&hub).iter().any(|t| t == "test-node__echo_text"));
+    assert!(!last_offered(&hub).iter().any(|t| t == "list_nodes"), "and so do the node tools, with no node left");
 }

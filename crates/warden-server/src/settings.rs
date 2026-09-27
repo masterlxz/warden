@@ -9,7 +9,7 @@
 //! running keeps the one it started with.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -27,13 +27,22 @@ pub const WRONG_KEY_DELAY: Duration = Duration::from_secs(1);
 /// The hub's orchestrator, which a settings save replaces while connections stay open. Each turn
 /// takes `current()` once and keeps it for the whole turn.
 ///
-/// Also carries the tools only the hub has (P93, the node tools): set once with `set_extra_tools`,
-/// they're on the current orchestrator and on every one a `replace` puts in, so chat, the Warden
-/// API and scheduled tasks all get them.
+/// Also carries the tools only the hub has (P93): the node tools, fixed (`set_extra_tools`), and the
+/// tools of the MCP servers the connected nodes lend, which come and go with them
+/// (`set_dynamic_tools`). Both sit on the current orchestrator and on every one a `replace` puts in,
+/// so chat, the Warden API and scheduled tasks all get them.
 #[derive(Clone)]
 pub struct SharedOrchestrator {
     current: Arc<RwLock<Arc<Orchestrator>>>,
-    extras: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
+    parts: Arc<Mutex<Parts>>,
+}
+
+/// What `current` is built from, changed under one lock so two changes never lose each other.
+struct Parts {
+    /// The orchestrator as the settings built it, without the hub's own tools.
+    base: Orchestrator,
+    extras: Vec<Arc<dyn Tool>>,
+    dynamic: Vec<Arc<dyn Tool>>,
 }
 
 impl SharedOrchestrator {
@@ -46,22 +55,31 @@ impl SharedOrchestrator {
     }
 
     pub fn replace(&self, orchestrator: Orchestrator) {
-        let with_extras = self.extras.read().unwrap().iter().fold(orchestrator, |o, tool| o.with_tool(tool.clone()));
-        *self.current.write().unwrap() = Arc::new(with_extras);
+        self.change(|parts| parts.base = orchestrator);
     }
 
-    /// Adds `tools` to the current orchestrator and to every later `replace`. Meant to be called
-    /// once, when the hub starts serving.
+    /// Tools on every orchestrator from now on. Meant to be called once, when the hub starts serving.
     pub fn set_extra_tools(&self, tools: Vec<Arc<dyn Tool>>) {
-        *self.extras.write().unwrap() = tools;
-        let current = self.current().as_ref().clone();
-        self.replace(current);
+        self.change(|parts| parts.extras = tools);
+    }
+
+    /// Replaces the tools that come and go (a node's MCP tools, P93) — called when a node joins or leaves.
+    pub fn set_dynamic_tools(&self, tools: Vec<Arc<dyn Tool>>) {
+        self.change(|parts| parts.dynamic = tools);
+    }
+
+    fn change(&self, edit: impl FnOnce(&mut Parts)) {
+        let mut parts = self.parts.lock().unwrap_or_else(|e| e.into_inner());
+        edit(&mut parts);
+        let built = parts.extras.iter().chain(&parts.dynamic).fold(parts.base.clone(), |o, tool| o.with_tool(tool.clone()));
+        *self.current.write().unwrap() = Arc::new(built);
     }
 }
 
 impl From<Arc<Orchestrator>> for SharedOrchestrator {
     fn from(orchestrator: Arc<Orchestrator>) -> Self {
-        Self { current: Arc::new(RwLock::new(orchestrator)), extras: Arc::default() }
+        let parts = Parts { base: orchestrator.as_ref().clone(), extras: Vec::new(), dynamic: Vec::new() };
+        Self { current: Arc::new(RwLock::new(orchestrator)), parts: Arc::new(Mutex::new(parts)) }
     }
 }
 
@@ -288,6 +306,14 @@ mod tests {
         // A settings save or a sync puts a fresh orchestrator in: the hub's own tools stay.
         shared.replace(Orchestrator::new(Arc::new(Silent), vault));
         assert_eq!(tool_names(&shared).iter().filter(|n| *n == "list_nodes").count(), 1);
+
+        // A node joins with an MCP tool, then leaves: the fixed tools stay through both.
+        shared.set_dynamic_tools(vec![Arc::new(Named("casa__query"))]);
+        let names = tool_names(&shared);
+        assert!(names.contains(&"casa__query".to_string()) && names.contains(&"list_nodes".to_string()));
+        shared.set_dynamic_tools(Vec::new());
+        let names = tool_names(&shared);
+        assert!(!names.contains(&"casa__query".to_string()) && names.contains(&"list_nodes".to_string()));
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use warden_bootstrap::{bootstrap, Overrides};

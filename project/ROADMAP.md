@@ -495,8 +495,8 @@ A ordem combinada, do que entrega mais com menos risco para o mais caro:
 
 1. **Tarefas agendadas** (P92): o Warden fazendo coisas sozinho, num nó sempre de pé. Feito na Sessão 108 (motor,
    CLI, telas na web e no desktop, e o `manage_tasks`); falta testar com modelo real (P95).
-2. **Nós como capacidades** (P93): outras máquinas emprestam o que têm, e o estado continua no hub. Fatia 1
-   (shell e pasta, `warden-server node`) feita na Sessão 108; faltam o MCP do nó e o modelo local.
+2. **Nós como capacidades** (P93): outras máquinas emprestam o que têm, e o estado continua no hub. Fatias 1 e 2
+   (shell, pasta e os servidores MCP do nó) feitas na Sessão 108; falta o modelo local.
 3. **Descentralizar só os dados fáceis**, se a queda do nó principal virar problema real: aparelhos e chaves,
    conversas e gasto. Outro nó assume a API e as conversas continuam.
 4. **A rede completa** (P86): agentes e configuração, e por último o vault com junção de texto.

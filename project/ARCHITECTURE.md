@@ -2415,3 +2415,26 @@ aparelho `Approved` e hoje não tem cliente.
     `[[nodes]]` sincroniza;
   - hub sem tela: `warden-server nodes list|allow <id> [--agent …] [--approval]|deny <id>`.
 
+### Como ficou a fatia 2 (Sessão 108)
+
+- Decisão do usuário: **o nó empresta, por nome, servidores do `[[mcp_servers]]` do `config.toml` dele**
+  (`--mcp github --mcp postgres`, `--config` para outro arquivo), no formato que o desktop e o CLI já usam,
+  inclusive OAuth. Nada vai sem ser nomeado. Um nome que não existe, ou um servidor que não sobe, impede o nó de
+  começar: emprestar metade do pedido seria uma surpresa.
+- **`connect_mcp_server`/`add_mcp_tools`** saíram do laço do `bootstrap` (que passou a usá-los) e são o que o nó
+  usa para subir os servidores. Uma colisão de nome entre dois servidores no nó vira `servidor__tool`, como no hub.
+- **No nó**: `LocalNode::with_mcp_tools`, e a oferta leva os schemas (`NodeOfferDto.mcp_tools`). A chamada chega
+  como `ToolCallRequest { tool: "mcp", arguments: { tool, arguments } }`, e uma tool não emprestada é recusada lá.
+- **No hub**, cada tool MCP de um nó online vira uma **`NodeMcpTool` própria**:
+  - nome `<slug do nome do nó>__<tool>` (`casa-pc__query`): minúsculas e `-`, até 64 caracteres; numa colisão
+    entre dois nós com o mesmo nome entra o fim do id;
+  - a descrição começa com "On node '<nome>':", e o schema é o original;
+  - as mesmas regras das tools da fatia 1 (online, aprovado, ligado, agente liberado, aprovação, log, sem repetir).
+- **Tools que vêm e vão**: o `SharedOrchestrator` guarda a base (como as settings a construíram), as tools fixas
+  do hub e as **dinâmicas**. Quando um nó entra ou sai, `set_dynamic_tools(factory.mcp_tools())` remonta o
+  orquestrador. Um turno já em andamento fica com o que pegou no começo.
+- **O log de auditoria** passou a guardar só o tamanho de `content` e de qualquer texto com mais de 200
+  caracteres, nas tools da fatia 1 e nas MCP (achado no ponta a ponta: as MCP gravavam o conteúdo escrito).
+- `list_nodes` mostra as tools MCP de cada nó e o prefixo delas; as telas da web e do desktop mostram quantas e
+  quais o nó empresta.
+

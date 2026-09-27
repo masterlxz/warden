@@ -99,6 +99,13 @@ struct NodeArgs {
     /// outside). Also where --shell commands start.
     #[arg(long)]
     files: Option<PathBuf>,
+    /// Lend one of this machine's MCP servers, by its name in `[[mcp_servers]]` of this machine's
+    /// config file. Repeatable; a server not named here isn't lent.
+    #[arg(long = "mcp")]
+    mcp: Vec<String>,
+    /// This machine's config file (TOML), where --mcp looks the servers up. Defaults to the OS config dir.
+    #[arg(long)]
+    config: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -464,14 +471,18 @@ fn now_millis() -> i64 {
 }
 
 async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
-    anyhow::ensure!(args.shell || args.files.is_some(), "a node has to lend something — pass --shell, --files <folder>, or both");
+    anyhow::ensure!(
+        args.shell || args.files.is_some() || !args.mcp.is_empty(),
+        "a node has to lend something — pass --shell, --files <folder>, --mcp <server>, or a mix"
+    );
     if let Some(dir) = &args.files {
         anyhow::ensure!(dir.is_dir(), "--files {} is not a folder", dir.display());
     }
     let name = args.name.clone().unwrap_or_else(|| resolve_server_name(None));
     let identity_path = warden_server::node_client::default_node_identity_path().context("could not determine the OS config directory")?;
     let identity = warden_server::node_client::NodeIdentity::load_or_create(&identity_path, &name)?;
-    let local = std::sync::Arc::new(warden_server::node_client::LocalNode::new(args.shell, args.files.clone()));
+    let mcp_tools = lend_mcp_servers(&args.mcp, args.config.as_deref()).await?;
+    let local = std::sync::Arc::new(warden_server::node_client::LocalNode::new(args.shell, args.files.clone()).with_mcp_tools(mcp_tools));
     let session = warden_server::node_client::NodeSession {
         hub_url: args.hub.clone(),
         name,
@@ -479,14 +490,48 @@ async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
         offer: local.offer(args.description.clone(), args.tags.clone()),
         identity_path: Some(identity_path),
     };
-    let lends = match (args.shell, &args.files) {
-        (true, Some(dir)) => format!("its shell and the folder {}", dir.display()),
-        (true, None) => "its shell".to_string(),
-        (false, Some(dir)) => format!("the folder {}", dir.display()),
-        (false, None) => unreachable!(),
-    };
+    let mut lent = Vec::new();
+    if args.shell {
+        lent.push("its shell".to_string());
+    }
+    if let Some(dir) = &args.files {
+        lent.push(format!("the folder {}", dir.display()));
+    }
+    if !args.mcp.is_empty() {
+        lent.push(format!("{} MCP tool(s) from {}", session_tool_count(&local), args.mcp.join(", ")));
+    }
+    let lends = lent.join(", ");
     eprintln!("warden-server node: '{}' ({}) lends {lends}", session.name, identity.device_id);
     warden_server::node_client::run_node(session, identity, local).await
+}
+
+fn session_tool_count(local: &warden_server::node_client::LocalNode) -> usize {
+    local.offer(String::new(), Vec::new()).mcp_tools.len()
+}
+
+/// Starts each MCP server named with --mcp from this machine's config. Any name that isn't there, or a
+/// server that doesn't start, stops the node from starting — lending half of what was asked would be
+/// a surprise.
+async fn lend_mcp_servers(names: &[String], config: Option<&str>) -> anyhow::Result<Vec<std::sync::Arc<dyn warden_core::tool::Tool>>> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let config_path = config.map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let file = load_config_from_path(&config_path, config.is_some())?;
+    let mut tools = Vec::new();
+    for name in names {
+        let Some(server) = file.mcp_servers.iter().find(|s| s.name() == name) else {
+            let known: Vec<&str> = file.mcp_servers.iter().map(|s| s.name()).collect();
+            anyhow::bail!(
+                "no MCP server named '{name}' in {} (it has: {})",
+                config_path.display(),
+                if known.is_empty() { "none".to_string() } else { known.join(", ") }
+            );
+        };
+        let lent = warden_bootstrap::connect_mcp_server(server).await.with_context(|| format!("MCP server '{name}' didn't start"))?;
+        warden_bootstrap::add_mcp_tools(&mut tools, name, Ok(lent));
+    }
+    Ok(tools)
 }
 
 fn run_nodes_command(action: NodesAction, config: Option<String>) -> anyhow::Result<()> {

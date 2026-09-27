@@ -31,6 +31,7 @@ use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::node_tools::NodeToolFactory;
 use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, NodeRegistry};
 use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
@@ -253,7 +254,7 @@ impl Server {
             Some(tls) => tls.secure_url(listener.local_addr()?.port()).map(Arc::from),
             None => None,
         };
-        let ctx = ConnectionContext {
+        let mut ctx = ConnectionContext {
             auth_key: self.auth_key,
             server_name: self.server_name,
             orchestrator: self.orchestrator,
@@ -270,12 +271,15 @@ impl Server {
             tasks: self.tasks,
             changes: self.changes.clone(),
             nodes: self.nodes.clone(),
+            node_tools: None,
         };
         // P93: the node tools join the hub's orchestrator — chat, the Warden API and scheduled tasks
         // all get them. They read `[[nodes]]` from the settings file, so a hub without one has none.
         if let Some(settings) = &ctx.settings {
-            let tools = crate::node_tools::node_tools(self.nodes.clone(), settings.config_path(), ctx.devices_path.as_ref().clone(), self.node_audit.clone());
-            ctx.orchestrator.set_extra_tools(tools);
+            let factory = NodeToolFactory::new(self.nodes.clone(), settings.config_path(), ctx.devices_path.as_ref().clone(), self.node_audit.clone());
+            ctx.orchestrator.set_extra_tools(factory.fixed_tools());
+            ctx.orchestrator.set_dynamic_tools(factory.mcp_tools());
+            ctx.node_tools = Some(factory);
         }
         let runs_tasks = ctx.tasks.as_ref().is_some_and(TaskRunner::runs_here);
         let _scheduler = match (&ctx.tasks, runs_tasks, &ctx.settings) {
@@ -337,6 +341,8 @@ struct ConnectionContext {
     tasks: Option<TaskRunner>,
     changes: broadcast::Sender<String>,
     nodes: NodeRegistry,
+    /// Rebuilds the nodes' MCP tools when one joins or leaves (fatia 2). `None` without a settings file.
+    node_tools: Option<NodeToolFactory>,
 }
 
 impl ConnectionContext {
@@ -365,6 +371,13 @@ fn spawn_api_key_change(
     });
 }
 
+/// Puts the connected nodes' MCP tools on the hub's orchestrator — after a node joined or left.
+fn refresh_node_mcp_tools(shared: &SharedOrchestrator, factory: Option<&NodeToolFactory>) {
+    if let Some(factory) = factory {
+        shared.set_dynamic_tools(factory.mcp_tools());
+    }
+}
+
 fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> String {
     let mut parts = Vec::new();
     if offer.shell {
@@ -372,6 +385,9 @@ fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> Str
     }
     if offer.files {
         parts.push("files");
+    }
+    if !offer.mcp_tools.is_empty() {
+        parts.push("MCP tools");
     }
     if parts.is_empty() {
         "nothing".to_string()
@@ -528,6 +544,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         tasks,
         changes,
         nodes,
+        node_tools,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -655,6 +672,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     if let Some(offer) = node_offer {
         eprintln!("warden-server: {device_name} ({device_id}) is a node offering {}", describe_offer(&offer));
         nodes.connect(&device_id, ConnectedNode { name: device_name.clone(), offer, channel: tool_channel.clone() });
+        refresh_node_mcp_tools(&shared_orchestrator, node_tools.as_ref());
     }
 
     // Fase 7.4: a client that advertised tools in Hello gets its own Orchestrator (cheap clone —
@@ -969,7 +987,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     }
 
     devices.lock().unwrap().remove(&device_id);
-    nodes.disconnect(&device_id, &tool_channel);
+    if nodes.disconnect(&device_id, &tool_channel) {
+        refresh_node_mcp_tools(&shared_orchestrator, node_tools.as_ref());
+    }
     // Calls still waiting on this device (a node's long command) fail now instead of at their timeout.
     tool_channel.close();
     // Nobody is left to answer: open approvals count as a no right away.

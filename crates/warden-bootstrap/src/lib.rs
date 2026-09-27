@@ -1195,6 +1195,49 @@ pub fn resolve_delegate_max_depth(from_env: Option<String>, from_file: Option<u3
 /// earlier, Tavily, and any `[[mcp_servers]]` entry already processed this call) via
 /// `warden_core::tool::dedupe_tool_name` (shared with `warden-server`'s own collision point, P42);
 /// a rename is logged so whoever writes `allowed_tools` knows the name to use.
+/// Starts (or connects to) one configured MCP server and lists its tools — stdio, HTTP, or HTTP with
+/// OAuth. Shared by `bootstrap` and a node lending its MCP servers to a hub (P93).
+pub async fn connect_mcp_server(server: &McpServerConfig) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
+    let name = server.name();
+    match server {
+        McpServerConfig::Stdio { command, args, env, .. } => {
+            let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            McpToolProvider::connect_stdio(name, command, args, &env).await?.tools().await
+        }
+        McpServerConfig::Http { url, oauth, .. } if *oauth => {
+            warden_core::tool::mcp_oauth::connect_http_oauth(name, url, &oauth_credential_store_path(name)).await?.tools().await
+        }
+        McpServerConfig::Http { url, headers, .. } => {
+            let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            McpToolProvider::connect_http(name, url, &headers).await?.tools().await
+        }
+    }
+}
+
+/// Adds `name`'s tools to `base_tools`, renaming one to `{name}__{tool}` only when its name is taken.
+/// A server that didn't connect is skipped with a note.
+pub fn add_mcp_tools(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, tools: anyhow::Result<Vec<Arc<dyn Tool>>>) {
+    match tools {
+        Ok(tools) => {
+            for tool in tools {
+                let original = tool.spec().name;
+                let existing: Vec<String> = base_tools.iter().map(|t| t.spec().name).collect();
+                let resolved = warden_core::tool::dedupe_tool_name(&existing, name, &original);
+                if resolved == original {
+                    base_tools.push(tool);
+                } else {
+                    eprintln!(
+                        "note: MCP server '{name}' tool '{original}' collides with an already-registered tool — \
+                         renamed to '{resolved}' (use this name in allowed_tools)\n"
+                    );
+                    base_tools.push(warden_core::tool::rename_tool(tool, resolved));
+                }
+            }
+        }
+        Err(err) => eprintln!("note: MCP server '{name}' unavailable, skipping: {err:#}\n"),
+    }
+}
+
 async fn register_mcp_tools<P: ToolProvider>(base_tools: &mut Vec<Arc<dyn Tool>>, name: &str, connect_result: anyhow::Result<P>) {
     match connect_result {
         Ok(provider) => match provider.tools().await {
@@ -1528,21 +1571,8 @@ pub async fn bootstrap(
     base_tools.extend(build_ssh_tools(&config.ssh_hosts, vault.root().clone(), default_ssh_audit_log_path()));
 
     for server in &config.mcp_servers {
-        let name = server.name();
-        let connect = match server {
-            McpServerConfig::Stdio { command, args, env, .. } => {
-                let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                McpToolProvider::connect_stdio(name, command, args, &env).await
-            }
-            McpServerConfig::Http { url, oauth, .. } if *oauth => {
-                warden_core::tool::mcp_oauth::connect_http_oauth(name, url, &oauth_credential_store_path(name)).await
-            }
-            McpServerConfig::Http { url, headers, .. } => {
-                let headers: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                McpToolProvider::connect_http(name, url, &headers).await
-            }
-        };
-        register_mcp_tools(&mut base_tools, name, connect).await;
+        let tools = connect_mcp_server(server).await;
+        add_mcp_tools(&mut base_tools, server.name(), tools);
     }
 
     let delegate_max_depth =

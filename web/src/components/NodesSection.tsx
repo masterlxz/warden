@@ -20,7 +20,12 @@ function message(err: unknown): string {
 
 function offers(node: NodeInfo): string {
   if (!node.offer) return "ainda não se conectou desde que o hub subiu";
-  const parts = [node.offer.shell && "terminal", node.offer.files && "arquivos de uma pasta"].filter(Boolean);
+  const mcp = node.offer.mcpTools ?? [];
+  const parts = [
+    node.offer.shell && "terminal",
+    node.offer.files && "arquivos de uma pasta",
+    mcp.length > 0 && `${mcp.length} tool(s) MCP (${mcp.map((t) => t.name).join(", ")})`,
+  ].filter(Boolean);
   return parts.length ? `empresta ${parts.join(" e ")}` : "não empresta nada";
 }
 

@@ -216,6 +216,8 @@ export interface NodeOffer {
   tags: string[];
   shell: boolean;
   files: boolean;
+  /** Tools of the MCP servers it lends; the agents see each as `<node>__<tool>`. */
+  mcpTools?: { name: string; description: string }[];
 }
 
 /** Mirrors `NodeInfoDto`: a node, what it offers and what the hub lets agents do with it. */

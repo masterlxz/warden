@@ -179,8 +179,37 @@ O plano da fatia 1 foi aprovado em Plan mode.
   - **o hub reiniciado com outra chave de pareamento**: o nó reconectou sozinho com o token salvo.
 - **Sem teste com modelo real nem entre máquinas diferentes**: registrado no P96.
 
-**Próximo passo**: a fatia 2 do P93 (servidores MCP do nó), ou outro item. Os testes ficam para a sessão dedicada
-(P80, P87, P88, P91, P95, P96).
+**Continuação: fatia 2 do P93** (commit da fatia 1: `45f8e49`). Decisão do usuário: o nó empresta, por nome,
+servidores do `[[mcp_servers]]` do `config.toml` dele. O plano foi aprovado em Plan mode.
+
+- **Bootstrap**: `connect_mcp_server` e `add_mcp_tools`, extraídos do laço de MCP e usados por ele.
+- **Nó**: `--mcp <nome>` e `--config`, `LocalNode::with_mcp_tools`, `NodeOfferDto.mcp_tools` e `run("mcp", …)`.
+- **Hub**:
+  - `NodeToolFactory` (`fixed_tools`/`mcp_tools`) e `NodeMcpTool` (`<nó>__<tool>`, o schema original);
+  - `SharedOrchestrator` com base, fixas e dinâmicas;
+  - as tools refeitas quando um nó entra ou sai (`NodeRegistry::disconnect` diz se tirou alguém);
+  - `list_nodes` com as tools MCP e o prefixo.
+- **Log**: `for_log` guarda só o tamanho de `content` e de textos longos, nos dois tipos de tool.
+- **Telas**: as tools MCP na oferta, na web e no desktop.
+
+**Verificação da fatia 2**:
+
+- `cargo test --workspace`: 845 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `build` da web
+  e do desktop limpos.
+- **Testes novos**:
+  - nó (1): a tool MCP emprestada roda, e outra é recusada;
+  - nomes (1): slug, colisão entre dois nós e limite de 64;
+  - log (1);
+  - dinâmicas (no teste do `SharedOrchestrator`): entram e saem sem levar as fixas;
+  - integração (1): a tool do nó só aparece depois de aprovar e liberar, roda, fica fora de outro agente, pede o
+    sim quando configurado, e **some quando o nó sai**, junto com as tools fixas quando não sobra nó.
+- **Ponta a ponta com binários reais** (scratchpad): o nó emprestando `--mcp vault`, um `[[mcp_servers]]` que sobe
+  o próprio `warden-mcp-server` por stdio, com outro config e outro vault. O modelo falso chamou
+  `casa-pc__read_file` e `casa-pc__write_file`, e o arquivo foi lido e escrito no vault que só o nó tem. O hub
+  reiniciado reconectou o nó, e o log passou a mostrar só o tamanho do conteúdo.
+
+**Próximo passo**: a fatia 3 do P93 (o modelo local do nó como provedor), ou outro item. Os testes ficam para a
+sessão dedicada (P80, P87, P88, P91, P95, P96).
 
 ---
 

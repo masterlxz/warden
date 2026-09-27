@@ -28,6 +28,8 @@ const MAX_SHELL_TIMEOUT_MS: u64 = 300_000;
 /// covers the trip back.
 const TIMEOUT_MARGIN: Duration = Duration::from_secs(10);
 const FILE_TIMEOUT: Duration = Duration::from_secs(30);
+/// MCP tools do anything from a lookup to a long job; the node's own server decides beyond this.
+const MCP_TIMEOUT: Duration = Duration::from_secs(300);
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const DETAIL_PREVIEW_CHARS: usize = 2000;
 
@@ -145,17 +147,96 @@ pub struct NodeTool {
     op: NodeOp,
 }
 
-/// The five node tools for this hub. `audit_path`: where every call is logged (`None`: not logged).
-pub fn node_tools(registry: NodeRegistry, config_path: PathBuf, devices_path: PathBuf, audit_path: Option<PathBuf>) -> Vec<Arc<dyn Tool>> {
-    let ctx = NodeContext { registry, config_path, devices_path, agent: None, approver: None, audit: audit_path.map(|p| Arc::new(AuditLog::new(p))) };
-    [NodeOp::List, NodeOp::Shell, NodeOp::ReadFile, NodeOp::WriteFile, NodeOp::ListFiles]
-        .into_iter()
-        .map(|op| Arc::new(NodeTool { ctx: ctx.clone(), op }) as Arc<dyn Tool>)
-        .collect()
+/// Builds this hub's node tools: the five fixed ones, and one per MCP tool a connected node lends.
+#[derive(Clone)]
+pub struct NodeToolFactory {
+    ctx: NodeContext,
+}
+
+/// The longest tool name the model APIs accept.
+const MAX_TOOL_NAME: usize = 64;
+
+impl NodeToolFactory {
+    /// `audit_path`: where every call is logged (`None`: not logged).
+    pub fn new(registry: NodeRegistry, config_path: PathBuf, devices_path: PathBuf, audit_path: Option<PathBuf>) -> Self {
+        Self { ctx: NodeContext { registry, config_path, devices_path, agent: None, approver: None, audit: audit_path.map(|p| Arc::new(AuditLog::new(p))) } }
+    }
+
+    /// `list_nodes`, `node_shell`, `node_read_file`, `node_write_file`, `node_list_files`.
+    pub fn fixed_tools(&self) -> Vec<Arc<dyn Tool>> {
+        [NodeOp::List, NodeOp::Shell, NodeOp::ReadFile, NodeOp::WriteFile, NodeOp::ListFiles]
+            .into_iter()
+            .map(|op| Arc::new(NodeTool { ctx: self.ctx.clone(), op }) as Arc<dyn Tool>)
+            .collect()
+    }
+
+    /// One tool per MCP tool of every connected node, named `<node>__<tool>` with its own schema.
+    /// Rebuilt whenever a node joins or leaves; who may use each is still checked per turn.
+    pub fn mcp_tools(&self) -> Vec<Arc<dyn Tool>> {
+        let mut taken: Vec<String> = Vec::new();
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        for (id, node) in self.ctx.registry.online() {
+            let slug = node_slug(&node.name);
+            for spec in &node.offer.mcp_tools {
+                let name = mcp_tool_name(&slug, &id, &spec.name, &taken);
+                taken.push(name.clone());
+                let mut offered = spec.clone();
+                offered.name = name;
+                offered.description = format!("On node '{}': {}", node.name, spec.description);
+                tools.push(Arc::new(NodeMcpTool { ctx: self.ctx.clone(), node_id: id.clone(), remote_name: spec.name.clone(), spec: offered }));
+            }
+        }
+        tools
+    }
+}
+
+/// `"Casa PC"` → `"casa-pc"`: what the model sees before `__` in a node's MCP tools.
+pub fn node_slug(name: &str) -> String {
+    let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let slug = slug.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    let slug: String = slug.chars().take(20).collect();
+    if slug.is_empty() { "node".to_string() } else { slug }
+}
+
+/// `<slug>__<tool>`, unique among `taken` (two nodes with the same name get a piece of the id) and at
+/// most 64 characters.
+fn mcp_tool_name(slug: &str, node_id: &str, tool: &str, taken: &[String]) -> String {
+    let fit = |prefix: &str| {
+        let room = MAX_TOOL_NAME.saturating_sub(prefix.len() + 2);
+        format!("{prefix}__{}", tool.chars().take(room).collect::<String>())
+    };
+    let name = fit(slug);
+    if !taken.contains(&name) {
+        return name;
+    }
+    let tail: String = node_id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().filter(|c| c.is_ascii_alphanumeric()).collect();
+    fit(&format!("{slug}-{tail}"))
 }
 
 fn str_arg<'a>(args: &'a Value, name: &str) -> anyhow::Result<&'a str> {
     args.get(name).and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required '{name}' argument"))
+}
+
+/// Longer strings than this go in the log as their size only.
+const LOG_TEXT_CHARS: usize = 200;
+
+/// The arguments as the audit log keeps them: what was done, where and by whom — not the file
+/// content, nor any other long text an MCP tool was handed.
+fn for_log(args: &Value) -> Value {
+    let Some(fields) = args.as_object() else { return args.clone() };
+    let size = |text: &str| json!(format!("({} characters)", text.chars().count()));
+    Value::Object(
+        fields
+            .iter()
+            .map(|(key, value)| {
+                let kept = match value.as_str() {
+                    Some(text) if key == "content" || text.chars().count() > LOG_TEXT_CHARS => size(text),
+                    _ => value.clone(),
+                };
+                (key.clone(), kept)
+            })
+            .collect(),
+    )
 }
 
 fn preview(text: &str) -> String {
@@ -189,9 +270,15 @@ impl NodeTool {
                 if u.node.offer.files {
                     offers.push("files");
                 }
+                let mcp: Vec<&str> = u.node.offer.mcp_tools.iter().map(|t| t.name.as_str()).collect();
+                if !mcp.is_empty() {
+                    offers.push("mcp");
+                }
                 json!({
                     "node": u.id,
                     "name": u.node.name,
+                    "mcp_tools": mcp,
+                    "mcp_tool_prefix": format!("{}__", node_slug(&u.node.name)),
                     "description": u.node.offer.description,
                     "tags": u.node.offer.tags,
                     "offers": offers,
@@ -352,12 +439,89 @@ impl Tool for NodeTool {
         let name = self.spec().name;
         let node = args.get("node").and_then(Value::as_str).unwrap_or("").to_string();
         let result = self.call_op(&args).await.map(|(_, value)| value);
-        // The file content isn't worth keeping in the log; what was done, where and by whom is.
-        let mut logged = args.clone();
-        if let Some(content) = logged.get_mut("content") {
-            *content = json!(format!("({} characters)", content.as_str().map_or(0, |c| c.chars().count())));
-        }
-        self.ctx.log(&node, &name, &logged, &result);
+        self.ctx.log(&node, &name, &for_log(&args), &result);
         result
+    }
+}
+
+/// One MCP tool a node lends, offered to the model under its own name and schema (P93, fatia 2). The
+/// same rules as the other node tools apply on every call: the node online, approved, switched on and
+/// open to this agent; a yes first when it asks; logged; never retried if the node drops.
+pub struct NodeMcpTool {
+    ctx: NodeContext,
+    node_id: String,
+    /// The name on the node.
+    remote_name: String,
+    spec: ToolSpec,
+}
+
+impl NodeMcpTool {
+    fn usable(&self) -> Option<Usable> {
+        self.ctx.usable().into_iter().find(|u| u.id == self.node_id && u.node.offer.mcp_tools.iter().any(|t| t.name == self.remote_name))
+    }
+}
+
+#[async_trait]
+impl Tool for NodeMcpTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    fn scoped_to_agent(&self, agent: Option<&str>) -> Option<Arc<dyn Tool>> {
+        let mut ctx = self.ctx.clone();
+        ctx.agent = agent.map(str::to_string);
+        Some(Arc::new(Self { ctx, node_id: self.node_id.clone(), remote_name: self.remote_name.clone(), spec: self.spec.clone() }))
+    }
+
+    fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        let mut ctx = self.ctx.clone();
+        ctx.approver = Some(approver);
+        Some(Arc::new(Self { ctx, node_id: self.node_id.clone(), remote_name: self.remote_name.clone(), spec: self.spec.clone() }))
+    }
+
+    fn is_available(&self) -> bool {
+        self.usable().is_some()
+    }
+
+    async fn call(&self, args: Value) -> anyhow::Result<Value> {
+        let result = async {
+            let node = self.usable().ok_or_else(|| anyhow::anyhow!("node '{}' isn't available to you right now", self.node_id))?;
+            let detail = format!(
+                "Call '{}' on node '{}' ({}) with:\n\n{}",
+                self.remote_name,
+                node.id,
+                node.node.name,
+                preview(&serde_json::to_string_pretty(&args).unwrap_or_default())
+            );
+            self.ctx.approve(&node, &self.spec.name, detail).await?;
+            let tool = NodeTool { ctx: self.ctx.clone(), op: NodeOp::List };
+            tool.run_on(&node, "mcp", json!({ "tool": self.remote_name, "arguments": args }), MCP_TIMEOUT).await
+        }
+        .await;
+        self.ctx.log(&self.node_id, &self.spec.name, &for_log(&args), &result);
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_log_keeps_what_was_done_not_the_text() {
+        let logged = for_log(&json!({ "path": "a.md", "content": "secret", "query": "x".repeat(300), "limit": 5 }));
+        assert_eq!(logged, json!({ "path": "a.md", "content": "(6 characters)", "query": "(300 characters)", "limit": 5 }));
+    }
+
+    #[test]
+    fn mcp_tool_names_are_short_safe_and_unique() {
+        assert_eq!(node_slug("Casa PC!"), "casa-pc");
+        assert_eq!(node_slug("  "), "node");
+        assert_eq!(mcp_tool_name("casa-pc", "node-casa-pc-1a2b3c4d", "query", &[]), "casa-pc__query");
+        let taken = vec!["casa-pc__query".to_string()];
+        assert_eq!(mcp_tool_name("casa-pc", "node-casa-pc-1a2b3c4d", "query", &taken), "casa-pc-1a2b3c4d__query");
+        let long = mcp_tool_name("casa-pc", "id", &"x".repeat(100), &[]);
+        assert_eq!(long.len(), MAX_TOOL_NAME);
+        assert!(long.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
     }
 }

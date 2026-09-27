@@ -430,7 +430,7 @@ interface NodeInfo {
   name: string;
   online: boolean;
   approved: boolean;
-  offer?: { description: string; tags: string[]; shell: boolean; files: boolean };
+  offer?: { description: string; tags: string[]; shell: boolean; files: boolean; mcpTools?: { name: string }[] };
   enabled: boolean;
   agents: string[];
   requireApproval: boolean;
@@ -445,7 +445,12 @@ interface NodeDraft {
 
 function offerLabel(node: NodeInfo): string {
   if (!node.offer) return "not connected to this machine's hub since it started";
-  const parts = [node.offer.shell && "its shell", node.offer.files && "a folder"].filter(Boolean);
+  const mcp = node.offer.mcpTools ?? [];
+  const parts = [
+    node.offer.shell && "its shell",
+    node.offer.files && "a folder",
+    mcp.length > 0 && `${mcp.length} MCP tool(s) (${mcp.map((t) => t.name).join(", ")})`,
+  ].filter(Boolean);
   return parts.length ? `lends ${parts.join(" and ")}` : "lends nothing";
 }
 

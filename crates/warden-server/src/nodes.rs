@@ -48,11 +48,14 @@ impl NodeRegistry {
 
     /// Takes the node offline — only if `channel` is still the connection registered for it, so an
     /// old connection closing after the node reconnected doesn't take the new one down.
-    pub fn disconnect(&self, device_id: &str, channel: &RemoteToolChannel) {
+    /// `true` when it did take one offline.
+    pub fn disconnect(&self, device_id: &str, channel: &RemoteToolChannel) -> bool {
         let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if inner.online.get(device_id).is_some_and(|n| n.channel.same(channel)) {
             inner.online.remove(device_id);
+            return true;
         }
+        false
     }
 
     pub fn online(&self) -> Vec<(String, ConnectedNode)> {

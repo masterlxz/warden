@@ -251,6 +251,10 @@ pub struct NodeOfferDto {
     /// Reads and writes files in one folder.
     #[serde(default)]
     pub files: bool,
+    /// Tools of the MCP servers this node lends (fatia 2), each with its own schema, as the node names
+    /// them. The hub offers each as a tool of its own, `<node>__<tool>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_tools: Vec<ToolSpec>,
 }
 
 /// One node for the screens (P93): a device that announced itself as a node, or one `[[nodes]]`
@@ -1803,7 +1807,7 @@ mod tests {
         )
         .unwrap();
         let ClientMessage::Hello { node: Some(offer), .. } = hello else { panic!("{hello:?}") };
-        assert_eq!(offer, NodeOfferDto { description: "PC".into(), tags: vec!["gpu".into()], shell: true, files: false });
+        assert_eq!(offer, NodeOfferDto { description: "PC".into(), tags: vec!["gpu".into()], shell: true, files: false, mcp_tools: vec![] });
         // A client from before P93 sends no `node` and is no node.
         let plain: ClientMessage = serde_json::from_str(r#"{"type":"hello","deviceId":"p","deviceName":"Phone","authKey":"k"}"#).unwrap();
         assert!(matches!(plain, ClientMessage::Hello { node: None, .. }));
