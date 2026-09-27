@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Multiusuário (P84, Sessão 107) | Root lê tudo vs root administra sem ler; restringir o agente compartilhado pelo prompt vs filtrando os dados; login por aparelho vs senha vs TruthID | **Root administra sem ler** (escolha do usuário), com backup sempre criptografado por pessoa e uma política de recuperação por workspace; **filtro por audiência das notas** (o prompt é camada extra); **todo mundo tem nome de usuário**, criado pelo root, com senha e/ou TruthID por convite. Desenho só, nada implementado. Ver "Multiusuário" |
 | Rede de nós no mesmo workspace (P86, Sessão 107) | Failover entre hubs vs rede de nós; estado com um nó âncora vs serviço externo vs sem centro; fazer agora vs em etapas | **Rede de nós, sem centro (preferência do usuário), com CRDT por tipo de dado — mas adiada**: primeiro tarefas agendadas (P92) e nós como capacidades (P93), que não precisam de estado descentralizado. Ver "Rede de nós" |
 | Tools do cliente na Warden API (P91, Sessão 107) | Oferecer ao modelo só as tools do cliente vs as do cliente e todas as do agente vs as do cliente e só memória/skills; guardar a `thought_signature` do Gemini no hub vs dentro do id da chamada | **As do cliente e todas as do agente, e a do cliente vale em nome repetido** ✓ (escolha do usuário; para limitar, a chave fica presa a um agente com `allowed_tools`). **A assinatura vai dentro do id** (`call_<hex>__ts_<base64url>`), sem estado no hub. Ver "Warden API" |
 | Warden API (P12, Sessão 106) | Formato próprio vs compatível com a OpenAI; repassar as tools do cliente vs ignorar; salvar as chamadas como conversas vs só o gasto | **Compatível com a OpenAI (`/v1/models`, `/v1/chat/completions`, com stream) no mesmo porto do hub, tools do cliente ignoradas e nada salvo além do gasto no canal `api`** ✓ (escolhas do usuário). Chaves criadas no app (web, desktop, `warden-server api-keys`), só o hash no disco. O repasse de tools fica como pendência ligada ao P89 — ver "Warden API" |
@@ -2161,4 +2162,88 @@ O que o usuário mais quer ("rodar tarefas a qualquer momento", usar vários apa
 **P92** e **P93**, sem estado descentralizado. Se a queda do nó principal virar problema real, descentraliza-se
 primeiro só os dados fáceis (aparelhos e chaves, conversas, gasto), que já bastam para outro nó assumir a API e as
 conversas; o vault fica no sync atual. O resto (agentes, configuração, vault com junção de texto) é o P86 completo.
+
+## Multiusuário no mesmo workspace (P84, desenho da Sessão 107 — nada implementado)
+
+Registro de uma conversa de desenho com o usuário. Hoje o Warden é o agente pessoal de uma pessoa. A ideia é que,
+numa família (ou numa empresa, "precisa ser do mesmo jeito"), cada pessoa tenha os seus agentes e o seu vault sem
+misturar, com o usuário como **root** configurando as permissões. Nas palavras dele: pegar a ideia, sem ter
+pensado em todas as possibilidades.
+
+### O modelo
+
+| Conceito | O que é |
+|---|---|
+| **Usuário** | Uma pessoa. Papéis: **root** (o dono do workspace), **membro** e talvez **convidado** (só usa o que foi liberado). Aparelhos pareados e chaves da Warden API passam a pertencer a um usuário |
+| **Espaço de memória** | Um vault. Cada usuário tem o **seu**, isolado. O root pode criar **espaços compartilhados** ("casa", "viagens") com quem lê e quem escreve em cada um |
+| **Agente** | Tem um **dono** (uma pessoa) ou é **do workspace**. Para cada agente se define quem pode usá-lo e com quais limites. Cada pessoa cria os próprios agentes, dentro do que o root permitir |
+| **Permissão** | Sempre a mesma forma: **quem** (usuário ou grupo) pode **o quê** (usar, ver, editar, administrar) **em quê** (agente, espaço, conversa, tool, provedor, limite de gasto) |
+
+Exemplos que o modelo cobre:
+
+- "minha mulher usa meu agente, sem shell e com até R$ 20 por mês": permissão de uso no agente, com restrição de
+  tools e limite de gasto;
+- "o agente da casa lê o espaço 'casa' e nunca o meu vault": o agente com acesso só àquele espaço;
+- "a chave da API dela só fala com os agentes dela": a chave herda as permissões do usuário que a criou, e pode ser
+  presa a um agente, como já é hoje (P12).
+
+Peças que já existem e seriam aproveitadas: `allowed_tools` por agente, chave da API presa a um agente, limites de
+gasto com escopo "usuário" (P4), skills com escopo por agente, aprovação de tools. Falta o conceito de pessoa
+amarrando tudo.
+
+### Privacidade e backup
+
+Escolha do usuário: **o root não lê o vault nem as conversas dos outros**. Mas ele tem medo de perder os dados de
+alguém numa manutenção ("tá criptografado e eu perco acesso"). O conflito é real: **conseguir recuperar é
+conseguir ler**. A saída é separar copiar de ler:
+
+- **Backup sempre**: o root copia tudo, mas o que é de cada pessoa vai **criptografado com a chave dela**. Um backup
+  completo e ilegível para o root.
+- **Recuperação por política do workspace**, decidida na criação e visível para todos os membros:
+  - **privado de verdade**: só a pessoa recupera, com um código de recuperação dela. Se perder a senha e o código,
+    perdeu;
+  - **recuperável com consentimento**: a chave dividida em partes (Shamir, 2 de 3: a pessoa, o código de
+    recuperação dela e o root). O root sozinho não abre; o root mais o código da pessoa abrem. O melhor para
+    família;
+  - **recuperação de empresa**: o admin recupera sozinho, mas cada uso fica registrado e a pessoa é avisada.
+- **Aviso honesto, a mostrar para os membros**: o agente precisa ler o vault para trabalhar, e roda no hub. Quem
+  controla a máquina do hub sempre pode, tecnicamente, ver o que o agente vê enquanto ele trabalha. A criptografia
+  protege backups, discos e cópias, e impede leitura casual, mas não protege contra quem tem controle total do
+  servidor. Para esse nível, o agente da pessoa teria que rodar num aparelho dela (liga com P86/P93).
+
+### Conversas compartilhadas
+
+Privadas por padrão. O dono pode compartilhar uma conversa com outros usuários, para **leitura** ou
+**participação** (a outra pessoa também escreve). É o mesmo formato de permissão.
+
+### O agente de alguém falando com outra pessoa
+
+Pedido do usuário: com o agente dele, a memória é a dele, mas ele quer decidir o que o agente pode responder para
+a esposa, "ensinando" o agente ou por uma interface.
+
+- **A proteção não pode ser o prompt**: uma instrução ("não conte X para ela") vaza, porque o modelo pode ser
+  convencido ou errar.
+- **Camada que garante**: as notas têm **audiência**, por pasta ou etiqueta ("só eu", "família", "ela"). Quando o
+  agente fala com uma pessoa, ele só **enxerga** as notas liberadas para ela: busca no vault, memória fixa e leitura
+  de arquivos filtradas antes de chegar ao modelo.
+- **Camada de comportamento**, por cima: o dono ensina o tom e o que evitar ("sobre dinheiro, responda só de forma
+  geral"), por texto ou por uma tela. Ajuda, mas não é o que protege.
+
+### Login
+
+- **Todo mundo tem nome de usuário.** Não existe autocadastro: só o root cria usuários.
+- **Senha**: o root cria o usuário com uma senha provisória, e a pessoa troca no primeiro acesso.
+- **TruthID**: o root cria o usuário e gera um **convite** (código ou QR); a pessoa abre o convite e liga o TruthID
+  dela àquele usuário, e daí em diante entra por ele. Um usuário pode ter os dois. O fluxo exato precisa de estudo
+  próprio (o `warden-truthid` do P38 nunca foi testado contra o app real).
+- **Aparelho pareado entra como alguém**: o token do aparelho fica preso a um usuário, e tudo o que o aparelho faz
+  vale com as permissões dele.
+
+### Em aberto
+
+- Onde fica cada vault (pastas por usuário no mesmo hub; e com a rede de nós do P86, como os conflitos entre nós
+  se combinam com as permissões entre pessoas).
+- Grupos de usuários, e como a interface de permissões fica simples para uma família.
+- O que o root vê sem ler: tamanho, gasto, último acesso.
+- A saída dos arquivos fixos do vault (P94), porque um perfil fixo por vault não faz sentido com vários usuários.
 

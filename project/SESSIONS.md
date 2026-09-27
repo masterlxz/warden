@@ -65,6 +65,19 @@
   tudo: P86 reescrito, **P92 (tarefas agendadas)** e **P93 (nós como capacidades)** novos, e `ROADMAP.md` com a
   ordem combinada (P92 → P93 → dados fáceis descentralizados → rede completa).
 
+**P84, conversa de desenho** em seguida: o usuário quer, para a família e também para empresa, pessoas no mesmo
+workspace, com ele como root. Nada implementado; registrado em `ARCHITECTURE.md` ("Multiusuário") e no P84:
+
+- modelo com usuário, espaço de memória, agente (com dono ou do workspace) e permissão (quem → o quê → em quê),
+  valendo também na Warden API;
+- o root não lê vault nem conversas dos outros. Para o medo de perder dados: backup sempre criptografado por
+  pessoa e uma política de recuperação por workspace, mais o aviso honesto de que quem controla o hub pode ver o
+  que o agente vê;
+- conversas compartilháveis; audiência nas notas como proteção de verdade quando o agente de um fala com outro;
+- login com nome de usuário, criado pelo root, com senha e/ou TruthID por convite.
+- Item novo **P94**: tirar os arquivos fixos do vault (`_profile.md`, `_behavior.md`, `_feedback.md`), pedido do
+  usuário na mesma conversa.
+
 **Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, a Warden API nas telas), agora incluindo o
 opencode apontado para a Warden API e o Gemini real. Depois, P92.
 
