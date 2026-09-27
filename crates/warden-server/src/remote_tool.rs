@@ -42,6 +42,18 @@ impl RemoteToolChannel {
         }
     }
 
+    /// Fails every call still waiting on this connection, right away — called when it closes, so a
+    /// caller hears "disconnected" instead of sitting out its whole timeout (P93: a node that drops
+    /// in the middle of a long command).
+    pub fn close(&self) {
+        self.pending.lock().unwrap().clear();
+    }
+
+    /// Whether `other` is this same connection's channel (not just one to the same device).
+    pub fn same(&self, other: &RemoteToolChannel) -> bool {
+        Arc::ptr_eq(&self.pending, &other.pending)
+    }
+
     /// Sends a `ToolCallRequest` for `tool(arguments)` down this connection and waits (up to
     /// `timeout`) for the matching `ToolCallResult`/`ToolCallError` — the one call-id allocator
     /// and pending map this connection has, shared by every caller that needs to ask *this*

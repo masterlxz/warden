@@ -24,6 +24,7 @@ import {
   type LimitStatus,
   type ServerMessage,
   type UsageReport,
+  type NodeInfo,
   type SkillDto,
   type Task,
   type TaskInfo,
@@ -69,6 +70,16 @@ export class SettingsError extends Error {
 
 /** A Warden API key change the hub refused (P12). `authRejected`: the pairing key was wrong. */
 export class ApiKeyError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** A node access change the hub refused (P93). `authRejected`: the pairing key was wrong. */
+export class NodeError extends Error {
   constructor(
     message: string,
     public readonly authRejected: boolean,
@@ -402,7 +413,11 @@ export class ServerConnection {
       case "apiKeyCreated":
       case "syncStatus":
       case "taskList":
+      case "nodeList":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "nodeError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new NodeError(message.message, message.authRejected)));
         break;
       case "taskError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new TaskError(message.message, message.authRejected)));
@@ -587,6 +602,20 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "revokeApiKey", requestId, pairingKey, id }));
     if (reply.type !== "apiKeyList") throw new Error("resposta inesperada do hub");
     return reply.keys;
+  }
+
+  /** Nodes (P93): connected or allowed, with what each offers and who may use it. */
+  async listNodes(): Promise<NodeInfo[]> {
+    const reply = await this.request((requestId) => ({ type: "listNodes", requestId }));
+    if (reply.type !== "nodeList") throw new Error("resposta inesperada do hub");
+    return reply.nodes;
+  }
+
+  /** Writes a node's access; rejects with `NodeError` (wrong pairing key: `authRejected`). */
+  async setNodeAccess(pairingKey: string, deviceId: string, enabled: boolean, agents: string[], requireApproval: boolean): Promise<NodeInfo[]> {
+    const reply = await this.request((requestId) => ({ type: "setNodeAccess", requestId, pairingKey, deviceId, enabled, agents, requireApproval }));
+    if (reply.type !== "nodeList") throw new Error("resposta inesperada do hub");
+    return reply.nodes;
   }
 
   /** Scheduled tasks (P92), in the config's order, and whether this hub runs them on schedule. */

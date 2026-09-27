@@ -46,6 +46,8 @@ pub struct EmbeddedServerHandle {
     /// Its scheduled tasks (P92): the Tasks screen's "Run now" goes through it, so a run never
     /// overlaps a scheduled one and the hub's devices hear when it's done.
     pub(crate) task_runner: Option<warden_server::scheduler::TaskRunner>,
+    /// The nodes connected to it (P93), for the Workspace screen.
+    pub(crate) node_registry: warden_server::nodes::NodeRegistry,
 }
 
 /// The embedded hub's web settings (P78): the desktop's own config file, built the way the desktop
@@ -352,6 +354,7 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
         server = server.with_tasks(warden_bootstrap::tasks::TaskStore::new(dir), run);
     }
     let task_runner = server.task_runner();
+    let node_registry = server.node_registry();
     let bound_addr = server.local_addr()?;
     let secure_url = tls.as_ref().and_then(|tls| tls.secure_url(bound_addr.port()));
     let tls_without_host = tls.is_some() && secure_url.is_none();
@@ -363,7 +366,7 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     tokio::spawn(server.serve_until(async {
         let _ = shutdown_rx.await;
     }));
-    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, tls_without_host, web_ui: config.web_ui, cert_renewal, orchestrator: shared, task_runner })
+    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, tls_without_host, web_ui: config.web_ui, cert_renewal, orchestrator: shared, task_runner, node_registry })
 }
 
 #[cfg(test)]

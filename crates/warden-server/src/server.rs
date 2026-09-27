@@ -31,6 +31,7 @@ use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, NodeRegistry};
 use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
@@ -96,6 +97,10 @@ pub struct Server {
     task_tick: Duration,
     /// Conversations changed outside any one connection (a task ran): every connection hears it.
     changes: broadcast::Sender<String>,
+    /// Who is connected as a node (P93), for the node tools and the screens.
+    nodes: NodeRegistry,
+    /// Where node calls are logged; `None` in tests that don't care.
+    node_audit: Option<PathBuf>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -130,7 +135,20 @@ impl Server {
             tasks: None,
             task_tick: DEFAULT_TASK_TICK,
             changes: broadcast::channel(64).0,
+            nodes: NodeRegistry::default(),
+            node_audit: warden_bootstrap::default_node_audit_log_path(),
         })
+    }
+
+    /// The nodes connected to this hub (P93) — the desktop's Workspace screen reads its embedded hub's.
+    pub fn node_registry(&self) -> NodeRegistry {
+        self.nodes.clone()
+    }
+
+    /// Logs node calls to `path` instead of the default file — tests keep it in their temp dir.
+    pub fn with_node_audit(mut self, path: Option<PathBuf>) -> Self {
+        self.node_audit = path;
+        self
     }
 
     /// Scheduled tasks (P92): every device lists their conversations from `store`, and with `run`
@@ -251,7 +269,14 @@ impl Server {
             api_keys: self.api_keys,
             tasks: self.tasks,
             changes: self.changes.clone(),
+            nodes: self.nodes.clone(),
         };
+        // P93: the node tools join the hub's orchestrator — chat, the Warden API and scheduled tasks
+        // all get them. They read `[[nodes]]` from the settings file, so a hub without one has none.
+        if let Some(settings) = &ctx.settings {
+            let tools = crate::node_tools::node_tools(self.nodes.clone(), settings.config_path(), ctx.devices_path.as_ref().clone(), self.node_audit.clone());
+            ctx.orchestrator.set_extra_tools(tools);
+        }
         let runs_tasks = ctx.tasks.as_ref().is_some_and(TaskRunner::runs_here);
         let _scheduler = match (&ctx.tasks, runs_tasks, &ctx.settings) {
             (Some(runner), true, Some(settings)) => {
@@ -311,6 +336,7 @@ struct ConnectionContext {
     /// Scheduled tasks (P92): their conversations are listed next to every device's own.
     tasks: Option<TaskRunner>,
     changes: broadcast::Sender<String>,
+    nodes: NodeRegistry,
 }
 
 impl ConnectionContext {
@@ -337,6 +363,21 @@ fn spawn_api_key_change(
         let reply = handle_api_key_change(store.as_ref(), settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, change).await;
         let _ = reply_tx.send(reply);
     });
+}
+
+fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> String {
+    let mut parts = Vec::new();
+    if offer.shell {
+        parts.push("shell");
+    }
+    if offer.files {
+        parts.push("files");
+    }
+    if parts.is_empty() {
+        "nothing".to_string()
+    } else {
+        parts.join(" and ")
+    }
 }
 
 /// Off the reader loop, like the API keys: a wrong key waits a second under the settings lock.
@@ -486,6 +527,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         api_keys,
         tasks,
         changes,
+        nodes,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -505,7 +547,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             auth_key: provided,
             device_token,
             tools,
-        }) => (device_id, device_name, provided, device_token, tools),
+            node,
+        }) => (device_id, device_name, provided, device_token, tools, node),
         // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
@@ -523,7 +566,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key, device_token, tools) = hello;
+    let (device_id, device_name, provided_key, device_token, tools, node_offer) = hello;
 
     // P36: the shared key only pairs; a paired device authenticates with its own token. The
     // pairing status itself (Pending/Approved) stays silent here — a `Pending` device still gets a
@@ -608,6 +651,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     // arriving right after this device's own Hello can never race the registration.
     let tool_channel = RemoteToolChannel::new(tx.clone());
     devices.lock().unwrap().insert(device_id.clone(), tool_channel.clone());
+    // P93: a node lends its shell and files to the hub's agents through this same channel.
+    if let Some(offer) = node_offer {
+        eprintln!("warden-server: {device_name} ({device_id}) is a node offering {}", describe_offer(&offer));
+        nodes.connect(&device_id, ConnectedNode { name: device_name.clone(), offer, channel: tool_channel.clone() });
+    }
 
     // Fase 7.4: a client that advertised tools in Hello gets its own Orchestrator (cheap clone —
     // Orchestrator is Arc-backed) with a RemoteTool proxy per advertised spec, so the model can
@@ -639,7 +687,17 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             }
         };
         let Some(frame) = frame else { break };
-        match frame? {
+        // A read error (the peer vanished without closing, e.g. a node that lost power) ends the
+        // connection like a close does: the cleanup after the loop must still run, or calls waiting
+        // on this device would sit out their whole timeout.
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(err) => {
+                eprintln!("warden-server: {device_id}'s connection broke: {err}");
+                break;
+            }
+        };
+        match frame {
             Message::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
@@ -838,6 +896,19 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
                     spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
                 }
+                Ok(ClientMessage::ListNodes { request_id }) => {
+                    let pairing = PairingStore::new(devices_path.as_ref().clone());
+                    let _ = tx.send(handle_list_nodes(&nodes, &pairing, settings.as_deref(), request_id));
+                }
+                Ok(ClientMessage::SetNodeAccess { request_id, pairing_key, device_id: node_id, enabled, agents, require_approval }) => {
+                    let (nodes, settings, lock, auth_key, reply_tx) = (nodes.clone(), settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    let pairing = PairingStore::new(devices_path.as_ref().clone());
+                    tokio::spawn(async move {
+                        let access = warden_bootstrap::NodeAccessConfig { id: node_id, enabled, agents, require_approval };
+                        let reply = handle_set_node_access(&nodes, &pairing, settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, access).await;
+                        let _ = reply_tx.send(reply);
+                    });
+                }
                 Ok(ClientMessage::ListTasks { request_id }) => {
                     let _ = tx.send(handle_list_tasks(tasks.as_ref(), settings.as_deref(), request_id));
                 }
@@ -898,6 +969,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     }
 
     devices.lock().unwrap().remove(&device_id);
+    nodes.disconnect(&device_id, &tool_channel);
+    // Calls still waiting on this device (a node's long command) fail now instead of at their timeout.
+    tool_channel.close();
     // Nobody is left to answer: open approvals count as a no right away.
     approver.close();
     // `tool_channel`, the approver and this connection's own `Orchestrator` (its `RemoteTool`s) hold

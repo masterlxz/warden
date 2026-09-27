@@ -183,6 +183,26 @@ impl SshHostConfig {
     }
 }
 
+/// What agents may do with one node (P93, TOML `[[nodes]]`) — the hub's half of the two locks; the
+/// node's own operator chose what it offers (`warden-server node --shell/--files`). Keyed by the
+/// node's device id. Like `SshHostConfig`, off unless a person switches it on.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NodeAccessConfig {
+    /// The node's device id, as the hub's device list shows it.
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    /// Agents allowed to use it. Empty means every agent and every channel without one. A name
+    /// that no longer matches an agent matches nobody, so a stale list only ever closes access.
+    #[serde(default)]
+    pub agents: Vec<String>,
+    /// Ask a human before every command or file operation on this node; a channel that can't ask
+    /// (a scheduled task, Telegram) refuses instead.
+    #[serde(default)]
+    pub require_approval: bool,
+}
+
 /// One named combo (P90): `providers` are ids from `FileConfig::providers`, tried in order — the
 /// first that isn't down answers.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -395,6 +415,9 @@ pub struct FileConfig {
     /// Only a hub started with `--run-tasks` runs them — the file syncs, so every hub reads them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskConfig>,
+    /// What agents may do with each node (P93, TOML `[[nodes]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<NodeAccessConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -634,7 +657,19 @@ pub fn remove_agent_from(agents: &mut Vec<AgentConfig>, ssh_hosts: &mut [SshHost
 
 /// `remove_agent_from` over a whole `FileConfig` — for callers that hold one (the CLI's `/agents remove`).
 pub fn remove_agent_references(config: &mut FileConfig, agent_id: &str) -> Vec<SshHostEffect> {
+    forget_agent_in_nodes(&mut config.nodes, agent_id);
     remove_agent_from(&mut config.agents, &mut config.ssh_hosts, agent_id)
+}
+
+/// Drops a removed agent from every node's list (P93). A node left with no agent is switched off,
+/// never opened to everyone — the same rule as the SSH hosts.
+pub fn forget_agent_in_nodes(nodes: &mut [NodeAccessConfig], agent_id: &str) {
+    for node in nodes.iter_mut().filter(|n| n.agents.iter().any(|a| a == agent_id)) {
+        node.agents.retain(|a| a != agent_id);
+        if node.agents.is_empty() {
+            node.enabled = false;
+        }
+    }
 }
 
 /// Where an OAuth-authenticated MCP server's persisted token lives (PENDING.md P26) — one JSON
@@ -835,6 +870,11 @@ pub struct HubPairingConfig {
 /// directory (the tools then simply run without an audit log).
 pub fn default_ssh_audit_log_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("ssh_audit.jsonl"))
+}
+
+/// Where the hub logs every call its agents make on a node (P93) — same format as the SSH log.
+pub fn default_node_audit_log_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("node_audit.jsonl"))
 }
 
 /// Where `HubPairingConfig` lives (Fase 9.7) — same `dirs::config_dir()` base as
@@ -1846,6 +1886,19 @@ oauth = true
     }
 
     #[test]
+    fn a_removed_agent_closes_the_nodes_it_was_alone_on() {
+        let mut nodes = vec![
+            NodeAccessConfig { id: "a".into(), enabled: true, agents: vec!["ops".into()], require_approval: false },
+            NodeAccessConfig { id: "b".into(), enabled: true, agents: vec!["ops".into(), "dev".into()], require_approval: false },
+            NodeAccessConfig { id: "c".into(), enabled: true, agents: vec![], require_approval: false },
+        ];
+        forget_agent_in_nodes(&mut nodes, "ops");
+        assert_eq!((nodes[0].enabled, nodes[0].agents.len()), (false, 0), "never falls through to everyone");
+        assert_eq!((nodes[1].enabled, nodes[1].agents.clone()), (true, vec!["dev".to_string()]));
+        assert!(nodes[2].enabled && nodes[2].agents.is_empty());
+    }
+
+    #[test]
     fn save_config_round_trips_through_load_config() {
         let path = temp_toml_path("save-round-trip");
         let config = FileConfig {
@@ -1944,6 +1997,7 @@ oauth = true
                 timezone: Some("America/Sao_Paulo".to_string()),
                 enabled: false,
             }],
+            nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
         };
 
         save_config(&path, &config).unwrap();

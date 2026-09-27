@@ -61,6 +61,63 @@ enum Command {
     /// conversation, which every device lists. A running `serve` sees changes made here within
     /// half a minute.
     Tasks(TasksArgs),
+    /// Makes this machine a node (P93): it connects to a hub and lends its shell and/or a folder of
+    /// files to the hub's agents. The hub still decides who may use it (`warden-server nodes`).
+    Node(NodeArgs),
+    /// On the hub: what agents may do with each node (P93) — the `[[nodes]]` entries.
+    Nodes {
+        #[command(subcommand)]
+        action: NodesAction,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long, global = true)]
+        config: Option<String>,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct NodeArgs {
+    /// The hub to join, e.g. wss://hub.tailnet.ts.net:7420 (or ws:// on a trusted network).
+    #[arg(long)]
+    hub: String,
+    /// The hub's pairing key — only the first time; the node keeps the token the hub gives it.
+    /// Falls back to WARDEN_SERVER_AUTH_KEY.
+    #[arg(long)]
+    auth_key: Option<String>,
+    /// How this node shows up on the hub. Defaults to the machine's host name.
+    #[arg(long)]
+    name: Option<String>,
+    /// One line for the agents: what this machine is and what it's good for.
+    #[arg(long, default_value = "")]
+    description: String,
+    /// A label agents can pick nodes by, like gpu or home. Repeatable.
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    /// Lend this machine's shell: agents allowed on the hub can run any command as this user.
+    #[arg(long)]
+    shell: bool,
+    /// Share this folder: agents allowed on the hub can read and write text files inside it (never
+    /// outside). Also where --shell commands start.
+    #[arg(long)]
+    files: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+enum NodesAction {
+    /// Every node in `[[nodes]]` and whether it's on, for which agents, and whether it asks first.
+    List,
+    /// Lets agents use this node (its device id, as `devices list` shows it). It must also be approved
+    /// there (`devices approve`).
+    Allow {
+        id: String,
+        /// Only these agents (repeatable). Without it, every agent.
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        /// Ask a person before every command or file operation on it.
+        #[arg(long)]
+        approval: bool,
+    },
+    /// Stops agents from using this node (keeps its entry).
+    Deny { id: String },
 }
 
 #[derive(clap::Args, Debug)]
@@ -406,6 +463,64 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or_default()
 }
 
+async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(args.shell || args.files.is_some(), "a node has to lend something — pass --shell, --files <folder>, or both");
+    if let Some(dir) = &args.files {
+        anyhow::ensure!(dir.is_dir(), "--files {} is not a folder", dir.display());
+    }
+    let name = args.name.clone().unwrap_or_else(|| resolve_server_name(None));
+    let identity_path = warden_server::node_client::default_node_identity_path().context("could not determine the OS config directory")?;
+    let identity = warden_server::node_client::NodeIdentity::load_or_create(&identity_path, &name)?;
+    let local = std::sync::Arc::new(warden_server::node_client::LocalNode::new(args.shell, args.files.clone()));
+    let session = warden_server::node_client::NodeSession {
+        hub_url: args.hub.clone(),
+        name,
+        auth_key: std::env::var("WARDEN_SERVER_AUTH_KEY").ok().or(args.auth_key.clone()).unwrap_or_default(),
+        offer: local.offer(args.description.clone(), args.tags.clone()),
+        identity_path: Some(identity_path),
+    };
+    let lends = match (args.shell, &args.files) {
+        (true, Some(dir)) => format!("its shell and the folder {}", dir.display()),
+        (true, None) => "its shell".to_string(),
+        (false, Some(dir)) => format!("the folder {}", dir.display()),
+        (false, None) => unreachable!(),
+    };
+    eprintln!("warden-server node: '{}' ({}) lends {lends}", session.name, identity.device_id);
+    warden_server::node_client::run_node(session, identity, local).await
+}
+
+fn run_nodes_command(action: NodesAction, config: Option<String>) -> anyhow::Result<()> {
+    let config_path = config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    match action {
+        NodesAction::List => {
+            let config = load_config_from_path(&config_path, config.is_some())?;
+            if config.nodes.is_empty() {
+                println!("no nodes allowed yet — run `warden-server node` on a machine, approve it (`devices approve <id>`), then `nodes allow <id>`");
+            }
+            for node in &config.nodes {
+                let who = if node.agents.is_empty() { "every agent".to_string() } else { node.agents.join(", ") };
+                println!("{}\t{}\t{who}\t{}", node.id, if node.enabled { "on" } else { "off" }, if node.require_approval { "asks first" } else { "no approval" });
+            }
+        }
+        NodesAction::Allow { id, agents, approval } => {
+            warden_server::nodes::set_node_access(&config_path, warden_bootstrap::NodeAccessConfig { id: id.clone(), enabled: true, agents, require_approval: approval })?;
+            let store = PairingStore::new(devices_path()?);
+            match store.status(&id)? {
+                Some(warden_server::PairingStatus::Approved) => println!("node '{id}' allowed"),
+                _ => println!("node '{id}' allowed — it also has to be approved in the device list: `warden-server devices approve {id}`"),
+            }
+        }
+        NodesAction::Deny { id } => {
+            let mut config = load_config_from_path(&config_path, config.is_some())?;
+            let node = config.nodes.iter_mut().find(|n| n.id == id).ok_or_else(|| anyhow::anyhow!("no node '{id}' in the config"))?;
+            node.enabled = false;
+            save_config(&config_path, &config)?;
+            println!("node '{id}' denied — agents can't use it any more");
+        }
+    }
+    Ok(())
+}
+
 async fn run_tasks_command(args: TasksArgs) -> anyhow::Result<()> {
     let config_path = args.config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
     let mut config = load_config_from_path(&config_path, args.config.is_some())?;
@@ -636,6 +751,8 @@ async fn main() -> anyhow::Result<()> {
         Command::ApiKeys { action } => run_api_keys_command(action),
         Command::Sync(args) => run_sync_command(args).await,
         Command::Tasks(args) => run_tasks_command(args).await,
+        Command::Node(args) => run_node_command(args).await,
+        Command::Nodes { action, config } => run_nodes_command(action, config),
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

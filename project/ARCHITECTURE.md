@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Nós como capacidades (P93, Sessão 108) | Binário do nó: subcomando do `warden-server` vs binário leve novo vs desktop primeiro; tools por nó vs tools genéricas com parâmetro `node`; permissão só no nó vs nas duas pontas | **`warden-server node`**, **tools genéricas com `node`** (`list_nodes`, `node_shell`, `node_read_file`, `node_write_file`), exceto as tools MCP do nó, que viram tools próprias com prefixo por causa do schema; **duas travas, como os hosts SSH**: o nó escolhe o que oferece e o hub decide por nó (ligado, agentes, aprovação a cada chamada) ✓ (escolhas do usuário). Fatias: shell e arquivos, depois MCP do nó, depois o modelo local como provedor. Ver "Nós como capacidades" |
 | Tarefas agendadas (P92, Sessão 108) | Definição no `config.toml` vs arquivo próprio; resultado numa conversa vs nota no vault vs escolha por tarefa; hora perdida roda ao voltar vs pula; tool com aprovação recusa vs pede a quem estiver on vs pré-autorizada; qual hub executa | **`[[tasks]]` no `config.toml`, resultado numa conversa da tarefa, hora perdida roda uma vez ao voltar, tool com aprovação é recusada, e cada hub tem uma chave local "executar tarefas" desligada por padrão** ✓ (escolhas do usuário). Em fatias: motor + CLI, depois telas, depois `manage_tasks` com opt-in e aprovação. Ver "Tarefas agendadas" |
 | Multiusuário (P84, Sessão 107) | Root lê tudo vs root administra sem ler; restringir o agente compartilhado pelo prompt vs filtrando os dados; login por aparelho vs senha vs TruthID | **Root administra sem ler** (escolha do usuário), com backup sempre criptografado por pessoa e uma política de recuperação por workspace; **filtro por audiência das notas** (o prompt é camada extra); **todo mundo tem nome de usuário**, criado pelo root, com senha e/ou TruthID por convite. Desenho só, nada implementado. Ver "Multiusuário" |
 | Rede de nós no mesmo workspace (P86, Sessão 107) | Failover entre hubs vs rede de nós; estado com um nó âncora vs serviço externo vs sem centro; fazer agora vs em etapas | **Rede de nós, sem centro (preferência do usuário), com CRDT por tipo de dado — mas adiada**: primeiro tarefas agendadas (P92) e nós como capacidades (P93), que não precisam de estado descentralizado. Ver "Rede de nós" |
@@ -2348,3 +2349,69 @@ agente, as tools dele e os limites de gasto do P4, num hub que fica sempre de p�
 - **CLI**: `warden-server serve --run-tasks` e `warden-server tasks list|add|pause|resume|remove|run`. O `add`
   valida com `check_tasks` e salva pelo `save_config` (mantém os comentários, P82). O `run` executa no próprio
   processo; um `serve` rodando não avisa os aparelhos dessa execução, que aparece quando a lista recarregar.
+
+## Nós como capacidades (P93, desenho da Sessão 108)
+
+Saiu do estudo do P86: outras máquinas entram no workspace e **emprestam o que têm** (shell, arquivos, servidores
+MCP, um modelo local), e o estado continua no hub. Os nós só executam. Um agente ou uma tarefa (P92) pede "roda no
+nó de casa" ou "roda num nó com GPU".
+
+**O que já existe**: o `Hello` de um aparelho já anuncia tools (o celular empresta `list_phone_files` e
+`read_phone_file`, Fase 7.4), e o hub faz o proxy com o `RemoteTool`/`RemoteToolChannel`. Mas essas tools só
+servem à conversa daquele mesmo aparelho. O `CallDeviceTool` (Fase 9.3/9.4) roteia entre aparelhos, exige
+aparelho `Approved` e hoje não tem cliente.
+
+| Pergunta | Decisão |
+|---|---|
+| O que roda no nó | **`warden-server node --hub wss://…`** (escolha do usuário): o binário que já existe conecta no hub como mais um aparelho e oferece o que foi liberado. Serve para VPS, mini-PC e servidor sem tela. O desktop ganha uma chave "emprestar este computador" numa fatia depois |
+| O que oferece | Shell, arquivos de uma pasta escolhida, servidores MCP daquela máquina e o modelo local (Ollama ou outro OpenAI-compatible) como provedor no hub (as quatro, escolha do usuário), em fatias |
+| Como o agente escolhe | **Tools genéricas com um parâmetro `node`** (escolha do usuário): `list_nodes` (quem está online, descrição, etiquetas como "gpu" e "casa", o que cada um oferece), `node_shell`, `node_read_file`, `node_write_file`. A lista de tools não cresce a cada nó novo. **Exceção: as tools MCP de um nó** viram tools próprias com prefixo (`casa__github_search`), com o schema delas, só enquanto o nó está online e para os agentes liberados (escolha do usuário: o modelo usa muito melhor uma tool com schema) |
+| Permissão | **Duas travas, como os hosts SSH do P47** (escolha do usuário). No nó, quem instala escolhe o que ele oferece (`--shell`, `--files <pasta>`, …). No hub, cada nó tem: ligado, quais agentes podem usar (vazio = todos) e "pedir aprovação a cada chamada". O nó precisa estar aprovado na lista de aparelhos |
+| Nó cai no meio de uma chamada | A chamada falha com um erro claro e **não é repetida**: um comando de shell não é idempotente. O agente decide o que fazer |
+| Onde fica a permissão do hub | `[[nodes]]` no `config.toml`, pelo id do aparelho, como `ssh_hosts` |
+
+**Fatias** (escolha do usuário):
+
+1. O nó (`warden-server node`), `list_nodes`/`node_shell`/`node_read_file`/`node_write_file`, as permissões no hub
+   e as telas básicas.
+2. Os servidores MCP do nó, como tools próprias com prefixo.
+3. O modelo local do nó como provedor no hub (streaming do modelo pelo WebSocket).
+
+### Como ficou a fatia 1 (Sessão 108)
+
+- **O nó** (`warden-server node`, `node_client.rs`):
+  - `--hub`, `--auth-key` (só na primeira vez), `--name`, `--description`, `--tag` (repetível), `--shell` e
+    `--files <pasta>`;
+  - a identidade (id gerado uma vez e o token do hub) fica em `<config dir>/warden/node.json` (0600), então ele
+    volta sozinho mesmo depois de trocarem a chave de pareamento do hub;
+  - reconecta com espera de 1 s a 60 s e manda ping a cada 20 s;
+  - executa localmente `shell` (o `ShellTool`, na pasta `--files` ou em home), `read_file` (texto, até 1 MB),
+    `write_file` e `list_files` (até 1000), com a pasta como `Vault`, cujo `path_of` recusa `..` e caminho
+    absoluto;
+  - o que não foi ligado é recusado no próprio nó.
+- **Protocolo**: `Hello.node: Option<NodeOfferDto>` (descrição, etiquetas, `shell`, `files`). As chamadas usam o
+  `ToolCallRequest`/`ToolCallResult` que já existiam (Fase 7.4). Na web: `ListNodes` e `SetNodeAccess` →
+  `NodeList`/`NodeError`.
+- **No hub**:
+  - `NodeRegistry` (`nodes.rs`): quem está conectado como nó e o que ofereceu por último. Sai pelo mesmo canal, e
+    uma conexão velha não derruba uma nova do mesmo nó;
+  - as tools (`node_tools.rs`): `list_nodes`, `node_shell`, `node_read_file`, `node_write_file` e
+    `node_list_files`, genéricas com `node` (o `enum` traz os ids utilizáveis), no molde das tools de SSH
+    (`scoped_to_agent`, `with_approver`, `is_available`, log em `node_audit.jsonl` sem o conteúdo dos arquivos);
+  - um nó só aparece para um turno se estiver conectado, aprovado na lista de aparelhos, ligado no `[[nodes]]`,
+    aberto àquele agente e oferecendo o que a chamada pede. Tudo é relido a cada chamada;
+  - as tools entram por `SharedOrchestrator::set_extra_tools`, reaplicado a cada `replace` (save de settings,
+    sync), então chat, Warden API e tarefas agendadas recebem as mesmas.
+- **Nó que cai**: `RemoteToolChannel::close()` falha na hora as chamadas pendentes, e a mensagem diz que não foi
+  repetida. **Achado no teste**: um erro de leitura na conexão (o outro lado sumiu sem fechar) saía da função pelo
+  `?` antes da limpeza, e a chamada esperava o timeout inteiro. Agora o erro encerra o laço como um fechamento, o
+  que também limpa qualquer aparelho que caia assim.
+- **`[[nodes]]`** (`NodeAccessConfig { id, enabled, agents, require_approval }`): remover um agente pelas
+  Settings da web ou pelo `/agents` tira o nome dele dos nós, e um nó que fica sem agente é desligado, nunca aberto
+  a todos. Um nome que sobrar (removido por outro caminho) não casa com ninguém, então só fecha o acesso.
+- **Telas e CLI**:
+  - web: seção "Nós" na aba Aparelhos, com a chave de pareamento a cada mudança;
+  - desktop: seção "Nodes" no Workspace, que também libera por id um nó ligado ao hub do VPS, já que o
+    `[[nodes]]` sincroniza;
+  - hub sem tela: `warden-server nodes list|allow <id> [--agent …] [--approval]|deny <id>`.
+

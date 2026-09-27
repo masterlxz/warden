@@ -424,15 +424,189 @@ function HubPairingQrSection() {
   );
 }
 
+/** Mirrors `NodeInfoDto` (P93). */
+interface NodeInfo {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  approved: boolean;
+  offer?: { description: string; tags: string[]; shell: boolean; files: boolean };
+  enabled: boolean;
+  agents: string[];
+  requireApproval: boolean;
+}
+
+interface NodeDraft {
+  deviceId: string;
+  enabled: boolean;
+  agents: string[];
+  requireApproval: boolean;
+}
+
+function offerLabel(node: NodeInfo): string {
+  if (!node.offer) return "not connected to this machine's hub since it started";
+  const parts = [node.offer.shell && "its shell", node.offer.files && "a folder"].filter(Boolean);
+  return parts.length ? `lends ${parts.join(" and ")}` : "lends nothing";
+}
+
+/**
+ * P93 — machines running `warden-server node` that lend their shell or a folder to your agents. Two
+ * locks: the node's operator chose what it offers; here you pick whether agents may use it, which
+ * ones, and whether each call asks you first. It must also be approved in the device list below. The
+ * entries are saved in config.toml, which syncs — so a node that joins the hub on your VPS can be
+ * allowed from here by typing its id.
+ */
+function NodesSection({ refreshKey }: { refreshKey: number }) {
+  const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
+  const [agentIds, setAgentIds] = useState<string[]>([]);
+  const [draft, setDraft] = useState<NodeDraft | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<NodeInfo[]>("list_nodes")
+      .then(setNodes)
+      .catch((err) => setError(String(err)));
+    invoke<{ agents: { id: string }[] }>("get_settings")
+      .then((settings) => setAgentIds(settings.agents.map((a) => a.id)))
+      .catch(() => setAgentIds([]));
+  }, [refreshKey]);
+
+  async function save() {
+    if (!draft) return;
+    setError(null);
+    try {
+      setNodes(await invoke<NodeInfo[]>("save_node_access", { ...draft }));
+      setDraft(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  return (
+    <section className="settings-section">
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">Nodes</h3>
+        <button type="button" className="settings-browse-btn" onClick={() => setDraft({ deviceId: "", enabled: true, agents: [], requireApproval: false })}>
+          + Allow a node by id
+        </button>
+      </div>
+      <p className="settings-hint">
+        Other machines lending their shell or a folder to your agents: <code>warden-server node --hub … --shell --files &lt;folder&gt;</code>.
+      </p>
+      {error && <p className="settings-error-banner">{error}</p>}
+
+      {draft && (
+        <div className="provider-card skill-editor">
+          <label className="settings-field">
+            <span className="settings-label">Node device id</span>
+            <input
+              className="settings-input"
+              type="text"
+              placeholder="node-home-pc-1a2b3c4d"
+              value={draft.deviceId}
+              disabled={nodes?.some((n) => n.deviceId === draft.deviceId) && draft.deviceId !== ""}
+              onChange={(e) => setDraft({ ...draft, deviceId: e.currentTarget.value })}
+            />
+          </label>
+          <label className="settings-field settings-checkbox-field">
+            <span className="settings-checkbox-row">
+              <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.currentTarget.checked })} />
+              <span className="settings-label">Agents may use it</span>
+            </span>
+          </label>
+          <div className="settings-field">
+            <span className="settings-label">Only these agents</span>
+            <div className="skill-agent-list">
+              {agentIds.map((id) => (
+                <label className="skill-agent-option" key={id}>
+                  <input
+                    type="checkbox"
+                    checked={draft.agents.includes(id)}
+                    onChange={(e) =>
+                      setDraft({ ...draft, agents: e.currentTarget.checked ? [...draft.agents, id] : draft.agents.filter((a) => a !== id) })
+                    }
+                  />
+                  {id}
+                </label>
+              ))}
+            </div>
+            <span className="settings-hint">None ticked means every agent.</span>
+          </div>
+          <label className="settings-field settings-checkbox-field">
+            <span className="settings-checkbox-row">
+              <input type="checkbox" checked={draft.requireApproval} onChange={(e) => setDraft({ ...draft, requireApproval: e.currentTarget.checked })} />
+              <span className="settings-label">Ask me before every command or file</span>
+            </span>
+            <span className="settings-hint">Scheduled tasks can't use a node that asks, since nobody is there to answer.</span>
+          </label>
+          <div className="skill-editor-actions">
+            <button type="button" className="settings-save-btn" disabled={draft.deviceId.trim() === ""} onClick={() => void save()}>
+              Save
+            </button>
+            <button type="button" className="settings-browse-btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {nodes === null ? (
+        <p className="settings-hint">Loading nodes…</p>
+      ) : nodes.length === 0 ? (
+        <p className="settings-hint">No nodes yet.</p>
+      ) : (
+        <div className="workspace-device-list">
+          {nodes.map((node) => (
+            <div className="workspace-device-row" key={node.deviceId}>
+              <div className="workspace-device-info">
+                <div className="workspace-device-name-row">
+                  <span className="workspace-device-name">
+                    {node.name} {node.online ? "· online" : ""}
+                  </span>
+                  <span className={`storage-provider-badge workspace-status-badge workspace-status-badge--${node.enabled && node.approved ? "approved" : "pending"}`}>
+                    {!node.approved ? "needs approval" : node.enabled ? "allowed" : "blocked"}
+                  </span>
+                </div>
+                <span className="workspace-device-meta">
+                  {node.deviceId} · {offerLabel(node)}
+                  {node.offer?.description ? ` · ${node.offer.description}` : ""}
+                  {node.offer && node.offer.tags.length > 0 ? ` · ${node.offer.tags.join(", ")}` : ""}
+                  {" · "}
+                  {node.agents.length === 0 ? "every agent" : `only ${node.agents.join(", ")}`}
+                  {node.requireApproval ? " · asks first" : ""}
+                </span>
+              </div>
+              <div className="workspace-device-actions">
+                <button
+                  type="button"
+                  className="settings-browse-btn"
+                  onClick={() => setDraft({ deviceId: node.deviceId, enabled: node.enabled, agents: node.agents, requireApproval: node.requireApproval })}
+                >
+                  Access
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function WorkspaceView() {
   const [devices, setDevices] = useState<PairedDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
+  /** Bumped with the device list, so the nodes reread their "approved" state. */
+  const [refreshKey, setRefreshKey] = useState(0);
 
   function refresh() {
     invoke<PairedDevice[]>("list_paired_devices")
-      .then(setDevices)
+      .then((next) => {
+        setDevices(next);
+        setRefreshKey((k) => k + 1);
+      })
       .catch((err) => setError(String(err)));
   }
 
@@ -526,6 +700,8 @@ function WorkspaceView() {
           ))}
         </div>
       )}
+
+      <NodesSection refreshKey={refreshKey} />
     </div>
   );
 }

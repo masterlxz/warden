@@ -129,8 +129,58 @@ desktop o resultado aparece na tela de Tarefas (não no chat); na web toda mudan
 - **Sem ponta a ponta com modelo real**: o modelo falso não decide chamar tools sozinho. Registrado no P95, junto
   com as telas.
 
-**Próximo passo**: a rodada de testes com o usuário (P95, P80/P87/P88, a Warden API), ou o próximo item do
-roteiro (P93, nós como capacidades).
+**Continuação: P93, nós como capacidades** (commit da fatia 3 do P92: `d748cca`). O usuário escolheu seguir com
+código e deixar os testes para uma sessão dedicada, "fazer tudo de uma vez". Desenho conversado e registrado em
+`ARCHITECTURE.md` ("Nós como capacidades"):
+- `warden-server node`;
+- tools genéricas com `node`, exceto as MCP do nó, que viram tools próprias com prefixo;
+- duas travas como os hosts SSH;
+- chamada que cai não se repete;
+- as quatro capacidades (shell, arquivos, MCP, modelo local), em três fatias.
+
+O plano da fatia 1 foi aprovado em Plan mode.
+
+- **Nó** (`node_client.rs`): `LocalNode` (shell e pasta, a segunda trava), `NodeIdentity` em `node.json`,
+  `serve_once`/`run_node` com reconexão e ping.
+- **Protocolo**: `Hello.node`, `ListNodes`/`SetNodeAccess`, `NodeList`/`NodeError`.
+- **Hub**:
+  - `NodeRegistry` (`nodes.rs`) e as cinco tools (`node_tools.rs`);
+  - `SharedOrchestrator::set_extra_tools`;
+  - `RemoteToolChannel::close`/`same`;
+  - a leitura com erro agora encerra o laço sem pular a limpeza;
+  - `AuditLog::record` público.
+- **Config**: `[[nodes]]` e `forget_agent_in_nodes`, com renomear e remover agente pela web.
+- **Telas e CLI**: seção "Nós" na aba Aparelhos da web, "Nodes" no Workspace do desktop (`node_cmds.rs`), e
+  `warden-server node` e `warden-server nodes`.
+- Docs: `ARCHITECTURE.md`, `PENDING.md` (P93 atualizado, **P96** novo), `ROADMAP.md`, `README.md`.
+
+**Verificação da fatia 1 do P93**:
+
+- `cargo test --workspace`: 842 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `tsc` e `build`
+  da web e do desktop limpos.
+- **Testes novos**:
+  - nó (3): arquivos presos à pasta (`..`, absoluto, `list_files ..`), o que não foi emprestado é recusado no nó, e
+    a identidade criada uma vez;
+  - agente removido fecha os nós (1);
+  - formato das mensagens (1);
+  - tools extras sobrevivem a um `replace` (1);
+  - integração com `Server` real e um nó real no mesmo processo (2): nada aparece antes de aprovar e liberar;
+    shell, escrever e ler pela conversa; outro agente não vê o nó; com aprovação, o "não" não roda e o "sim" roda;
+    o log não guarda o conteúdo dos arquivos; e **o nó cai no meio de um `sleep 30`: a chamada falha na hora
+    dizendo que não foi repetida**. Esse teste achou o bug do `?` no laço de leitura.
+- **Ponta a ponta com binários reais**, isolados no scratchpad (hub e nó com `XDG_CONFIG_HOME` próprios), e um
+  modelo falso OpenAI-compatible que devolve a chamada de `node_shell` no formato de streaming:
+  - o nó conectou e se apresentou;
+  - antes de aprovar, o modelo não recebia nenhuma tool de nó;
+  - `devices approve` pelo CLI e a chave errada recusada pelo `connection.ts` da web;
+  - o `cat readme.txt` rodou na pasta do nó e voltou pelo chat;
+  - com aprovação, o cartão chegou; o "não" não rodou e o "sim" rodou;
+  - o `node_audit.jsonl` registrou tudo;
+  - **o hub reiniciado com outra chave de pareamento**: o nó reconectou sozinho com o token salvo.
+- **Sem teste com modelo real nem entre máquinas diferentes**: registrado no P96.
+
+**Próximo passo**: a fatia 2 do P93 (servidores MCP do nó), ou outro item. Os testes ficam para a sessão dedicada
+(P80, P87, P88, P91, P95, P96).
 
 ---
 

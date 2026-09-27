@@ -471,7 +471,8 @@ impl AuditLog {
         &self.path
     }
 
-    fn record(&self, entry: &Value) -> std::io::Result<()> {
+    /// Appends one JSON line. Also used by the hub's node tools (P93) for their own log.
+    pub fn record(&self, entry: &Value) -> std::io::Result<()> {
         use std::io::Write as _;
         let _guard = self.write_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {

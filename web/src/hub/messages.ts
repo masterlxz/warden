@@ -210,6 +210,28 @@ export interface ApiKey {
   agentId?: string;
 }
 
+/** Mirrors `NodeOfferDto` (P93): what a node lends, as its operator chose. */
+export interface NodeOffer {
+  description: string;
+  tags: string[];
+  shell: boolean;
+  files: boolean;
+}
+
+/** Mirrors `NodeInfoDto`: a node, what it offers and what the hub lets agents do with it. */
+export interface NodeInfo {
+  deviceId: string;
+  name: string;
+  online: boolean;
+  /** Approved in the device list — needed before any agent can use it. */
+  approved: boolean;
+  offer?: NodeOffer;
+  enabled: boolean;
+  /** Empty = every agent. */
+  agents: string[];
+  requireApproval: boolean;
+}
+
 /** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
 export interface Task {
   id: string;
@@ -338,6 +360,9 @@ export type ClientMessage =
   | { type: "listApiKeys"; requestId: number }
   | { type: "createApiKey"; requestId: number; pairingKey: string; name: string; agentId?: string }
   | { type: "revokeApiKey"; requestId: number; pairingKey: string; id: string }
+  /** P93 — nodes; changing one's access repeats the pairing key. */
+  | { type: "listNodes"; requestId: number }
+  | { type: "setNodeAccess"; requestId: number; pairingKey: string; deviceId: string; enabled: boolean; agents: string[]; requireApproval: boolean }
   /** P92 — scheduled tasks; every change repeats the pairing key. */
   | { type: "listTasks"; requestId: number }
   | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
@@ -398,6 +423,8 @@ export type ServerMessage =
   | { type: "apiKeyList"; requestId: number; keys: ApiKey[] }
   | { type: "apiKeyCreated"; requestId: number; key: string; keys: ApiKey[] }
   | { type: "apiKeyError"; requestId: number; message: string; authRejected: boolean }
+  | { type: "nodeList"; requestId: number; nodes: NodeInfo[] }
+  | { type: "nodeError"; requestId: number; message: string; authRejected: boolean }
   /** `runsHere`: this hub runs the tasks on schedule. */
   | { type: "taskList"; requestId: number; tasks: TaskInfo[]; runsHere: boolean }
   | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
@@ -473,6 +500,14 @@ export function decode(text: string): ServerMessage {
     case "taskList": {
       const raw = json as { requestId: number; tasks: Array<Omit<TaskInfo, "running"> & { running?: boolean }>; runsHere: boolean };
       return { type: "taskList", requestId: raw.requestId, tasks: raw.tasks.map((t) => ({ ...t, running: t.running ?? false })), runsHere: raw.runsHere };
+    }
+    case "nodeList": {
+      const raw = json as { requestId: number; nodes: Array<Omit<NodeInfo, "agents" | "requireApproval"> & { agents?: string[]; requireApproval?: boolean }> };
+      return { type: "nodeList", requestId: raw.requestId, nodes: raw.nodes.map((n) => ({ ...n, agents: n.agents ?? [], requireApproval: n.requireApproval ?? false })) };
+    }
+    case "nodeError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "nodeError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
     }
     case "taskError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };

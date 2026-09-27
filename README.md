@@ -138,6 +138,24 @@ the embedded hub — kept in `hub-local.json`, outside the synced config. And in
 switched on (Settings or `/agents`) turns "every weekday at 8, summarize the news" into a task, after
 you approve the card it shows.
 
+### Nodes: lend another machine to your agents
+
+Any other machine (a home PC, a second VPS) can lend its shell and/or a folder to the hub's agents,
+while everything else stays on the hub:
+
+```bash
+# on that machine — the pairing key is only needed the first time
+warden-server node --hub wss://<hub>:7420 --auth-key <key> --description "home PC" --tag home --shell --files ~/shared
+# on the hub (or the web's Devices tab / the desktop's Workspace)
+warden-server devices approve <node id>
+warden-server nodes allow <node id> --agent ops --approval
+```
+
+Agents then get `list_nodes`, `node_shell`, `node_read_file`, `node_write_file` and `node_list_files`.
+Two locks: the node chooses what it lends, the hub chooses which agents may use it and whether each call
+asks you first. Every call is logged to `node_audit.jsonl`; a call cut short by the node dropping fails
+right away and is never retried.
+
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the
 reasoning behind it.

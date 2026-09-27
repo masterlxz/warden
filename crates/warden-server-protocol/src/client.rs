@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use warden_core::tool::ToolSpec;
 
-use crate::protocol::{ClientMessage, ServerMessage};
+use crate::protocol::{ClientMessage, NodeOfferDto, ServerMessage};
 
 /// A connection to a `warden-server`, past the Hello/HelloAck handshake.
 ///
@@ -70,6 +70,21 @@ impl ServerConnection {
         tools: Vec<ToolSpec>,
         tls: Arc<ClientConfig>,
     ) -> anyhow::Result<(Self, Option<String>)> {
+        Self::handshake_full(url, device_id, device_name, auth_key, device_token, tools, None, tls).await
+    }
+
+    /// The general form: also announces this client as a node (P93) when `node` is set.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handshake_full(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        auth_key: &str,
+        device_token: Option<String>,
+        tools: Vec<ToolSpec>,
+        node: Option<NodeOfferDto>,
+        tls: Arc<ClientConfig>,
+    ) -> anyhow::Result<(Self, Option<String>)> {
         let (ws, _response) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(Connector::Rustls(tls)))
             .await
             .map_err(|err| match err {
@@ -88,6 +103,7 @@ impl ServerConnection {
             auth_key: auth_key.to_string(),
             device_token,
             tools,
+            node,
         })
         .await?;
 

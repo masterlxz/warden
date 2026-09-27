@@ -1673,3 +1673,8 @@ button:focus-visible {
   overflow-wrap: anywhere;
   user-select: all;
 }
+
+/* P93 — the nodes under the device list. */
+.nodes-section {
+  margin-top: 1.5rem;
+}

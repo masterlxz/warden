@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DeviceError, type DeviceList, type ServerConnection } from "../hub/connection";
 import type { HubDevice } from "../hub/messages";
+import NodesSection from "./NodesSection";
 
 // The hub's paired devices (Sessão 103) — the same list, approve and revoke as the desktop's
 // Workspace screen and `warden-server devices`, so a hub with no screen can be managed from here.
@@ -28,12 +29,15 @@ export default function DevicesView({ conn }: { conn: ServerConnection | null })
   const [pairingKey, setPairingKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Bumped when the device list changes, so the nodes below reread their "approved" state. */
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(async () => {
     if (!conn) return;
     setError(null);
     try {
       setList(await conn.listDevices());
+      setRefreshKey((k) => k + 1);
     } catch (err) {
       setError(message(err));
     }
@@ -55,6 +59,7 @@ export default function DevicesView({ conn }: { conn: ServerConnection | null })
     setKeyError(null);
     try {
       setList(await conn.setDeviceStatus(pairingKey, asking.device.deviceId, asking.action));
+      setRefreshKey((k) => k + 1);
       cancel();
     } catch (err) {
       if (err instanceof DeviceError && err.authRejected) {
@@ -152,6 +157,8 @@ export default function DevicesView({ conn }: { conn: ServerConnection | null })
           })}
         </ul>
       )}
+
+      <NodesSection conn={conn} refreshKey={refreshKey} />
     </div>
   );
 }

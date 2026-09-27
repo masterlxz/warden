@@ -1,6 +1,7 @@
 mod api_key_cmds;
 mod approval;
 mod git_sync_cmds;
+mod node_cmds;
 mod qr;
 mod recording;
 mod server_cmds;
@@ -630,6 +631,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         ssh_hosts,
         // Scheduled tasks (P92) have no Settings screen yet — carry them forward.
         tasks: existing.tasks,
+        // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
+        nodes: existing.nodes,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
@@ -843,6 +846,8 @@ pub fn run() {
             api_key_cmds::list_api_keys,
             api_key_cmds::create_api_key,
             api_key_cmds::revoke_api_key,
+            node_cmds::list_nodes,
+            node_cmds::save_node_access,
             task_cmds::list_tasks,
             task_cmds::save_task,
             task_cmds::set_task_enabled_cmd,

@@ -82,6 +82,7 @@ async fn a_second_hello_on_the_same_connection_is_ignored_not_fatal() {
         auth_key: "test-key".to_string(),
         device_token: None,
         tools: Vec::new(),
+        node: None,
     })
     .await
     .unwrap();

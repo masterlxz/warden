@@ -236,6 +236,44 @@ pub struct DeviceDto {
     pub last_seen_ms: i64,
 }
 
+/// What a node offers (P93), as it announced itself in `Hello`. Its operator chose it on the node
+/// (`--shell`, `--files`); the hub still decides who may use it (`[[nodes]]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeOfferDto {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Runs shell commands.
+    #[serde(default)]
+    pub shell: bool,
+    /// Reads and writes files in one folder.
+    #[serde(default)]
+    pub files: bool,
+}
+
+/// One node for the screens (P93): a device that announced itself as a node, or one `[[nodes]]`
+/// names, with what it offers and what the hub lets agents do with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeInfoDto {
+    pub device_id: String,
+    pub name: String,
+    pub online: bool,
+    /// Approved in the hub's device list — needed before any agent can use it.
+    pub approved: bool,
+    /// What it offered the last time it connected to this hub; absent when it hasn't since the hub started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer: Option<NodeOfferDto>,
+    pub enabled: bool,
+    /// Agents allowed to use it; empty = every agent.
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub require_approval: bool,
+}
+
 /// One Warden API key (P12), for the settings screens. Never the key or its hash: `shown` is its
 /// first characters, for recognizing it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -618,6 +656,10 @@ pub enum ClientMessage {
         /// `Server` only builds the remote-tool-dispatch machinery when this is non-empty.
         #[serde(default)]
         tools: Vec<ToolSpec>,
+        /// P93: this connection is a node (`warden-server node`) lending what it has to the hub's
+        /// agents. Absent for every other client.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<NodeOfferDto>,
     },
     Ping {
         nonce: u64,
@@ -819,6 +861,23 @@ pub enum ClientMessage {
         request_id: u64,
         pairing_key: String,
         id: String,
+    },
+    /// Nodes (P93), answered by `NodeList`. Open to any paired device; `SetNodeAccess` asks for the
+    /// pairing key again.
+    ListNodes {
+        request_id: u64,
+    },
+    /// Writes this node's `[[nodes]]` entry: whether agents may use it, which ones, and whether every
+    /// call waits for a yes.
+    SetNodeAccess {
+        request_id: u64,
+        pairing_key: String,
+        device_id: String,
+        enabled: bool,
+        #[serde(default)]
+        agents: Vec<String>,
+        #[serde(default)]
+        require_approval: bool,
     },
     /// Scheduled tasks (P92), answered by `TaskList`. Open to any paired device; every change below
     /// asks for the pairing key again and is answered by the updated `TaskList`.
@@ -1103,6 +1162,18 @@ pub enum ServerMessage {
         #[serde(default)]
         auth_rejected: bool,
     },
+    /// Reply to `ListNodes` and to a successful `SetNodeAccess` (P93).
+    NodeList {
+        request_id: u64,
+        nodes: Vec<NodeInfoDto>,
+    },
+    /// A node request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
+    NodeError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
     /// Reply to every task request (P92), in the config's order. `runs_here`: this hub runs the
     /// tasks on schedule (`--run-tasks`, or the desktop's switch).
     TaskList {
@@ -1186,6 +1257,7 @@ mod tests {
             auth_key: "secret".into(),
             device_token: None,
             tools: Vec::new(),
+            node: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1234,6 +1306,7 @@ mod tests {
                 description: "List files".into(),
                 parameters: serde_json::json!({"type": "object"}),
             }],
+            node: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1720,6 +1793,30 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&created).unwrap(),
             serde_json::json!({ "type": "apiKeyCreated", "requestId": 2, "key": "wdn_x", "keys": [{ "id": "abc", "name": "n8n", "shown": "wdn_12345678", "createdAtMs": 5 }] })
+        );
+    }
+
+    #[test]
+    fn node_messages_use_the_web_shapes() {
+        let hello: ClientMessage = serde_json::from_str(
+            r#"{"type":"hello","deviceId":"node-1","deviceName":"Casa","authKey":"k","node":{"description":"PC","tags":["gpu"],"shell":true,"files":false}}"#,
+        )
+        .unwrap();
+        let ClientMessage::Hello { node: Some(offer), .. } = hello else { panic!("{hello:?}") };
+        assert_eq!(offer, NodeOfferDto { description: "PC".into(), tags: vec!["gpu".into()], shell: true, files: false });
+        // A client from before P93 sends no `node` and is no node.
+        let plain: ClientMessage = serde_json::from_str(r#"{"type":"hello","deviceId":"p","deviceName":"Phone","authKey":"k"}"#).unwrap();
+        assert!(matches!(plain, ClientMessage::Hello { node: None, .. }));
+
+        let set: ClientMessage = serde_json::from_str(r#"{"type":"setNodeAccess","requestId":3,"pairingKey":"k","deviceId":"node-1","enabled":true,"agents":["ops"],"requireApproval":true}"#).unwrap();
+        assert!(matches!(set, ClientMessage::SetNodeAccess { enabled: true, require_approval: true, ref agents, .. } if agents == &["ops"]));
+        let list = ServerMessage::NodeList {
+            request_id: 3,
+            nodes: vec![NodeInfoDto { device_id: "node-1".into(), name: "Casa".into(), online: true, approved: false, offer: None, enabled: false, agents: vec![], require_approval: false }],
+        };
+        assert_eq!(
+            serde_json::to_value(&list).unwrap(),
+            serde_json::json!({ "type": "nodeList", "requestId": 3, "nodes": [{ "deviceId": "node-1", "name": "Casa", "online": true, "approved": false, "enabled": false, "agents": [], "requireApproval": false }] })
         );
     }
 

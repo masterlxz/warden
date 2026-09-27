@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use warden_bootstrap::settings::{apply_hub_settings, config_version, hub_settings};
 use warden_bootstrap::{load_config_from_path, render_config, FileConfig};
 use warden_core::orchestrator::Orchestrator;
+use warden_core::tool::Tool;
 use warden_server_protocol::protocol::{HubSettingsDto, HubSettingsUpdate};
 use warden_server_protocol::ServerMessage;
 
@@ -25,8 +26,15 @@ pub const WRONG_KEY_DELAY: Duration = Duration::from_secs(1);
 
 /// The hub's orchestrator, which a settings save replaces while connections stay open. Each turn
 /// takes `current()` once and keeps it for the whole turn.
+///
+/// Also carries the tools only the hub has (P93, the node tools): set once with `set_extra_tools`,
+/// they're on the current orchestrator and on every one a `replace` puts in, so chat, the Warden
+/// API and scheduled tasks all get them.
 #[derive(Clone)]
-pub struct SharedOrchestrator(Arc<RwLock<Arc<Orchestrator>>>);
+pub struct SharedOrchestrator {
+    current: Arc<RwLock<Arc<Orchestrator>>>,
+    extras: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
+}
 
 impl SharedOrchestrator {
     pub fn new(orchestrator: Orchestrator) -> Self {
@@ -34,17 +42,26 @@ impl SharedOrchestrator {
     }
 
     pub fn current(&self) -> Arc<Orchestrator> {
-        self.0.read().unwrap().clone()
+        self.current.read().unwrap().clone()
     }
 
     pub fn replace(&self, orchestrator: Orchestrator) {
-        *self.0.write().unwrap() = Arc::new(orchestrator);
+        let with_extras = self.extras.read().unwrap().iter().fold(orchestrator, |o, tool| o.with_tool(tool.clone()));
+        *self.current.write().unwrap() = Arc::new(with_extras);
+    }
+
+    /// Adds `tools` to the current orchestrator and to every later `replace`. Meant to be called
+    /// once, when the hub starts serving.
+    pub fn set_extra_tools(&self, tools: Vec<Arc<dyn Tool>>) {
+        *self.extras.write().unwrap() = tools;
+        let current = self.current().as_ref().clone();
+        self.replace(current);
     }
 }
 
 impl From<Arc<Orchestrator>> for SharedOrchestrator {
     fn from(orchestrator: Arc<Orchestrator>) -> Self {
-        Self(Arc::new(RwLock::new(orchestrator)))
+        Self { current: Arc::new(RwLock::new(orchestrator)), extras: Arc::default() }
     }
 }
 
@@ -234,6 +251,44 @@ fn staging_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tool that only has a name — enough to see which orchestrator carries it.
+    struct Named(&'static str);
+
+    #[async_trait]
+    impl Tool for Named {
+        fn spec(&self) -> warden_core::tool::ToolSpec {
+            warden_core::tool::ToolSpec { name: self.0.to_string(), description: String::new(), parameters: serde_json::json!({ "type": "object" }) }
+        }
+
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::Value::Null)
+        }
+    }
+
+    struct Silent;
+
+    #[async_trait]
+    impl warden_core::model::ModelProvider for Silent {
+        async fn chat_stream(&self, _messages: Vec<warden_core::model::Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            anyhow::bail!("not called")
+        }
+    }
+
+    fn tool_names(shared: &SharedOrchestrator) -> Vec<String> {
+        shared.current().tools().iter().map(|t| t.spec().name).collect()
+    }
+
+    #[test]
+    fn extra_tools_survive_a_replace() {
+        let vault = Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join("warden-shared-extras-test")));
+        let shared = SharedOrchestrator::new(Orchestrator::new(Arc::new(Silent), vault.clone()));
+        shared.set_extra_tools(vec![Arc::new(Named("list_nodes"))]);
+        assert!(tool_names(&shared).contains(&"list_nodes".to_string()));
+        // A settings save or a sync puts a fresh orchestrator in: the hub's own tools stay.
+        shared.replace(Orchestrator::new(Arc::new(Silent), vault));
+        assert_eq!(tool_names(&shared).iter().filter(|n| *n == "list_nodes").count(), 1);
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use warden_bootstrap::{bootstrap, Overrides};
     use warden_server_protocol::protocol::{ProviderEditDto, SecretEdit};

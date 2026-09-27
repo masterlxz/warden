@@ -19,7 +19,7 @@ use warden_server_protocol::protocol::{
 };
 
 use crate::{
-    default_limit_configs, default_model_for, env_switches_limits_off, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
+    default_limit_configs, default_model_for, env_switches_limits_off, forget_agent_in_nodes, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
     Provider, ProviderConfig,
 };
 
@@ -412,9 +412,11 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     let mut scratch = config.agents.clone();
     for id in &removed {
         remove_agent_from(&mut scratch, &mut config.ssh_hosts, id);
+        forget_agent_in_nodes(&mut config.nodes, id);
     }
-    for host in &mut config.ssh_hosts {
-        for name in &mut host.agents {
+    let node_lists = config.nodes.iter_mut().map(|n| &mut n.agents);
+    for list in config.ssh_hosts.iter_mut().map(|h| &mut h.agents).chain(node_lists) {
+        for name in list {
             if let Some((_, new)) = renames.iter().find(|(original, _)| original == name) {
                 *name = new.clone();
             }
