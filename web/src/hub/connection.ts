@@ -555,8 +555,8 @@ export class ServerConnection {
   }
 
   /** A new key: `key` is the only time it's ever sent. Rejects with `ApiKeyError`. */
-  async createApiKey(pairingKey: string, name: string): Promise<{ key: string; keys: ApiKey[] }> {
-    const reply = await this.request((requestId) => ({ type: "createApiKey", requestId, pairingKey, name }));
+  async createApiKey(pairingKey: string, name: string, agentId?: string): Promise<{ key: string; keys: ApiKey[] }> {
+    const reply = await this.request((requestId) => ({ type: "createApiKey", requestId, pairingKey, name, ...(agentId && { agentId }) }));
     if (reply.type !== "apiKeyCreated") throw new Error("resposta inesperada do hub");
     return { key: reply.key, keys: reply.keys };
   }

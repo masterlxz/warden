@@ -87,7 +87,7 @@ async fn route<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, head: &Request
     let path = head.path.split('?').next().unwrap_or_default();
     match (head.method.as_str(), path) {
         ("GET", "/v1/models") => {
-            let body = json!({ "object": "list", "data": model_ids(api).into_iter().map(|id| json!({ "id": id, "object": "model", "created": 0, "owned_by": "warden" })).collect::<Vec<_>>() });
+            let body = json!({ "object": "list", "data": model_ids(api, &key).into_iter().map(|id| json!({ "id": id, "object": "model", "created": 0, "owned_by": "warden" })).collect::<Vec<_>>() });
             write_json(stream, "200 OK", body.to_string().as_bytes()).await.map_err(io_error)
         }
         ("POST", "/v1/chat/completions") => {
@@ -146,8 +146,12 @@ async fn read_body<S: AsyncRead + Unpin>(stream: &mut S, head: &RequestHead) -> 
     Ok(body)
 }
 
-/// `warden`, then `warden/<agent>` for every configured agent.
-fn model_ids(api: &ApiContext) -> Vec<String> {
+/// `warden`, then `warden/<agent>` for every configured agent — or, for a key bound to an agent,
+/// only that agent's.
+fn model_ids(api: &ApiContext, key: &ApiKey) -> Vec<String> {
+    if let Some(agent) = &key.agent_id {
+        return vec![format!("{DEFAULT_MODEL}/{agent}")];
+    }
     let mut ids = vec![DEFAULT_MODEL.to_string()];
     if let Some(host) = &api.settings {
         if let Ok(config) = load_config_from_path(&host.config_path(), false) {
@@ -210,16 +214,43 @@ fn parse_turn(request: &Value) -> Result<Turn, ApiError> {
     Ok(Turn { history, input, system })
 }
 
+/// The model a request actually gets. A general key takes what it asks for (`warden` when it asks
+/// for nothing). A key bound to agent `X` only speaks as `X`: nothing, `warden` or `warden/X` is
+/// `warden/X`, and any other agent is refused.
+fn effective_model(key: &ApiKey, requested: Option<&str>) -> Result<String, ApiError> {
+    let Some(agent) = &key.agent_id else {
+        return Ok(requested.unwrap_or(DEFAULT_MODEL).to_string());
+    };
+    let bound = format!("{DEFAULT_MODEL}/{agent}");
+    match requested {
+        None => Ok(bound),
+        Some(model) if model == DEFAULT_MODEL || model == bound => Ok(bound),
+        Some(model) => {
+            let mut err = ApiError::new("403 Forbidden", "permission_error", format!("this key only speaks as agent '{agent}' (model '{bound}'), not '{model}'"));
+            err.code = Some("model_not_allowed".into());
+            Err(err)
+        }
+    }
+}
+
 /// The orchestrator and persona for `model`: the hub's own, or a configured agent's.
 fn scope_model(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestrator, Option<String>), ApiError> {
     let base = api.orchestrator.current().with_spend_context(SpendContext::new("api").with_user(key.name.clone()));
     if model == DEFAULT_MODEL {
         return Ok((base, None));
     }
-    let unknown = || {
-        let mut err = ApiError::new("404 Not Found", "invalid_request_error", format!("the model '{model}' does not exist — see GET /v1/models"));
-        err.code = Some("model_not_found".into());
-        err
+    let unknown = || match &key.agent_id {
+        // The key's own agent was deleted or renamed: refused, never the hub's default instead.
+        Some(agent) => {
+            let mut err = ApiError::new("403 Forbidden", "permission_error", format!("the agent this key is bound to ('{agent}') no longer exists — create a new key"));
+            err.code = Some("agent_gone".into());
+            err
+        }
+        None => {
+            let mut err = ApiError::new("404 Not Found", "invalid_request_error", format!("the model '{model}' does not exist — see GET /v1/models"));
+            err.code = Some("model_not_found".into());
+            err
+        }
     };
     let agent_id = model.strip_prefix(&format!("{DEFAULT_MODEL}/")).ok_or_else(unknown)?;
     let host = api.settings.as_ref().ok_or_else(unknown)?;
@@ -264,7 +295,7 @@ fn completion_id() -> String {
 }
 
 async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContext, key: &ApiKey, request: &Value) -> Result<(), ApiError> {
-    let model = request.get("model").and_then(Value::as_str).unwrap_or(DEFAULT_MODEL).to_string();
+    let model = effective_model(key, request.get("model").and_then(Value::as_str))?;
     let Turn { history, input, system } = parse_turn(request)?;
     let (orchestrator, persona) = scope_model(api, key, &model)?;
     let system_prompt: Option<String> = {

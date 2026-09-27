@@ -35,6 +35,10 @@ pub struct ApiKey {
     pub created_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<i64>,
+    /// The only agent this key speaks as; `None` is a general key that picks per request. Absent in
+    /// a file from before this existed, so those keys stay general.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     hash: String,
 }
 
@@ -98,8 +102,11 @@ impl ApiKeyStore {
         Ok(self.load()?.keys)
     }
 
-    /// A new key named `name` (trimmed; not empty, at most `MAX_NAME_CHARS`, unique).
-    pub fn create(&self, name: &str) -> anyhow::Result<CreatedApiKey> {
+    /// A new key named `name` (trimmed; not empty, at most `MAX_NAME_CHARS`, unique), bound to
+    /// `agent_id` when given (blank = general). The store doesn't read the config: the caller checks
+    /// that the agent exists.
+    pub fn create(&self, name: &str, agent_id: Option<&str>) -> anyhow::Result<CreatedApiKey> {
+        let agent_id = agent_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string);
         let name = name.trim();
         anyhow::ensure!(!name.is_empty(), "the key needs a name");
         anyhow::ensure!(name.chars().count() <= MAX_NAME_CHARS, "the name is too long (max {MAX_NAME_CHARS} characters)");
@@ -115,6 +122,7 @@ impl ApiKeyStore {
             shown: key.chars().take(SHOWN_CHARS).collect(),
             created_at_ms: now_millis(),
             last_used_at_ms: None,
+            agent_id,
             hash: hash_key(&key),
         };
         file.keys.push(info.clone());
@@ -171,21 +179,21 @@ mod tests {
     #[test]
     fn a_key_is_shown_once_and_only_its_hash_is_kept() {
         let store = store("create");
-        let created = store.create("  n8n  ").unwrap();
+        let created = store.create("  n8n  ", None).unwrap();
         assert!(created.key.starts_with(KEY_PREFIX));
         assert_eq!(created.info.name, "n8n");
         assert!(created.key.starts_with(&created.info.shown));
         let on_disk = std::fs::read_to_string(store.path()).unwrap();
         assert!(!on_disk.contains(&created.key), "the key itself never reaches the disk");
-        assert!(store.create("n8n").is_err(), "names are unique");
-        assert!(store.create("   ").is_err());
+        assert!(store.create("n8n", None).is_err(), "names are unique");
+        assert!(store.create("   ", None).is_err());
         assert_eq!(store.list().unwrap(), vec![created.info]);
     }
 
     #[test]
     fn authenticate_takes_the_right_key_only_and_notes_the_use() {
         let store = store("auth");
-        let created = store.create("script").unwrap();
+        let created = store.create("script", None).unwrap();
         assert_eq!(store.authenticate("wdn_nope").unwrap(), None);
         assert_eq!(store.authenticate("no-prefix").unwrap(), None);
         let found = store.authenticate(&created.key).unwrap().expect("the right key");
@@ -196,5 +204,19 @@ mod tests {
         assert!(store.revoke(&created.info.id).unwrap());
         assert!(!store.revoke(&created.info.id).unwrap());
         assert_eq!(store.authenticate(&created.key).unwrap(), None, "a revoked key stops working");
+    }
+
+    #[test]
+    fn a_key_can_be_bound_to_an_agent_and_old_files_stay_general() {
+        let store = store("agent");
+        let bound = store.create("bot", Some(" poet ")).unwrap();
+        assert_eq!(bound.info.agent_id.as_deref(), Some("poet"));
+        assert_eq!(store.create("blank", Some("  ")).unwrap().info.agent_id, None, "blank is general");
+        assert_eq!(store.authenticate(&bound.key).unwrap().unwrap().agent_id.as_deref(), Some("poet"));
+
+        let old = self::store("old");
+        std::fs::create_dir_all(old.path().parent().unwrap()).unwrap();
+        std::fs::write(old.path(), r#"{"keys":[{"id":"a","name":"n","shown":"wdn_x","created_at_ms":1,"hash":"h"}]}"#).unwrap();
+        assert_eq!(old.list().unwrap()[0].agent_id, None);
     }
 }

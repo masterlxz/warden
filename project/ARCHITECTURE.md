@@ -2059,6 +2059,16 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   - na web, a seção "Warden API" das Configurações; no desktop, a seção em Settings (comandos Tauri sobre o
     mesmo arquivo), fora do formulário;
   - no terminal, `warden-server api-keys list|create|revoke`.
+- **Chave presa a um agente** (pedido do usuário, mesma sessão): `ApiKey.agent_id` (ausente = geral, e chaves
+  antigas continuam gerais).
+  - Uma chave presa a `X` só fala como `X`: `model` ausente, `warden` ou `warden/X` viram `warden/X`, e outro
+    agente → `403 model_not_allowed`.
+  - O `/v1/models` dela lista só `warden/X`. Se `X` sumiu do config → `403 agent_gone`, nunca o padrão do hub.
+  - Quem cria confere que o agente existe (`api_key_admin::check_agent_exists`): o hub pelo `SettingsHost`, o
+    desktop e o CLI pelo config. A web e o desktop têm um seletor "Geral / Só o agente X", e o CLI tem
+    `--agent`.
+  - O gasto já saía por agente (o `SpendTurn` usa o `agent_id` do orquestrador), então um limite de escopo
+    `agent` vale para essas chamadas.
 - **Fica de fora**: o repasse das tools do cliente (P89), imagens, `/v1/embeddings` e outros endpoints, e
   keep-alive.
 

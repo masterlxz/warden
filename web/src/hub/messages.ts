@@ -204,6 +204,8 @@ export interface ApiKey {
   shown: string;
   createdAtMs: number;
   lastUsedAtMs?: number;
+  /** The only agent this key speaks as; absent for a general key. */
+  agentId?: string;
 }
 
 /** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
@@ -308,7 +310,7 @@ export type ClientMessage =
   /** Sessão 103 — the hub's paired devices; approving or revoking repeats the pairing key. */
   | { type: "listDevices"; requestId: number }
   | { type: "listApiKeys"; requestId: number }
-  | { type: "createApiKey"; requestId: number; pairingKey: string; name: string }
+  | { type: "createApiKey"; requestId: number; pairingKey: string; name: string; agentId?: string }
   | { type: "revokeApiKey"; requestId: number; pairingKey: string; id: string }
   | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
   /** P61 — the hub's vault sync; an action repeats the pairing key. */

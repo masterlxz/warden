@@ -266,8 +266,10 @@ impl ConnectionContext {
 }
 
 /// Off the reader loop: a wrong key waits a second under the settings lock.
+#[allow(clippy::too_many_arguments)]
 fn spawn_api_key_change(
     api_keys: &Option<Arc<PathBuf>>,
+    settings: &Option<Arc<dyn SettingsHost>>,
     lock: &Arc<tokio::sync::Mutex<()>>,
     auth_key: &Arc<str>,
     tx: &mpsc::UnboundedSender<ServerMessage>,
@@ -276,9 +278,9 @@ fn spawn_api_key_change(
     change: ApiKeyChange,
 ) {
     let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
-    let (lock, auth_key, reply_tx) = (lock.clone(), auth_key.clone(), tx.clone());
+    let (settings, lock, auth_key, reply_tx) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
     tokio::spawn(async move {
-        let reply = handle_api_key_change(store.as_ref(), &lock, &auth_key, request_id, &pairing_key, change).await;
+        let reply = handle_api_key_change(store.as_ref(), settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, change).await;
         let _ = reply_tx.send(reply);
     });
 }
@@ -732,11 +734,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let store = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
                     let _ = tx.send(handle_list_api_keys(store.as_ref(), request_id));
                 }
-                Ok(ClientMessage::CreateApiKey { request_id, pairing_key, name }) => {
-                    spawn_api_key_change(&api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Create { name });
+                Ok(ClientMessage::CreateApiKey { request_id, pairing_key, name, agent_id }) => {
+                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Create { name, agent_id });
                 }
                 Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
-                    spawn_api_key_change(&api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
+                    spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
                 }
                 Ok(ClientMessage::RequestSyncStatus { request_id }) => {
                     // Computes the pending diff over the whole vault: off the reader loop.

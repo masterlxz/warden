@@ -13,11 +13,20 @@ pub struct ApiKeyInfo {
     shown: String,
     created_at_ms: i64,
     last_used_at_ms: Option<i64>,
+    /// The only agent this key speaks as; `None` for a general key.
+    agent_id: Option<String>,
 }
 
 impl From<ApiKey> for ApiKeyInfo {
     fn from(key: ApiKey) -> Self {
-        Self { id: key.id, name: key.name, shown: key.shown, created_at_ms: key.created_at_ms, last_used_at_ms: key.last_used_at_ms }
+        Self {
+            id: key.id,
+            name: key.name,
+            shown: key.shown,
+            created_at_ms: key.created_at_ms,
+            last_used_at_ms: key.last_used_at_ms,
+            agent_id: key.agent_id,
+        }
     }
 }
 
@@ -38,9 +47,14 @@ pub fn list_api_keys() -> Result<Vec<ApiKeyInfo>, String> {
     Ok(store()?.list().map_err(|e| format!("{e:#}"))?.into_iter().map(Into::into).collect())
 }
 
+/// `agent_id` binds the key to that agent (it must be in the config); `None` or blank is general.
 #[tauri::command]
-pub fn create_api_key(name: String) -> Result<CreatedApiKeyInfo, String> {
-    let created = store()?.create(&name).map_err(|e| format!("{e:#}"))?;
+pub fn create_api_key(name: String, agent_id: Option<String>) -> Result<CreatedApiKeyInfo, String> {
+    if agent_id.as_deref().is_some_and(|a| !a.trim().is_empty()) {
+        let config_path = warden_bootstrap::default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+        warden_server::api_key_admin::check_agent_exists(&config_path, agent_id.as_deref()).map_err(|e| format!("{e:#}"))?;
+    }
+    let created = store()?.create(&name, agent_id.as_deref()).map_err(|e| format!("{e:#}"))?;
     Ok(CreatedApiKeyInfo { key: created.key, info: created.info.into() })
 }
 

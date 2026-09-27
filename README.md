@@ -99,7 +99,9 @@ curl http://<hub>:7420/v1/chat/completions \
   -d '{"model": "warden", "messages": [{"role": "user", "content": "What did I write about the trip?"}]}'
 ```
 
-`GET /v1/models` lists `warden` and one `warden/<agent>` per configured agent. Streaming (`"stream":
+`GET /v1/models` lists `warden` and one `warden/<agent>` per configured agent. A key can also be bound
+to one agent (`api-keys create bot --agent <id>`, or the selector in Settings): it then only speaks as
+that agent, whatever `model` says. Streaming (`"stream":
 true`) works; tools the client sends are ignored (the agent answers with its own), nothing is saved as
 a conversation, and the spend counts toward the `api` channel's limits.
 

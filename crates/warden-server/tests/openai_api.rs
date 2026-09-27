@@ -59,6 +59,7 @@ struct Hub {
     keys: ApiKeyStore,
     systems: Arc<Mutex<Vec<String>>>,
     guard: Arc<SpendGuard>,
+    config: PathBuf,
 }
 
 async fn hub() -> Hub {
@@ -70,17 +71,17 @@ async fn hub() -> Hub {
     let guard = Arc::new(SpendGuard::new(Arc::new(MemoryStore::default()), Vec::new(), PriceTable::new(Vec::new())));
     let orchestrator = Orchestrator::new(Arc::new(Echo { systems: systems.clone() }), Arc::new(Vault::new(dir.join("vault")))).with_spend_guard(guard.clone());
     let keys = ApiKeyStore::new(dir.join("api_keys.json"));
-    let key = keys.create("script").unwrap().key;
+    let key = keys.create("script", None).unwrap().key;
     let web = StaticWebUi([("index.html".to_string(), b"<p>web</p>".to_vec())].into_iter().collect());
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), "pairing-key-0123456789-0123456789", "Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
         .await
         .unwrap()
-        .with_settings(Arc::new(Host { path: config }))
+        .with_settings(Arc::new(Host { path: config.clone() }))
         .with_web_ui(Arc::new(web))
         .with_api(dir.join("api_keys.json"));
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
-    Hub { addr, key, keys, systems, guard }
+    Hub { addr, key, keys, systems, guard, config }
 }
 
 /// One request, the whole answer: (status code, body).
@@ -181,4 +182,34 @@ async fn the_web_page_and_the_websocket_still_answer_on_the_same_port() {
     let (status, body) = http(hub.addr, "GET", "/", None, None).await;
     assert_eq!((status, body.as_str()), (200, "<p>web</p>"));
     ServerConnection::connect(&format!("ws://{}", hub.addr), "phone", "Phone", "pairing-key-0123456789-0123456789").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_key_bound_to_an_agent_only_speaks_as_it() {
+    let hub = hub().await;
+    std::fs::write(&hub.config, "[[agents]]\nid = \"poet\"\npersona = \"You are the poet.\"\n\n[[agents]]\nid = \"admin\"\npersona = \"You are the admin.\"\n").unwrap();
+    let bound = hub.keys.create("bot", Some("poet")).unwrap().key;
+
+    let (_, body) = http(hub.addr, "GET", "/v1/models", Some(&bound), None).await;
+    let ids: Vec<String> = json(&body)["data"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, ["warden/poet"], "only its agent");
+
+    for body in [r#"{"model":"warden","messages":[{"role":"user","content":"hi"}]}"#, r#"{"messages":[{"role":"user","content":"hi"}]}"#] {
+        let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&bound), Some(body)).await;
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(json(&reply)["model"], "warden/poet");
+        assert!(hub.systems.lock().unwrap().last().unwrap().contains("You are the poet."));
+    }
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&bound), Some(r#"{"model":"warden/admin","messages":[{"role":"user","content":"hi"}]}"#)).await;
+    assert_eq!((status, json(&reply)["error"]["code"].as_str()), (403, Some("model_not_allowed")));
+
+    // The general key still picks freely.
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&hub.key), Some(r#"{"model":"warden/admin","messages":[{"role":"user","content":"hi"}]}"#)).await;
+    assert_eq!(status, 200, "{reply}");
+    assert!(hub.systems.lock().unwrap().last().unwrap().contains("You are the admin."));
+
+    // The agent is gone: refused, never the hub's default instead.
+    std::fs::write(&hub.config, "[[agents]]\nid = \"admin\"\npersona = \"You are the admin.\"\n").unwrap();
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&bound), Some(r#"{"messages":[{"role":"user","content":"hi"}]}"#)).await;
+    assert_eq!((status, json(&reply)["error"]["code"].as_str()), (403, Some("agent_gone")), "{reply}");
 }

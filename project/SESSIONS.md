@@ -144,6 +144,29 @@ gasto, e chaves geridas na web, no desktop e no terminal. O plano foi aprovado e
   - revogar pelo CLI com o `serve` rodando: a mesma chave passou de 200 para 401.
 - **Não testado**: as telas da web e do desktop (rodada de testes, P80).
 
+**Chave da Warden API presa a um agente**, pedido do usuário em seguida (plano aprovado em Plan mode):
+
+- **O que mudou**:
+  - `ApiKey.agent_id`: ausente = chave geral, e as chaves antigas continuam gerais;
+  - uma chave presa só fala como o seu agente: `warden`, sem `model` ou `warden/X` viram `warden/X`, outro
+    agente dá `403 model_not_allowed`, e um agente que sumiu do config dá `403 agent_gone`;
+  - o `/v1/models` dessa chave lista só o agente dela;
+  - quem cria a chave confere que o agente existe (`check_agent_exists`);
+  - onde se escolhe: `CreateApiKey.agentId` no protocolo, seletor "Geral / Só o agente X" na web e no desktop,
+    `warden-server api-keys create <nome> --agent <id>` no terminal (e o `list` mostra o escopo).
+- **Verificação**: `cargo test --workspace` com 790 passando, 0 falhas; clippy limpo. Desktop: clippy limpo, 20
+  testes passando e `build` limpo. Web: `tsc`/`build` limpos.
+- **Testes novos**: no store, o `agent_id` e um arquivo antigo sem o campo; no handler, agente inexistente e hub
+  sem config não criam nada; no protocolo, o `agentId`; e 1 de integração: modelos da chave presa, `warden` e
+  sem `model` como o agente, `403` para outro agente, chave geral livre e `403 agent_gone` depois de apagar o
+  agente.
+- **Ponta a ponta** com o binário real:
+  - `--agent ghost` foi recusado;
+  - `--agent ana` criou a chave, e o `list` mostra "only agent ana";
+  - com o SDK oficial da OpenAI e essa chave: `/v1/models` = `['warden/ana']`, `model="warden"` respondeu como
+    ana, e `warden/bia` deu `403 model_not_allowed`;
+  - pelo WebSocket, um agente inexistente foi recusado e `bia` foi criado.
+
 **Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, a Warden API nas telas), incluindo o CLI com
 recados e o Gemini real.
 

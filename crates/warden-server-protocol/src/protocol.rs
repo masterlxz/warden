@@ -247,6 +247,9 @@ pub struct ApiKeyDto {
     pub created_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<i64>,
+    /// The only agent this key speaks as; absent for a general key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// What `SetDeviceStatus` does — the same two actions as `warden-server devices approve|revoke`.
@@ -762,6 +765,9 @@ pub enum ClientMessage {
         request_id: u64,
         pairing_key: String,
         name: String,
+        /// Binds the key to this agent (it then only speaks as it); absent for a general key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
     },
     /// Answered by the updated `ApiKeyList`.
     RevokeApiKey {
@@ -1611,13 +1617,15 @@ mod tests {
     #[test]
     fn api_key_messages_use_the_web_shapes() {
         let create: ClientMessage = serde_json::from_str(r#"{"type":"createApiKey","requestId":2,"pairingKey":"k","name":"n8n"}"#).unwrap();
-        assert_eq!(create, ClientMessage::CreateApiKey { request_id: 2, pairing_key: "k".into(), name: "n8n".into() });
+        assert_eq!(create, ClientMessage::CreateApiKey { request_id: 2, pairing_key: "k".into(), name: "n8n".into(), agent_id: None });
+        let bound: ClientMessage = serde_json::from_str(r#"{"type":"createApiKey","requestId":2,"pairingKey":"k","name":"bot","agentId":"poet"}"#).unwrap();
+        assert!(matches!(bound, ClientMessage::CreateApiKey { agent_id: Some(ref a), .. } if a == "poet"));
         let revoke: ClientMessage = serde_json::from_str(r#"{"type":"revokeApiKey","requestId":3,"pairingKey":"k","id":"abc"}"#).unwrap();
         assert_eq!(revoke, ClientMessage::RevokeApiKey { request_id: 3, pairing_key: "k".into(), id: "abc".into() });
         let created = ServerMessage::ApiKeyCreated {
             request_id: 2,
             key: "wdn_x".into(),
-            keys: vec![ApiKeyDto { id: "abc".into(), name: "n8n".into(), shown: "wdn_12345678".into(), created_at_ms: 5, last_used_at_ms: None }],
+            keys: vec![ApiKeyDto { id: "abc".into(), name: "n8n".into(), shown: "wdn_12345678".into(), created_at_ms: 5, last_used_at_ms: None, agent_id: None }],
         };
         assert_eq!(
             serde_json::to_value(&created).unwrap(),

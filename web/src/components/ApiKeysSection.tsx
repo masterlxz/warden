@@ -13,12 +13,15 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-type Asking = { kind: "create"; name: string } | { kind: "revoke"; key: ApiKey };
+type Asking = { kind: "create"; name: string; agentId: string } | { kind: "revoke"; key: ApiKey };
 
 export default function ApiKeysSection({ conn }: { conn: ServerConnection | null }) {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
+  /** "" = a general key. */
+  const [agentId, setAgentId] = useState("");
+  const [agentIds, setAgentIds] = useState<string[]>([]);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [pairingKey, setPairingKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -35,6 +38,12 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
       setKeys(await conn.listApiKeys());
     } catch (err) {
       setError(message(err));
+    }
+    try {
+      const { settings } = await conn.requestSettings();
+      setAgentIds(settings.agents.map((a) => a.id));
+    } catch {
+      setAgentIds([]);
     }
   }, [conn]);
 
@@ -54,11 +63,12 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
     setKeyError(null);
     try {
       if (asking.kind === "create") {
-        const result = await conn.createApiKey(pairingKey, asking.name);
+        const result = await conn.createApiKey(pairingKey, asking.name, asking.agentId || undefined);
         setKeys(result.keys);
         setCreated({ name: asking.name.trim(), key: result.key });
         setCopied(false);
         setName("");
+        setAgentId("");
       } else {
         setKeys(await conn.revokeApiKey(pairingKey, asking.key.id));
       }
@@ -119,7 +129,8 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
       </div>
       <p className="skills-hint">
         O agente deste hub no formato da API da OpenAI, para scripts, n8n ou qualquer cliente que fale com a OpenAI. Endereço base{" "}
-        <code>{baseUrl}</code>, modelo <code>warden</code> ou <code>warden/&lt;agente&gt;</code>. As tools mandadas pelo cliente são
+        <code>{baseUrl}</code>. Uma chave geral escolhe o modelo a cada chamada (<code>warden</code> ou{" "}
+        <code>warden/&lt;agente&gt;</code>); uma chave presa a um agente só fala como ele. As tools mandadas pelo cliente são
         ignoradas, e nada vira conversa; o gasto entra no canal <code>api</code>.
       </p>
 
@@ -154,6 +165,16 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
                 <code>{key.shown}…</code>
               </div>
               <p className="skills-item-description">
+                {key.agentId ? (
+                  <>
+                    Só fala como <strong>{key.agentId}</strong>
+                    {agentIds.length > 0 && !agentIds.includes(key.agentId) && " (agente removido: a chave não funciona mais)"}
+                  </>
+                ) : (
+                  "Geral: escolhe o agente a cada chamada"
+                )}
+              </p>
+              <p className="skills-item-description">
                 Criada em {dateFormatter.format(new Date(key.createdAtMs))} ·{" "}
                 {key.lastUsedAtMs ? `usada por último em ${dateFormatter.format(new Date(key.lastUsedAtMs))}` : "nunca usada"}
               </p>
@@ -178,10 +199,18 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
           className="skills-actions"
           onSubmit={(e) => {
             e.preventDefault();
-            setAsking({ kind: "create", name });
+            setAsking({ kind: "create", name, agentId });
           }}
         >
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome da chave (ex.: n8n)" maxLength={60} aria-label="Nome da chave" />
+          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agente da chave">
+            <option value="">Geral (qualquer agente)</option>
+            {agentIds.map((id) => (
+              <option key={id} value={id}>
+                Só o agente {id}
+              </option>
+            ))}
+          </select>
           <button type="submit" className="primary-button" disabled={!conn || asking !== null || name.trim() === ""}>
             Criar chave
           </button>

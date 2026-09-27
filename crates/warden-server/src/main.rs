@@ -110,7 +110,16 @@ enum ApiKeysAction {
     /// Every key: id, name, its first characters, when it was created and last used.
     List,
     /// A new key named NAME — printed once, never stored.
-    Create { name: String },
+    Create {
+        name: String,
+        /// Binds the key to this agent: it then only speaks as it (`warden` and `warden/<this
+        /// agent>` both mean it, any other agent is refused). Without it the key is general.
+        #[arg(long)]
+        agent: Option<String>,
+        /// The config file the agent is checked against, as in `serve`.
+        #[arg(long)]
+        config: Option<String>,
+    },
     /// Removes a key; clients using it get 401 from the next request on.
     Revoke { id: String },
 }
@@ -337,14 +346,23 @@ fn run_api_keys_command(action: ApiKeysAction) -> anyhow::Result<()> {
             }
             for key in keys {
                 let used = key.last_used_at_ms.map_or("never used".to_string(), |ms| format!("last used {ms}"));
-                println!("{}\t{}\t{}…\tcreated {}\t{used}", key.id, key.name, key.shown, key.created_at_ms);
+                let scope = key.agent_id.as_deref().map_or("any agent".to_string(), |agent| format!("only agent {agent}"));
+                println!("{}\t{}\t{}…\t{scope}\tcreated {}\t{used}", key.id, key.name, key.shown, key.created_at_ms);
             }
         }
-        ApiKeysAction::Create { name } => {
-            let created = store.create(&name)?;
+        ApiKeysAction::Create { name, agent, config } => {
+            if agent.as_deref().is_some_and(|a| !a.trim().is_empty()) {
+                let config_path = config.map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+                warden_server::api_key_admin::check_agent_exists(&config_path, agent.as_deref())?;
+            }
+            let created = store.create(&name, agent.as_deref())?;
             println!("{}", created.key);
             eprintln!("key '{}' created (id {}) — copy it now, it isn't shown again", created.info.name, created.info.id);
-            eprintln!("use it as the bearer token with base URL http(s)://<this hub>:<port>/v1 (model \"warden\" or \"warden/<agent>\")");
+            eprintln!("use it as the bearer token with base URL http(s)://<this hub>:<port>/v1");
+            match &created.info.agent_id {
+                Some(agent) => eprintln!("it only speaks as agent '{agent}' (model \"warden\" or \"warden/{agent}\"; any other agent is refused)"),
+                None => eprintln!("a general key: model \"warden\", or \"warden/<agent>\" to speak as a configured agent"),
+            }
         }
         ApiKeysAction::Revoke { id } => {
             anyhow::ensure!(store.revoke(&id)?, "no API key with id '{id}'");

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { EmbeddedServerStatus } from "../types";
+import type { EmbeddedServerStatus, Settings } from "../types";
 
 /** Mirrors `api_key_cmds::ApiKeyInfo` — never the key or its hash; `shown` is its start. */
 interface ApiKeyInfo {
@@ -9,6 +9,8 @@ interface ApiKeyInfo {
   shown: string;
   createdAtMs: number;
   lastUsedAtMs: number | null;
+  /** The only agent this key speaks as; null for a general key. */
+  agentId: string | null;
 }
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -32,6 +34,9 @@ function ApiKeysSection() {
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [status, setStatus] = useState<EmbeddedServerStatus | null>(null);
   const [name, setName] = useState("");
+  /** "" = a general key. */
+  const [agentId, setAgentId] = useState("");
+  const [agentIds, setAgentIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ name: string; key: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -44,6 +49,9 @@ function ApiKeysSection() {
     invoke<EmbeddedServerStatus>("embedded_server_status")
       .then(setStatus)
       .catch(() => setStatus(null));
+    invoke<Settings>("get_settings")
+      .then((settings) => setAgentIds(settings.agents.map((a) => a.id)))
+      .catch(() => setAgentIds([]));
   }
 
   useEffect(load, []);
@@ -51,10 +59,11 @@ function ApiKeysSection() {
   async function handleCreate() {
     setError(null);
     try {
-      const result = await invoke<{ key: string; info: ApiKeyInfo }>("create_api_key", { name });
+      const result = await invoke<{ key: string; info: ApiKeyInfo }>("create_api_key", { name, agentId: agentId || null });
       setCreated({ name: result.info.name, key: result.key });
       setCopied(false);
       setName("");
+      setAgentId("");
       load();
     } catch (err) {
       setError(String(err));
@@ -90,8 +99,9 @@ function ApiKeysSection() {
       </div>
       <p className="settings-hint">
         Your agent in the OpenAI chat-completions format, for scripts, n8n or any client that talks to OpenAI: use one of
-        these keys as the API key and model <code>warden</code> or <code>warden/&lt;agent&gt;</code>. Tools the client sends
-        are ignored, nothing is saved as a conversation, and the spend goes to the <code>api</code> channel.
+        these keys as the API key. A general key picks the model per call (<code>warden</code> or{" "}
+        <code>warden/&lt;agent&gt;</code>); a key bound to an agent only speaks as it. Tools the client sends are ignored,
+        nothing is saved as a conversation, and the spend goes to the <code>api</code> channel.
       </p>
       <p className="settings-hint">
         {baseUrl ? (
@@ -131,6 +141,11 @@ function ApiKeysSection() {
               <div>
                 <strong>{key.name}</strong> <code>{key.shown}…</code>
                 <div className="settings-hint">
+                  {key.agentId
+                    ? `Only speaks as ${key.agentId}${agentIds.length > 0 && !agentIds.includes(key.agentId) ? " (agent removed — this key no longer works)" : ""}`
+                    : "General — picks the agent per call"}
+                </div>
+                <div className="settings-hint">
                   Created {dateFormatter.format(new Date(key.createdAtMs))} ·{" "}
                   {key.lastUsedAtMs ? `last used ${dateFormatter.format(new Date(key.lastUsedAtMs))}` : "never used"}
                 </div>
@@ -163,6 +178,14 @@ function ApiKeysSection() {
           value={name}
           onChange={(e) => setName(e.currentTarget.value)}
         />
+        <select className="settings-input" value={agentId} onChange={(e) => setAgentId(e.currentTarget.value)} aria-label="Key's agent">
+          <option value="">General (any agent)</option>
+          {agentIds.map((id) => (
+            <option key={id} value={id}>
+              Only agent {id}
+            </option>
+          ))}
+        </select>
         <button type="button" className="settings-browse-btn" disabled={name.trim() === ""} onClick={() => void handleCreate()}>
           Create key
         </button>
