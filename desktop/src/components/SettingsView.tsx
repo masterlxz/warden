@@ -127,6 +127,7 @@ const PROVIDER_KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
   { value: "openai_compatible", label: "OpenAI-compatible (Ollama, OpenRouter, Groq, ...)" },
+  { value: "node", label: "A node's model (another machine)" },
 ];
 
 /** Known-good starting points for popular integrations — researched 2026-08-29 (Sessão 35; see
@@ -212,6 +213,7 @@ function ProviderCard({
   onSetActive: () => void;
 }) {
   const isOpenAiCompatible = provider.kind === "openai_compatible";
+  const isNode = provider.kind === "node";
 
   return (
     <div className={`provider-card${isActive ? " provider-card-active" : ""}`}>
@@ -266,18 +268,37 @@ function ProviderCard({
         </label>
       )}
 
-      <ApiKeyField
-        label={isOpenAiCompatible ? "API key (optional — most local servers don't need one)" : "API key"}
-        value={provider.apiKey}
-        onChange={(v) => onChange({ ...provider, apiKey: v })}
-      />
+      {isNode && (
+        <label className="settings-field">
+          <span className="settings-label">Node device id</span>
+          <input
+            className="settings-input"
+            type="text"
+            placeholder="node-home-pc-1a2b3c4d"
+            value={provider.node ?? ""}
+            onChange={(e) => onChange({ ...provider, node: e.currentTarget.value })}
+          />
+          <span className="settings-hint">
+            Answers only through a hub with that node online, approved and allowed (Workspace → Nodes). In a combo, the
+            next provider answers while it's out.
+          </span>
+        </label>
+      )}
+
+      {!isNode && (
+        <ApiKeyField
+          label={isOpenAiCompatible ? "API key (optional — most local servers don't need one)" : "API key"}
+          value={provider.apiKey}
+          onChange={(v) => onChange({ ...provider, apiKey: v })}
+        />
+      )}
 
       <label className="settings-field">
-        <span className="settings-label">Model</span>
+        <span className="settings-label">{isNode ? "Provider on the node" : "Model"}</span>
         <input
           className="settings-input"
           type="text"
-          placeholder={defaultModel ? `Default: ${defaultModel}` : isOpenAiCompatible ? "Required, e.g. llama3.1" : ""}
+          placeholder={isNode ? "Its id in the node's config.toml, as in --model (e.g. ollama)" : defaultModel ? `Default: ${defaultModel}` : isOpenAiCompatible ? "Required, e.g. llama3.1" : ""}
           value={provider.model}
           onChange={(e) => onChange({ ...provider, model: e.currentTarget.value })}
         />

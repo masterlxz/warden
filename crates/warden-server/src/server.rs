@@ -32,7 +32,7 @@ use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::node_tools::NodeToolFactory;
-use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, NodeRegistry};
+use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, HubNodeModelRouter, ModelChannel, NodeRegistry};
 use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
@@ -280,6 +280,12 @@ impl Server {
             ctx.orchestrator.set_extra_tools(factory.fixed_tools());
             ctx.orchestrator.set_dynamic_tools(factory.mcp_tools());
             ctx.node_tools = Some(factory);
+            // Fatia 3: a `kind = "node"` provider in this process answers through this hub.
+            warden_bootstrap::node_model::set_node_model_router(Some(Arc::new(HubNodeModelRouter {
+                registry: self.nodes.clone(),
+                config_path: settings.config_path(),
+                devices_path: ctx.devices_path.as_ref().clone(),
+            })));
         }
         let runs_tasks = ctx.tasks.as_ref().is_some_and(TaskRunner::runs_here);
         let _scheduler = match (&ctx.tasks, runs_tasks, &ctx.settings) {
@@ -388,6 +394,9 @@ fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> Str
     }
     if !offer.mcp_tools.is_empty() {
         parts.push("MCP tools");
+    }
+    if !offer.models.is_empty() {
+        parts.push("models");
     }
     if parts.is_empty() {
         "nothing".to_string()
@@ -668,10 +677,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     // arriving right after this device's own Hello can never race the registration.
     let tool_channel = RemoteToolChannel::new(tx.clone());
     devices.lock().unwrap().insert(device_id.clone(), tool_channel.clone());
-    // P93: a node lends its shell and files to the hub's agents through this same channel.
-    if let Some(offer) = node_offer {
+    // P93: a node lends its shell, files, MCP tools and models to the hub's agents over this connection.
+    let node_models = node_offer.as_ref().map(|_| ModelChannel::new(&tx));
+    if let (Some(offer), Some(models)) = (node_offer, &node_models) {
         eprintln!("warden-server: {device_name} ({device_id}) is a node offering {}", describe_offer(&offer));
-        nodes.connect(&device_id, ConnectedNode { name: device_name.clone(), offer, channel: tool_channel.clone() });
+        nodes.connect(&device_id, ConnectedNode { name: device_name.clone(), offer, channel: tool_channel.clone(), models: models.clone() });
         refresh_node_mcp_tools(&shared_orchestrator, node_tools.as_ref());
     }
 
@@ -914,6 +924,21 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
                     spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
                 }
+                Ok(ClientMessage::ModelEvent { request_id, event }) => {
+                    if let Some(models) = &node_models {
+                        models.deliver(request_id, event);
+                    }
+                }
+                Ok(ClientMessage::ModelDone { request_id }) => {
+                    if let Some(models) = &node_models {
+                        models.finish(request_id);
+                    }
+                }
+                Ok(ClientMessage::ModelError { request_id, message, transient }) => {
+                    if let Some(models) = &node_models {
+                        models.fail(request_id, message, transient);
+                    }
+                }
                 Ok(ClientMessage::ListNodes { request_id }) => {
                     let pairing = PairingStore::new(devices_path.as_ref().clone());
                     let _ = tx.send(handle_list_nodes(&nodes, &pairing, settings.as_deref(), request_id));
@@ -989,6 +1014,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     devices.lock().unwrap().remove(&device_id);
     if nodes.disconnect(&device_id, &tool_channel) {
         refresh_node_mcp_tools(&shared_orchestrator, node_tools.as_ref());
+    }
+    if let Some(models) = &node_models {
+        models.close(&device_name);
     }
     // Calls still waiting on this device (a node's long command) fail now instead of at their timeout.
     tool_channel.close();

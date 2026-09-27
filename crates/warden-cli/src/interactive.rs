@@ -1859,7 +1859,7 @@ async fn wizard_models_add(terminal: &mut CliTerminal, session: &mut CliSession)
     };
 
     let had_active_provider = config.active_provider.is_some();
-    config.providers.push(ProviderConfig { id: id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input) });
+    config.providers.push(ProviderConfig { id: id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input), node: None });
     if !had_active_provider {
         config.active_provider = Some(id.clone());
     }
@@ -1898,7 +1898,8 @@ async fn wizard_models_edit(terminal: &mut CliTerminal, session: &mut CliSession
     };
 
     let old_id = current.id.clone();
-    config.providers[index] = ProviderConfig { id: new_id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input) };
+    // A node's model (P93) isn't set up from this wizard; editing one keeps its node.
+    config.providers[index] = ProviderConfig { id: new_id.clone(), kind, api_key: non_empty(api_key), base_url, model: non_empty(model_input), node: current.node.clone() };
     if new_id != old_id {
         rename_provider_cascade(&mut config, &old_id, &new_id);
         if session.provider_id.as_deref() == Some(old_id.as_str()) {

@@ -34,6 +34,7 @@ pub mod auto_sync;
 mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;
+pub mod node_model;
 pub mod message_agent;
 pub mod settings;
 pub mod skill_gen;
@@ -59,6 +60,9 @@ pub enum Provider {
     /// (local, no real key needed), OpenRouter, Groq, DeepSeek, etc. `ProviderConfig::base_url`
     /// is required for this kind; there's no single sensible default endpoint.
     OpenaiCompatible,
+    /// A model on a node (P93): `ProviderConfig::node` names the node, `model` its provider there.
+    /// Only answers through a hub with that node connected.
+    Node,
 }
 
 /// One configured model provider (Sessão 35's provider registry) — the desktop Settings screen
@@ -75,8 +79,12 @@ pub struct ProviderConfig {
     /// Only meaningful (and required) for `Provider::OpenaiCompatible`.
     pub base_url: Option<String>,
     /// Falls back to `default_model_for(kind)` when unset — `None` for `OpenaiCompatible`,
-    /// which has no universal default (depends entirely on what's hosted there).
+    /// which has no universal default (depends entirely on what's hosted there). For
+    /// `Provider::Node`, the id of the provider *on that node*.
     pub model: Option<String>,
+    /// Only for `Provider::Node` (P93): the device id of the node whose model this is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// One named agent (a persona a conversation can pick, alongside its model) — closes P3
@@ -504,7 +512,7 @@ pub fn default_model_for(provider: Provider) -> Option<&'static str> {
         Provider::Gemini => Some("gemini-3.5-flash"),
         Provider::Openai => Some("gpt-4o-mini"),
         Provider::Anthropic => Some("claude-sonnet-4-5"),
-        Provider::OpenaiCompatible => None,
+        Provider::OpenaiCompatible | Provider::Node => None,
     }
 }
 
@@ -1347,6 +1355,14 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
             // key at all — an empty string is a valid "no key" for them.
             Arc::new(OpenAiProvider::with_base_url(provider.api_key.clone().unwrap_or_default(), model, base_url))
         }
+        Provider::Node => {
+            let node = provider
+                .node
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .with_context(|| format!("provider '{}' (node) has no node configured — the device id of the node whose model it is", provider.id))?;
+            Arc::new(node_model::NodeModelProvider::new(node, model))
+        }
     })
 }
 
@@ -1494,15 +1510,16 @@ fn resolve_model_provider(config: &FileConfig, overrides: &Overrides) -> anyhow:
         // that will fail clearly in `build_model_provider` (no api_key/base_url).
         Provider::Anthropic => ("anthropic", None),
         Provider::OpenaiCompatible => ("openai_compatible", None),
+        Provider::Node => ("node", None),
     };
     let env_var = match kind {
         Provider::Gemini => Some("GEMINI_API_KEY"),
         Provider::Openai => Some("OPENAI_API_KEY"),
-        Provider::Anthropic | Provider::OpenaiCompatible => None,
+        Provider::Anthropic | Provider::OpenaiCompatible | Provider::Node => None,
     };
     let api_key = resolve_secret(env_var.and_then(|v| std::env::var(v).ok()), api_key_from_config);
 
-    let synthesized = ProviderConfig { id: id.to_string(), kind, api_key, base_url: None, model: config.model.clone() };
+    let synthesized = ProviderConfig { id: id.to_string(), kind, api_key, base_url: None, model: config.model.clone(), node: None };
     build_model_provider(&synthesized, overrides.model.clone())
 }
 
@@ -1953,6 +1970,7 @@ oauth = true
                 api_key: None,
                 base_url: Some("http://localhost:11434/v1".to_string()),
                 model: Some("llama3.1".to_string()),
+                node: None,
             }],
             active_provider: Some("ollama-local".to_string()),
             mcp_servers: vec![
@@ -2456,7 +2474,7 @@ oauth = true
     }
 
     fn provider_entry(id: &str, kind: Provider) -> ProviderConfig {
-        ProviderConfig { id: id.to_string(), kind, api_key: Some("a-key".to_string()), base_url: None, model: Some("a-model".to_string()) }
+        ProviderConfig { id: id.to_string(), kind, api_key: Some("a-key".to_string()), base_url: None, model: Some("a-model".to_string()), node: None }
     }
 
     fn combo(id: &str, members: &[&str]) -> ComboConfig {
@@ -2639,7 +2657,7 @@ oauth = true
     }
 
     fn provider_config(id: &str) -> ProviderConfig {
-        ProviderConfig { id: id.to_string(), kind: Provider::Gemini, api_key: None, base_url: None, model: None }
+        ProviderConfig { id: id.to_string(), kind: Provider::Gemini, api_key: None, base_url: None, model: None, node: None }
     }
 
     fn agent_config(id: &str, provider_id: Option<&str>) -> AgentConfig {

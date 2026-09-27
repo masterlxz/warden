@@ -527,6 +527,7 @@ mod tests {
                 api_key: None,
                 base_url: Some("http://localhost:11434/v1".into()),
                 model: Some("m".into()),
+                node: None,
             }],
             agents,
             ..FileConfig::default()

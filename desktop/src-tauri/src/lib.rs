@@ -325,6 +325,9 @@ struct ProviderPayload {
     api_key: String,
     base_url: String,
     model: String,
+    /// Kind "node" only (P93): the node's device id.
+    #[serde(default)]
+    node: String,
 }
 
 /// One entry of the agent registry (closes P3), as read/written by the Settings screen — same
@@ -459,6 +462,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 api_key: p.api_key.unwrap_or_default(),
                 base_url: p.base_url.unwrap_or_default(),
                 model: p.model.unwrap_or_default(),
+                node: p.node.unwrap_or_default(),
             })
             .collect(),
         active_provider: config.active_provider.unwrap_or_default(),
@@ -516,7 +520,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         payload
             .providers
             .into_iter()
-            .map(|p| ProviderConfig { id: p.id, kind: p.kind, api_key: Some(p.api_key), base_url: Some(p.base_url), model: Some(p.model) })
+            .map(|p| ProviderConfig { id: p.id, kind: p.kind, api_key: Some(p.api_key), base_url: Some(p.base_url), model: Some(p.model), node: Some(p.node) })
             .collect(),
     )?;
 

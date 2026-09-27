@@ -63,7 +63,7 @@ impl SettingsHost for TestHost {
 }
 
 fn provider(id: &str, base_url: String) -> ProviderConfig {
-    ProviderConfig { id: id.into(), kind: Provider::OpenaiCompatible, api_key: Some("x".into()), base_url: Some(base_url), model: Some(format!("{id}-model")) }
+    ProviderConfig { id: id.into(), kind: Provider::OpenaiCompatible, api_key: Some("x".into()), base_url: Some(base_url), model: Some(format!("{id}-model")), node: None }
 }
 
 #[tokio::test]

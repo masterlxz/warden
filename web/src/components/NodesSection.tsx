@@ -25,6 +25,7 @@ function offers(node: NodeInfo): string {
     node.offer.shell && "terminal",
     node.offer.files && "arquivos de uma pasta",
     mcp.length > 0 && `${mcp.length} tool(s) MCP (${mcp.map((t) => t.name).join(", ")})`,
+    (node.offer.models ?? []).length > 0 && `os modelos ${(node.offer.models ?? []).join(", ")}`,
   ].filter(Boolean);
   return parts.length ? `empresta ${parts.join(" e ")}` : "não empresta nada";
 }

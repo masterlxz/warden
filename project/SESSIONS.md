@@ -208,8 +208,52 @@ servidores do `[[mcp_servers]]` do `config.toml` dele. O plano foi aprovado em P
   `casa-pc__read_file` e `casa-pc__write_file`, e o arquivo foi lido e escrito no vault que só o nó tem. O hub
   reiniciado reconectou o nó, e o log passou a mostrar só o tamanho do conteúdo.
 
-**Próximo passo**: a fatia 3 do P93 (o modelo local do nó como provedor), ou outro item. Os testes ficam para a
-sessão dedicada (P80, P87, P88, P91, P95, P96).
+**Continuação: fatia 3 do P93** (commit da fatia 2: `9e24ce7`). Decisões do usuário: um provedor
+`kind = "node"`, e a lista de agentes do nó também limitando o modelo. O plano foi aprovado em Plan mode.
+
+- **Núcleo**:
+  - serde em `Message`/`ToolCall`/`Role`/`StreamEvent`;
+  - `ProviderUnavailable`, transitório no `FallbackProvider` (e `is_transient` público);
+  - `ModelProvider::for_agent`, com o `FallbackProvider` repassando e o `Orchestrator` aplicando em
+    `with_agent`/`with_model`.
+- **Bootstrap**: `Provider::Node`, `ProviderConfig.node`, `node_model.rs` (`NodeModelProvider`,
+  `NodeModelRouter`, `set_node_model_router`) e a validação em `check_providers`.
+- **Protocolo**: `NodeOfferDto.models`, `ModelRequest`/`ModelCancel` e `ModelEvent`/`ModelDone`/`ModelError`, e o
+  campo `node` nos DTOs de provedor.
+- **Nó**: `--model`, `LocalNode::with_models`/`answer_model`, e o cancelamento por `AbortHandle`.
+- **Hub**: `ModelChannel`, `HubNodeModelRouter` (instalado no `serve_until`), o laço de leitura entregando os
+  eventos e a queda fechando as respostas abertas.
+- **Telas**: o tipo "Modelo de um nó" nos provedores (web e desktop) e os modelos nas listas de nós; o `list_nodes`
+  mostra os modelos.
+- Docs: `ARCHITECTURE.md` (fatia 3), `PENDING.md` (**P93 fechado**, P96 ampliado, **P97** novo), `ROADMAP.md`,
+  `README.md`.
+
+**Verificação da fatia 3**:
+
+- `cargo test --workspace`: 851 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `build` da web
+  e do desktop limpos.
+- **Testes novos**:
+  - núcleo (2): num combo, `ProviderUnavailable` cai no próximo e o agente chega a todo elo; e `Message`/eventos
+    passam pelo JSON sem mudar;
+  - provedor sem hub dá `ProviderUnavailable` (1);
+  - validação e ida e volta do `kind = "node"` (1);
+  - formato das mensagens de modelo (no teste das mensagens de nó);
+  - integração com `Server` e nó reais (`tests/node_models.rs`, 1, em sequência por causa do roteador global):
+    - não aprovado, fica fora de alcance;
+    - a resposta chega do nó em pedaços;
+    - a tool call pedida pelo modelo do nó roda no hub e o resultado volta ao nó;
+    - um agente fora da lista cai, pelo combo, num `openai_compatible` de verdade, com o aviso de fallback;
+    - **o nó cai no meio de uma resposta e o turno falha na hora**;
+    - offline, fica fora de alcance para um agente e o combo responde o outro.
+- **Ponta a ponta com binários reais** (scratchpad): o nó com `--model ollama`, um `openai_compatible` apontando
+  para um "Ollama" falso em Python, e o hub com o combo `casa` (tipo nó) → `spare`, ativo:
+  - o chat pela conexão da web recebeu "ollama-de-casa says: …", e o `llama3` foi pedido no "Ollama" do nó;
+  - com o nó derrubado, a resposta veio do `spare`, com o aviso "node '…' is offline".
+  - Achado de processo, não de código: o hub se recusa a subir sem um provedor que funcione, e o nó ficou tentando
+    a cada 16 s até ele subir, como esperado.
+
+**Próximo passo**: outro item do roteiro (P97, desktop como nó; P84, multiusuário; P94, arquivos fixos do vault),
+ou a sessão dedicada de testes (P80, P87, P88, P91, P95, P96).
 
 ---
 

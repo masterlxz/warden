@@ -8,8 +8,16 @@
 //! the agents call are in `node_tools.rs`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
+use warden_bootstrap::node_model::NodeModelRouter;
+use warden_core::model::{ChatStream, Message, ProviderUnavailable, StreamEvent};
+use warden_core::tool::ToolSpec;
 
 use warden_bootstrap::{load_config_from_path, save_config, NodeAccessConfig};
 use warden_server_protocol::protocol::{NodeInfoDto, NodeOfferDto};
@@ -25,6 +33,132 @@ pub struct ConnectedNode {
     pub name: String,
     pub offer: NodeOfferDto,
     pub channel: RemoteToolChannel,
+    /// Its model answers in flight (fatia 3).
+    pub models: ModelChannel,
+}
+
+type ModelSink = mpsc::UnboundedSender<anyhow::Result<StreamEvent>>;
+
+/// The model calls one node connection is answering: each `request_id` feeds one stream. The
+/// connection's read loop delivers the node's `ModelEvent`/`ModelDone`/`ModelError`; when the
+/// connection closes, every open stream fails at once.
+#[derive(Clone)]
+pub struct ModelChannel {
+    tx: mpsc::WeakUnboundedSender<ServerMessage>,
+    pending: Arc<Mutex<HashMap<u64, ModelSink>>>,
+    next_id: Arc<AtomicU64>,
+}
+
+impl ModelChannel {
+    /// A weak sender, so a stream left somewhere never keeps the connection's writer alive.
+    pub fn new(tx: &mpsc::UnboundedSender<ServerMessage>) -> Self {
+        Self { tx: tx.downgrade(), pending: Arc::default(), next_id: Arc::default() }
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<u64, ModelSink>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Sends the request and returns its stream's receiving end.
+    fn open(&self, model: &str, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<(u64, mpsc::UnboundedReceiver<anyhow::Result<StreamEvent>>)> {
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sink, events) = mpsc::unbounded_channel();
+        self.pending().insert(request_id, sink);
+        let sent = self.tx.upgrade().is_some_and(|tx| tx.send(ServerMessage::ModelRequest { request_id, model: model.to_string(), messages, tools }).is_ok());
+        if !sent {
+            self.pending().remove(&request_id);
+            return Err(ProviderUnavailable("the node disconnected".to_string()).into());
+        }
+        Ok((request_id, events))
+    }
+
+    /// One event from the node.
+    pub fn deliver(&self, request_id: u64, event: StreamEvent) {
+        if let Some(sink) = self.pending().get(&request_id) {
+            let _ = sink.send(Ok(event));
+        }
+    }
+
+    /// The answer ended: its stream closes.
+    pub fn finish(&self, request_id: u64) {
+        self.pending().remove(&request_id);
+    }
+
+    /// The node's model failed; a transient failure lets a combo move on.
+    pub fn fail(&self, request_id: u64, message: String, transient: bool) {
+        if let Some(sink) = self.pending().remove(&request_id) {
+            let err = if transient { anyhow::Error::new(ProviderUnavailable(message)) } else { anyhow::anyhow!(message) };
+            let _ = sink.send(Err(err));
+        }
+    }
+
+    /// The connection closed: every answer still open fails now.
+    pub fn close(&self, node_name: &str) {
+        for (_, sink) in self.pending().drain() {
+            let _ = sink.send(Err(ProviderUnavailable(format!("node '{node_name}' disconnected in the middle of the answer")).into()));
+        }
+    }
+
+    /// The hub dropped a stream before it ended: tell the node to stop.
+    fn cancel(&self, request_id: u64) {
+        if self.pending().remove(&request_id).is_some() {
+            if let Some(tx) = self.tx.upgrade() {
+                let _ = tx.send(ServerMessage::ModelCancel { request_id });
+            }
+        }
+    }
+}
+
+/// Holds a request open while its stream is alive; dropping it early cancels the request on the node.
+struct CancelOnDrop {
+    channel: ModelChannel,
+    request_id: u64,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.channel.cancel(self.request_id);
+    }
+}
+
+/// The hub's side of `warden_bootstrap::node_model` (fatia 3): a `kind = "node"` provider's call goes
+/// to that node, when it's online, approved, switched on, open to the asking agent, and lends that
+/// model. Otherwise the call fails as unavailable, so a combo moves on to its next provider.
+pub struct HubNodeModelRouter {
+    pub registry: NodeRegistry,
+    pub config_path: PathBuf,
+    pub devices_path: PathBuf,
+}
+
+#[async_trait]
+impl NodeModelRouter for HubNodeModelRouter {
+    async fn chat_stream(&self, node_id: &str, model: &str, agent: Option<&str>, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+        let unavailable = |why: String| -> anyhow::Error { ProviderUnavailable(why).into() };
+        let node = self.registry.online().into_iter().find(|(id, _)| id == node_id).map(|(_, n)| n).ok_or_else(|| unavailable(format!("node '{node_id}' is offline")))?;
+        if !matches!(PairingStore::new(self.devices_path.clone()).status(node_id), Ok(Some(PairingStatus::Approved))) {
+            return Err(unavailable(format!("node '{node_id}' isn't approved in the device list")));
+        }
+        let config = load_config_from_path(&self.config_path, false)?;
+        let access = config.nodes.iter().find(|n| n.id == node_id && n.enabled).ok_or_else(|| unavailable(format!("node '{node_id}' isn't switched on for agents")))?;
+        if !access.agents.is_empty() && !agent.is_some_and(|a| access.agents.iter().any(|allowed| allowed == a)) {
+            return Err(unavailable(format!("node '{node_id}' isn't open to {}", agent.map_or("chats without an agent".to_string(), |a| format!("agent '{a}'")))));
+        }
+        if !node.offer.models.iter().any(|m| m == model) {
+            return Err(unavailable(format!("node '{node_id}' doesn't lend a model '{model}' (it lends: {})", if node.offer.models.is_empty() { "none".to_string() } else { node.offer.models.join(", ") })));
+        }
+
+        let (request_id, mut events) = node.models.open(model, messages, tools)?;
+        let guard = CancelOnDrop { channel: node.models.clone(), request_id };
+        // Waiting for the first event means a failure before any answer (the node's own model down)
+        // still reaches `FallbackProvider` as an error it can move on from.
+        let first = match events.recv().await {
+            Some(Ok(event)) => Some(event),
+            Some(Err(err)) => return Err(err),
+            None => None,
+        };
+        let rest = futures_util::stream::unfold((events, guard), |(mut events, guard)| async move { events.recv().await.map(|item| (item, (events, guard))) });
+        Ok(Box::pin(futures_util::stream::iter(first.map(Ok)).chain(rest)))
+    }
 }
 
 #[derive(Default)]

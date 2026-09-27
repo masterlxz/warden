@@ -133,6 +133,12 @@ impl Orchestrator {
     /// desktop's per-conversation model selector) swap the model for one call without re-running
     /// `bootstrap()` (which would reconnect MCP servers, redo OAuth, etc.).
     pub fn with_model(&self, model: Arc<dyn ModelProvider>) -> Self {
+        // Scoped to the agent already set, if the model cares (P93: a node's model) — the channels
+        // pick the agent's model after scoping to the agent.
+        let model = match &self.agent_id {
+            Some(agent) => model.for_agent(Some(agent)).unwrap_or(model),
+            None => model,
+        };
         Self { model, ..self.clone() }
     }
 
@@ -166,6 +172,9 @@ impl Orchestrator {
                     }
                 }
             }
+        }
+        if let Some(scoped) = clone.model.for_agent(agent_id.as_deref()) {
+            clone.model = scoped;
         }
         clone.agent_id = agent_id;
         clone

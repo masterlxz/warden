@@ -154,6 +154,9 @@ warden-server nodes allow <node id> --agent ops --approval
 Agents then get `list_nodes`, `node_shell`, `node_read_file`, `node_write_file` and `node_list_files`.
 A node can also lend MCP servers from its own `config.toml`, by name (`--mcp github --mcp postgres`):
 each of their tools shows up on the hub as `<node>__<tool>`, with its own schema, while the node is online.
+And it can lend a model (`--model ollama`, a provider in its own config): on the hub, a provider with
+`kind = "node"`, the node's id and `model = "ollama"` streams from it. Put it in a combo with a cloud model
+and the cloud answers whenever the home machine is off.
 Two locks: the node chooses what it lends, the hub chooses which agents may use it and whether each call
 asks you first. Every call is logged to `node_audit.jsonl`; a call cut short by the node dropping fails
 right away and is never retried.

@@ -2438,3 +2438,37 @@ aparelho `Approved` e hoje não tem cliente.
 - `list_nodes` mostra as tools MCP de cada nó e o prefixo delas; as telas da web e do desktop mostram quantas e
   quais o nó empresta.
 
+### Como ficou a fatia 3 (Sessão 108)
+
+- Decisões do usuário: **um provedor `kind = "node"`** no `[[providers]]` (o id do nó em `node`, e em `model` o id
+  do provedor **no nó**), que entra em todo seletor, inclusive combos; e **a lista de agentes do `[[nodes]]` também
+  limita o modelo**. A aprovação a cada chamada não vale para o modelo.
+- **No nó**: `--model <id>` empresta um `[[providers]]` do `config.toml` dele (o Ollama local, por exemplo). A
+  oferta leva os ids (`NodeOfferDto.models`). O nó recebe `ModelRequest { request_id, model, messages, tools }`,
+  chama o provedor local e devolve `ModelEvent` (texto, tool call, uso) e `ModelDone`, ou `ModelError { transient
+  }`. Um `ModelCancel` aborta a resposta. Um combo no próprio nó responde, mas o aviso de fallback de lá não
+  atravessa.
+- **No núcleo**:
+  - `Message`, `ToolCall`, `Role` e `StreamEvent` ganharam serde (o `StreamEvent` com `kind`/`data`);
+  - o erro **`ProviderUnavailable`**, que o `FallbackProvider` trata como transitório, como um 503;
+  - **`ModelProvider::for_agent`**: o modelo fica sabendo quem pede, como o `scoped_to_agent` das tools. O
+    `FallbackProvider` repassa aos de dentro, e o `Orchestrator` aplica em `with_agent` e também em `with_model`,
+    porque os canais trocam o modelo depois de escopar o agente.
+- **O provedor** (`warden-bootstrap/src/node_model.rs`): `NodeModelProvider` pede a um **roteador do processo**
+  (`set_node_model_router`), que o hub instala ao subir. Sem hub no processo (o CLI, o desktop com o hub
+  desligado) a chamada dá `ProviderUnavailable`, e um combo segue. O roteador é global: dois hubs no mesmo processo
+  (só em teste) disputariam ele.
+- **No hub** (`nodes.rs`):
+  - cada nó conectado tem um `ModelChannel` (`request_id` → stream), alimentado pelo laço de leitura;
+  - `HubNodeModelRouter` confere online, aprovado, ligado, agente liberado e modelo oferecido, e responde
+    `ProviderUnavailable` com o motivo;
+  - espera o primeiro evento antes de devolver o stream, então uma falha antes de qualquer resposta ainda deixa o
+    combo seguir;
+  - largar o stream antes do fim manda `ModelCancel`;
+  - a queda do nó falha na hora todas as respostas abertas.
+- **Validação**: um provedor `node` exige `node` e `model`. Um `node` que sobra em outro tipo (o tipo foi trocado no
+  formulário) é descartado.
+- **Telas**: o tipo "Modelo de um nó" nos provedores da web e do desktop (id do nó e provedor no nó, sem chave nem
+  URL), e os modelos oferecidos nas listas de nós. O assistente `/models` do CLI não cria esse tipo (cadastro pelas
+  telas ou no arquivo); editar um mantém o `node`.
+

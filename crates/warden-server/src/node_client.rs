@@ -14,7 +14,13 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use std::collections::HashMap;
+
+use futures_util::StreamExt;
 use warden_core::memory::Vault;
+use warden_core::model::fallback::is_transient;
+use warden_core::model::{Message, ModelProvider, StreamEvent};
+use warden_core::tool::ToolSpec;
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::Tool;
 use warden_server_protocol::protocol::NodeOfferDto;
@@ -34,13 +40,15 @@ pub struct LocalNode {
     files: Option<Arc<Vault>>,
     /// Tools of the MCP servers lent with `--mcp` (fatia 2), already named uniquely.
     mcp: Vec<Arc<dyn Tool>>,
+    /// Model providers lent with `--model` (fatia 3), by their id in this machine's config.
+    models: Vec<(String, Arc<dyn ModelProvider>)>,
 }
 
 impl LocalNode {
     /// `shell`: run commands (in `files`' folder, or the home directory). `files`: the folder shared.
     pub fn new(shell: bool, files: Option<PathBuf>) -> Self {
         let base = files.clone().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."));
-        Self { shell: shell.then(|| ShellTool::new(Arc::new(Vault::new(base)))), files: files.map(|dir| Arc::new(Vault::new(dir))), mcp: Vec::new() }
+        Self { shell: shell.then(|| ShellTool::new(Arc::new(Vault::new(base)))), files: files.map(|dir| Arc::new(Vault::new(dir))), mcp: Vec::new(), models: Vec::new() }
     }
 
     /// Also lends these MCP tools (from `warden_bootstrap::connect_mcp_server`, names already unique).
@@ -49,8 +57,52 @@ impl LocalNode {
         self
     }
 
+    /// Also lends these model providers (`warden_bootstrap::build_model_for`), by their id here.
+    pub fn with_models(mut self, models: Vec<(String, Arc<dyn ModelProvider>)>) -> Self {
+        self.models = models;
+        self
+    }
+
     pub fn offer(&self, description: String, tags: Vec<String>) -> NodeOfferDto {
-        NodeOfferDto { description, tags, shell: self.shell.is_some(), files: self.files.is_some(), mcp_tools: self.mcp.iter().map(|t| t.spec()).collect() }
+        NodeOfferDto {
+            description,
+            tags,
+            shell: self.shell.is_some(),
+            files: self.files.is_some(),
+            mcp_tools: self.mcp.iter().map(|t| t.spec()).collect(),
+            models: self.models.iter().map(|(id, _)| id.clone()).collect(),
+        }
+    }
+
+    /// Runs one model call for the hub, sending each event on `reply` and ending with `ModelDone` or
+    /// `ModelError`. Fallback notices from a combo on this node stay here: the hub reports its own.
+    pub async fn answer_model(&self, request_id: u64, model: &str, messages: Vec<Message>, tools: Vec<ToolSpec>, reply: &mpsc::UnboundedSender<ClientMessage>) {
+        let Some((_, provider)) = self.models.iter().find(|(id, _)| id == model) else {
+            let _ = reply.send(ClientMessage::ModelError { request_id, message: format!("this node doesn't lend a model '{model}'"), transient: false });
+            return;
+        };
+        let mut stream = match provider.chat_stream(messages, tools).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = reply.send(ClientMessage::ModelError { request_id, message: format!("{err:#}"), transient: is_transient(&err) });
+                return;
+            }
+        };
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(StreamEvent::ProviderFallback(_)) => {}
+                Ok(event) => {
+                    if reply.send(ClientMessage::ModelEvent { request_id, event }).is_err() {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    let _ = reply.send(ClientMessage::ModelError { request_id, message: format!("{err:#}"), transient: false });
+                    return;
+                }
+            }
+        }
+        let _ = reply.send(ClientMessage::ModelDone { request_id });
     }
 
     /// Runs one call from the hub: `shell`, `read_file`, `write_file` or `list_files`.
@@ -186,6 +238,8 @@ pub async fn serve_once(session: &NodeSession, identity: &mut NodeIdentity, loca
     );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<ClientMessage>();
+    // Model answers in flight, so a `ModelCancel` can stop one.
+    let answering: Arc<std::sync::Mutex<HashMap<u64, tokio::task::AbortHandle>>> = Arc::default();
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
     heartbeat.tick().await;
     let mut nonce = 0u64;
@@ -202,6 +256,19 @@ pub async fn serve_once(session: &NodeSession, identity: &mut NodeIdentity, loca
                         };
                         let _ = tx.send(reply);
                     });
+                }
+                Some(ServerMessage::ModelRequest { request_id, model, messages, tools }) => {
+                    let (local, tx, done) = (local.clone(), tx.clone(), answering.clone());
+                    let task = tokio::spawn(async move {
+                        local.answer_model(request_id, &model, messages, tools, &tx).await;
+                        done.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+                    });
+                    answering.lock().unwrap_or_else(|e| e.into_inner()).insert(request_id, task.abort_handle());
+                }
+                Some(ServerMessage::ModelCancel { request_id }) => {
+                    if let Some(task) = answering.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id) {
+                        task.abort();
+                    }
                 }
                 Some(ServerMessage::AuthError { reason }) => anyhow::bail!("the hub closed this node's access: {reason}"),
                 Some(_) => {}

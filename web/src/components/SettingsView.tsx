@@ -26,6 +26,7 @@ const KINDS: { value: ProviderKind; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
   { value: "openai_compatible", label: "Compatível com OpenAI (Ollama, OpenRouter…)" },
+  { value: "node", label: "Modelo de um nó (outra máquina)" },
 ];
 
 const SCOPES: { value: LimitScope; label: string; target: string }[] = [
@@ -42,7 +43,7 @@ interface SecretDraft {
   edit: SecretEdit;
 }
 
-type ProviderDraft = Keyed<{ originalId?: string; id: string; kind: ProviderKind; baseUrl: string; model: string; apiKey: SecretDraft }>;
+type ProviderDraft = Keyed<{ originalId?: string; id: string; kind: ProviderKind; baseUrl: string; model: string; apiKey: SecretDraft; node: string }>;
 
 type LimitsMode = "default" | "custom" | "off";
 
@@ -72,7 +73,7 @@ const KEEP: SecretEdit = { action: "keep" };
 
 function toDraft(s: HubSettings): Draft {
   return {
-    providers: s.providers.map((p) => keyed({ originalId: p.id, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: { saved: p.apiKey, edit: KEEP } })),
+    providers: s.providers.map((p) => keyed({ originalId: p.id, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: { saved: p.apiKey, edit: KEEP }, node: p.node ?? "" })),
     activeProvider: s.activeProvider,
     combos: (s.combos ?? []).map((c) => keyed({ ...c })),
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
@@ -93,7 +94,7 @@ function strip<T>({ key: _key, ...rest }: Keyed<T>): T {
 
 function toUpdate(d: Draft): HubSettingsUpdate {
   return {
-    providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit })),
+    providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit, node: p.kind === "node" ? p.node : "" })),
     activeProvider: d.activeProvider,
     combos: d.combos.map(strip),
     agents: d.agents.map(strip),
@@ -375,7 +376,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             onClick={() =>
               update((d) => ({
                 ...d,
-                providers: [...d.providers, keyed({ id: "", kind: "gemini" as ProviderKind, baseUrl: "", model: "", apiKey: { saved: { set: false }, edit: KEEP } })],
+                providers: [...d.providers, keyed({ id: "", kind: "gemini" as ProviderKind, baseUrl: "", model: "", apiKey: { saved: { set: false }, edit: KEEP }, node: "" })],
               }))
             }
           >
@@ -415,24 +416,31 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     ))}
                   </select>
                 </Field>
-                <Field label="Modelo">
+                <Field label={p.kind === "node" ? "Provedor no nó" : "Modelo"} hint={p.kind === "node" ? "O id dele no config.toml do nó, o mesmo do --model" : undefined}>
                   <input
                     value={p.model}
-                    placeholder={settings.defaultModels[p.kind] ?? "obrigatório para este tipo"}
+                    placeholder={p.kind === "node" ? "ollama" : (settings.defaultModels[p.kind] ?? "obrigatório para este tipo")}
                     onChange={(e) => patchProvider(p.key, { model: e.target.value })}
                   />
                 </Field>
+                {p.kind === "node" && (
+                  <Field label="Id do nó" hint="Só responde com o nó online, aprovado e liberado (aba Aparelhos). Num combo, cai no próximo quando ele está fora.">
+                    <input value={p.node} placeholder="node-casa-pc-1a2b3c4d" onChange={(e) => patchProvider(p.key, { node: e.target.value })} />
+                  </Field>
+                )}
                 {p.kind === "openai_compatible" && (
                   <Field label="URL base" hint="Ex.: http://localhost:11434/v1">
                     <input value={p.baseUrl} onChange={(e) => patchProvider(p.key, { baseUrl: e.target.value })} />
                   </Field>
                 )}
-                <SecretField
-                  label="Chave de API"
-                  value={p.apiKey}
-                  writable={secretsWritable}
-                  onChange={(edit) => patchProvider(p.key, { apiKey: { ...p.apiKey, edit } })}
-                />
+                {p.kind !== "node" && (
+                  <SecretField
+                    label="Chave de API"
+                    value={p.apiKey}
+                    writable={secretsWritable}
+                    onChange={(edit) => patchProvider(p.key, { apiKey: { ...p.apiKey, edit } })}
+                  />
+                )}
               </div>
             </li>
           ))}

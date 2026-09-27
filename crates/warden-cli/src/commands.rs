@@ -177,6 +177,7 @@ pub fn kind_label(kind: Provider) -> &'static str {
         Provider::Openai => "openai",
         Provider::Anthropic => "anthropic",
         Provider::OpenaiCompatible => "openai_compatible",
+        Provider::Node => "node",
     }
 }
 

@@ -278,6 +278,7 @@ impl NodeTool {
                     "node": u.id,
                     "name": u.node.name,
                     "mcp_tools": mcp,
+                    "models": u.node.offer.models,
                     "mcp_tool_prefix": format!("{}__", node_slug(&u.node.name)),
                     "description": u.node.offer.description,
                     "tags": u.node.offer.tags,

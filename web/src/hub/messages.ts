@@ -111,7 +111,7 @@ export interface SecretStatus {
 /** Mirrors `SecretEdit`: what a save does to one secret. `keep` is an untouched field. */
 export type SecretEdit = { action: "keep" } | { action: "set"; value: string } | { action: "clear" };
 
-export type ProviderKind = "gemini" | "openai" | "anthropic" | "openai_compatible";
+export type ProviderKind = "gemini" | "openai" | "anthropic" | "openai_compatible" | "node";
 
 /** Mirrors `ProviderSettingsDto`. Empty strings mean "not set". */
 export interface ProviderSettings {
@@ -120,6 +120,8 @@ export interface ProviderSettings {
   baseUrl: string;
   model: string;
   apiKey: SecretStatus;
+  /** Kind "node" only (P93): the node's device id. */
+  node?: string;
 }
 
 /** Mirrors `ProviderEditDto`. `originalId` is the id it had when loaded (absent for a new one), so a
@@ -131,6 +133,8 @@ export interface ProviderEdit {
   baseUrl: string;
   model: string;
   apiKey: SecretEdit;
+  /** Kind "node" only (P93): the node's device id. */
+  node: string;
 }
 
 /** Mirrors `AgentSettingsDto`. `providerId` is empty for "no default model"; `allowedTools: null`
@@ -218,6 +222,8 @@ export interface NodeOffer {
   files: boolean;
   /** Tools of the MCP servers it lends; the agents see each as `<node>__<tool>`. */
   mcpTools?: { name: string; description: string }[];
+  /** Model providers it lends, by their id on the node (a hub provider of kind "node" uses one). */
+  models?: string[];
 }
 
 /** Mirrors `NodeInfoDto`: a node, what it offers and what the hub lets agents do with it. */

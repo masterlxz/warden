@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use warden_core::model::{Attachment, Usage};
+use warden_core::model::{Attachment, Message, StreamEvent, Usage};
 use warden_core::skill::Skill;
 use warden_core::spend::{LimitStatus, Price, SpendBreakdown, SpendBucket, SpendGuard};
 use warden_core::tool::ToolSpec;
@@ -255,6 +255,10 @@ pub struct NodeOfferDto {
     /// them. The hub offers each as a tool of its own, `<node>__<tool>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_tools: Vec<ToolSpec>,
+    /// Model providers this node lends (fatia 3), by their id on the node. A hub reaches one through
+    /// a `[[providers]]` entry with `kind = "node"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
 }
 
 /// One node for the screens (P93): a device that announced itself as a node, or one `[[nodes]]`
@@ -370,6 +374,9 @@ pub struct ProviderSettingsDto {
     pub base_url: String,
     pub model: String,
     pub api_key: SecretStatusDto,
+    /// Kind "node" only (P93): the node's device id. Empty otherwise.
+    #[serde(default)]
+    pub node: String,
 }
 
 /// One model provider as a save sends it. `original_id` is the id it had when the screen loaded
@@ -384,6 +391,9 @@ pub struct ProviderEditDto {
     pub base_url: String,
     pub model: String,
     pub api_key: SecretEdit,
+    /// Kind "node" only (P93): the node's device id.
+    #[serde(default)]
+    pub node: String,
 }
 
 /// One agent, both ways. `original_id` only matters in a save (see `ProviderEditDto`): it carries a
@@ -704,6 +714,23 @@ pub enum ClientMessage {
         call_id: u64,
         message: String,
     },
+    /// A node's answer to `ServerMessage::ModelRequest` (P93), one stream event at a time.
+    ModelEvent {
+        request_id: u64,
+        event: StreamEvent,
+    },
+    /// The node's model finished that answer.
+    ModelDone {
+        request_id: u64,
+    },
+    /// The node's model failed. `transient`: it was busy or unreachable there (a 503, Ollama down),
+    /// so a hub combo may move on to its next provider.
+    ModelError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        transient: bool,
+    },
     /// Asks the server to route a tool call to a *different* connected device (Fase 9.3/9.4) —
     /// unlike `Hello.tools`/`ToolCallRequest` (Fase 7.4, always a round-trip back to the same
     /// connection that advertised the tool), this lets any connected client reach a specific
@@ -1001,6 +1028,19 @@ pub enum ServerMessage {
         call_id: u64,
         tool: String,
         arguments: Value,
+    },
+    /// Asks a node to run one model call on its provider `model` (P93) — answered by
+    /// `ModelEvent`s and a `ModelDone`/`ModelError` with the same `request_id`.
+    ModelRequest {
+        request_id: u64,
+        model: String,
+        messages: Vec<Message>,
+        #[serde(default)]
+        tools: Vec<ToolSpec>,
+    },
+    /// The hub no longer wants that answer (the turn ended or dropped it).
+    ModelCancel {
+        request_id: u64,
     },
     /// Reply to a `ClientMessage::CallDeviceTool` (Fase 9.4) — the target device answered. Same
     /// `call_id` the caller allocated for that request.
@@ -1725,6 +1765,7 @@ mod tests {
                 base_url: String::new(),
                 model: String::new(),
                 api_key: SecretEdit::Set("sk".into()),
+                node: String::new(),
             }],
             active_provider: "primary".into(),
             agents: Vec::new(),
@@ -1807,7 +1848,13 @@ mod tests {
         )
         .unwrap();
         let ClientMessage::Hello { node: Some(offer), .. } = hello else { panic!("{hello:?}") };
-        assert_eq!(offer, NodeOfferDto { description: "PC".into(), tags: vec!["gpu".into()], shell: true, files: false, mcp_tools: vec![] });
+        assert_eq!(offer, NodeOfferDto { description: "PC".into(), tags: vec!["gpu".into()], shell: true, files: false, mcp_tools: vec![], models: vec![] });
+
+        let event: ClientMessage = serde_json::from_str(r#"{"type":"modelEvent","requestId":4,"event":{"kind":"content_delta","data":"Olá"}}"#).unwrap();
+        assert!(matches!(event, ClientMessage::ModelEvent { request_id: 4, event: StreamEvent::ContentDelta(ref t) } if t == "Olá"));
+        let request = ServerMessage::ModelRequest { request_id: 4, model: "ollama".into(), messages: vec![Message::user("oi")], tools: vec![] };
+        let back: ServerMessage = serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert!(matches!(back, ServerMessage::ModelRequest { request_id: 4, ref model, ref messages, .. } if model == "ollama" && messages[0].content == "oi"));
         // A client from before P93 sends no `node` and is no node.
         let plain: ClientMessage = serde_json::from_str(r#"{"type":"hello","deviceId":"p","deviceName":"Phone","authKey":"k"}"#).unwrap();
         assert!(matches!(plain, ClientMessage::Hello { node: None, .. }));

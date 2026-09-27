@@ -430,7 +430,7 @@ interface NodeInfo {
   name: string;
   online: boolean;
   approved: boolean;
-  offer?: { description: string; tags: string[]; shell: boolean; files: boolean; mcpTools?: { name: string }[] };
+  offer?: { description: string; tags: string[]; shell: boolean; files: boolean; mcpTools?: { name: string }[]; models?: string[] };
   enabled: boolean;
   agents: string[];
   requireApproval: boolean;
@@ -450,6 +450,7 @@ function offerLabel(node: NodeInfo): string {
     node.offer.shell && "its shell",
     node.offer.files && "a folder",
     mcp.length > 0 && `${mcp.length} MCP tool(s) (${mcp.map((t) => t.name).join(", ")})`,
+    (node.offer.models ?? []).length > 0 && `the model(s) ${(node.offer.models ?? []).join(", ")}`,
   ].filter(Boolean);
   return parts.length ? `lends ${parts.join(" and ")}` : "lends nothing";
 }

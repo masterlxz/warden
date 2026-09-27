@@ -103,6 +103,11 @@ struct NodeArgs {
     /// config file. Repeatable; a server not named here isn't lent.
     #[arg(long = "mcp")]
     mcp: Vec<String>,
+    /// Lend one of this machine's model providers (its local Ollama, say), by its id in
+    /// `[[providers]]` of this machine's config file. Repeatable. On the hub, a `[[providers]]` entry
+    /// with `kind = "node"`, this node's id and that provider's id uses it.
+    #[arg(long = "model")]
+    models: Vec<String>,
     /// This machine's config file (TOML), where --mcp looks the servers up. Defaults to the OS config dir.
     #[arg(long)]
     config: Option<String>,
@@ -472,8 +477,8 @@ fn now_millis() -> i64 {
 
 async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
-        args.shell || args.files.is_some() || !args.mcp.is_empty(),
-        "a node has to lend something — pass --shell, --files <folder>, --mcp <server>, or a mix"
+        args.shell || args.files.is_some() || !args.mcp.is_empty() || !args.models.is_empty(),
+        "a node has to lend something — pass --shell, --files <folder>, --mcp <server>, --model <provider>, or a mix"
     );
     if let Some(dir) = &args.files {
         anyhow::ensure!(dir.is_dir(), "--files {} is not a folder", dir.display());
@@ -482,7 +487,8 @@ async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
     let identity_path = warden_server::node_client::default_node_identity_path().context("could not determine the OS config directory")?;
     let identity = warden_server::node_client::NodeIdentity::load_or_create(&identity_path, &name)?;
     let mcp_tools = lend_mcp_servers(&args.mcp, args.config.as_deref()).await?;
-    let local = std::sync::Arc::new(warden_server::node_client::LocalNode::new(args.shell, args.files.clone()).with_mcp_tools(mcp_tools));
+    let models = lend_models(&args.models, args.config.as_deref())?;
+    let local = std::sync::Arc::new(warden_server::node_client::LocalNode::new(args.shell, args.files.clone()).with_mcp_tools(mcp_tools).with_models(models));
     let session = warden_server::node_client::NodeSession {
         hub_url: args.hub.clone(),
         name,
@@ -499,6 +505,9 @@ async fn run_node_command(args: NodeArgs) -> anyhow::Result<()> {
     }
     if !args.mcp.is_empty() {
         lent.push(format!("{} MCP tool(s) from {}", session_tool_count(&local), args.mcp.join(", ")));
+    }
+    if !args.models.is_empty() {
+        lent.push(format!("the model(s) {}", args.models.join(", ")));
     }
     let lends = lent.join(", ");
     eprintln!("warden-server node: '{}' ({}) lends {lends}", session.name, identity.device_id);
@@ -532,6 +541,27 @@ async fn lend_mcp_servers(names: &[String], config: Option<&str>) -> anyhow::Res
         warden_bootstrap::add_mcp_tools(&mut tools, name, Ok(lent));
     }
     Ok(tools)
+}
+
+/// Builds each model provider named with --model from this machine's config — like --mcp, a name that
+/// isn't there, or a provider that can't be built, stops the node from starting.
+fn lend_models(ids: &[String], config: Option<&str>) -> anyhow::Result<Vec<(String, std::sync::Arc<dyn warden_core::model::ModelProvider>)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let config_path = config.map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let file = load_config_from_path(&config_path, config.is_some())?;
+    ids.iter()
+        .map(|id| {
+            let Some(provider) = file.providers.iter().find(|p| &p.id == id) else {
+                let known: Vec<&str> = file.providers.iter().map(|p| p.id.as_str()).collect();
+                anyhow::bail!("no provider named '{id}' in {} (it has: {})", config_path.display(), if known.is_empty() { "none".to_string() } else { known.join(", ") });
+            };
+            anyhow::ensure!(provider.kind != warden_bootstrap::Provider::Node, "provider '{id}' is itself another node's model — lend a local one");
+            let built = warden_bootstrap::build_model_provider(provider, None).with_context(|| format!("provider '{id}' can't be used"))?;
+            Ok((id.clone(), built))
+        })
+        .collect()
 }
 
 fn run_nodes_command(action: NodesAction, config: Option<String>) -> anyhow::Result<()> {

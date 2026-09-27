@@ -16,7 +16,8 @@ pub mod openai;
 
 pub use fallback::{FallbackProvider, ProviderFallback};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     System,
     User,
@@ -28,7 +29,7 @@ pub enum Role {
 /// A tool invocation requested by the model — either present on an assistant
 /// `Message` (what the model asked to run) or standalone in a `Response`
 /// (what the provider just parsed out of the model's reply).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -38,6 +39,7 @@ pub struct ToolCall {
     /// request — omitting it makes the API reject the request outright (400 INVALID_ARGUMENT)
     /// once the conversation has more than one turn involving a tool call. Always `None` for
     /// OpenAI/Anthropic, which have no equivalent concept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought_signature: Option<String>,
 }
 
@@ -57,7 +59,8 @@ pub const PDF_MIME_TYPE: &str = "application/pdf";
 /// The mime types a user may attach to a turn — what every provider accepts inline.
 pub const USER_ATTACHMENT_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif", PDF_MIME_TYPE];
 
-#[derive(Debug, Clone)]
+/// Serializable so a hub can send a turn to a node's own model (P93) — the wire shape is this one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
@@ -138,7 +141,8 @@ pub struct Response {
 /// One fragment of a streaming `chat_stream` call. Providers emit these as their HTTP response
 /// arrives incrementally (SSE); `ResponseAccumulator` reassembles them into the same `Response`
 /// shape a non-streaming call would have produced.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// A fragment of the assistant's text content, in arrival order.
     ContentDelta(String),
@@ -179,6 +183,20 @@ impl std::fmt::Display for ProviderHttpError {
 }
 
 impl std::error::Error for ProviderHttpError {}
+
+/// The provider can't be reached right now — a node (P93) that is offline, not approved, switched off
+/// or closed to this agent, or a node model asked for outside a hub. `FallbackProvider` treats it
+/// like a 503: a combo moves on to its next provider.
+#[derive(Debug, Clone)]
+pub struct ProviderUnavailable(pub String);
+
+impl std::fmt::Display for ProviderUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProviderUnavailable {}
 
 pub type ChatStream = Pin<Box<dyn Stream<Item = anyhow::Result<StreamEvent>> + Send>>;
 
@@ -304,6 +322,13 @@ pub trait ModelProvider: Send + Sync {
     }
 
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream>;
+
+    /// A copy that knows which agent is asking (P93: a node's model is only for the agents that
+    /// node allows), or `None` when the agent makes no difference — the default. Applied by
+    /// `Orchestrator::with_agent`/`with_model`, like `Tool::scoped_to_agent`.
+    fn for_agent(&self, _agent: Option<&str>) -> Option<std::sync::Arc<dyn ModelProvider>> {
+        None
+    }
 
     async fn chat(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<Response> {
         let stream = self.chat_stream(messages, tools).await?;

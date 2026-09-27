@@ -393,6 +393,7 @@ api_key = "sk-ant-original-secret-9999"
                     kind: p.kind.clone(),
                     base_url: p.base_url.clone(),
                     model: p.model.clone(),
+                    node: p.node.clone(),
                     api_key: SecretEdit::Keep,
                 })
                 .collect(),

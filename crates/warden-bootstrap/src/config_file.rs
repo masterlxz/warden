@@ -192,7 +192,7 @@ mod tests {
     use crate::{Provider, ProviderConfig};
 
     fn provider(id: &str, model: &str) -> ProviderConfig {
-        ProviderConfig { id: id.to_string(), kind: Provider::Gemini, api_key: None, base_url: None, model: Some(model.to_string()) }
+        ProviderConfig { id: id.to_string(), kind: Provider::Gemini, api_key: None, base_url: None, model: Some(model.to_string()), node: None }
     }
 
     fn config_with(providers: Vec<ProviderConfig>, active: &str) -> FileConfig {

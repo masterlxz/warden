@@ -43,6 +43,7 @@ pub fn provider_kind_str(kind: Provider) -> &'static str {
         Provider::Openai => "openai",
         Provider::Anthropic => "anthropic",
         Provider::OpenaiCompatible => "openai_compatible",
+        Provider::Node => "node",
     }
 }
 
@@ -52,6 +53,7 @@ pub fn provider_kind_from_str(kind: &str) -> Result<Provider, String> {
         "openai" => Ok(Provider::Openai),
         "anthropic" => Ok(Provider::Anthropic),
         "openai_compatible" => Ok(Provider::OpenaiCompatible),
+        "node" => Ok(Provider::Node),
         other => Err(format!("unknown provider kind '{other}'")),
     }
 }
@@ -190,7 +192,17 @@ pub fn check_providers(providers: Vec<ProviderConfig>) -> Result<Vec<ProviderCon
             return Err(format!("duplicate provider name: {id}"));
         }
         let trim = |s: Option<String>| s.as_deref().and_then(non_empty);
-        checked.push(ProviderConfig { id, kind: p.kind, api_key: trim(p.api_key), base_url: trim(p.base_url), model: trim(p.model) });
+        let node = trim(p.node);
+        if p.kind == Provider::Node {
+            if node.is_none() {
+                return Err(format!("provider '{id}' is a node's model: say which node (its device id)"));
+            }
+            if trim(p.model.clone()).is_none() {
+                return Err(format!("provider '{id}' is a node's model: say which of the node's providers (its id on the node)"));
+            }
+        }
+        let node = if p.kind == Provider::Node { node } else { None };
+        checked.push(ProviderConfig { id, kind: p.kind, api_key: trim(p.api_key), base_url: trim(p.base_url), model: trim(p.model), node });
     }
     Ok(checked)
 }
@@ -298,6 +310,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 base_url: p.base_url.clone().unwrap_or_default(),
                 model: p.model.clone().unwrap_or_default(),
                 api_key: secret_status(p.api_key.as_deref()),
+                node: p.node.clone().unwrap_or_default(),
             })
             .collect(),
         active_provider: config.active_provider.clone().unwrap_or_default(),
@@ -367,6 +380,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             api_key: apply_secret(edit.api_key, saved_key),
             base_url: Some(edit.base_url),
             model: Some(edit.model),
+            node: Some(edit.node),
         });
     }
     let providers = check_providers(providers)?;
@@ -448,12 +462,38 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_node_model_needs_its_node_and_its_provider_there() {
+        let node = |node: Option<&str>, model: Option<&str>| ProviderConfig {
+            id: "casa".into(),
+            kind: Provider::Node,
+            api_key: Some("ignored".into()),
+            base_url: None,
+            model: model.map(str::to_string),
+            node: node.map(str::to_string),
+        };
+        assert!(check_providers(vec![node(None, Some("ollama"))]).is_err());
+        assert!(check_providers(vec![node(Some("node-casa"), None)]).is_err());
+        let checked = check_providers(vec![node(Some(" node-casa "), Some("ollama"))]).unwrap();
+        assert_eq!((checked[0].node.as_deref(), checked[0].model.as_deref()), (Some("node-casa"), Some("ollama")));
+        assert_eq!(provider_kind_from_str("node").unwrap(), Provider::Node);
+        assert_eq!(provider_kind_str(Provider::Node), "node");
+
+        // A `node` left on another kind (the kind was switched in a form) doesn't stick.
+        let other = ProviderConfig { kind: Provider::Gemini, ..node(Some("node-casa"), Some("gemini-3.5-flash")) };
+        assert_eq!(check_providers(vec![other]).unwrap()[0].node, None);
+
+        let toml_text = "[[providers]]\nid = \"casa\"\nkind = \"node\"\nnode = \"node-casa\"\nmodel = \"ollama\"\n";
+        let config: FileConfig = toml::from_str(toml_text).unwrap();
+        assert_eq!((config.providers[0].kind, config.providers[0].node.as_deref()), (Provider::Node, Some("node-casa")));
+    }
+
     use super::*;
     use crate::SshHostConfig;
     use warden_server_protocol::protocol::ProviderEditDto;
 
     fn provider(id: &str, key: Option<&str>) -> ProviderConfig {
-        ProviderConfig { id: id.into(), kind: Provider::Gemini, api_key: key.map(Into::into), base_url: None, model: None }
+        ProviderConfig { id: id.into(), kind: Provider::Gemini, api_key: key.map(Into::into), base_url: None, model: None, node: None }
     }
 
     fn agent(id: &str) -> AgentConfig {
@@ -506,7 +546,7 @@ mod tests {
             providers: view
                 .providers
                 .into_iter()
-                .map(|p| ProviderEditDto { original_id: Some(p.id.clone()), id: p.id, kind: p.kind, base_url: p.base_url, model: p.model, api_key: SecretEdit::Keep })
+                .map(|p| ProviderEditDto { original_id: Some(p.id.clone()), id: p.id, kind: p.kind, base_url: p.base_url, model: p.model, api_key: SecretEdit::Keep, node: String::new() })
                 .collect(),
             active_provider: view.active_provider,
             agents: view.agents.into_iter().map(|a| AgentSettingsDto { original_id: Some(a.id.clone()), ..a }).collect(),
@@ -587,6 +627,7 @@ mod tests {
             base_url: String::new(),
             model: String::new(),
             api_key: SecretEdit::Keep,
+            node: String::new(),
         });
         let saved = apply_hub_settings(sample(), update).unwrap();
         assert_eq!(saved.providers[2].api_key, None);
@@ -651,6 +692,7 @@ mod tests {
             base_url: String::new(),
             model: String::new(),
             api_key: SecretEdit::Set("sk-new".into()),
+            node: String::new(),
         });
         update.active_provider = "oa".into();
         let saved = apply_hub_settings(legacy, update).unwrap();

@@ -62,7 +62,7 @@ export interface Conversation {
 /** Mirrors `warden_bootstrap::Provider`. `openaiCompatible` covers any other server that speaks
  * the OpenAI chat-completions wire format — Ollama (local, no real key needed), OpenRouter,
  * Groq, DeepSeek, etc. — via a configurable `baseUrl` instead of one dedicated kind per company. */
-export type ProviderKind = "gemini" | "openai" | "anthropic" | "openai_compatible";
+export type ProviderKind = "gemini" | "openai" | "anthropic" | "openai_compatible" | "node";
 
 /** One entry of the provider registry (Sessão 35) — the user can add/edit/delete any number of
  * these in Settings, each independently selectable as the active one. Empty string means
@@ -75,8 +75,11 @@ export interface ProviderEntry {
   apiKey: string;
   /** Only meaningful (and required) for `kind === "openai_compatible"`. */
   baseUrl: string;
-  /** Falls back to `defaultModels[kind]` when empty — no such default for `openai_compatible`. */
+  /** Falls back to `defaultModels[kind]` when empty — no such default for `openai_compatible`. For
+   * `node`, the id of the provider on that node. */
   model: string;
+  /** Kind "node" only (P93): the node's device id. */
+  node?: string;
 }
 
 /** One external MCP server (Phase 5.2/P25) to connect to on startup — mirrors
