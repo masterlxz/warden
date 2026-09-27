@@ -430,14 +430,30 @@ interface Person {
   name: string;
   role: string;
   mustChangePassword: boolean;
+  /** Fatia 2 — the tools you set for them; absent/null is the safe default. */
+  tools?: string[] | null;
+  /** Their own agents' names. */
+  agents?: string[];
 }
+
+/** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
+function safeByDefault(tool: string): boolean {
+  return ["read_file", "write_file", "use_skill", "read_skill_file", "manage_skill", "delegate_task", "jobs", "budget", "generate_document"].includes(tool) || tool.startsWith("tavily");
+}
+
+/** Mirrors `NEVER_FOR_MEMBERS`: never theirs, so never offered. */
+const NEVER_FOR_MEMBERS = ["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats"];
 
 interface PeoplePayload {
   users: Person[];
   tempPassword: string | null;
 }
 
-type PeopleDraft = { kind: "add"; id: string; name: string } | { kind: "rename"; id: string; name: string };
+type PeopleDraft =
+  | { kind: "add"; id: string; name: string }
+  | { kind: "rename"; id: string; name: string }
+  /** `null`: the safe default. */
+  | { kind: "tools"; id: string; tools: string[] | null };
 
 /**
  * P84 — the members of this workspace besides you: `[[users]]` in config.toml, which syncs, so someone
@@ -451,14 +467,18 @@ function PeopleSection() {
   const [shown, setShown] = useState<{ id: string; password: string } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toolNames, setToolNames] = useState<string[]>([]);
 
   useEffect(() => {
     invoke<PeoplePayload>("list_people")
       .then((p) => setPeople(p.users))
       .catch((err) => setError(String(err)));
+    invoke<string[]>("list_tool_names")
+      .then((names) => setToolNames(names.filter((n) => !NEVER_FOR_MEMBERS.includes(n))))
+      .catch(() => setToolNames([]));
   }, []);
 
-  async function run(command: string, args: Record<string, string>, shownFor?: string) {
+  async function run(command: string, args: Record<string, unknown>, shownFor?: string) {
     setError(null);
     try {
       const payload = await invoke<PeoplePayload>(command, args);
@@ -476,6 +496,8 @@ function PeopleSection() {
     if (draft.kind === "add") {
       const id = draft.id.trim().toLowerCase();
       await run("add_person", { id, name: draft.name }, id);
+    } else if (draft.kind === "tools") {
+      await run("set_person_tools", { id: draft.id, tools: draft.tools });
     } else {
       await run("rename_person", { id: draft.id, name: draft.name });
     }
@@ -491,8 +513,8 @@ function PeopleSection() {
       </div>
       <p className="settings-hint">
         Others who use this Warden. Each signs in on the web or the phone with their own username and password, and has their own vault and
-        conversations, which you don&apos;t see. For now they talk to your agents with their own memory, without the shell, nodes or your
-        integrations.
+        conversations, which you don&apos;t see. They talk to the agents you share with them (Settings → Agents), always with their own
+        memory and only the tools you allow them here, and can make agents of their own.
       </p>
       {error && <p className="settings-error-banner">{error}</p>}
       {shown && (
@@ -507,7 +529,46 @@ function PeopleSection() {
         </div>
       )}
 
-      {draft && (
+      {draft?.kind === "tools" && (
+        <div className="provider-card skill-editor">
+          <span className="settings-label">Tools for {draft.id}</span>
+          <span className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              id="person-tools-default"
+              checked={draft.tools === null}
+              onChange={(e) => setDraft({ ...draft, tools: e.currentTarget.checked ? null : toolNames.filter(safeByDefault) })}
+            />
+            <label htmlFor="person-tools-default">The safe default (their own vault's files and skills, web search)</label>
+          </span>
+          {draft.tools !== null &&
+            toolNames.map((tool) => (
+              <span key={tool} className="settings-checkbox-row">
+                <input
+                  type="checkbox"
+                  id={`person-tool-${tool}`}
+                  checked={draft.tools!.includes(tool)}
+                  onChange={(e) => setDraft({ ...draft, tools: e.currentTarget.checked ? [...draft.tools!, tool] : draft.tools!.filter((t) => t !== tool) })}
+                />
+                <label htmlFor={`person-tool-${tool}`}>
+                  {tool}
+                  {!safeByDefault(tool) && <span className="settings-hint"> — reaches what's yours (shell, nodes, integrations)</span>}
+                </label>
+              </span>
+            ))}
+          <span className="settings-hint">An agent never goes past this, nor past its own tools.</span>
+          <div className="skill-editor-actions">
+            <button type="button" className="settings-save-btn" onClick={() => void save()}>
+              Save
+            </button>
+            <button type="button" className="settings-browse-btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {draft && draft.kind !== "tools" && (
         <div className="provider-card skill-editor">
           {draft.kind === "add" && (
             <label className="settings-field">
@@ -546,7 +607,10 @@ function PeopleSection() {
                     {person.mustChangePassword ? "provisional password" : "active"}
                   </span>
                 </div>
-                <span className="workspace-device-meta">{person.id}</span>
+                <span className="workspace-device-meta">
+                  {person.id} · {person.tools == null ? "default tools" : person.tools.length === 0 ? "no tools" : `tools: ${person.tools.join(", ")}`}
+                  {person.agents && person.agents.length > 0 ? ` · own agents: ${person.agents.join(", ")}` : ""}
+                </span>
                 {confirmRemove === person.id && (
                   <span className="settings-hint">
                     {person.name} leaves the workspace and their devices are disconnected. Their vault and conversations stay on disk.
@@ -567,6 +631,9 @@ function PeopleSection() {
                   <>
                     <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ kind: "rename", id: person.id, name: person.name })}>
                       Rename
+                    </button>
+                    <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ kind: "tools", id: person.id, tools: person.tools ?? null })}>
+                      Tools
                     </button>
                     <button type="button" className="settings-browse-btn" onClick={() => void run("reset_person_password", { id: person.id }, person.id)}>
                       New password

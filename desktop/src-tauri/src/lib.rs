@@ -875,6 +875,7 @@ pub fn run() {
             people_cmds::add_person,
             people_cmds::rename_person,
             people_cmds::reset_person_password,
+            people_cmds::set_person_tools,
             people_cmds::remove_person,
             lend_cmds::get_lend_status,
             lend_cmds::lend_options,

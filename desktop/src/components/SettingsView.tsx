@@ -532,6 +532,7 @@ function AgentCard({
   providers,
   combos,
   toolNames,
+  people,
   onChange,
   onDelete,
 }: {
@@ -540,6 +541,8 @@ function AgentCard({
   combos: Combo[];
   /** Every tool the running app has, for the "Restrict tools" list. */
   toolNames: string[];
+  /** P84 — the workspace's members, to share this agent with. */
+  people: { id: string; name: string }[];
   onChange: (next: AgentEntry) => void;
   onDelete: () => void;
 }) {
@@ -697,6 +700,40 @@ function AgentCard({
           {agent.allowedTools.length === 0 && (
             <span className="settings-hint">No tool ticked — this agent can only chat.</span>
           )}
+        </div>
+      )}
+      {people.length > 0 && (
+        <div className="settings-field agent-tool-list" role="group" aria-label={`People ${agent.id || "this agent"} is shared with`}>
+          <span className="settings-label">Shared with</span>
+          <span className="settings-hint">They use it with their own memory and only the tools you allow them (Workspace → People).</span>
+          <span className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              id={`share-${agent.id}-all`}
+              checked={(agent.sharedWith ?? []).includes("*")}
+              onChange={(e) => onChange({ ...agent, sharedWith: e.currentTarget.checked ? ["*"] : [] })}
+            />
+            <label htmlFor={`share-${agent.id}-all`}>Everyone</label>
+          </span>
+          {!(agent.sharedWith ?? []).includes("*") &&
+            people.map((p) => (
+              <span key={p.id} className="settings-checkbox-row">
+                <input
+                  type="checkbox"
+                  id={`share-${agent.id}-${p.id}`}
+                  checked={(agent.sharedWith ?? []).includes(p.id)}
+                  onChange={(e) =>
+                    onChange({
+                      ...agent,
+                      sharedWith: e.currentTarget.checked ? [...(agent.sharedWith ?? []), p.id] : (agent.sharedWith ?? []).filter((s) => s !== p.id),
+                    })
+                  }
+                />
+                <label htmlFor={`share-${agent.id}-${p.id}`}>
+                  {p.name} ({p.id})
+                </label>
+              </span>
+            ))}
         </div>
       )}
     </div>
@@ -974,11 +1011,15 @@ function SettingsView() {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [toolNames, setToolNames] = useState<string[]>([]);
+  const [people, setPeople] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     invoke<string[]>("list_tool_names")
       .then(setToolNames)
       .catch(() => setToolNames([]));
+    invoke<{ users: { id: string; name: string }[] }>("list_people")
+      .then((p) => setPeople(p.users))
+      .catch(() => setPeople([]));
     invoke<Settings>("get_settings")
       .then(setForm)
       .catch((err) => setError(String(err)))
@@ -1329,7 +1370,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} providers={form.providers} combos={form.combos} toolNames={toolNames} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} providers={form.providers} combos={form.combos} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

@@ -11,6 +11,8 @@ interface ApiKeyInfo {
   lastUsedAtMs: number | null;
   /** The only agent this key speaks as; null for a general key. */
   agentId: string | null;
+  /** P84 — the member it belongs to; null for yours. */
+  user: string | null;
 }
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -141,6 +143,7 @@ function ApiKeysSection() {
               <div>
                 <strong>{key.name}</strong> <code>{key.shown}…</code>
                 <div className="settings-hint">
+                  {key.user && `${key.user}'s key · `}
                   {key.agentId
                     ? `Only speaks as ${key.agentId}${agentIds.length > 0 && !agentIds.includes(key.agentId) ? " (agent removed — this key no longer works)" : ""}`
                     : "General — picks the agent per call"}

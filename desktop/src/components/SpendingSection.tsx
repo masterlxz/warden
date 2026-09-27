@@ -9,6 +9,7 @@ const SCOPE_OPTIONS: { value: LimitScope; label: string }[] = [
   { value: "agent", label: "One agent" },
   { value: "channel", label: "One channel" },
   { value: "user", label: "One person on a channel" },
+  { value: "person", label: "One member of the workspace" },
 ];
 
 /** A blank field is `null`; anything that is not a number is `null` too, and the submit check
@@ -188,6 +189,19 @@ function LimitCard({
                 </option>
               ))}
             </select>
+          </label>
+        )}
+        {limit.scope === "person" && (
+          <label className="settings-field">
+            <span className="settings-label">Member (username)</span>
+            <input
+              className="settings-input"
+              type="text"
+              placeholder="ana"
+              value={limit.target}
+              onChange={(e) => onChange({ ...limit, target: e.currentTarget.value })}
+            />
+            <span className="settings-hint">Covers everything they spend: the web, the phone and their API keys.</span>
           </label>
         )}
         {limit.scope === "user" && (

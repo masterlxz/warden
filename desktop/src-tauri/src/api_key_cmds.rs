@@ -15,6 +15,8 @@ pub struct ApiKeyInfo {
     last_used_at_ms: Option<i64>,
     /// The only agent this key speaks as; `None` for a general key.
     agent_id: Option<String>,
+    /// P84: the member the key belongs to; `None` for the owner's.
+    user: Option<String>,
 }
 
 impl From<ApiKey> for ApiKeyInfo {
@@ -26,6 +28,7 @@ impl From<ApiKey> for ApiKeyInfo {
             created_at_ms: key.created_at_ms,
             last_used_at_ms: key.last_used_at_ms,
             agent_id: key.agent_id,
+            user: key.user,
         }
     }
 }

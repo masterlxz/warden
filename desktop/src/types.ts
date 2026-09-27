@@ -141,6 +141,8 @@ export interface AgentEntry {
   /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
    * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
   allowedTools: string[] | null;
+  /** P84 — the people this agent is shared with, by username, or ["*"] for everyone. */
+  sharedWith?: string[];
 }
 
 /** Mirrors `ssh_cmds::SshHostPayload` (P47) — an SSH server the AI can run commands on through the
@@ -336,7 +338,8 @@ export interface SkillEntry {
   agents: string[];
 }
 
-export type LimitScope = "global" | "agent" | "channel" | "user";
+/** P84 — `person` is one member of the workspace, on every channel. */
+export type LimitScope = "global" | "agent" | "channel" | "user" | "person";
 
 /** Mirrors `spend_cmds::LimitPayload` (P4) — one spending ceiling: at most `maxTokens` and/or
  * `maxCostUsd` inside any sliding `windowHours` stretch. `target` is an empty string for `global`;

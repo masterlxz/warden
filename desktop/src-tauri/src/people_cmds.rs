@@ -6,7 +6,7 @@
 //! No pairing key is asked: this is the owner's own machine, like the rest of its settings.
 
 use serde::Serialize;
-use warden_bootstrap::users::{add_user, generate_temp_password, remove_user, rename_user, reset_password};
+use warden_bootstrap::users::{add_user, generate_temp_password, remove_user, rename_user, reset_password, set_user_tools};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server::people::user_info;
 use warden_server::PairingStore;
@@ -51,6 +51,12 @@ pub fn add_person(id: String, name: String) -> Result<PeoplePayload, String> {
 #[tauri::command]
 pub fn rename_person(id: String, name: String) -> Result<PeoplePayload, String> {
     change(|config| rename_user(config, &id, &name).map(|()| None))
+}
+
+/// P84 fatia 2: which tools a member may use; `None` is the safe default.
+#[tauri::command]
+pub fn set_person_tools(id: String, tools: Option<Vec<String>>) -> Result<PeoplePayload, String> {
+    change(|config| set_user_tools(config, &id, tools).map(|()| None))
 }
 
 #[tauri::command]
