@@ -2165,7 +2165,7 @@ O que o usuário mais quer ("rodar tarefas a qualquer momento", usar vários apa
 primeiro só os dados fáceis (aparelhos e chaves, conversas, gasto), que já bastam para outro nó assumir a API e as
 conversas; o vault fica no sync atual. O resto (agentes, configuração, vault com junção de texto) é o P86 completo.
 
-## Multiusuário no mesmo workspace (P84, desenho da Sessão 107; fatia 1 feita na Sessão 110)
+## Multiusuário no mesmo workspace (P84, desenho da Sessão 107; fatias 1 e 2 feitas nas Sessões 110 e 111)
 
 Registro de uma conversa de desenho com o usuário. Hoje o Warden é o agente pessoal de uma pessoa. A ideia é que,
 numa família (ou numa empresa, "precisa ser do mesmo jeito"), cada pessoa tenha os seus agentes e o seu vault sem
@@ -2253,8 +2253,8 @@ a esposa, "ensinando" o agente ou por uma interface.
 
 1. **Pessoas e login** (feita na Sessão 110): usuários, root e membros, login por usuário e senha, aparelho preso a
    uma pessoa, vault e conversas por pessoa.
-2. **Permissões nos agentes**: quem usa qual agente, com quais tools e limites de gasto, e chaves da Warden API por
-   pessoa.
+2. **Permissões nos agentes** (feita na Sessão 111): quem usa qual agente, com quais tools e limites de gasto, agentes
+   próprios e chaves da Warden API por pessoa.
 3. **Espaços compartilhados e audiência das notas**: o agente do root falando com outra pessoa só enxerga o que foi
    liberado para ela.
 4. **Criptografia, backup e recuperação**, com as três políticas acima.
@@ -2322,6 +2322,63 @@ a esposa, "ensinando" o agente ou por uma interface.
 - **Fora desta fatia**: a extensão e o CLI remoto seguem só com a chave (root). O chat do próprio desktop é do root.
   O membro não cria agentes e não tem Warden API. A memória fixa (`_profile.md` etc.) do vault do membro nasce
   vazia (P94).
+
+### Como ficou a fatia 2 (Sessão 111)
+
+- **Decisões do usuário**:
+  - o membro só usa os agentes que o root compartilhar, e os que já existem começam só do root;
+  - as tools são uma lista por pessoa, que começa no conjunto seguro da fatia 1;
+  - os membros criam agentes próprios, com dono;
+  - cada membro tem as próprias chaves da Warden API.
+- **Agentes** (`AgentConfig`), com dois campos novos:
+  - `owner` (`None` é do root);
+  - `shared_with` (ids de membros ou `"*"`, só nos agentes do root).
+- **Visibilidade**: uma função só decide quem vê cada agente, `users::agent_visible_to`. O root vê os dele; o membro
+  vê os dele e os compartilhados. Ela vale no chat, na Warden API (`/v1/models` e o `model`), nas chaves presas a
+  agente e no seletor.
+- **Onde os agentes dos membros ficam de fora**:
+  - a tela do root não mostra e, ao salvar, preserva os agentes dos membros (`apply_hub_settings`, o save do desktop
+    e o `/agents` do CLI);
+  - `delegate_to_agent`, `message_agent`, `manage_agents` e as tarefas agendadas só enxergam os agentes do root.
+- **Tools por pessoa** (`UserConfig.tools`):
+  - `None` é o padrão (`default_member_tool`, que saiu do `people.rs`);
+  - `set_user_tools` descarta `NEVER_FOR_MEMBERS` (`delegate_to_agent`, `message_agent`, `manage_agents`,
+    `manage_tasks`, `usage_stats`). Essas tools nunca são de um membro, porque alcançam orquestradores e conversas
+    que o `with_vault` não religa;
+  - o turno fica com a interseção entre as tools da pessoa (`member_tools`) e as do agente (o `allowed_tools` já
+    aplicado ao escopar). O hub relê o config a cada turno, então uma mudança do root vale na hora.
+- **Agentes próprios** (`save_member_agent` e `delete_member_agent`, pelas mensagens `SaveOwnAgent` e
+  `DeleteOwnAgent`):
+  - ficam sempre com o membro como dono, sem compartilhamento e sem `can_*`;
+  - as tools são cortadas às da pessoa;
+  - nome único no config inteiro;
+  - só o dono edita ou apaga;
+  - `remove_user` leva os agentes junto e tira a pessoa de todo `shared_with`.
+- **O que o membro vê**: `member_settings_view` monta os agentes que ele enxerga:
+  - os próprios completos, com `owner`;
+  - os compartilhados só pelo nome, porque a persona do root pode ter coisa privada;
+  - `tool_names` com as tools que ele tem.
+- **Gasto por pessoa**: `Scope::Person(id)` no núcleo.
+  - `SpendContext.person` e `SpendEvent.person`; o evento com `serde(default)`, então o ledger antigo continua lido;
+  - um `[[limits]]` com `scope = "person"` e `target = "<id>"` cobre a pessoa na web, no celular e na API;
+  - o escopo entrou nos editores de limites (web, desktop e o `/limits` do CLI).
+- **Sem aprovador para membros**: um turno de membro não recebe o aprovador. Ele não pode aprovar a própria extensão
+  de limite (o que anularia o limite do root), e uma tool que espera o "sim" do root é recusada. Achado pelo teste de
+  integração.
+- **Chaves da API por pessoa** (`ApiKey.user`):
+  - o membro lista, cria e revoga só as dele, confirmando com a **própria senha** no campo `pairing_key`, com a
+    mesma espera de 1 s no erro;
+  - só prende a chave a um agente que ele vê;
+  - uma chamada pela chave dele roda em `member_orchestrator` (canal `api`, `person` marcado);
+  - remover o membro revoga as chaves dele;
+  - a lista do root mostra de quem é cada chave.
+- **Telas**:
+  - web do membro: as abas **Agentes** (`MyAgentsView`) e **API** (a `ApiKeysSection` no modo membro);
+  - web do root: "Compartilhar com" nos agentes, ferramentas por pessoa na aba Pessoas (com aviso nas que alcançam o
+    que é do root), escopo "Uma pessoa" nos limites e o dono de cada chave;
+  - desktop: "Shared with", as tools na seção People (`set_person_tools`), o escopo "One member of the workspace"
+    nos limites e o dono das chaves;
+  - mobile: sem mudança, porque ele já lê os agentes pela visão do hub.
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 

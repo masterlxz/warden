@@ -179,8 +179,15 @@ warden-server users remove ana             # revokes her devices; her vault and 
 ```
 
 The web's People tab and the desktop's Workspace do the same. A member picks their own password on the
-first sign-in, talks to your agents with their own memory, and gets no shell, nodes, your MCP
-integrations or any of the hub's administration.
+first sign-in and gets none of the hub's administration. What else they get is up to you:
+
+- **agents**: only the ones you share with them (`shared_with = ["ana"]` or `["*"]`, or "Shared with"
+  in Settings), always with *their* memory; they can also make agents of their own, which only they see;
+- **tools**: a safe default (their own vault's files and skills, web search), or the list you set for
+  them in People — the shell, nodes and your MCP integrations only if you tick them;
+- **spending**: a `[[limits]]` entry with `scope = "person"` and `target = "ana"` caps her on every
+  channel, and she can't approve going past it;
+- **Warden API**: keys of their own (the web's API tab), which speak as them.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

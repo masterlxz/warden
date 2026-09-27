@@ -2,7 +2,73 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-27 (Sessão 110)
+> Última atualização: 2026-09-27 (Sessão 111)
+
+---
+
+### 2026-09-27 — Sessão 111
+
+- **Objetivo**: a fatia 2 do P84 (permissões nos agentes). Plano aprovado em Plan mode.
+- **Decisões do usuário**:
+  - agentes só compartilhados explicitamente;
+  - tools como lista por pessoa;
+  - agentes próprios dos membros, com dono;
+  - chaves da API por pessoa.
+  - O plano incluiu também o limite de gasto por pessoa.
+- **Etapa 1** (`1a2b539`):
+  - `Scope::Person` e `SpendContext`/`SpendEvent.person` no núcleo;
+  - `AgentConfig.owner`/`shared_with` e `UserConfig.tools`;
+  - `agent_visible_to`, `member_tools`, `NEVER_FOR_MEMBERS`, `save_member_agent`, `delete_member_agent` e
+    `clean_shares`;
+  - os saves (hub, desktop, CLI) preservam os agentes dos membros;
+  - delegação, recados, `manage_agents` e tarefas só enxergam os agentes do root;
+  - `LimitScope::Person` no CLI e nas configurações.
+- **Etapa 2** (`025196e`):
+  - protocolo: `SetUserTools`, `SaveOwnAgent`, `DeleteOwnAgent`, `AgentSettingsDto.shared_with`/`owner`,
+    `UserInfoDto.tools`/`agents` e `ApiKeyDto.user`;
+  - hub: visibilidade no chat, tools lidas a cada turno, visão de configurações do membro, agentes próprios, chaves
+    da API por pessoa (com a senha do membro) e a Warden API rodando a chave do membro como membro.
+- **Etapa 3** (`7781a43`), web: "Compartilhar com", ferramentas por pessoa na aba Pessoas, escopo "Uma pessoa", as
+  abas Agentes e API do membro e o dono das chaves.
+- **Etapa 4** (`1fad91a`), desktop: "Shared with", tools por pessoa na seção People, escopo "One member of the
+  workspace" e o dono das chaves.
+- **Achados**:
+  - **o membro podia aprovar a extensão do próprio limite**, porque o turno dele recebia o aprovador da conexão.
+    Agora o turno de um membro não tem aprovador, e o limite é parada firme (achado pelo teste de integração);
+  - o `rustc` caiu várias vezes durante os builds (SIGSEGV, ICE e crash do `lld`). Repetir passa; registrado no
+    **P101**. Um script no scratchpad repetiu os builds que caíam.
+- Docs: `ARCHITECTURE.md` ("Como ficou a fatia 2"), `PENDING.md` (P84 atualizado, **P100** e **P101** novos),
+  `ROADMAP.md` e `README.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 876 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `tsc` e `build`
+  da web e do desktop limpos. O mobile não mudou.
+- **Testes novos**:
+  - núcleo (2): o limite por pessoa soma dois canais e não pega outra pessoa; uma linha antiga do ledger continua
+    lida;
+  - bootstrap (5): quem vê qual agente, as tools do membro (padrão, lista e as proibidas), agentes próprios (dono,
+    sem poderes, tools cortadas, nome ocupado, não é de outro, remoção), limpeza dos compartilhamentos, e o save do
+    root mantendo os agentes dos membros;
+  - **integração com `Server` real** (`tests/people.rs`, 2 novos):
+    - agentes compartilhados e privado;
+    - interseção de tools e `SetUserTools`, sem `delegate_to_agent`;
+    - agente próprio invisível ao root;
+    - limite por pessoa parando só a Ana;
+    - chaves da API da Ana: senha dela, agente que ela não vê recusado, a lista só dela, sem revogar a do root,
+      `/v1/models` só com os agentes dela, a chamada escrevendo no vault dela, o 404 no agente privado e o 401
+      depois da remoção.
+- **Ponta a ponta com o binário real e o `connection.ts` da web** (scratchpad isolado, modelo falso):
+  - a Ana não via nada antes de o root compartilhar o `family` pela tela de configurações, e depois via;
+  - o agente privado foi recusado;
+  - o modelo recebeu as tools padrão e, depois de `setUserTools`, só `shell,write_file`;
+  - o agente `cook` dela ficou com `owner = "ana"` e sem compartilhamento mesmo pedindo `"*"`, e o root não o viu
+    nem usou;
+  - a chave dela listou `warden, warden/family, warden/cook`.
+- **Sem teste visual nem com modelo real**: está no **P100**.
+
+**Próximo passo**: a fatia 3 do P84 (espaços compartilhados e audiência das notas), o P94 (arquivos fixos do
+vault) ou a sessão dedicada de testes (P80, P87, P88, P91, P95, P96, P98, P99, P100).
 
 ---
 

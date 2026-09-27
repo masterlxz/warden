@@ -478,7 +478,9 @@ pessoa com o próprio vault e os próprios agentes, agentes compartilhados com l
 Warden API, backup sem leitura, conversas compartilháveis, audiência nas notas e login por senha ou TruthID com
 convite. Serve para família e para empresa. Dividido em cinco fatias na Sessão 110 (`ARCHITECTURE.md`); a **fatia 1,
 pessoas e login, foi feita na Sessão 110**: membros com usuário e senha, cada um com o próprio vault e as próprias
-conversas, e sem a administração do hub. Registro original abaixo.
+conversas, e sem a administração do hub. **A fatia 2, permissões nos agentes, foi feita na Sessão 111**: agentes
+compartilhados, tools e limite de gasto por pessoa, agentes próprios e chaves da API por pessoa. Registro original
+abaixo.
 
 Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo
 workspace, com **permissões configuráveis**. Hoje o hub tem um dono (a chave de pareamento) e os devices são
