@@ -2,7 +2,80 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-27 (Sessão 109)
+> Última atualização: 2026-09-27 (Sessão 110)
+
+---
+
+### 2026-09-27 — Sessão 110
+
+- **Objetivo**: começar o P84 (multiusuário), escolhido pelo usuário depois do P97. O P84 foi dividido em cinco
+  fatias (`ARCHITECTURE.md`, "As fatias"), e esta sessão fez a **fatia 1, pessoas e login**. Plano aprovado em
+  Plan mode.
+- **Decisões do usuário**:
+  - os usuários ficam no `config.toml`, que sincroniza, com as senhas só como hash;
+  - as conversas passam a ser da pessoa (todos os aparelhos dela), e as que já existiam viram do root;
+  - um membro usa os agentes do root com a própria memória.
+- **Etapa 1** (`e07a228`):
+  - `Orchestrator::with_vault` e `Tool::with_vault` no núcleo (arquivos, shell, skills, `delegate_task`);
+  - `warden_bootstrap::users`: `[[users]]`, hash Argon2 (`argon2` 0.5, otimizado no perfil dev), senha provisória,
+    `authenticate_user` com hash-isca, caminhos por pessoa;
+  - os saves de configurações preservam `users` (o desktop explicitamente).
+- **Etapa 2** (`5534912`):
+  - protocolo: `Hello.username/password`, `HelloAck.user`, `ChangePassword`, `ListUsers`, `SaveUser`,
+    `ResetPassword`, `RemoveUser`, `UserList`, `PasswordChanged`, `UserError` e `DeviceDto.user`;
+    `ServerConnection::handshake_as_member`;
+  - `device_registry.rs`: `PairingProof`, `authenticate_as`, `revoke_user_devices`;
+  - `people.rs` (pessoa na conexão, orquestrador do membro, allowlist de tools, recusas, portão da senha provisória,
+    visão de configurações do membro, migração das conversas) e `user_admin.rs`;
+  - `server.rs` ligando tudo; `Server::with_users_dir`, ligado no `serve` e no hub embutido do desktop;
+  - `warden-server users list|add|reset-password|remove`;
+  - uso por pessoa. A função `device_conversations_dir` saiu (a migração faz o trabalho).
+- **Etapa 3** (`db9be2a`), web: login com duas abas, `ChangePasswordView`, `PeopleView`, abas de administração
+  escondidas para membros e o dono de cada aparelho.
+- **Etapa 4** (`af93bbe`): mobile ("Pairing key / Username" e o diálogo da senha) e desktop (`people_cmds.rs` e a
+  seção People no Workspace).
+- **Achados durante a sessão**:
+  - um membro que voltava com o token e mandava também a senha antiga era recusado. Agora o token decide
+    (achado pelo teste de integração);
+  - o teste `a_reconnecting_device_can_fetch_its_conversation_history` mudou de propósito: o outro aparelho do
+    root agora vê a mesma conversa;
+  - o teste de retomar o chat do mobile precisou rolar até o botão "Disconnect", porque a tela de conexão cresceu.
+- Docs: `ARCHITECTURE.md` ("As fatias" e "Como ficou a fatia 1"), `PENDING.md` (P84 atualizado, **P99** novo),
+  `ROADMAP.md` e `README.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 867 passando, 0 falhas (3 testes da função removida saíram). `cargo clippy --workspace
+  --all-targets` limpo. `tsc` e `build` da web e do desktop limpos. `flutter analyze` limpo e `flutter test` com 99
+  passando.
+- **Testes novos**:
+  - `with_vault`: arquivos e sub-agente escrevem no vault novo, nada é lido do antigo, e o original fica intacto;
+  - `users`: hash e verificação, hash-isca válido, criar, renomear, trocar, redefinir e remover, e a ida e volta
+    pelo `config.toml` sem a senha em claro;
+  - pareamento por pessoa e a revogação dos aparelhos de um membro;
+  - migração das conversas, com colisões e um arquivo ilegível;
+  - allowlist de tools, recusas e o portão da senha provisória;
+  - **integração com `Server` real** (`tests/people.rs`, 2):
+    - dono e membro ao mesmo tempo, a senha errada recusada e a troca obrigatória;
+    - a nota do membro no vault dele e não no do dono, e as tools e as conversas separadas;
+    - a administração recusada e as configurações só com agentes;
+    - a volta pelo token, o dono do aparelho, e a remoção fechando a conexão;
+    - criar e redefinir mostrando a senha uma vez;
+  - mobile (2): o `Hello` com usuário e senha, o `HelloAck.user` e a troca de senha errada e certa.
+- **Ponta a ponta com o binário real** (scratchpad isolado por `HOME`/`XDG_CONFIG_HOME`, modelo falso
+  OpenAI-compatible em Python, o `connection.ts` da web empacotado com esbuild):
+  - `users add` imprimiu a senha provisória, e o config ficou só com o hash;
+  - a migração moveu as conversas de um aparelho antigo para `root/`, com `default` repetido virando
+    `default-older-tablet`, e o dono viu a conversa;
+  - senha errada recusada, troca obrigatória, e a nota em `users/ana/vault/notes/e2e.md`;
+  - o modelo recebeu para a Ana `budget, delegate_task, generate_document, jobs, manage_skill, read_file,
+    read_skill_file, use_skill, write_file`, e para o dono também `shell` e `usage_stats`;
+  - conversas separadas, a administração recusada, a lista de aparelhos com `ana-web@ana`, o dono criando outra
+    pessoa, e a remoção derrubando a conexão aberta da Ana e o token dela.
+- **Sem teste visual** (sem janela nem navegador nesta máquina) e sem modelo real: está no **P99**.
+
+**Próximo passo**: fatia 2 do P84 (permissões nos agentes), P94 (arquivos fixos do vault, que agora pesa mais) ou a
+sessão dedicada de testes (P80, P87, P88, P91, P95, P96, P98, P99).
 
 ---
 

@@ -476,7 +476,9 @@ plugin malicioso, e se skills são um tipo de plugin ou um marketplace à parte.
 **Desenho conversado na Sessão 107** (ver P84 e `ARCHITECTURE.md`, "Multiusuário"): o usuário como root, cada
 pessoa com o próprio vault e os próprios agentes, agentes compartilhados com limites, permissões valendo também na
 Warden API, backup sem leitura, conversas compartilháveis, audiência nas notas e login por senha ou TruthID com
-convite. Serve para família e para empresa. Registro original abaixo.
+convite. Serve para família e para empresa. Dividido em cinco fatias na Sessão 110 (`ARCHITECTURE.md`); a **fatia 1,
+pessoas e login, foi feita na Sessão 110**: membros com usuário e senha, cada um com o próprio vault e as próprias
+conversas, e sem a administração do hub. Registro original abaixo.
 
 Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo
 workspace, com **permissões configuráveis**. Hoje o hub tem um dono (a chave de pareamento) e os devices são

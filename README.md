@@ -166,6 +166,22 @@ lend (shell, a folder, MCP servers, models) and the pairing key once, reconnects
 at launch, and lists what the hub's agents did on this computer. The setting stays on this computer
 (it isn't synced).
 
+### People: family or team on the same Warden
+
+You're the owner: whoever holds the pairing key. Add other people and they sign in on the web or the
+phone with their own username and password, each with their own vault and conversations:
+
+```bash
+warden-server users add ana --name "Ana"   # prints a provisional password, once
+warden-server users list
+warden-server users reset-password ana
+warden-server users remove ana             # revokes her devices; her vault and conversations stay on disk
+```
+
+The web's People tab and the desktop's Workspace do the same. A member picks their own password on the
+first sign-in, talks to your agents with their own memory, and gets no shell, nodes, your MCP
+integrations or any of the hub's administration.
+
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the
 reasoning behind it.

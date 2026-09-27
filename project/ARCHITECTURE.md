@@ -2165,7 +2165,7 @@ O que o usuário mais quer ("rodar tarefas a qualquer momento", usar vários apa
 primeiro só os dados fáceis (aparelhos e chaves, conversas, gasto), que já bastam para outro nó assumir a API e as
 conversas; o vault fica no sync atual. O resto (agentes, configuração, vault com junção de texto) é o P86 completo.
 
-## Multiusuário no mesmo workspace (P84, desenho da Sessão 107 — nada implementado)
+## Multiusuário no mesmo workspace (P84, desenho da Sessão 107; fatia 1 feita na Sessão 110)
 
 Registro de uma conversa de desenho com o usuário. Hoje o Warden é o agente pessoal de uma pessoa. A ideia é que,
 numa família (ou numa empresa, "precisa ser do mesmo jeito"), cada pessoa tenha os seus agentes e o seu vault sem
@@ -2248,6 +2248,80 @@ a esposa, "ensinando" o agente ou por uma interface.
 - Grupos de usuários, e como a interface de permissões fica simples para uma família.
 - O que o root vê sem ler: tamanho, gasto, último acesso.
 - A saída dos arquivos fixos do vault (P94), porque um perfil fixo por vault não faz sentido com vários usuários.
+
+### As fatias (Sessão 110)
+
+1. **Pessoas e login** (feita na Sessão 110): usuários, root e membros, login por usuário e senha, aparelho preso a
+   uma pessoa, vault e conversas por pessoa.
+2. **Permissões nos agentes**: quem usa qual agente, com quais tools e limites de gasto, e chaves da Warden API por
+   pessoa.
+3. **Espaços compartilhados e audiência das notas**: o agente do root falando com outra pessoa só enxerga o que foi
+   liberado para ela.
+4. **Criptografia, backup e recuperação**, com as três políticas acima.
+5. **Convite pelo TruthID.**
+
+### Como ficou a fatia 1 (Sessão 110)
+
+- **Decisões do usuário**:
+  - os usuários ficam no `config.toml` (`[[users]]`), que sincroniza entre as máquinas do root, com as senhas só
+    como hash Argon2id;
+  - as conversas passam a ser **da pessoa**, as mesmas em todos os aparelhos dela, e as que já existiam viram do
+    root;
+  - um membro que usa um agente do root leva a persona e as tools do agente, mas **com a memória dele**. Usar a
+    memória do root com outra pessoa espera a audiência (fatia 3).
+- **Root**: continua sendo quem tem a chave de pareamento. Não aparece no `[[users]]`, e os aparelhos pareados com
+  a chave são dele (`PairedDevice.user = None`). As telas de administração seguem pedindo a chave. Sem
+  `[[users]]`, nada muda para quem já usava.
+- **Membro** (`warden_bootstrap::users`): `UserConfig { id, name, role = "member", password_hash,
+  must_change_password }`. O id tem de 1 a 32 caracteres (letras minúsculas, dígitos, `-` ou `_`), e `root` é
+  reservado.
+  - O root cria o membro, e a senha provisória (14 caracteres, sem letras parecidas) aparece uma vez.
+  - `authenticate_user` confere a senha até de um nome que não existe, contra um hash-isca, para o tempo de
+    resposta não revelar quem existe.
+- **Pareamento** (`device_registry.rs`): `PairingProof` (`Nothing`, `PairingKey` ou `Member(id)`) e
+  `authenticate_as`.
+  - Pareia pela senha: o aparelho vira do membro. Pareia pela chave: vira do root. O token mantém o dono.
+  - Um aparelho que volta com o token pode mandar também a senha velha, e quem decide é o token.
+  - Senha errada espera 1 s, como a chave errada.
+  - `revoke_user_devices` revoga os aparelhos de um membro removido. Um aparelho cujo membro sumiu do config é
+    recusado no `Hello`, o que cobre o hub do VPS depois do sync.
+- **Protocolo**:
+  - `Hello.username/password` e `HelloAck.user` (`UserInfoDto`, ausente para o root e para hubs antigos);
+  - `ChangePassword`, e `ListUsers`, `SaveUser` (criar com `is_new`, ou renomear), `ResetPassword` e `RemoveUser`
+    com a chave, respondidos por `UserList { temp_password }`, `PasswordChanged` ou `UserError`;
+  - `DeviceDto.user` mostra de quem é cada aparelho.
+- **Na conexão** (`people.rs`), `Person::Root` ou `Person::Member(MemberSpace)`, com vault em
+  `~/.config/warden/users/<id>/vault`, arquivos gerados em `…/<id>/generated` e conversas em
+  `conversations-server/users/<id>/`. Para um membro:
+  - **orquestrador**: `member_orchestrator` aplica, depois de escopar o agente, `with_allowed_tools(allowlist)`,
+    `with_vault`, `with_media_root` e o gasto como `server:user-<id>`;
+  - **allowlist** (`member_may_use`): arquivos, skills, `delegate_task`, `jobs`, `budget`, `generate_document` e as
+    tools `tavily*`. Ficam de fora o shell, o SSH, os nós, as MCP do root, `delegate_to_agent`, `message_agent`,
+    `usage_stats`, `manage_agents` e `manage_tasks`. É lista de permitidas de propósito: uma tool nova fica longe
+    dos membros até alguém decidir, na fatia 2;
+  - **`Orchestrator::with_vault`** (núcleo): troca o vault do contexto e da memória fixa, e religa cada tool presa a
+    um vault (`Tool::with_vault`: arquivos, shell, as três de skills e o `delegate_task`, que carrega um
+    orquestrador dentro). Um sub-agente do membro também escreve no vault dele;
+  - **recusas**: `member_refusal` recusa a administração e as visões do hub inteiro (aparelhos, chaves da API, nós,
+    tarefas, sync, uso, pessoas, `CallDeviceTool`, salvar configurações), cada uma com o erro do seu tipo e
+    `auth_rejected`. `RequestSettings` responde só com os agentes (`member_settings_view`);
+  - **senha provisória**: com ela, `password_gate` deixa passar só `ChangePassword`, `Ping` e `Goodbye`;
+  - **vault e skills**: as telas usam o vault do membro;
+  - **tarefas**: `ConversationsChanged` das tarefas não chega a membros, e `task-*` não aparece na lista deles.
+- **Migração**: na subida do hub, `migrate_device_conversations` move `conversations-server/<aparelho>/` (e o
+  `<aparelho>.json` de antes do P78) para `conversations-server/root/`. Um id repetido (o `default` de cada
+  aparelho) vira `<id>-<aparelho>`, e um arquivo ilegível é movido como está. A função `device_conversations_dir`
+  saiu.
+- **Uso**: `RequestUsage` mostra uma linha "Owner" e uma por membro (`user:<id>`).
+- **Telas**:
+  - web: login com as abas Usuário e Chave de pareamento, troca de senha obrigatória, e a aba Pessoas só para o
+    root. Para um membro, somem Uso, Tarefas, Aparelhos, Sync e Configurações;
+  - mobile: "Pairing key / Username" na conexão e o diálogo de troca de senha antes do chat;
+  - desktop: a seção People no Workspace, pelo `config.toml` local e sem pedir a chave;
+  - CLI: `warden-server users list|add|reset-password|remove`.
+- **Fora desta fatia**: a extensão e o CLI remoto seguem só com a chave (root). O chat do próprio desktop é do root.
+  O membro não cria agentes e não tem Warden API. A memória fixa (`_profile.md` etc.) do vault do membro nasce
+  vazia (P94).
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 
