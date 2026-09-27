@@ -5,8 +5,15 @@
 //! persona when `model` names one (`warden/<agent>`).
 //!
 //! Deliberately small, decisions of the user's:
-//! - tools the client sends (`tools`/`tool_choice`, `tool` messages) are ignored: the agent answers
-//!   with its own tools, in text;
+//! - the client's `tools` (P91) are offered next to the agent's own, and the client's wins when a
+//!   name repeats. A call to one ends the request with `finish_reason: "tool_calls"`; the client runs
+//!   it and sends the results back as `tool` messages, and the turn carries on from there. A key
+//!   bound to an agent with `allowed_tools` is how the agent's own tools are narrowed.
+//!   `tool_choice: "none"` leaves the client's tools out; any other value is `auto`, since the
+//!   providers aren't told a choice. `parallel_tool_calls` is ignored;
+//! - the ids of the calls handed out are the hub's own (`call_<hex>`), unique per call. A Gemini
+//!   `thought_signature`, which Gemini 3 requires back on the call, travels inside the id
+//!   (`call_<hex>__ts_<base64url>`), so the hub keeps no state between requests;
 //! - nothing is saved as a conversation; the spend goes to the `api` channel, per key, so spending
 //!   limits (P4) apply;
 //! - plain HTTP/1.1 written by hand like `web_ui.rs`: one request per connection, `Content-Length`
@@ -19,9 +26,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras};
-use warden_core::model::{Message, StreamEvent, Usage};
-use warden_core::orchestrator::Orchestrator;
+use warden_core::model::{Message, StreamEvent, ToolCall, Usage};
+use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::spend::SpendContext;
+use warden_core::tool::ToolSpec;
 
 use crate::api_keys::{ApiKey, ApiKeyStore};
 use crate::settings::{SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
@@ -161,11 +169,96 @@ fn model_ids(api: &ApiContext, key: &ApiKey) -> Vec<String> {
     ids
 }
 
-/// The request's history, last user message and client system text.
+/// The request's history, last user message and client system text. `input` is `None` when the
+/// request ends with the results of the client's tools: the turn continues instead of starting.
 struct Turn {
     history: Vec<Message>,
-    input: String,
+    input: Option<String>,
     system: Vec<String>,
+}
+
+/// Separates the id of a call from the Gemini signature riding in it (see the module doc).
+const SIGNATURE_MARK: &str = "__ts_";
+
+/// A fresh id for a call handed to the client, carrying `signature` when there is one.
+fn encode_call_id(signature: Option<&str>) -> String {
+    use base64::Engine;
+    let id = format!("call_{}", &warden_bootstrap::generate_auth_key()[..24]);
+    match signature {
+        Some(signature) => format!("{id}{SIGNATURE_MARK}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature)),
+        None => id,
+    }
+}
+
+/// The id to use with the provider and the signature, from an id the client sent back. An id the
+/// hub didn't make (or a mangled signature) is kept whole, without a signature.
+fn decode_call_id(id: &str) -> (String, Option<String>) {
+    use base64::Engine;
+    if let Some((base, encoded)) = id.split_once(SIGNATURE_MARK) {
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).ok().and_then(|bytes| String::from_utf8(bytes).ok());
+        if let Some(signature) = decoded {
+            return (base.to_string(), Some(signature));
+        }
+    }
+    (id.to_string(), None)
+}
+
+/// The client's `tools`, as the model is offered them. `tool_choice: "none"` offers none.
+fn client_tools(request: &Value) -> Result<Vec<ToolSpec>, ApiError> {
+    if request.get("tool_choice").and_then(Value::as_str) == Some("none") {
+        return Ok(Vec::new());
+    }
+    let Some(tools) = request.get("tools").filter(|t| !t.is_null()) else { return Ok(Vec::new()) };
+    let tools = tools.as_array().ok_or_else(|| ApiError::bad_request("'tools' must be a list"))?;
+    tools
+        .iter()
+        .map(|tool| {
+            if tool.get("type").and_then(Value::as_str) != Some("function") {
+                return Err(ApiError::bad_request("only tools of type 'function' are supported"));
+            }
+            let function = tool.get("function").ok_or_else(|| ApiError::bad_request("a tool needs its 'function'"))?;
+            let name = function.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).ok_or_else(|| ApiError::bad_request("a tool needs a 'name'"))?;
+            Ok(ToolSpec {
+                name: name.to_string(),
+                description: function.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+                parameters: function.get("parameters").cloned().unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+            })
+        })
+        .collect()
+}
+
+/// An assistant message's `tool_calls`, as the model made them.
+fn parse_tool_calls(message: &Value) -> Result<Vec<ToolCall>, ApiError> {
+    let Some(calls) = message.get("tool_calls").filter(|c| !c.is_null()) else { return Ok(Vec::new()) };
+    let calls = calls.as_array().ok_or_else(|| ApiError::bad_request("'tool_calls' must be a list"))?;
+    calls
+        .iter()
+        .map(|call| {
+            let id = call.get("id").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("a tool call needs its 'id'"))?;
+            let name = call.pointer("/function/name").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("a tool call needs 'function.name'"))?;
+            // `arguments` is a JSON string; one the model got wrong is sent back as no arguments.
+            let arguments = call.pointer("/function/arguments").and_then(Value::as_str).and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_else(|| json!({}));
+            let (id, thought_signature) = decode_call_id(id);
+            Ok(ToolCall { id, name: name.to_string(), arguments, thought_signature })
+        })
+        .collect()
+}
+
+/// The calls handed to the client, in OpenAI's shape, with the hub's ids. With `index` for a
+/// streamed delta.
+fn tool_calls_json(calls: &[ToolCall], streamed: bool) -> Vec<Value> {
+    calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| {
+            let arguments = if call.arguments.is_null() { "{}".to_string() } else { call.arguments.to_string() };
+            let mut value = json!({ "id": encode_call_id(call.thought_signature.as_deref()), "type": "function", "function": { "name": call.name, "arguments": arguments } });
+            if streamed {
+                value["index"] = json!(index);
+            }
+            value
+        })
+        .collect()
 }
 
 /// The text of one message's `content`: a string, `null`, or a list of text parts. Anything else
@@ -191,23 +284,48 @@ fn content_text(content: Option<&Value>) -> Result<String, ApiError> {
 fn parse_turn(request: &Value) -> Result<Turn, ApiError> {
     let messages = request.get("messages").and_then(Value::as_array).ok_or_else(|| ApiError::bad_request("'messages' is required"))?;
     let (last, earlier) = messages.split_last().ok_or_else(|| ApiError::bad_request("'messages' is empty"))?;
-    if last.get("role").and_then(Value::as_str) != Some("user") {
-        return Err(ApiError::bad_request("the last message must be the user's"));
-    }
-    let input = content_text(last.get("content"))?;
-    if input.trim().is_empty() {
-        return Err(ApiError::bad_request("the last message is empty"));
-    }
+    // A request ends with the user's message (a new turn) or the client's tool results (the turn
+    // it stopped continues), which are part of the history.
+    let (input, earlier) = match last.get("role").and_then(Value::as_str) {
+        Some("user") => {
+            let input = content_text(last.get("content"))?;
+            if input.trim().is_empty() {
+                return Err(ApiError::bad_request("the last message is empty"));
+            }
+            (Some(input), earlier)
+        }
+        Some("tool") => (None, messages.as_slice()),
+        _ => return Err(ApiError::bad_request("the last message must be the user's or a tool result")),
+    };
     let mut history = Vec::new();
     let mut system = Vec::new();
+    // Which tool each call id is for: a result names only the call, and Gemini keys results by name.
+    let mut called: Vec<ToolCall> = Vec::new();
     for message in earlier {
         let text = content_text(message.get("content"))?;
         match message.get("role").and_then(Value::as_str) {
             Some("system" | "developer") if !text.trim().is_empty() => system.push(text),
             Some("user") => history.push(Message::user(text)),
-            // An assistant turn that only asked for the client's tools has no text to keep.
-            Some("assistant") if !text.is_empty() => history.push(Message::assistant(text)),
-            // The client's own tool calls and results: ignored, like its `tools`.
+            Some("assistant") => {
+                let calls = parse_tool_calls(message)?;
+                if calls.is_empty() {
+                    if !text.is_empty() {
+                        history.push(Message::assistant(text));
+                    }
+                } else {
+                    called.extend(calls.iter().cloned());
+                    history.push(Message { content: text, ..Message::assistant_tool_calls(calls) });
+                }
+            }
+            Some("tool") => {
+                let id = message.get("tool_call_id").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("a tool message needs its 'tool_call_id'"))?;
+                let (id, _) = decode_call_id(id);
+                let call = called
+                    .iter()
+                    .find(|call| call.id == id)
+                    .ok_or_else(|| ApiError::bad_request(format!("the tool message for '{id}' answers no earlier tool call")))?;
+                history.push(Message::tool_result(call, text));
+            }
             _ => {}
         }
     }
@@ -297,7 +415,9 @@ fn completion_id() -> String {
 async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContext, key: &ApiKey, request: &Value) -> Result<(), ApiError> {
     let model = effective_model(key, request.get("model").and_then(Value::as_str))?;
     let Turn { history, input, system } = parse_turn(request)?;
+    let tools = client_tools(request)?;
     let (orchestrator, persona) = scope_model(api, key, &model)?;
+    let orchestrator = orchestrator.with_client_tools(tools);
     let system_prompt: Option<String> = {
         let parts: Vec<&str> = persona.iter().map(String::as_str).chain(system.iter().map(String::as_str)).collect();
         (!parts.is_empty()).then(|| parts.join("\n\n"))
@@ -306,13 +426,19 @@ async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContex
     let created = now_secs();
 
     if request.get("stream").and_then(Value::as_bool) != Some(true) {
-        let outcome = orchestrator.handle_turn(&history, &input, Vec::new(), system_prompt.as_deref()).await.map_err(|e| turn_error(&e))?;
+        let outcome = run_turn(&orchestrator, &history, input.as_deref(), system_prompt.as_deref(), |_| {}).await.map_err(|e| turn_error(&e))?;
+        let message = if outcome.client_tool_calls.is_empty() {
+            json!({ "role": "assistant", "content": outcome.content })
+        } else {
+            let content = (!outcome.content.is_empty()).then_some(outcome.content.as_str());
+            json!({ "role": "assistant", "content": content, "tool_calls": tool_calls_json(&outcome.client_tool_calls, false) })
+        };
         let body = json!({
             "id": id,
             "object": "chat.completion",
             "created": created,
             "model": model,
-            "choices": [{ "index": 0, "message": { "role": "assistant", "content": outcome.content }, "finish_reason": "stop" }],
+            "choices": [{ "index": 0, "message": message, "finish_reason": finish_reason(&outcome) }],
             "usage": usage_json(outcome.usage.as_ref()),
         });
         return write_json(stream, "200 OK", body.to_string().as_bytes()).await.map_err(io_error);
@@ -320,14 +446,14 @@ async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContex
 
     let include_usage = request.pointer("/stream_options/include_usage").and_then(Value::as_bool) == Some(true);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Only the text goes out live: whether a tool call is the client's is known once the turn ends.
     let turn = tokio::spawn(async move {
-        orchestrator
-            .handle_turn_streaming(&history, &input, Vec::new(), system_prompt.as_deref(), move |event| {
-                if let StreamEvent::ContentDelta(text) = event {
-                    let _ = tx.send(text.clone());
-                }
-            })
-            .await
+        run_turn(&orchestrator, &history, input.as_deref(), system_prompt.as_deref(), move |event| {
+            if let StreamEvent::ContentDelta(text) = event {
+                let _ = tx.send(text.clone());
+            }
+        })
+        .await
     });
 
     // The status line can only be sent once: the first delta, or a finished turn, decides it.
@@ -359,12 +485,37 @@ async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContex
         start_event_stream(stream).await.map_err(io_error)?;
         send_event(stream, &chunk(json!({ "role": "assistant", "content": outcome.content }), None)).await.map_err(io_error)?;
     }
-    send_event(stream, &chunk(json!({}), Some("stop"))).await.map_err(io_error)?;
+    for call in tool_calls_json(&outcome.client_tool_calls, true) {
+        send_event(stream, &chunk(json!({ "tool_calls": [call] }), None)).await.map_err(io_error)?;
+    }
+    send_event(stream, &chunk(json!({}), Some(finish_reason(&outcome)))).await.map_err(io_error)?;
     if include_usage {
         let usage = json!({ "id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": [], "usage": usage_json(outcome.usage.as_ref()) });
         send_event(stream, &usage).await.map_err(io_error)?;
     }
     finish_event_stream(stream).await.map_err(io_error)
+}
+
+/// A new turn for the user's `input`, or the one that stopped on the client's tools when `None`.
+async fn run_turn(
+    orchestrator: &Orchestrator,
+    history: &[Message],
+    input: Option<&str>,
+    system_prompt: Option<&str>,
+    on_event: impl FnMut(&StreamEvent) + Send,
+) -> anyhow::Result<MessageOutcome> {
+    match input {
+        Some(input) => orchestrator.handle_turn_streaming(history, input, Vec::new(), system_prompt, on_event).await,
+        None => orchestrator.resume_turn_streaming(history, system_prompt, on_event).await,
+    }
+}
+
+fn finish_reason(outcome: &MessageOutcome) -> &'static str {
+    if outcome.client_tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    }
 }
 
 fn io_error(err: std::io::Error) -> ApiError {
@@ -397,21 +548,86 @@ async fn finish_event_stream<S: AsyncWrite + Unpin>(stream: &mut S) -> std::io::
 mod tests {
     use super::*;
 
+    use warden_core::model::Role;
+
     #[test]
-    fn a_turn_keeps_the_text_and_leaves_the_clients_tools_out() {
+    fn a_turn_keeps_the_text_and_the_clients_tool_calls_and_results() {
         let request = json!({ "messages": [
             { "role": "system", "content": "Be brief." },
             { "role": "user", "content": "first" },
-            { "role": "assistant", "content": null, "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "x", "arguments": "{}" } }] },
+            { "role": "assistant", "content": null, "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "x", "arguments": "{\"a\":1}" } }] },
             { "role": "tool", "tool_call_id": "c1", "content": "tool output" },
             { "role": "assistant", "content": [{ "type": "text", "text": "an answer" }] },
             { "role": "user", "content": "second" },
         ]});
         let turn = parse_turn(&request).ok().unwrap();
         assert_eq!(turn.system, ["Be brief."]);
-        assert_eq!(turn.input, "second");
-        let history: Vec<_> = turn.history.iter().map(|m| m.content.as_str()).collect();
-        assert_eq!(history, ["first", "an answer"]);
+        assert_eq!(turn.input.as_deref(), Some("second"));
+        let roles: Vec<_> = turn.history.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::Assistant, Role::Tool, Role::Assistant]);
+        assert_eq!(turn.history[1].tool_calls[0].name, "x");
+        assert_eq!(turn.history[1].tool_calls[0].arguments, json!({ "a": 1 }));
+        assert_eq!(turn.history[2].tool_name.as_deref(), Some("x"));
+        assert_eq!(turn.history[2].content, "tool output");
+    }
+
+    #[test]
+    fn a_request_ending_in_tool_results_continues_the_turn() {
+        let id = encode_call_id(Some("gemini-signature+/="));
+        let request = json!({ "messages": [
+            { "role": "user", "content": "weather?" },
+            { "role": "assistant", "content": "checking", "tool_calls": [{ "id": id, "type": "function", "function": { "name": "get_weather", "arguments": "not json" } }] },
+            { "role": "tool", "tool_call_id": id, "content": "sunny" },
+        ]});
+        let turn = parse_turn(&request).ok().unwrap();
+        assert_eq!(turn.input, None);
+        assert_eq!(turn.history.len(), 3);
+        let call = &turn.history[1].tool_calls[0];
+        assert_eq!(turn.history[1].content, "checking");
+        assert_eq!(call.arguments, json!({}));
+        assert_eq!(call.thought_signature.as_deref(), Some("gemini-signature+/="));
+        assert!(!call.id.contains(SIGNATURE_MARK), "the provider gets the short id");
+        assert_eq!(turn.history[2].tool_call_id.as_deref(), Some(call.id.as_str()));
+        assert_eq!(turn.history[2].tool_name.as_deref(), Some("get_weather"));
+    }
+
+    #[test]
+    fn a_tool_result_for_no_call_is_refused() {
+        let request = json!({ "messages": [
+            { "role": "user", "content": "hi" },
+            { "role": "tool", "tool_call_id": "ghost", "content": "x" },
+        ]});
+        assert!(parse_turn(&request).err().unwrap().message.contains("ghost"));
+    }
+
+    #[test]
+    fn call_ids_are_unique_and_carry_the_signature_there_and_back() {
+        let plain = encode_call_id(None);
+        assert!(plain.starts_with("call_") && plain.len() == 29, "{plain}");
+        assert_ne!(plain, encode_call_id(None));
+        assert_eq!(decode_call_id(&plain), (plain.clone(), None));
+
+        let signed = encode_call_id(Some("opaque blob"));
+        assert!(signed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{signed}");
+        let (base, signature) = decode_call_id(&signed);
+        assert_eq!(signature.as_deref(), Some("opaque blob"));
+        assert!(signed.starts_with(&base) && base.len() == 29);
+
+        // An id the hub didn't make passes through as it is.
+        assert_eq!(decode_call_id("toolu_01abc"), ("toolu_01abc".to_string(), None));
+        assert_eq!(decode_call_id("x__ts_!!!"), ("x__ts_!!!".to_string(), None));
+    }
+
+    #[test]
+    fn the_clients_tools_are_read_and_none_leaves_them_out() {
+        let tools = json!([{ "type": "function", "function": { "name": "get_weather", "description": "d", "parameters": { "type": "object" } } }]);
+        let specs = client_tools(&json!({ "tools": tools })).ok().unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!((specs[0].name.as_str(), specs[0].description.as_str()), ("get_weather", "d"));
+        assert!(client_tools(&json!({ "tools": tools, "tool_choice": "none" })).ok().unwrap().is_empty());
+        assert_eq!(client_tools(&json!({ "tools": tools, "tool_choice": "required" })).ok().unwrap().len(), 1);
+        assert!(client_tools(&json!({})).ok().unwrap().is_empty());
+        assert!(client_tools(&json!({ "tools": [{ "type": "custom" }] })).is_err());
     }
 
     #[test]
@@ -419,7 +635,7 @@ mod tests {
         let error = |request: Value| parse_turn(&request).err().map(|e| e.message).unwrap_or_default();
         assert!(error(json!({})).contains("'messages' is required"));
         assert!(error(json!({ "messages": [] })).contains("empty"));
-        assert!(error(json!({ "messages": [{ "role": "assistant", "content": "x" }] })).contains("the user's"));
+        assert!(error(json!({ "messages": [{ "role": "assistant", "content": "x" }] })).contains("the user's or a tool result"));
         assert!(error(json!({ "messages": [{ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": "data:" } }] }] })).contains("image_url"));
     }
 }

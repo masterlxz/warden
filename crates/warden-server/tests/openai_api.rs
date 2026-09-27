@@ -18,15 +18,36 @@ use warden_server::api_keys::ApiKeyStore;
 use warden_server::{Server, ServerConnection, SettingsHost, StaticWebUi};
 
 /// Answers "echo: <last user message>" in two pieces, with usage, and keeps every system prompt it saw.
+/// Offered the client's `get_weather` (P91), it calls it with a Gemini-style signature, and given
+/// its result, answers with the result and the signature that came back on the call.
 struct Echo {
     systems: Arc<Mutex<Vec<String>>>,
 }
 
 #[async_trait]
 impl ModelProvider for Echo {
-    async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let system = messages.iter().filter(|m| m.role == Role::System).map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
         self.systems.lock().unwrap().push(system);
+        if let Some(result) = messages.last().filter(|m| m.role == Role::Tool) {
+            let call = messages.iter().rev().flat_map(|m| m.tool_calls.iter()).find(|c| Some(&c.id) == result.tool_call_id.as_ref());
+            let signature = call.and_then(|c| c.thought_signature.clone()).unwrap_or_default();
+            let text = format!("weather: {} (signature {signature})", result.content);
+            return Ok(Box::pin(futures_util::stream::iter(vec![Ok(StreamEvent::ContentDelta(text))])));
+        }
+        if tools.iter().any(|t| t.name == "get_weather") {
+            let events = vec![
+                Ok(StreamEvent::ContentDelta("let me check".into())),
+                Ok(StreamEvent::ToolCallDelta {
+                    index: 0,
+                    id: Some("call_0".into()),
+                    name: Some("get_weather".into()),
+                    arguments_delta: Some(r#"{"city":"Recife"}"#.into()),
+                    thought_signature: Some("sig-1".into()),
+                }),
+            ];
+            return Ok(Box::pin(futures_util::stream::iter(events)));
+        }
         let last = messages.iter().rev().find(|m| m.role == Role::User).map(|m| m.content.clone()).unwrap_or_default();
         let history = messages.iter().filter(|m| m.role == Role::User).count();
         let events = vec![
@@ -182,6 +203,62 @@ async fn the_web_page_and_the_websocket_still_answer_on_the_same_port() {
     let (status, body) = http(hub.addr, "GET", "/", None, None).await;
     assert_eq!((status, body.as_str()), (200, "<p>web</p>"));
     ServerConnection::connect(&format!("ws://{}", hub.addr), "phone", "Phone", "pairing-key-0123456789-0123456789").await.unwrap();
+}
+
+const WEATHER_TOOL: &str = r#"{"type":"function","function":{"name":"get_weather","description":"The weather in a city","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}"#;
+
+#[tokio::test]
+async fn a_call_to_the_clients_tool_comes_back_and_its_result_finishes_the_turn() {
+    let hub = hub().await;
+    let body = format!(r#"{{"messages":[{{"role":"user","content":"weather in Recife?"}}],"tools":[{WEATHER_TOOL}]}}"#);
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&hub.key), Some(&body)).await;
+    assert_eq!(status, 200, "{reply}");
+    let reply = json(&reply);
+    let choice = &reply["choices"][0];
+    assert_eq!(choice["finish_reason"], "tool_calls");
+    assert_eq!(choice["message"]["content"], "let me check");
+    let call = &choice["message"]["tool_calls"][0];
+    assert_eq!(call["type"], "function");
+    assert_eq!(call["function"]["name"], "get_weather");
+    assert_eq!(json(call["function"]["arguments"].as_str().unwrap()), serde_json::json!({ "city": "Recife" }));
+    let id = call["id"].as_str().unwrap();
+    assert!(id.starts_with("call_") && id != "call_0", "{id}");
+
+    // The client runs it and sends back what the SDKs send: the assistant message as it came, then the result.
+    let messages = serde_json::json!([
+        { "role": "user", "content": "weather in Recife?" },
+        choice["message"],
+        { "role": "tool", "tool_call_id": id, "content": "sunny, 31°C" },
+    ]);
+    let body = format!(r#"{{"messages":{messages},"tools":[{WEATHER_TOOL}]}}"#);
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&hub.key), Some(&body)).await;
+    assert_eq!(status, 200, "{reply}");
+    let reply = json(&reply);
+    assert_eq!(reply["choices"][0]["finish_reason"], "stop");
+    assert_eq!(reply["choices"][0]["message"]["content"], "weather: sunny, 31°C (signature sig-1)");
+    assert!(reply["choices"][0]["message"].get("tool_calls").is_none());
+}
+
+#[tokio::test]
+async fn a_streamed_call_to_the_clients_tool_arrives_as_tool_call_chunks() {
+    let hub = hub().await;
+    let body = format!(r#"{{"stream":true,"messages":[{{"role":"user","content":"weather?"}}],"tools":[{WEATHER_TOOL}]}}"#);
+    let (status, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&hub.key), Some(&body)).await;
+    assert_eq!(status, 200, "{reply}");
+    let events: Vec<&str> = reply.split("\n\n").filter_map(|e| e.strip_prefix("data: ")).collect();
+    assert_eq!(events.last(), Some(&"[DONE]"));
+    let chunks: Vec<serde_json::Value> = events[..events.len() - 1].iter().map(|e| json(e)).collect();
+    let text: String = chunks.iter().filter_map(|c| c["choices"][0]["delta"]["content"].as_str()).collect();
+    assert_eq!(text, "let me check");
+    let calls: Vec<&serde_json::Value> = chunks.iter().filter_map(|c| c["choices"][0]["delta"]["tool_calls"].get(0)).collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!((calls[0]["index"].as_u64(), calls[0]["function"]["name"].as_str()), (Some(0), Some("get_weather")));
+    assert_eq!(chunks.last().unwrap()["choices"][0]["finish_reason"], "tool_calls");
+
+    // `tool_choice: "none"` leaves the client's tools out: a plain answer.
+    let body = format!(r#"{{"tool_choice":"none","messages":[{{"role":"user","content":"weather?"}}],"tools":[{WEATHER_TOOL}]}}"#);
+    let (_, reply) = http(hub.addr, "POST", "/v1/chat/completions", Some(&hub.key), Some(&body)).await;
+    assert_eq!(json(&reply)["choices"][0]["finish_reason"], "stop");
 }
 
 #[tokio::test]

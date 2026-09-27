@@ -2,7 +2,60 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 106)
+> Última atualização: 2026-09-26 (Sessão 107)
+
+---
+
+### 2026-09-26 — Sessão 107
+
+- **Objetivo**: P91, a Warden API repassar as tools do cliente (function calling), para harnesses como o opencode
+  (P89). O plano foi aprovado em Plan mode. Decisão do usuário: o modelo vê as tools do cliente **e todas as do
+  agente**, e a do cliente vale em nome repetido. Para limitar, a chave fica presa a um agente com `allowed_tools`.
+- Antes disso, a limpeza de cache pedida: só havia o `desktop/node_modules/.vite` (4,4 MB), que foi apagado. Não havia
+  `target/`, `build/` nem `.dart_tool/`.
+
+**O que foi feito**:
+
+- **Orquestrador** (`warden-core/src/orchestrator/mod.rs`):
+  - `with_client_tools(Vec<ToolSpec>)`: as specs entram no pedido ao modelo, e uma tool do agente com o mesmo nome
+    some. Só a raiz do turno as oferece (`!charged`).
+  - Uma chamada a uma delas termina o turno com `MessageOutcome.client_tool_calls`. As tools do agente pedidas na
+    mesma resposta não rodam.
+  - `resume_turn_streaming(history, system_prompt, on_event)` continua um turno cujo histórico termina em
+    resultados de tool, sem mensagem nova do usuário, buscando no vault pela última mensagem do usuário.
+    `handle_turn_streaming` e ela dividem o novo `start_turn` (budget, jobs e `SpendTurn`).
+- **Warden API** (`warden-server/src/openai_api.rs`):
+  - `client_tools` lê `tools` (só `function`); `tool_choice: "none"` tira as tools e o resto conta como `auto`.
+  - `parse_turn` guarda `tool_calls` e mensagens `tool` no histórico e aceita a última mensagem sendo `tool`
+    (`Turn.input: Option`). Um `tool_call_id` órfão dá 400.
+  - Os ids entregues são do hub (`call_<24 hex>`). A `thought_signature` do Gemini vai dentro do id
+    (`call_<hex>__ts_<base64url>`) e volta separada, com o id curto para o provedor.
+  - A resposta sai com `tool_calls` e `finish_reason: "tool_calls"`. Com stream, o texto sai ao vivo e as chamadas
+    vão num chunk cada, no fim.
+- Docs: `ARCHITECTURE.md` (registro de decisões e a parte "Tools do cliente" na seção "Warden API"), `PENDING.md`
+  (P91 fechado, nota do P51) e `README.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 802 passando, 0 falhas (790 + 12 novos). `cargo clippy --workspace --all-targets` limpo.
+  A linha "Broken pipe" na saída vem do `tests/mcp_stdio.rs` (o binário de teste como servidor MCP filho) e já
+  existia.
+- **Testes novos**:
+  - orquestrador (6): a chamada do cliente para o turno; na resposta mista, a do agente não roda; a do agente
+    ainda roda sozinha; nome repetido; a continuação manda os resultados sem mensagem nova do usuário; um
+    subagente não vê as tools do cliente;
+  - API: `parse_turn` com tools e continuação, id órfão, ida e volta do id com assinatura, e `tool_choice`;
+  - integração com `Server` real (2): o laço completo sem stream, com a assinatura voltando ao modelo, e os chunks
+    de `tool_calls` com stream, mais `tool_choice: "none"`.
+- **Ponta a ponta** com o binário real, `XDG_CONFIG_HOME` no scratchpad (nada do `~/.config/warden` foi tocado), um
+  modelo OpenAI-compatible falso em Node e o **SDK oficial da OpenAI em Python** (2.19.2):
+  - o laço de tools completo, sem stream e com stream: `finish_reason=tool_calls` com `get_weather` e
+    `{"city":"Recife"}`, e depois o resultado virou a resposta final;
+  - o modelo recebeu as tools do agente mais o `get_weather`, e o `tool_call_id` com o id do hub.
+- **Não testado**: um harness de verdade (opencode, P89) e o Gemini real, que é onde a assinatura no id importa.
+
+**Próximo passo**: a rodada de testes com o usuário (P80/P87/P88, a Warden API nas telas), agora incluindo o
+opencode apontado para a Warden API e o Gemini real.
 
 ---
 

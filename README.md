@@ -101,9 +101,15 @@ curl http://<hub>:7420/v1/chat/completions \
 
 `GET /v1/models` lists `warden` and one `warden/<agent>` per configured agent. A key can also be bound
 to one agent (`api-keys create bot --agent <id>`, or the selector in Settings): it then only speaks as
-that agent, whatever `model` says. Streaming (`"stream":
-true`) works; tools the client sends are ignored (the agent answers with its own), nothing is saved as
-a conversation, and the spend counts toward the `api` channel's limits.
+that agent, whatever `model` says. Streaming (`"stream": true`) works, nothing is saved as a
+conversation, and the spend counts toward the `api` channel's limits.
+
+Function calling works too, so coding harnesses (opencode and the like) can bring their own tools. The
+model sees the client's `tools` next to the agent's own (the client's wins on a name clash). A call to
+one of the client's tools comes back as `tool_calls` with `finish_reason: "tool_calls"`, and the turn
+continues when the client sends the `tool` results back. To narrow which of the agent's own tools
+(shell, files...) such a client can reach, bind its key to an agent with `allowed_tools`.
+`tool_choice: "none"` leaves the client's tools out, and any other choice acts as `auto`.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

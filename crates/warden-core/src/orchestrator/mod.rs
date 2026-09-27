@@ -8,9 +8,9 @@ use serde_json::Value;
 use crate::budget::{SpendTurn, TurnBudget};
 use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
-use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, StreamEvent, ToolCall, Usage};
+use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, Role, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
-use crate::tool::{Approver, Tool, ToolProvider};
+use crate::tool::{Approver, Tool, ToolProvider, ToolSpec};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
 /// giving up, so a model stuck requesting tools can't loop forever.
@@ -41,6 +41,10 @@ pub struct MessageOutcome {
     /// Every time this turn's provider failed and a reserve answered instead (P79), once per
     /// switch even if the turn's tool loop hit it on several calls. Empty almost always.
     pub fallbacks: Vec<ProviderFallback>,
+    /// The calls to the caller's own tools (`with_client_tools`, P91) the model made: the turn
+    /// stopped there, for the caller to run them and continue with `resume_turn_streaming`. Empty
+    /// for every turn without client tools, and when the model answered in text.
+    pub client_tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Clone)]
@@ -76,6 +80,9 @@ pub struct Orchestrator {
     spend_ctx: SpendContext,
     /// Who to ask when a limit runs out mid-turn. `None` on a channel that can't ask.
     approver: Option<Arc<dyn Approver>>,
+    /// Tools the caller runs itself (P91, the Warden API's client `tools`): offered to the model
+    /// next to this orchestrator's own, but a call to one ends the turn instead of running.
+    client_tools: Vec<ToolSpec>,
 }
 
 impl Orchestrator {
@@ -93,6 +100,7 @@ impl Orchestrator {
             spend: None,
             spend_ctx: SpendContext::default(),
             approver: None,
+            client_tools: Vec::new(),
         }
     }
 
@@ -282,6 +290,15 @@ impl Orchestrator {
         Self { media_root: Some(root), ..self.clone() }
     }
 
+    /// Returns a copy whose turns also offer the caller's own tools (P91). A tool of this
+    /// orchestrator with the same name as one of them is hidden: the caller asked for its own. When
+    /// the model calls one, the turn ends with it in `MessageOutcome::client_tool_calls`; the caller
+    /// runs it and continues with `resume_turn_streaming`. Only a turn's root offers them — a
+    /// sub-agent can't hand a call back to the caller.
+    pub fn with_client_tools(&self, specs: Vec<ToolSpec>) -> Self {
+        Self { client_tools: specs, ..self.clone() }
+    }
+
     /// Every tool currently registered — used by `warden-mcp-server` to re-expose this
     /// orchestrator's whole capability set (vault access, shell if enabled, whatever MCP servers
     /// were connected in `bootstrap()`, ...) as its own MCP server for third-party clients.
@@ -352,6 +369,34 @@ impl Orchestrator {
         system_prompt: Option<&str>,
         on_event: impl FnMut(&StreamEvent) + Send,
     ) -> anyhow::Result<MessageOutcome> {
+        let next = Message::user_with_attachments(user_input, attachments);
+        self.start_turn(history, Some(next), user_input, system_prompt, on_event).await
+    }
+
+    /// Continues a turn that stopped on `client_tool_calls` (P91): `history` ends with the
+    /// assistant's calls and the caller's `Role::Tool` results, and the model picks up from there
+    /// — no new user message. The vault is searched with the last user message in `history`. A
+    /// continuation is a fresh turn for every limit (tool rounds, delegation budget).
+    pub async fn resume_turn_streaming(
+        &self,
+        history: &[Message],
+        system_prompt: Option<&str>,
+        on_event: impl FnMut(&StreamEvent) + Send,
+    ) -> anyhow::Result<MessageOutcome> {
+        let query = history.iter().rev().find(|m| m.role == Role::User).map(|m| m.content.clone()).unwrap_or_default();
+        self.start_turn(history, None, &query, system_prompt, on_event).await
+    }
+
+    /// What a new turn and a continued one share: `next` is the message the turn adds after
+    /// `history` (the user's, or none when continuing) and `query` what the vault is searched for.
+    async fn start_turn(
+        &self,
+        history: &[Message],
+        next: Option<Message>,
+        query: &str,
+        system_prompt: Option<&str>,
+        on_event: impl FnMut(&StreamEvent) + Send,
+    ) -> anyhow::Result<MessageOutcome> {
         // A turn that starts here (not one a parent orchestrator started for a sub-agent, which
         // already carries its parent's budget) gets its own budget, so the limit applies whichever
         // channel called and starts from zero every turn.
@@ -367,14 +412,14 @@ impl Orchestrator {
         // can't start jobs that would outlive its own short turn. Held until the turn ends (or its
         // future is dropped), which cancels the jobs nobody collected.
         let _jobs = if self.charged { None } else { turn.attach_jobs() };
-        turn.run_turn(history, user_input, attachments, system_prompt, on_event).await
+        turn.run_turn(history, next, query, system_prompt, on_event).await
     }
 
     async fn run_turn(
         &self,
         history: &[Message],
-        user_input: &str,
-        attachments: Vec<Attachment>,
+        next: Option<Message>,
+        query: &str,
         system_prompt: Option<&str>,
         mut on_event: impl FnMut(&StreamEvent) + Send,
     ) -> anyhow::Result<MessageOutcome> {
@@ -417,15 +462,15 @@ impl Orchestrator {
         #[cfg(feature = "semantic-search")]
         let hits = {
             let vault_for_search = self.vault.clone();
-            let query = user_input.to_string();
-            tokio::task::spawn_blocking(move || vault_for_search.search_semantic(&query, 8))
+            let owned_query = query.to_string();
+            tokio::task::spawn_blocking(move || vault_for_search.search_semantic(&owned_query, 8))
                 .await
                 .ok()
                 .and_then(|result| result.ok())
-                .unwrap_or_else(|| self.vault.search(user_input, 8).unwrap_or_default())
+                .unwrap_or_else(|| self.vault.search(query, 8).unwrap_or_default())
         };
         #[cfg(not(feature = "semantic-search"))]
-        let hits = self.vault.search(user_input, 8).unwrap_or_default();
+        let hits = self.vault.search(query, 8).unwrap_or_default();
         if !hits.is_empty() {
             let context = hits
                 .iter()
@@ -438,7 +483,7 @@ impl Orchestrator {
         }
 
         messages.extend(history.iter().cloned());
-        messages.push(Message::user_with_attachments(user_input, attachments));
+        messages.extend(next);
 
         let mut usage = Usage::default();
         let mut has_usage = false;
@@ -452,6 +497,10 @@ impl Orchestrator {
         // The turn's spending limits (P4), shared by the root and every sub-agent.
         let spend = self.budget.as_ref().and_then(|b| b.spend());
 
+        // The caller's tools (P91): only the root can hand a call back to the caller.
+        let client_tools: &[ToolSpec] = if self.charged { &[] } else { &self.client_tools };
+        let is_client_tool = |name: &str| client_tools.iter().any(|spec| spec.name == name);
+
         for _ in 0..MAX_TOOL_ITERATIONS {
             // Before anything is spent: may pause to ask for more room, or end the turn. Checked on
             // every call rather than once per turn, so a loop can't burn past a limit meanwhile.
@@ -464,7 +513,15 @@ impl Orchestrator {
             }
             // Recomputed every iteration: a tool's spec can change mid-turn (`delegate_to_agent`
             // lists the agents `manage_agents` created a moment ago).
-            let tool_specs = self.tools.iter().filter(|t| t.is_available()).map(|t| t.spec()).collect::<Vec<_>>();
+            // A tool of ours named like one of the caller's is hidden: the caller's wins.
+            let tool_specs = self
+                .tools
+                .iter()
+                .filter(|t| t.is_available())
+                .map(|t| t.spec())
+                .filter(|spec| !is_client_tool(&spec.name))
+                .chain(client_tools.iter().cloned())
+                .collect::<Vec<_>>();
             // The meter is for this call only — it goes stale as soon as more is spent.
             let mut call_messages = messages.clone();
             if let Some(notice) = meter {
@@ -500,13 +557,24 @@ impl Orchestrator {
                 has_usage = true;
             }
 
-            if response.tool_calls.is_empty() {
+            // A call to one of the caller's tools ends the turn with those calls. Our own tools
+            // asked for in the same response don't run: their calls couldn't go back to the caller,
+            // and the model can ask for them again once it has the caller's results.
+            let client_tool_calls: Vec<ToolCall> = response.tool_calls.iter().filter(|call| is_client_tool(&call.name)).cloned().collect();
+            if response.tool_calls.is_empty() || !client_tool_calls.is_empty() {
                 // The turn's root also reports what its sub-agents used (P18).
                 if let Some(sub_agents) = self.budget.as_ref().filter(|_| !self.charged).and_then(|b| b.usage()) {
                     usage += &sub_agents;
                     has_usage = true;
                 }
-                return Ok(MessageOutcome { content: response.content, usage: has_usage.then_some(usage), attachments, generated_files, fallbacks });
+                return Ok(MessageOutcome {
+                    content: response.content,
+                    usage: has_usage.then_some(usage),
+                    attachments,
+                    generated_files,
+                    fallbacks,
+                    client_tool_calls,
+                });
             }
 
             messages.push(Message::assistant_tool_calls(response.tool_calls.clone()));
@@ -1989,6 +2057,149 @@ mod tests {
             let budget = TurnBudget::for_turn(None, Some(SpendTurn::new(turn.spend.clone().unwrap(), SpendContext::new("cli"), None)));
             let bound = turn.with_turn_budget(budget);
             assert_eq!(offered(&bound), vec!["budget".to_string()]);
+        }
+    }
+
+    /// The caller's own tools (P91): offered next to ours, and a call to one ends the turn.
+    mod client_tools {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        use super::*;
+
+        /// Answers with `replies` in order and records what each call was offered and sent.
+        #[derive(Default)]
+        struct Scripted {
+            replies: Mutex<VecDeque<Response>>,
+            tools_seen: Mutex<Vec<Vec<ToolSpec>>>,
+            messages_seen: Mutex<Vec<Vec<Message>>>,
+        }
+
+        impl Scripted {
+            fn new(replies: Vec<Response>) -> Arc<Self> {
+                Arc::new(Self { replies: Mutex::new(replies.into()), ..Default::default() })
+            }
+        }
+
+        #[async_trait]
+        impl ModelProvider for Scripted {
+            async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                self.tools_seen.lock().unwrap().push(tools);
+                self.messages_seen.lock().unwrap().push(messages);
+                let reply = self.replies.lock().unwrap().pop_front().unwrap_or_else(|| Response { content: "done".into(), ..Default::default() });
+                Ok(response_stream(reply))
+            }
+        }
+
+        /// An `echo` of ours that counts its runs.
+        struct CountingEcho(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl Tool for CountingEcho {
+            fn spec(&self) -> ToolSpec {
+                EchoTool.spec()
+            }
+
+            async fn call(&self, args: Value) -> anyhow::Result<Value> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(args)
+            }
+        }
+
+        fn spec(name: &str, description: &str) -> ToolSpec {
+            ToolSpec { name: name.into(), description: description.into(), parameters: json!({ "type": "object" }) }
+        }
+
+        fn call(id: &str, name: &str) -> ToolCall {
+            ToolCall { id: id.into(), name: name.into(), arguments: json!({ "city": "Recife" }), thought_signature: Some("sig".into()) }
+        }
+
+        fn calls(names: &[(&str, &str)]) -> Response {
+            Response { content: "checking".into(), tool_calls: names.iter().map(|(id, name)| call(id, name)).collect(), usage: None }
+        }
+
+        fn root(model: Arc<Scripted>, runs: &Arc<AtomicUsize>) -> Orchestrator {
+            let mut orchestrator = Orchestrator::new(model, temp_vault());
+            orchestrator.register_tool(Arc::new(CountingEcho(runs.clone())));
+            orchestrator.with_client_tools(vec![spec("get_weather", "the client's")])
+        }
+
+        #[tokio::test]
+        async fn a_call_to_a_client_tool_ends_the_turn_with_it() {
+            let model = Scripted::new(vec![calls(&[("c1", "get_weather")])]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let outcome = root(model.clone(), &runs).handle_message(&[], "weather?").await.unwrap();
+
+            assert_eq!(outcome.content, "checking");
+            assert_eq!(outcome.client_tool_calls.len(), 1);
+            assert_eq!(outcome.client_tool_calls[0].name, "get_weather");
+            assert_eq!(outcome.client_tool_calls[0].thought_signature.as_deref(), Some("sig"));
+            let offered: Vec<String> = model.tools_seen.lock().unwrap()[0].iter().map(|s| s.name.clone()).collect();
+            assert_eq!(offered, ["echo", "get_weather"]);
+            assert_eq!(model.tools_seen.lock().unwrap().len(), 1, "one model call, then back to the caller");
+        }
+
+        #[tokio::test]
+        async fn our_tools_asked_for_next_to_a_client_one_do_not_run() {
+            let model = Scripted::new(vec![calls(&[("c1", "echo"), ("c2", "get_weather")])]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let outcome = root(model, &runs).handle_message(&[], "weather?").await.unwrap();
+
+            assert_eq!(outcome.client_tool_calls.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c2"]);
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn our_own_tools_still_run_inside_the_turn() {
+            let model = Scripted::new(vec![calls(&[("c1", "echo")])]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let outcome = root(model, &runs).handle_message(&[], "echo it").await.unwrap();
+
+            assert_eq!(runs.load(Ordering::SeqCst), 1);
+            assert_eq!(outcome.content, "done");
+            assert!(outcome.client_tool_calls.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_client_tool_named_like_ours_replaces_it() {
+            let model = Scripted::new(vec![calls(&[("c1", "echo")])]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let orchestrator = root(model.clone(), &runs).with_client_tools(vec![spec("echo", "the client's echo")]);
+            let outcome = orchestrator.handle_message(&[], "echo it").await.unwrap();
+
+            let offered = model.tools_seen.lock().unwrap()[0].clone();
+            assert_eq!(offered.len(), 1);
+            assert_eq!(offered[0].description, "the client's echo");
+            assert_eq!(outcome.client_tool_calls.len(), 1);
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+        }
+
+        #[tokio::test]
+        async fn a_resumed_turn_sends_the_results_and_no_new_user_message() {
+            let model = Scripted::new(vec![Response { content: "sunny in Recife".into(), ..Default::default() }]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let asked = call("c1", "get_weather");
+            let history = vec![Message::user("weather?"), Message::assistant_tool_calls(vec![asked.clone()]), Message::tool_result(&asked, "sunny")];
+            let outcome = root(model.clone(), &runs).resume_turn_streaming(&history, None, |_| {}).await.unwrap();
+
+            assert_eq!(outcome.content, "sunny in Recife");
+            assert!(outcome.client_tool_calls.is_empty());
+            let sent = model.messages_seen.lock().unwrap()[0].clone();
+            let last = sent.last().unwrap();
+            assert_eq!(last.role, Role::Tool);
+            assert_eq!(last.content, "sunny");
+            assert_eq!(sent.iter().filter(|m| m.role == Role::User).count(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_sub_agent_is_never_offered_the_callers_tools() {
+            let model = Scripted::new(vec![]);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let sub_agent = root(model.clone(), &runs).charged_to(TurnBudget::for_turn(None, None));
+            sub_agent.handle_message(&[], "task").await.unwrap();
+
+            let offered: Vec<String> = model.tools_seen.lock().unwrap()[0].iter().map(|s| s.name.clone()).collect();
+            assert_eq!(offered, ["echo"]);
         }
     }
 }

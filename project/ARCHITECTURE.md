@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Tools do cliente na Warden API (P91, Sessão 107) | Oferecer ao modelo só as tools do cliente vs as do cliente e todas as do agente vs as do cliente e só memória/skills; guardar a `thought_signature` do Gemini no hub vs dentro do id da chamada | **As do cliente e todas as do agente, e a do cliente vale em nome repetido** ✓ (escolha do usuário; para limitar, a chave fica presa a um agente com `allowed_tools`). **A assinatura vai dentro do id** (`call_<hex>__ts_<base64url>`), sem estado no hub. Ver "Warden API" |
 | Warden API (P12, Sessão 106) | Formato próprio vs compatível com a OpenAI; repassar as tools do cliente vs ignorar; salvar as chamadas como conversas vs só o gasto | **Compatível com a OpenAI (`/v1/models`, `/v1/chat/completions`, com stream) no mesmo porto do hub, tools do cliente ignoradas e nada salvo além do gasto no canal `api`** ✓ (escolhas do usuário). Chaves criadas no app (web, desktop, `warden-server api-keys`), só o hash no disco. O repasse de tools fica como pendência ligada ao P89 — ver "Warden API" |
 | Roteador de APIs de IA (P79, Sessão 105) | Construir um roteador próprio vs embutir o 9Router (Node + Next.js, MIT) vs recomendar instalar por fora | **Fallback nativo entre provedores cadastrados + roteador externo opcional** ✓ (escolha do usuário). Embutir descartado (runtime Node inteiro no hub em Rust, dependência de outro projeto). Um roteador externo continua funcionando como provedor `openai_compatible`. OAuth de assinatura de consumidor fica fora do Warden (termos dos provedores). Implementado na mesma sessão, e o roteamento virou **combos com nome** (P90) — ver "Fallback entre provedores (P79) e combos (P90)" |
 | Onde a memória mora vs sync (P61, Sessão 105) | Provider escolhido como fonte de leitura/escrita do agente (`Orchestrator` sobre `dyn StorageProvider`) vs disco local sempre + provider como destino de sync vs híbrido cache+fonte remota | **Disco local sempre + sync** ✓ (escolha do usuário: "local deixa mais rápido"). O agente nunca lê pela rede; o "storage" vira para onde o vault sincroniza (git ou Arweave). Consequência: o seletor de 4 cartões do desktop e a migração entre providers perdem o sentido, e `remote_node`/`RemoteNodeProvider`/`warden-node` saem (fatia 2, decisão do usuário: sem código morto). Fatia 1: o auto-sync sai do desktop para `warden_bootstrap::auto_sync::SyncRunner` e passa a rodar também no hub standalone, com tela na web |
@@ -2044,10 +2045,28 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   - o último uso é regravado no máximo uma vez por minuto.
   Chave errada ou ausente → `401 invalid_api_key` depois de 1 s (a mesma taxa da chave de pareamento).
 - **Turno**:
-  - `system`/`developer` do cliente é somado à persona; `user`/`assistant` viram o histórico; a última
-    mensagem precisa ser do usuário.
-  - `tools`, `tool_choice`, mensagens `tool` e `tool_calls` do cliente são ignorados. Uma parte que não é
-    texto (imagem) → `400`.
+  - `system`/`developer` do cliente é somado à persona; `user`/`assistant` viram o histórico, com os
+    `tool_calls` e as mensagens `tool`; a última mensagem é do usuário ou um resultado de tool.
+  - Uma parte que não é texto (imagem) → `400`.
+- **Tools do cliente** (P91, Sessão 107):
+  - As `tools` do cliente (só `type: "function"`) vão para `Orchestrator::with_client_tools` e são
+    oferecidas ao lado das do agente. Uma tool do agente com o nome de uma do cliente some do pedido.
+    Só a raiz do turno as oferece: um subagente não tem como devolver a chamada.
+  - Quando o modelo chama uma delas, o turno para e `MessageOutcome.client_tool_calls` volta. A resposta
+    sai com `tool_calls` e `finish_reason: "tool_calls"`. As tools do agente pedidas na mesma resposta
+    não rodam, porque a chamada delas não teria como ir ao cliente, e o modelo pode pedi-las de novo.
+  - O cliente roda a tool e reenvia a conversa com as mensagens `tool` no fim. O hub chama
+    `Orchestrator::resume_turn_streaming`, que continua sem mensagem nova do usuário e busca no vault
+    pela última mensagem do usuário. Cada continuação conta como um turno novo para os limites.
+  - Os ids entregues são do hub (`call_<24 hex>`), porque o Gemini repete `call_0` em toda resposta.
+    A `thought_signature` do Gemini, que o Gemini 3 exige de volta, vai dentro do id
+    (`call_<hex>__ts_<base64url>`). Na volta, o provedor recebe o id curto (a OpenAI limita a 40
+    caracteres) e a assinatura no campo dela. Um id que o hub não fez passa inteiro.
+  - `tool_choice: "none"` tira as tools do cliente. Qualquer outro valor conta como `auto`, porque o
+    `ModelProvider` não tem escolha de tool. `parallel_tool_calls` é ignorado.
+  - Com `stream`, o texto sai ao vivo e as chamadas vão num chunk cada, no fim, antes do `finish_reason`.
+    Só no fim se sabe se uma chamada era do cliente.
+  - Um `tool_call_id` que não responde a nenhuma chamada anterior → `400`.
   - O orquestrador compartilhado roda com `SpendContext::new("api").with_user(<nome da chave>)`, então os
     limites (P4) valem, e um limite atingido volta como `429` com `code: "spend_limit:<id>"`.
   - Sem approver, o que pede aprovação é recusado; sem pasta de conversas, não há `message_agent`.
@@ -2069,6 +2088,6 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
     `--agent`.
   - O gasto já saía por agente (o `SpendTurn` usa o `agent_id` do orquestrador), então um limite de escopo
     `agent` vale para essas chamadas.
-- **Fica de fora**: o repasse das tools do cliente (P89), imagens, `/v1/embeddings` e outros endpoints, e
-  keep-alive.
+- **Fica de fora**: imagens, `/v1/embeddings` e outros endpoints, e keep-alive. O repasse das tools do
+  cliente entrou na Sessão 107 (P91, acima).
 
