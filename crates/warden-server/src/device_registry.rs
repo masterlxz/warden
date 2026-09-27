@@ -55,6 +55,20 @@ pub struct PairedDevice {
     /// recorded before tokens existed, until its next `Hello` issues one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_hash: Option<String>,
+    /// P84: the member this device belongs to, set when it paired with their password. `None` is
+    /// the root's — every device paired with the pairing key, and every one from before P84.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// What a `Hello` proved besides a token (P84).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairingProof {
+    Nothing,
+    /// The hub's pairing key: the device is the root's.
+    PairingKey,
+    /// A member's password, already checked: the device is theirs.
+    Member(String),
 }
 
 /// What a successful `PairingStore::authenticate` hands back to `server.rs`.
@@ -65,6 +79,8 @@ pub struct HelloOutcome {
     /// A freshly issued device token, to send back in `HelloAck` — `None` when the device
     /// authenticated with its existing token, which stays valid.
     pub issued_token: Option<String>,
+    /// Whose device it is now — `None` for the root.
+    pub user: Option<String>,
 }
 
 /// Why `PairingStore::authenticate` turned a `Hello` down — `Display` is the `AuthError.reason`
@@ -147,6 +163,20 @@ impl PairingStore {
         device_token: Option<&str>,
         pairing_key_ok: bool,
     ) -> anyhow::Result<Result<HelloOutcome, AuthRejection>> {
+        let proof = if pairing_key_ok { PairingProof::PairingKey } else { PairingProof::Nothing };
+        self.authenticate_as(device_id, device_name, device_token, proof)
+    }
+
+    /// `authenticate`, with a member's password as a way to pair too (P84). A token keeps the
+    /// device's owner; pairing afresh makes it the prover's — the root's for the key, the member's
+    /// for their password.
+    pub fn authenticate_as(
+        &self,
+        device_id: &str,
+        device_name: &str,
+        device_token: Option<&str>,
+        proof: PairingProof,
+    ) -> anyhow::Result<Result<HelloOutcome, AuthRejection>> {
         let mut file = load(&self.path)?;
         let existing = file.devices.get(device_id);
         if existing.is_some_and(|d| d.status == PairingStatus::Revoked) {
@@ -156,7 +186,7 @@ impl PairingStore {
             (Some(stored), Some(token)) => stored == hash_token(token),
             _ => false,
         };
-        if !token_ok && !pairing_key_ok {
+        if !token_ok && proof == PairingProof::Nothing {
             return Ok(Err(AuthRejection::InvalidCredentials));
         }
 
@@ -168,6 +198,7 @@ impl PairingStore {
             first_seen_ms: now,
             last_seen_ms: now,
             token_hash: None,
+            user: None,
         });
         device.device_name = device_name.to_string();
         device.last_seen_ms = now;
@@ -176,10 +207,14 @@ impl PairingStore {
                 device.status = PairingStatus::Pending;
             }
             device.token_hash = Some(hash_token(token));
+            device.user = match proof {
+                PairingProof::Member(user) => Some(user),
+                _ => None,
+            };
         }
-        let status = device.status;
+        let (status, user) = (device.status, device.user.clone());
         save(&self.path, &file)?;
-        Ok(Ok(HelloOutcome { status, issued_token }))
+        Ok(Ok(HelloOutcome { status, issued_token, user }))
     }
 
     pub fn status(&self, device_id: &str) -> anyhow::Result<Option<PairingStatus>> {
@@ -202,6 +237,18 @@ impl PairingStore {
             .ok_or_else(|| anyhow::anyhow!("device '{device_id}' has never connected to this server — it needs to Hello at least once before it can be {status}"))?;
         device.status = status;
         save(&self.path, &file)
+    }
+
+    /// Revokes every device of member `user` (P84: removing them). Returns how many.
+    pub fn revoke_user_devices(&self, user: &str) -> anyhow::Result<usize> {
+        let mut file = load(&self.path)?;
+        let mut revoked = 0;
+        for device in file.devices.values_mut().filter(|d| d.user.as_deref() == Some(user) && d.status != PairingStatus::Revoked) {
+            device.status = PairingStatus::Revoked;
+            revoked += 1;
+        }
+        save(&self.path, &file)?;
+        Ok(revoked)
     }
 
     pub fn list(&self) -> anyhow::Result<Vec<(String, PairedDevice)>> {
@@ -252,7 +299,7 @@ mod tests {
         store.approve("dev-a").unwrap();
 
         let outcome = store.authenticate("dev-a", "New Name", Some(&token), false).unwrap().unwrap();
-        assert_eq!(outcome, HelloOutcome { status: PairingStatus::Approved, issued_token: None });
+        assert_eq!(outcome, HelloOutcome { status: PairingStatus::Approved, issued_token: None, user: None });
 
         let devices = store.list().unwrap();
         assert_eq!(devices[0].1.device_name, "New Name");
@@ -355,5 +402,26 @@ mod tests {
 
         let ids: Vec<_> = store.list().unwrap().into_iter().map(|(id, _)| id).collect();
         assert_eq!(ids, vec!["dev-a".to_string(), "dev-b".to_string()]);
+    }
+
+    /// P84: a member's password pairs the device as theirs; its token keeps it theirs; the pairing
+    /// key takes it back to the root; removing the member revokes all of theirs.
+    #[test]
+    fn a_device_belongs_to_whoever_paired_it() {
+        let store = PairingStore::new(temp_path());
+        let paired = store.authenticate_as("phone", "Ana's phone", None, PairingProof::Member("ana".into())).unwrap().unwrap();
+        assert_eq!(paired.user.as_deref(), Some("ana"));
+        let token = paired.issued_token.unwrap();
+        let again = store.authenticate_as("phone", "Ana's phone", Some(&token), PairingProof::Nothing).unwrap().unwrap();
+        assert_eq!((again.user.as_deref(), again.issued_token), (Some("ana"), None));
+        assert!(matches!(store.authenticate_as("tablet", "x", None, PairingProof::Nothing).unwrap(), Err(AuthRejection::InvalidCredentials)));
+
+        let root = store.authenticate_as("laptop", "Laptop", None, PairingProof::PairingKey).unwrap().unwrap();
+        assert_eq!(root.user, None);
+        store.authenticate_as("tablet", "Ana's tablet", None, PairingProof::Member("ana".into())).unwrap().unwrap();
+        assert_eq!(store.revoke_user_devices("ana").unwrap(), 2);
+        assert_eq!(store.status("phone").unwrap(), Some(PairingStatus::Revoked));
+        assert_eq!(store.status("laptop").unwrap(), Some(PairingStatus::Pending), "the root's device stays");
+        assert!(matches!(store.authenticate_as("phone", "x", Some(&token), PairingProof::Nothing).unwrap(), Err(AuthRejection::Revoked)));
     }
 }

@@ -340,6 +340,10 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     }
     if let Some(config_path) = default_config_path() {
         server = server.with_settings(Arc::new(DesktopHubSettings { config_path, desktop: state.orchestrator.clone() }));
+        // P84 — members sign in to the embedded hub too, each with their own vault.
+        if let Some(users_dir) = warden_bootstrap::users::default_users_dir() {
+            server = server.with_users_dir(users_dir);
+        }
     }
     // P61 — the web's Sync screen drives the desktop's own runner; the desktop already loops it.
     server = server.with_sync(state.sync_runner.clone(), None);

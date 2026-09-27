@@ -27,6 +27,7 @@ pub fn handle_list_devices(store: &PairingStore, you: &str, request_id: u64) -> 
                     },
                     first_seen_ms: device.first_seen_ms,
                     last_seen_ms: device.last_seen_ms,
+                    user: device.user,
                 })
                 .collect(),
             you: you.to_string(),

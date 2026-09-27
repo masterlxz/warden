@@ -3,12 +3,11 @@
 //! which one a `Chat` turn goes to. Pure functions over the conversations directory, kept out of
 //! `server.rs` so they're testable without a socket — same split as `skills.rs`.
 //!
-//! On disk each device has its own directory, `<root>/<device dir>/<conversation id>.json`, read
-//! and written with the same `warden_bootstrap` functions every other channel uses. Before P78 a
-//! device had exactly one conversation, `<root>/<device_id>.json`; `device_conversations_dir`
-//! moves that file into the device's directory as its `default` conversation, the one a client
-//! that never names a conversation (mobile and extension from before P78) keeps
-//! talking to.
+//! On disk each person has one directory (P84): the owner's `<root>/root/`, a member's
+//! `<root>/users/<id>/`, each `<conversation id>.json`, read and written with the same
+//! `warden_bootstrap` functions every other channel uses. Before P84 each device had its own
+//! directory, and before P78 a single `<root>/<device_id>.json`; `people::migrate_device_conversations`
+//! moves both into the owner's when the hub starts.
 //!
 //! Scheduled tasks (P92) keep their conversations in one directory of their own, shared by every
 //! device: an id starting with `task-` goes there (`ConversationDirs`), and every device's list
@@ -18,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use warden_bootstrap::tasks::CONVERSATION_PREFIX as TASK_PREFIX;
 use warden_bootstrap::{
-    delete_conversation, list_conversations, load_conversation, rename_conversation, save_conversation, ChatRole, Conversation,
+    delete_conversation, list_conversations, load_conversation, rename_conversation, ChatRole, Conversation,
     ConversationMessage,
 };
 use warden_server_protocol::protocol::{ConversationSummary, HistoryMessage, HistoryRole};
@@ -43,40 +42,6 @@ pub fn resolve_conversation_id(conversation_id: Option<String>) -> Result<String
         Some(id) if is_valid_id(&id) => Ok(id),
         Some(id) => Err(format!("invalid conversation id '{id}' (use 1-{MAX_ID_LEN} letters, digits, '-' or '_')")),
     }
-}
-
-/// `device_id`'s conversations directory under `root`, created on first write. A device id that
-/// isn't a safe name (a client picks its own `device_id`) gets a hash-derived directory
-/// instead, so it can never point outside `root`.
-///
-/// Also migrates the device's pre-P78 single conversation (`<root>/<device_id>.json`) into it as
-/// the `default` conversation, once — called when a device connects, so the move never races the
-/// device's own requests. A legacy file that doesn't parse is moved as is, so `RequestHistory`
-/// keeps reporting the parse error it always did instead of it disappearing.
-pub fn device_conversations_dir(root: &Path, device_id: &str) -> anyhow::Result<PathBuf> {
-    if !is_valid_id(device_id) {
-        use sha2::{Digest, Sha256};
-        let hash: String = Sha256::digest(device_id.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
-        return Ok(root.join(format!("device-{hash}")));
-    }
-    let dir = root.join(device_id);
-    let legacy = root.join(format!("{device_id}.json"));
-    let migrated = dir.join(format!("{DEFAULT_CONVERSATION_ID}.json"));
-    if legacy.is_file() && !migrated.exists() {
-        match load_conversation(root, device_id) {
-            Ok(Some(conversation)) => {
-                // `save_conversation` names the file after `conversation.id`, so the id changes too.
-                save_conversation(&dir, &Conversation { id: DEFAULT_CONVERSATION_ID.to_string(), ..conversation })?;
-                std::fs::remove_file(&legacy)?;
-            }
-            Ok(None) => {}
-            Err(_) => {
-                std::fs::create_dir_all(&dir)?;
-                std::fs::rename(&legacy, &migrated)?;
-            }
-        }
-    }
-    Ok(dir)
 }
 
 /// Where one device's requests find conversations: its own directory, and the hub's scheduled-task
@@ -189,6 +154,7 @@ fn to_history_message(message: ConversationMessage) -> HistoryMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use warden_bootstrap::save_conversation;
 
     fn temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -243,49 +209,6 @@ mod tests {
         }
         assert_eq!(resolve_conversation_id(None).unwrap(), DEFAULT_CONVERSATION_ID);
         assert!(resolve_conversation_id(Some("../etc".into())).is_err());
-    }
-
-    #[test]
-    fn an_unsafe_device_id_gets_a_hashed_directory_inside_the_root() {
-        let root = temp_dir();
-        let dir = device_conversations_dir(&root, "../../escape").unwrap();
-        assert_eq!(dir.parent().unwrap(), root);
-        assert!(dir.file_name().unwrap().to_str().unwrap().starts_with("device-"));
-        assert_eq!(device_conversations_dir(&root, "../../escape").unwrap(), dir);
-    }
-
-    #[test]
-    fn the_pre_p78_conversation_becomes_the_default_one() {
-        let root = temp_dir();
-        save(&root, "dev-1", 5, vec![message(ChatRole::User, "hi", 1)]);
-
-        let dir = device_conversations_dir(&root, "dev-1").unwrap();
-
-        assert!(!root.join("dev-1.json").exists());
-        let migrated = load_conversation(&dir, DEFAULT_CONVERSATION_ID).unwrap().unwrap();
-        assert_eq!(migrated.id, DEFAULT_CONVERSATION_ID);
-        assert_eq!(migrated.title, "title dev-1");
-        assert_eq!(contents(handle_history_request(&only(&dir), 1, None, None)), vec!["hi"]);
-        // Running again (the next connection) is a no-op.
-        assert_eq!(device_conversations_dir(&root, "dev-1").unwrap(), dir);
-    }
-
-    #[test]
-    fn a_corrupt_pre_p78_conversation_is_moved_and_still_reports_its_error() {
-        let root = temp_dir();
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("dev-1.json"), "not json").unwrap();
-
-        let dir = device_conversations_dir(&root, "dev-1").unwrap();
-
-        assert!(!root.join("dev-1.json").exists());
-        match handle_history_request(&only(&dir), 5, None, None) {
-            ServerMessage::HistoryError { request_id, message } => {
-                assert_eq!(request_id, 5);
-                assert!(message.contains("failed to parse"), "message was: {message}");
-            }
-            other => panic!("expected HistoryError, got {other:?}"),
-        }
     }
 
     #[test]

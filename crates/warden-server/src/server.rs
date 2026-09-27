@@ -24,8 +24,10 @@ use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, A
 
 use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
-use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
-use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
+use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
+use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
+use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, password_gate, user_info, MemberSpace, Person};
+use crate::user_admin::{handle_change_password, handle_list_users, handle_user_change, UserChange};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
@@ -102,6 +104,8 @@ pub struct Server {
     nodes: NodeRegistry,
     /// Where node calls are logged; `None` in tests that don't care.
     node_audit: Option<PathBuf>,
+    /// Where members keep their own vaults (P84). `None`: nobody but the root can sign in.
+    users_dir: Option<PathBuf>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -138,7 +142,16 @@ impl Server {
             changes: broadcast::channel(64).0,
             nodes: NodeRegistry::default(),
             node_audit: warden_bootstrap::default_node_audit_log_path(),
+            users_dir: None,
         })
+    }
+
+    /// Lets the members in `[[users]]` (P84) sign in with their password, each with their own vault
+    /// under `dir` (`warden_bootstrap::users::default_users_dir`). Needs `with_settings` too, since
+    /// that's where the members are read from.
+    pub fn with_users_dir(mut self, dir: PathBuf) -> Self {
+        self.users_dir = Some(dir);
+        self
     }
 
     /// The nodes connected to this hub (P93) — the desktop's Workspace screen reads its embedded hub's.
@@ -272,7 +285,15 @@ impl Server {
             changes: self.changes.clone(),
             nodes: self.nodes.clone(),
             node_tools: None,
+            users_dir: self.users_dir.map(Arc::new),
         };
+        // P84: conversations are a person's, not a device's — every device's move to the root's,
+        // once, before any connection can read them.
+        match migrate_device_conversations(&ctx.conversations_dir) {
+            Ok(0) => {}
+            Ok(moved) => eprintln!("warden-server: moved {moved} conversation(s) from each device's folder into the owner's"),
+            Err(err) => eprintln!("warden-server: failed to move the devices' conversations into the owner's: {err:#}"),
+        }
         // P93: the node tools join the hub's orchestrator — chat, the Warden API and scheduled tasks
         // all get them. They read `[[nodes]]` from the settings file, so a hub without one has none.
         if let Some(settings) = &ctx.settings {
@@ -349,6 +370,8 @@ struct ConnectionContext {
     nodes: NodeRegistry,
     /// Rebuilds the nodes' MCP tools when one joins or leaves (fatia 2). `None` without a settings file.
     node_tools: Option<NodeToolFactory>,
+    /// Where members' own vaults live (P84); `None` when members can't sign in here.
+    users_dir: Option<Arc<PathBuf>>,
 }
 
 impl ConnectionContext {
@@ -403,6 +426,26 @@ fn describe_offer(offer: &warden_server_protocol::protocol::NodeOfferDto) -> Str
     } else {
         parts.join(" and ")
     }
+}
+
+/// Runs a people change (P84) off the reader loop: a wrong key waits a second under the settings lock.
+#[allow(clippy::too_many_arguments)]
+fn spawn_user_change(
+    settings: &Option<Arc<dyn SettingsHost>>,
+    devices_path: &Arc<PathBuf>,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth_key: &Arc<str>,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+    request_id: u64,
+    pairing_key: String,
+    change: UserChange,
+) {
+    let (settings, lock, auth_key, reply_tx) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
+    let pairing = PairingStore::new(devices_path.as_ref().clone());
+    tokio::spawn(async move {
+        let reply = handle_user_change(settings.as_deref(), &pairing, &lock, &auth_key, request_id, &pairing_key, change).await;
+        let _ = reply_tx.send(reply);
+    });
 }
 
 /// Off the reader loop, like the API keys: a wrong key waits a second under the settings lock.
@@ -554,6 +597,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         changes,
         nodes,
         node_tools,
+        users_dir,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -574,7 +618,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             device_token,
             tools,
             node,
-        }) => (device_id, device_name, provided, device_token, tools, node),
+            username,
+            password,
+        }) => (device_id, device_name, provided, device_token, tools, node, username.zip(password)),
         // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
@@ -592,15 +638,35 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key, device_token, tools, node_offer) = hello;
+    let (device_id, device_name, provided_key, device_token, tools, node_offer, credentials) = hello;
 
     // P36: the shared key only pairs; a paired device authenticates with its own token. The
     // pairing status itself (Pending/Approved) stays silent here — a `Pending` device still gets a
     // normal `HelloAck` and can chat; only `CallDeviceTool` checks for `Approved` (Fase 9.3).
     let pairing_key_ok = !provided_key.is_empty() && provided_key.as_str() == auth_key.as_ref();
+    // P84: the members, read fresh — a member added or removed a moment ago counts.
+    let members = match settings.as_deref() {
+        Some(host) => load_config_from_path(&host.config_path(), false).map(|c| c.users).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let proof = match &credentials {
+        Some((username, password)) => match warden_bootstrap::users::authenticate_user(&members, username, password) {
+            Some(user) if users_dir.is_some() => PairingProof::Member(user.id.clone()),
+            Some(_) => return reject(&mut sink, "this hub doesn't host other people — sign in with the pairing key").await,
+            // A device coming back with its token may still send what it paired with; the token decides.
+            None if device_token.is_some() => PairingProof::Nothing,
+            None => {
+                eprintln!("warden-server: wrong username or password from '{device_id}' at {peer}");
+                tokio::time::sleep(crate::settings::WRONG_KEY_DELAY).await;
+                return reject(&mut sink, "wrong username or password").await;
+            }
+        },
+        None if pairing_key_ok => PairingProof::PairingKey,
+        None => PairingProof::Nothing,
+    };
     let store = PairingStore::new(devices_path.as_ref().clone());
-    let issued_token = match store.authenticate(&device_id, &device_name, device_token.as_deref(), pairing_key_ok) {
-        Ok(Ok(outcome)) => outcome.issued_token,
+    let (issued_token, owner) = match store.authenticate_as(&device_id, &device_name, device_token.as_deref(), proof) {
+        Ok(Ok(outcome)) => (outcome.issued_token, outcome.user),
         Ok(Err(rejection)) => {
             eprintln!("warden-server: rejected Hello from '{device_id}' at {peer}: {rejection}");
             return reject(&mut sink, &rejection.to_string()).await;
@@ -610,26 +676,42 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return reject(&mut sink, "server could not check this device's pairing").await;
         }
     };
-
-    eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}");
-
-    // Every device's conversations, for `RequestUsage`'s hub-wide totals.
-    let conversations_root = conversations_dir.clone();
-    // P78: this device's own conversations directory — resolved (and its pre-P78 conversation
-    // migrated into it) once here, before any of its requests can touch it.
-    let conversations_dir = match device_conversations_dir(&conversations_dir, &device_id) {
-        Ok(dir) => Arc::new(dir),
-        Err(err) => {
-            eprintln!("warden-server: failed to prepare {device_id}'s conversations directory: {err:#}");
-            return reject(&mut sink, "server could not open this device's conversations").await;
-        }
+    // Who this connection speaks for. A member's device whose member is gone is turned away.
+    let (person, mut must_change_password, user) = match (&owner, users_dir.as_deref()) {
+        (None, _) => (Person::Root, false, None),
+        (Some(id), Some(users_dir)) => match members.iter().find(|u| &u.id == id) {
+            Some(member) => (Person::Member(MemberSpace::new(member, users_dir, &conversations_dir)), member.must_change_password, Some(user_info(member))),
+            None => return reject(&mut sink, "this person is no longer part of the workspace").await,
+        },
+        (Some(_), None) => return reject(&mut sink, "this hub doesn't host other people any more").await,
     };
-    // P92: plus the scheduled tasks' conversations, shared by every device.
-    let conversation_dirs = Arc::new(ConversationDirs { device: conversations_dir.as_ref().clone(), tasks: tasks_dir.as_deref().cloned() });
+
+    match &person {
+        Person::Root => eprintln!("warden-server: {device_name} ({device_id}) connected from {peer}"),
+        Person::Member(member) => eprintln!("warden-server: {device_name} ({device_id}) connected from {peer} as {}", member.id),
+    }
+
+    // Every person's conversations, for `RequestUsage`'s hub-wide totals.
+    let conversations_root = conversations_dir.clone();
+    // P84: a person's conversations, shared by all their devices; the scheduled tasks' (P92) only
+    // for the root, who owns them.
+    let conversation_dirs = Arc::new(match &person {
+        Person::Root => ConversationDirs {
+            device: warden_bootstrap::users::root_conversations_dir(&conversations_root),
+            tasks: tasks_dir.as_deref().cloned(),
+        },
+        Person::Member(member) => ConversationDirs { device: member.conversations.clone(), tasks: None },
+    });
+    let conversations_dir = Arc::new(conversation_dirs.device.clone());
+    let member = match &person {
+        Person::Member(member) => Some(member.clone()),
+        Person::Root => None,
+    };
 
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: server_name.to_string(),
         device_token: issued_token,
+        user,
     })
     .await?;
 
@@ -658,10 +740,13 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     // P92: a task that ran changed a conversation every device lists. Through a weak sender, so this
     // forwarder never keeps the writer alive; aborted when the connection ends.
     let mut hub_changes = changes.subscribe();
+    // P84: those are the root's tasks; a member never hears about them.
+    let hears_task_changes = member.is_none();
     let weak_tx = tx.downgrade();
     let _forward_changes = AbortOnDrop(tokio::spawn(async move {
         loop {
             match hub_changes.recv().await {
+                Ok(_) if !hears_task_changes => continue,
                 Ok(conversation_id) => {
                     let Some(tx) = weak_tx.upgrade() else { break };
                     let _ = tx.send(ServerMessage::ConversationsChanged { conversation_id });
@@ -727,6 +812,45 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         };
         match frame {
             Message::Text(text) => match serde_json::from_str::<ClientMessage>(&text) {
+                // P84: a member on a provisional password may only change it; a member never
+                // reaches the hub's administration.
+                Ok(message) if must_change_password && password_gate(&message).is_some() => {
+                    if let Some(reply) = password_gate(&message) {
+                        let _ = tx.send(reply);
+                    }
+                }
+                Ok(message) if member.is_some() && member_refusal(&message).is_some() => {
+                    if let Some(reply) = member_refusal(&message) {
+                        let _ = tx.send(reply);
+                    }
+                }
+                Ok(ClientMessage::ChangePassword { request_id, old_password, new_password }) => {
+                    match &member {
+                        None => {
+                            let _ = tx.send(ServerMessage::UserError { request_id, message: "the workspace's owner signs in with the pairing key, which has no password to change".into(), auth_rejected: false });
+                        }
+                        Some(member) => {
+                            let reply = handle_change_password(settings.as_deref(), &settings_lock, &member.id, request_id, &old_password, &new_password).await;
+                            if matches!(reply, ServerMessage::PasswordChanged { .. }) {
+                                must_change_password = false;
+                            }
+                            let _ = tx.send(reply);
+                        }
+                    }
+                }
+                Ok(ClientMessage::ListUsers { request_id }) => {
+                    let _ = tx.send(handle_list_users(settings.as_deref(), request_id));
+                }
+                Ok(ClientMessage::SaveUser { request_id, pairing_key, id, name, is_new }) => {
+                    let change = if is_new { UserChange::Create { id, name } } else { UserChange::Rename { id, name } };
+                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, change);
+                }
+                Ok(ClientMessage::ResetPassword { request_id, pairing_key, id }) => {
+                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::ResetPassword { id });
+                }
+                Ok(ClientMessage::RemoveUser { request_id, pairing_key, id }) => {
+                    spawn_user_change(&settings, &devices_path, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::Remove { id });
+                }
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
@@ -754,6 +878,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     };
                     // `manage_agents` and SSH hosts that need a yes ask this device.
                     let orchestrator = orchestrator.with_approver(Arc::new(approver.clone()));
+                    // P84: a member's turn runs in their own space, with only the tools that stay in it.
+                    let orchestrator = match &member {
+                        Some(member) => member_orchestrator(&orchestrator, member),
+                        None => orchestrator,
+                    };
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
                     let reply_tx = tx.clone();
@@ -828,7 +957,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(message @ (ClientMessage::ListSkills { .. } | ClientMessage::SaveSkill { .. } | ClientMessage::DeleteSkill { .. })) => {
                     // Short local file I/O, answered inline (no spawn) — P72.
-                    let store = SkillStore::new(orchestrator.current().vault().clone());
+                    let vault = member.as_ref().map(|m| m.vault.clone()).unwrap_or_else(|| orchestrator.current().vault().clone());
+                    let store = SkillStore::new(vault);
                     if let Some(reply) = handle_skill_request(&store, message) {
                         let _ = tx.send(reply);
                     }
@@ -856,7 +986,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 ) => {
                     // P78 — listing and searching walk the whole vault, so this runs on the
                     // blocking pool instead of holding up this connection's reader loop.
-                    let vault = orchestrator.current().vault().clone();
+                    let vault = member.as_ref().map(|m| m.vault.clone()).unwrap_or_else(|| orchestrator.current().vault().clone());
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Some(reply) = handle_vault_request(&vault, message) {
@@ -884,7 +1014,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::RequestSettings { request_id }) => {
                     let access = SettingsAccess { host: settings.as_deref(), shared: &shared_orchestrator, lock: &settings_lock, auth_key: &auth_key, secure };
-                    let _ = tx.send(handle_request_settings(&access, request_id));
+                    let reply = handle_request_settings(&access, request_id);
+                    // P84: a member only sees the agents they can pick.
+                    let _ = tx.send(if member.is_some() { member_settings_view(reply) } else { reply });
                 }
                 Ok(ClientMessage::SaveSettings { request_id, pairing_key, base_version, update }) => {
                     // P78 — rebuilding the orchestrator starts MCP servers and can take seconds.

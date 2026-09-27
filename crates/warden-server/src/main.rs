@@ -72,6 +72,34 @@ enum Command {
         #[arg(long, global = true)]
         config: Option<String>,
     },
+    /// The people of this workspace besides you (P84), kept as `[[users]]` in the config file. Each
+    /// signs in with their username and password (the web, the phone) and has their own vault and
+    /// conversations on this hub. You stay the owner: whoever holds the pairing key.
+    Users {
+        #[command(subcommand)]
+        action: UsersAction,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long, global = true)]
+        config: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum UsersAction {
+    /// Every member, and whether they still have to pick their own password.
+    List,
+    /// Adds a member with a provisional password (printed once) they change when they first sign in.
+    Add {
+        /// Their username: lowercase letters, digits, - or _.
+        id: String,
+        /// How they're shown.
+        #[arg(long)]
+        name: String,
+    },
+    /// Gives a member a new provisional password (printed once), for a forgotten one.
+    ResetPassword { id: String },
+    /// Removes a member and revokes their devices. Their vault and conversations stay on disk.
+    Remove { id: String },
 }
 
 #[derive(clap::Args, Debug)]
@@ -519,6 +547,44 @@ fn session_tool_count(local: &warden_server::node_client::LocalNode) -> usize {
     local.offer(String::new(), Vec::new()).mcp_tools.len()
 }
 
+fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Result<()> {
+    use warden_bootstrap::users::{add_user, generate_temp_password, remove_user, reset_password};
+    let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let mut file = load_config_from_path(&config_path, config.is_some())?;
+    match action {
+        UsersAction::List => {
+            if file.users.is_empty() {
+                println!("no one else yet — add someone with `warden-server users add <username> --name \"Their Name\"`");
+            }
+            for user in &file.users {
+                let password = if user.must_change_password { "provisional password" } else { "own password" };
+                println!("{}\t{}\t{password}", user.id, user.name);
+            }
+        }
+        UsersAction::Add { id, name } => {
+            let password = generate_temp_password();
+            add_user(&mut file, &id, &name, &password)?;
+            save_config(&config_path, &file)?;
+            let id = &file.users.last().expect("just added").id;
+            println!("'{id}' added. Provisional password (shown only now): {password}");
+            println!("They sign in on the web or the phone with the username '{id}' and this password, then pick their own.");
+        }
+        UsersAction::ResetPassword { id } => {
+            let password = generate_temp_password();
+            reset_password(&mut file, &id, &password)?;
+            save_config(&config_path, &file)?;
+            println!("New provisional password for '{id}' (shown only now): {password}");
+        }
+        UsersAction::Remove { id } => {
+            remove_user(&mut file, &id)?;
+            save_config(&config_path, &file)?;
+            let revoked = PairingStore::new(devices_path()?).revoke_user_devices(&id)?;
+            println!("'{id}' removed and {revoked} device(s) of theirs revoked — their vault and conversations stay on disk");
+        }
+    }
+    Ok(())
+}
+
 fn run_nodes_command(action: NodesAction, config: Option<String>) -> anyhow::Result<()> {
     let config_path = config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
     match action {
@@ -728,6 +794,10 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     if let Some(settings) = settings {
         server = server.with_settings(Arc::new(settings));
+        // P84 — the members in `[[users]]` sign in with their password, each with their own vault.
+        if let Some(users_dir) = warden_bootstrap::users::default_users_dir() {
+            server = server.with_users_dir(users_dir);
+        }
     }
     let addr = server.local_addr()?;
     let page_url = match tls.as_ref().and_then(|tls| tls.secure_url(addr.port())) {
@@ -783,6 +853,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Tasks(args) => run_tasks_command(args).await,
         Command::Node(args) => run_node_command(args).await,
         Command::Nodes { action, config } => run_nodes_command(action, config),
+        Command::Users { action, config } => run_users_command(action, config),
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

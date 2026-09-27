@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use warden_core::tool::ToolSpec;
 
-use crate::protocol::{ClientMessage, NodeOfferDto, ServerMessage};
+use crate::protocol::{ClientMessage, NodeOfferDto, ServerMessage, UserInfoDto};
 
 /// The hub turned this client away (`AuthError`): a wrong key, or a token that was revoked. Typed so
 /// a caller that reconnects on its own (a node, P97) can tell it apart from a hub that's just away.
@@ -100,6 +100,45 @@ impl ServerConnection {
         node: Option<NodeOfferDto>,
         tls: Arc<ClientConfig>,
     ) -> anyhow::Result<(Self, Option<String>)> {
+        let hello = ClientMessage::Hello {
+            device_id: device_id.to_string(),
+            device_name: device_name.to_string(),
+            auth_key: auth_key.to_string(),
+            device_token,
+            tools,
+            node,
+            username: None,
+            password: None,
+        };
+        let (conn, token, _) = Self::hello(url, hello, tls).await?;
+        Ok((conn, token))
+    }
+
+    /// P84: pairs as a member with their username and password (or reconnects with the token a
+    /// previous one issued), and says who the hub took this device to be.
+    pub async fn handshake_as_member(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        username: &str,
+        password: &str,
+        device_token: Option<String>,
+        tls: Arc<ClientConfig>,
+    ) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
+        let hello = ClientMessage::Hello {
+            device_id: device_id.to_string(),
+            device_name: device_name.to_string(),
+            auth_key: String::new(),
+            device_token,
+            tools: Vec::new(),
+            node: None,
+            username: Some(username.to_string()),
+            password: Some(password.to_string()),
+        };
+        Self::hello(url, hello, tls).await
+    }
+
+    async fn hello(url: &str, hello: ClientMessage, tls: Arc<ClientConfig>) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
         let (ws, _response) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(Connector::Rustls(tls)))
             .await
             .map_err(|err| match err {
@@ -111,19 +150,10 @@ impl ServerConnection {
                 other => other.into(),
             })?;
         let mut conn = Self { ws };
-
-        conn.send(&ClientMessage::Hello {
-            device_id: device_id.to_string(),
-            device_name: device_name.to_string(),
-            auth_key: auth_key.to_string(),
-            device_token,
-            tools,
-            node,
-        })
-        .await?;
+        conn.send(&hello).await?;
 
         match conn.recv().await? {
-            Some(ServerMessage::HelloAck { device_token, .. }) => Ok((conn, device_token)),
+            Some(ServerMessage::HelloAck { device_token, user, .. }) => Ok((conn, device_token, user)),
             Some(ServerMessage::AuthError { reason }) => Err(AuthRejected { reason }.into()),
             Some(other) => anyhow::bail!("expected HelloAck, got {other:?}"),
             None => anyhow::bail!("server closed the connection before replying to Hello"),

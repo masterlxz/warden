@@ -21,6 +21,8 @@ pub const USAGE_DAYS: u32 = 30;
 /// The row scheduled tasks (P92) get in `by_device`: their conversations live apart from any device.
 pub const TASKS_USAGE_ID: &str = "tasks";
 const TASKS_USAGE_NAME: &str = "Tarefas agendadas";
+/// P84: the owner's conversations, every device of theirs together.
+const ROOT_USAGE_NAME: &str = "Owner";
 
 /// Everything `RequestUsage` reports. `conversations_root` holds one folder per device (P78) and,
 /// for devices that haven't reconnected since, their old single `<device_id>.json`. `tasks_dir`
@@ -42,6 +44,21 @@ pub fn build_usage_report(
                 let path = entry?.path();
                 if path.is_dir() {
                     let device_id = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    if device_id == "users" {
+                        // P84: one row per member, `user:<id>`.
+                        for member in std::fs::read_dir(&path)? {
+                            let member = member?.path();
+                            if member.is_dir() {
+                                let id = format!("user:{}", member.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                                names.insert(id.clone(), id.trim_start_matches("user:").to_string());
+                                per_device.push((id, list_conversations(&member)?));
+                            }
+                        }
+                        continue;
+                    }
+                    if device_id == warden_bootstrap::users::ROOT_ID {
+                        names.insert(device_id.clone(), ROOT_USAGE_NAME.to_string());
+                    }
                     per_device.push((device_id, list_conversations(&path)?));
                 }
             }

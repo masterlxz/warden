@@ -28,6 +28,7 @@ pub mod chat_input;
 pub mod conversations;
 pub mod device_registry;
 pub mod openai_api;
+pub mod people;
 pub mod devices;
 pub mod node_client;
 pub mod node_tools;
@@ -41,6 +42,7 @@ pub mod sync;
 pub mod task_admin;
 pub mod tls;
 pub mod usage;
+pub mod user_admin;
 pub mod vault;
 pub mod web_ui;
 

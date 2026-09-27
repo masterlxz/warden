@@ -234,6 +234,9 @@ pub struct DeviceDto {
     pub status: DeviceStatusDto,
     pub first_seen_ms: i64,
     pub last_seen_ms: i64,
+    /// P84: the member it belongs to; absent for the owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 /// What a node offers (P93), as it announced itself in `Hello`. Its operator chose it on the node
@@ -316,6 +319,20 @@ pub struct TaskDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
     pub enabled: bool,
+}
+
+/// A member of the workspace (P84), as the hub shows them — never the password hash.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInfoDto {
+    /// The username.
+    pub id: String,
+    pub name: String,
+    /// `member` today.
+    pub role: String,
+    /// Still on the provisional password the root set: the hub only lets them change it.
+    #[serde(default)]
+    pub must_change_password: bool,
 }
 
 /// A task and where it stands on this hub.
@@ -674,6 +691,12 @@ pub enum ClientMessage {
         /// agents. Absent for every other client.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         node: Option<NodeOfferDto>,
+        /// P84: pairs as this member (with `password`) instead of with the pairing key. Only needed
+        /// until the hub issues a token, like the key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     Ping {
         nonce: u64,
@@ -941,6 +964,39 @@ pub enum ClientMessage {
         pairing_key: String,
         id: String,
     },
+    /// P84: the member on this connection picks their own password, answered by `PasswordChanged`
+    /// or `UserError`. The only request a member on a provisional password may make.
+    ChangePassword {
+        request_id: u64,
+        old_password: String,
+        new_password: String,
+    },
+    /// The workspace's members, answered by `UserList`. The root's only.
+    ListUsers {
+        request_id: u64,
+    },
+    /// Creates a member (`is_new`) with a provisional password, or renames one. Answered by
+    /// `UserList`, with the provisional password once for a new member.
+    SaveUser {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        name: String,
+        #[serde(default)]
+        is_new: bool,
+    },
+    /// Gives a member a new provisional password (a forgotten one), shown once in `UserList`.
+    ResetPassword {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// Removes a member and revokes their devices. Their vault and conversations stay on the hub's disk.
+    RemoveUser {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -982,6 +1038,10 @@ pub enum ServerMessage {
         /// it held before, which no longer works.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_token: Option<String>,
+        /// P84: the member this device belongs to — absent for the root (the pairing key's
+        /// devices), which is also what a hub from before P84 sends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<UserInfoDto>,
     },
     AuthError {
         reason: String,
@@ -1232,6 +1292,25 @@ pub enum ServerMessage {
         #[serde(default)]
         auth_rejected: bool,
     },
+    /// P84: the members, after `ListUsers` or a change. `temp_password`: the provisional password
+    /// of the member just created or reset — shown once, never stored in the clear.
+    UserList {
+        request_id: u64,
+        users: Vec<UserInfoDto>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        temp_password: Option<String>,
+    },
+    PasswordChanged {
+        request_id: u64,
+    },
+    /// A user request failed. `auth_rejected`: the pairing key was wrong, or this connection isn't
+    /// the root's; nothing changed.
+    UserError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
     /// A device request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     DeviceError {
         request_id: u64,
@@ -1302,6 +1381,8 @@ mod tests {
             device_token: None,
             tools: Vec::new(),
             node: None,
+            username: None,
+            password: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1320,10 +1401,10 @@ mod tests {
 
     #[test]
     fn server_hello_ack_carries_an_issued_token_only_when_there_is_one() {
-        let without = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: None };
+        let without = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: None, user: None };
         assert_eq!(serde_json::to_string(&without).unwrap(), r#"{"type":"helloAck","serverName":"Hub"}"#);
 
-        let with = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: Some("tok".into()) };
+        let with = ServerMessage::HelloAck { server_name: "Hub".into(), device_token: Some("tok".into()), user: None };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"helloAck","serverName":"Hub","deviceToken":"tok"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), with);
@@ -1351,6 +1432,8 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             }],
             node: None,
+            username: None,
+            password: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1811,7 +1894,7 @@ mod tests {
 
         let list = ServerMessage::DeviceList {
             request_id: 4,
-            devices: vec![DeviceDto { device_id: "phone".into(), device_name: "Phone".into(), status: DeviceStatusDto::Pending, first_seen_ms: 1, last_seen_ms: 2 }],
+            devices: vec![DeviceDto { device_id: "phone".into(), device_name: "Phone".into(), status: DeviceStatusDto::Pending, first_seen_ms: 1, last_seen_ms: 2, user: None }],
             you: "web-1".into(),
         };
         let json = serde_json::to_value(&list).unwrap();

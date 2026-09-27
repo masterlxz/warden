@@ -41,7 +41,7 @@ async fn a_failing_model_call_comes_back_as_a_chat_error_not_a_dropped_connectio
 }
 
 /// P40: a device that reconnects gets back the turns it already had, from the same file `Chat`
-/// writes to — and only its own conversation, not another device's.
+/// writes to. Since P84 conversations are a person's: another device of the same owner sees them too.
 #[tokio::test]
 async fn a_reconnecting_device_can_fetch_its_conversation_history() {
     let addr = spin_up_server(MockProvider::replying("ahoy")).await;
@@ -65,7 +65,10 @@ async fn a_reconnecting_device_can_fetch_its_conversation_history() {
 
     let mut other_device = ServerConnection::connect(&url, "dev-2", "Other Device", "test-key").await.unwrap();
     other_device.send(&ClientMessage::RequestHistory { request_id: 2, limit: None, conversation_id: None }).await.unwrap();
-    assert_eq!(other_device.recv().await.unwrap(), Some(ServerMessage::History { request_id: 2, messages: Vec::new() }));
+    match other_device.recv().await.unwrap() {
+        Some(ServerMessage::History { messages, .. }) => assert_eq!(messages.len(), 2, "the owner's other device sees the same conversation"),
+        other => panic!("expected History, got {other:?}"),
+    }
 }
 
 /// P78: several conversations per device — each `Chat` lands in the one it names, the answer says
