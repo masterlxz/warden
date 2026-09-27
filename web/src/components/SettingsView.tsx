@@ -12,6 +12,7 @@ import type {
   ProviderKind,
   SecretEdit,
   SecretStatus,
+  UserInfo,
 } from "../hub/messages";
 
 // The hub's settings (P78): providers, agents, the Tavily/Whisper keys, spending limits, prices and
@@ -34,6 +35,7 @@ const SCOPES: { value: LimitScope; label: string; target: string }[] = [
   { value: "agent", label: "Um agente", target: "id do agente" },
   { value: "channel", label: "Um canal", target: "server, desktop, telegram…" },
   { value: "user", label: "Um usuário", target: "canal:id, ex. telegram:12345" },
+  { value: "person", label: "Uma pessoa", target: "usuário, ex. ana (em todos os canais)" },
 ];
 
 type Keyed<T> = T & { key: number };
@@ -202,9 +204,15 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   const [keyError, setKeyError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  /** P84 — the workspace's members, for sharing agents with them. */
+  const [people, setPeople] = useState<UserInfo[]>([]);
 
   const load = useCallback(() => {
     if (!conn) return;
+    conn
+      .listUsers()
+      .then(({ users }) => setPeople(users))
+      .catch(() => setPeople([]));
     conn.requestSettings().then(
       (result) => {
         setLoaded(result);
@@ -601,6 +609,34 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                   Limitar as ferramentas
                 </label>
               </div>
+              {people.length > 0 && (
+                <fieldset className="settings-tools">
+                  <legend className="skills-hint">Compartilhar com (a pessoa usa o agente com a memória e as ferramentas dela):</legend>
+                  <label className="settings-check">
+                    <input
+                      type="checkbox"
+                      checked={(a.sharedWith ?? []).includes("*")}
+                      onChange={(e) => patchAgent(a.key, { sharedWith: e.target.checked ? ["*"] : [] })}
+                    />
+                    Todas as pessoas
+                  </label>
+                  {!(a.sharedWith ?? []).includes("*") &&
+                    people.map((p) => (
+                      <label key={p.id} className="settings-check">
+                        <input
+                          type="checkbox"
+                          checked={(a.sharedWith ?? []).includes(p.id)}
+                          onChange={(e) =>
+                            patchAgent(a.key, {
+                              sharedWith: e.target.checked ? [...(a.sharedWith ?? []), p.id] : (a.sharedWith ?? []).filter((s) => s !== p.id),
+                            })
+                          }
+                        />
+                        {p.name} <code>{p.id}</code>
+                      </label>
+                    ))}
+                </fieldset>
+              )}
               {a.allowedTools !== null && (
                 <fieldset className="settings-tools">
                   <legend className="skills-hint">Só estas ferramentas:</legend>

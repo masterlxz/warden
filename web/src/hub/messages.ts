@@ -150,9 +150,14 @@ export interface AgentSettings {
   /** P92 — the `manage_tasks` tool. */
   canManageTasks: boolean;
   allowedTools: string[] | null;
+  /** P84 — members this agent is shared with, or ["*"] for everyone. */
+  sharedWith?: string[];
+  /** P84 — in a member's view, their username on their own agents; absent on the shared ones. */
+  owner?: string;
 }
 
-export type LimitScope = "global" | "agent" | "channel" | "user";
+/** P84 — `person` is one workspace member, on every channel. */
+export type LimitScope = "global" | "agent" | "channel" | "user" | "person";
 
 /** Mirrors `LimitSettingsDto` (P4). `target` is empty for a global limit; `warnAt`/`extendStep` are
  * fractions (0–1), `null` for the default. */
@@ -213,6 +218,10 @@ export interface UserInfo {
   role: string;
   /** Still on the provisional password: the hub only accepts `changePassword` until it's changed. */
   mustChangePassword: boolean;
+  /** P84 fatia 2 — the tools the owner set for them; absent/null is the safe default. */
+  tools?: string[] | null;
+  /** Their own agents' names. */
+  agents: string[];
 }
 
 /** Mirrors `ApiKeyDto` (P12): one Warden API key, never the key or its hash. `shown` is its start. */
@@ -224,6 +233,8 @@ export interface ApiKey {
   lastUsedAtMs?: number;
   /** The only agent this key speaks as; absent for a general key. */
   agentId?: string;
+  /** P84 — the member it belongs to; absent for the owner's. */
+  user?: string;
 }
 
 /** Mirrors `NodeOfferDto` (P93): what a node lends, as its operator chose. */
@@ -399,6 +410,11 @@ export type ClientMessage =
   | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
   | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
   | { type: "removeUser"; requestId: number; pairingKey: string; id: string }
+  /** P84 fatia 2 — the owner sets a member's tools (`null`: the safe default). */
+  | { type: "setUserTools"; requestId: number; pairingKey: string; id: string; tools: string[] | null }
+  /** A member's own agents, answered by `settings` (their view) or `settingsError`. */
+  | { type: "saveOwnAgent"; requestId: number; originalId?: string; agent: AgentSettings }
+  | { type: "deleteOwnAgent"; requestId: number; id: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -529,11 +545,11 @@ export function decode(text: string): ServerMessage {
     case "passwordChanged":
       return json as ServerMessage;
     case "userList": {
-      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword"> & { mustChangePassword?: boolean }>; tempPassword?: string };
+      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string };
       return {
         type: "userList",
         requestId: raw.requestId,
-        users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false })),
+        users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false, agents: u.agents ?? [] })),
         ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
       };
     }

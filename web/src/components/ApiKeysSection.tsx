@@ -15,7 +15,8 @@ function message(err: unknown): string {
 
 type Asking = { kind: "create"; name: string; agentId: string } | { kind: "revoke"; key: ApiKey };
 
-export default function ApiKeysSection({ conn }: { conn: ServerConnection | null }) {
+/** `member` (P84): the keys are this member's own, and changes are confirmed with their password. */
+export default function ApiKeysSection({ conn, member = false }: { conn: ServerConnection | null; member?: boolean }) {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -75,7 +76,7 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
       cancel();
     } catch (err) {
       if (err instanceof ApiKeyError && err.authRejected) {
-        setKeyError("Chave de pareamento errada.");
+        setKeyError(member ? "Senha errada." : "Chave de pareamento errada.");
       } else {
         cancel();
         setError(message(err));
@@ -103,9 +104,9 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
       }}
     >
       <label className="settings-field">
-        Chave de pareamento do hub
+        {member ? "Sua senha" : "Chave de pareamento do hub"}
         <input type="password" autoComplete="current-password" autoFocus value={pairingKey} onChange={(e) => setPairingKey(e.target.value)} />
-        <span className="field-hint">A mesma do primeiro login. É pedida a cada mudança.</span>
+        <span className="field-hint">{member ? "A mesma com que você entra. É pedida a cada mudança." : "A mesma do primeiro login. É pedida a cada mudança."}</span>
       </label>
       {keyError && <p className="error-banner">{keyError}</p>}
       <div className="skills-actions">
@@ -132,6 +133,7 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
         <code>{baseUrl}</code>. Uma chave geral escolhe o modelo a cada chamada (<code>warden</code> ou{" "}
         <code>warden/&lt;agente&gt;</code>); uma chave presa a um agente só fala como ele. As tools mandadas pelo cliente são
         ignoradas, e nada vira conversa; o gasto entra no canal <code>api</code>.
+        {member && " As suas chaves falam como você: a sua memória, os agentes que você vê e as ferramentas que você tem."}
       </p>
 
       {error && <p className="error-banner">{error}</p>}
@@ -165,6 +167,7 @@ export default function ApiKeysSection({ conn }: { conn: ServerConnection | null
                 <code>{key.shown}…</code>
               </div>
               <p className="skills-item-description">
+                {key.user && !member && <>De <strong>{key.user}</strong> · </>}
                 {key.agentId ? (
                   <>
                     Só fala como <strong>{key.agentId}</strong>

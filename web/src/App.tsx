@@ -5,7 +5,9 @@ import ChangePasswordView from "./components/ChangePasswordView";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
+import ApiKeysSection from "./components/ApiKeysSection";
 import LoginView, { type LoginCredentials } from "./components/LoginView";
+import MyAgentsView from "./components/MyAgentsView";
 import PeopleView from "./components/PeopleView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
@@ -30,7 +32,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "people" | "sync" | "settings";
+type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -477,6 +479,16 @@ export default function App() {
               </button>
             </>
           )}
+          {!isOwner && (
+            <>
+              <button type="button" className={view === "myAgents" ? "tab tab--active" : "tab"} onClick={() => setView("myAgents")}>
+                Agentes
+              </button>
+              <button type="button" className={view === "myApi" ? "tab tab--active" : "tab"} onClick={() => setView("myApi")}>
+                API
+              </button>
+            </>
+          )}
         </nav>
         {user && (
           <button type="button" className="link-button" onClick={() => setChangingPassword(true)} title="Trocar senha">
@@ -546,6 +558,12 @@ export default function App() {
           <DevicesView conn={conn} />
         ) : view === "people" ? (
           <PeopleView conn={conn} />
+        ) : view === "myAgents" ? (
+          <MyAgentsView conn={conn} onChanged={() => connRef.current && void refreshAgents(connRef.current)} />
+        ) : view === "myApi" ? (
+          <div className="usage-view">
+            <ApiKeysSection conn={conn} member />
+          </div>
         ) : view === "sync" ? (
           <SyncView conn={conn} />
         ) : view === "settings" ? (

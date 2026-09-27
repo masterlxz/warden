@@ -10,7 +10,24 @@ type Asking =
   | { kind: "create"; id: string; name: string }
   | { kind: "rename"; user: UserInfo; name: string }
   | { kind: "reset"; user: UserInfo }
-  | { kind: "remove"; user: UserInfo };
+  | { kind: "remove"; user: UserInfo }
+  /** `null`: back to the safe default. */
+  | { kind: "tools"; user: UserInfo; tools: string[] | null };
+
+/** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
+function safeByDefault(tool: string): boolean {
+  return ["read_file", "write_file", "use_skill", "read_skill_file", "manage_skill", "delegate_task", "jobs", "budget", "generate_document"].includes(tool) || tool.startsWith("tavily");
+}
+
+/** Mirrors `NEVER_FOR_MEMBERS`: tools a member never gets, so they aren't offered. */
+const NEVER_FOR_MEMBERS = ["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats"];
+
+/** What each person's tools reach, in a few words. */
+function toolsLabel(user: UserInfo): string {
+  if (user.tools == null) return "ferramentas padrão (arquivos e skills do próprio vault, busca na web)";
+  if (user.tools.length === 0) return "nenhuma ferramenta";
+  return `ferramentas: ${user.tools.join(", ")}`;
+}
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -25,6 +42,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
   const [busy, setBusy] = useState(false);
   /** The provisional password to hand over, and to whom — shown once. */
   const [shown, setShown] = useState<{ id: string; password: string } | null>(null);
+  /** The hub's tools, for choosing each person's. */
+  const [toolNames, setToolNames] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     if (!conn) return;
@@ -38,7 +57,11 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
 
   useEffect(() => {
     void load();
-  }, [load]);
+    conn
+      ?.requestSettings()
+      .then(({ settings }) => setToolNames(settings.toolNames.filter((t) => !NEVER_FOR_MEMBERS.includes(t))))
+      .catch(() => setToolNames([]));
+  }, [conn, load]);
 
   function cancel() {
     setAsking(null);
@@ -58,7 +81,9 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
             ? await conn.saveUser(pairingKey, asking.user.id, asking.name.trim(), false)
             : asking.kind === "reset"
               ? await conn.resetPassword(pairingKey, asking.user.id)
-              : await conn.removeUser(pairingKey, asking.user.id);
+              : asking.kind === "tools"
+                ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
+                : await conn.removeUser(pairingKey, asking.user.id);
       setUsers(reply.users);
       if (reply.tempPassword) {
         setShown({ id: asking.kind === "create" ? asking.id.trim().toLowerCase() : asking.kind === "reset" ? asking.user.id : "", password: reply.tempPassword });
@@ -111,7 +136,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
       </div>
       <p className="skills-hint">
         Quem mais usa este Warden. Cada pessoa entra com o próprio usuário e senha e tem o próprio vault e as próprias conversas, que você não vê.
-        Por enquanto ela conversa com os seus agentes usando a memória dela, sem terminal, nós ou integrações suas.
+        Ela conversa com os agentes que você compartilhar (em Configurações), sempre com a memória dela e só com as ferramentas que você
+        liberar aqui, e pode criar agentes próprios.
       </p>
       {error && <p className="error-banner">{error}</p>}
 
@@ -167,7 +193,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   </span>
                 </div>
                 <p className="skills-item-description">
-                  <code>{user.id}</code>
+                  <code>{user.id}</code> · {toolsLabel(user)}
+                  {user.agents.length > 0 && ` · agentes próprios: ${user.agents.join(", ")}`}
                 </p>
                 {mine?.kind === "rename" &&
                   keyForm(
@@ -179,6 +206,30 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     </label>,
                   )}
                 {mine?.kind === "reset" && keyForm("Gerar senha provisória")}
+                {mine?.kind === "tools" &&
+                  keyForm(
+                    "Salvar ferramentas",
+                    false,
+                    <fieldset className="settings-tools">
+                      <label className="settings-check">
+                        <input type="checkbox" checked={mine.tools === null} onChange={(e) => setAsking({ ...mine, tools: e.target.checked ? null : toolNames.filter(safeByDefault) })} />
+                        Usar o padrão seguro
+                      </label>
+                      {mine.tools !== null &&
+                        toolNames.map((tool) => (
+                          <label key={tool} className="settings-check">
+                            <input
+                              type="checkbox"
+                              checked={mine.tools!.includes(tool)}
+                              onChange={(e) => setAsking({ ...mine, tools: e.target.checked ? [...mine.tools!, tool] : mine.tools!.filter((t) => t !== tool) })}
+                            />
+                            <code>{tool}</code>
+                            {!safeByDefault(tool) && <span className="skills-danger"> alcança o que é seu (terminal, nós, integrações)</span>}
+                          </label>
+                        ))}
+                      <span className="field-hint">Um agente nunca passa disso, nem do que o próprio agente pode.</span>
+                    </fieldset>,
+                  )}
                 {mine?.kind === "remove" &&
                   keyForm(
                     "Remover",
@@ -191,6 +242,9 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   <div className="skills-actions">
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "rename", user, name: user.name })}>
                       Renomear
+                    </button>
+                    <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "tools", user, tools: user.tools ?? null })}>
+                      Ferramentas
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "reset", user })}>
                       Nova senha provisória

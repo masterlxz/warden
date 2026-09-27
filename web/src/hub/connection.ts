@@ -10,6 +10,7 @@
 import {
   encode,
   decode,
+  type AgentSettings,
   type ApiKey,
   type Attachment,
   type ClientMessage,
@@ -701,6 +702,25 @@ export class ServerConnection {
   /** Removes a member and revokes their devices; their vault and conversations stay on the hub. */
   async removeUser(pairingKey: string, id: string): Promise<UserList> {
     return this.userRequest((requestId) => ({ type: "removeUser", requestId, pairingKey, id }));
+  }
+
+  /** P84 fatia 2: the tools a member may use (`null`: the safe default). Rejects with `UserError`. */
+  async setUserTools(pairingKey: string, id: string, tools: string[] | null): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "setUserTools", requestId, pairingKey, id, tools }));
+  }
+
+  /** A member creates (`originalId` absent) or edits one of their own agents; answers with their
+   * settings view. Rejects with `SettingsError`. */
+  async saveOwnAgent(agent: AgentSettings, originalId?: string): Promise<LoadedSettings> {
+    const reply = await this.request((requestId) => ({ type: "saveOwnAgent", requestId, agent, ...(originalId && { originalId }) }));
+    if (reply.type !== "settings") throw new Error("resposta inesperada do hub");
+    return { settings: reply.settings, version: reply.version, secretsWritable: reply.secretsWritable };
+  }
+
+  async deleteOwnAgent(id: string): Promise<LoadedSettings> {
+    const reply = await this.request((requestId) => ({ type: "deleteOwnAgent", requestId, id }));
+    if (reply.type !== "settings") throw new Error("resposta inesperada do hub");
+    return { settings: reply.settings, version: reply.version, secretsWritable: reply.secretsWritable };
   }
 
   private async userRequest(build: (requestId: number) => ClientMessage): Promise<UserList> {
