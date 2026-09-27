@@ -9,9 +9,14 @@
 //! moves that file into the device's directory as its `default` conversation, the one a client
 //! that never names a conversation (mobile and extension from before P78) keeps
 //! talking to.
+//!
+//! Scheduled tasks (P92) keep their conversations in one directory of their own, shared by every
+//! device: an id starting with `task-` goes there (`ConversationDirs`), and every device's list
+//! shows them next to its own.
 
 use std::path::{Path, PathBuf};
 
+use warden_bootstrap::tasks::CONVERSATION_PREFIX as TASK_PREFIX;
 use warden_bootstrap::{
     delete_conversation, list_conversations, load_conversation, rename_conversation, save_conversation, ChatRole, Conversation,
     ConversationMessage,
@@ -74,14 +79,42 @@ pub fn device_conversations_dir(root: &Path, device_id: &str) -> anyhow::Result<
     Ok(dir)
 }
 
+/// Where one device's requests find conversations: its own directory, and the hub's scheduled-task
+/// conversations (P92) when it keeps any.
+#[derive(Debug, Clone)]
+pub struct ConversationDirs {
+    pub device: PathBuf,
+    pub tasks: Option<PathBuf>,
+}
+
+impl ConversationDirs {
+    /// The directory conversation `id` lives in.
+    pub fn dir_for(&self, id: &str) -> &Path {
+        match &self.tasks {
+            Some(tasks) if id.starts_with(TASK_PREFIX) => tasks,
+            _ => &self.device,
+        }
+    }
+
+    /// The device's conversations and the tasks', newest-updated first.
+    fn list(&self) -> anyhow::Result<Vec<Conversation>> {
+        let mut conversations = list_conversations(&self.device)?;
+        if let Some(tasks) = &self.tasks {
+            conversations.extend(list_conversations(tasks)?);
+            conversations.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+        }
+        Ok(conversations)
+    }
+}
+
 /// Answers a `RequestHistory`: that conversation's last `limit` messages (all of them when `None`),
 /// oldest first. A conversation that doesn't exist yet is an empty `History`, not an error.
-pub fn handle_history_request(device_dir: &Path, request_id: u64, limit: Option<u32>, conversation_id: Option<String>) -> ServerMessage {
+pub fn handle_history_request(dirs: &ConversationDirs, request_id: u64, limit: Option<u32>, conversation_id: Option<String>) -> ServerMessage {
     let id = match resolve_conversation_id(conversation_id) {
         Ok(id) => id,
         Err(message) => return ServerMessage::HistoryError { request_id, message },
     };
-    match load_conversation(device_dir, &id) {
+    match load_conversation(dirs.dir_for(&id), &id) {
         Ok(conversation) => {
             let messages = conversation.map(|c| c.messages).unwrap_or_default();
             let skip = limit.map_or(0, |limit| messages.len().saturating_sub(limit as usize));
@@ -93,10 +126,10 @@ pub fn handle_history_request(device_dir: &Path, request_id: u64, limit: Option<
 
 /// Answers a `ListConversations`/`RenameConversation`/`DeleteConversation`, or `None` for any
 /// other message.
-pub fn handle_conversation_request(device_dir: &Path, message: ClientMessage) -> Option<ServerMessage> {
+pub fn handle_conversation_request(dirs: &ConversationDirs, message: ClientMessage) -> Option<ServerMessage> {
     let (request_id, result) = match message {
         ClientMessage::ListConversations { request_id } => {
-            return Some(match list_conversations(device_dir) {
+            return Some(match dirs.list() {
                 Ok(conversations) => ServerMessage::ConversationList {
                     request_id,
                     conversations: conversations.into_iter().map(to_summary).collect(),
@@ -105,10 +138,10 @@ pub fn handle_conversation_request(device_dir: &Path, message: ClientMessage) ->
             });
         }
         ClientMessage::RenameConversation { request_id, conversation_id, title } => {
-            (request_id, existing(conversation_id).and_then(|id| found(rename_conversation(device_dir, &id, &title), &id)))
+            (request_id, existing(conversation_id).and_then(|id| found(rename_conversation(dirs.dir_for(&id), &id, &title), &id)))
         }
         ClientMessage::DeleteConversation { request_id, conversation_id } => {
-            (request_id, existing(conversation_id).and_then(|id| found(delete_conversation(device_dir, &id), &id)))
+            (request_id, existing(conversation_id).and_then(|id| found(delete_conversation(dirs.dir_for(&id), &id), &id)))
         }
         _ => return None,
     };
@@ -189,6 +222,10 @@ mod tests {
         save_conversation(dir, &conversation).unwrap();
     }
 
+    fn only(dir: &Path) -> ConversationDirs {
+        ConversationDirs { device: dir.to_path_buf(), tasks: None }
+    }
+
     fn contents(reply: ServerMessage) -> Vec<String> {
         match reply {
             ServerMessage::History { messages, .. } => messages.into_iter().map(|m| m.content).collect(),
@@ -228,7 +265,7 @@ mod tests {
         let migrated = load_conversation(&dir, DEFAULT_CONVERSATION_ID).unwrap().unwrap();
         assert_eq!(migrated.id, DEFAULT_CONVERSATION_ID);
         assert_eq!(migrated.title, "title dev-1");
-        assert_eq!(contents(handle_history_request(&dir, 1, None, None)), vec!["hi"]);
+        assert_eq!(contents(handle_history_request(&only(&dir), 1, None, None)), vec!["hi"]);
         // Running again (the next connection) is a no-op.
         assert_eq!(device_conversations_dir(&root, "dev-1").unwrap(), dir);
     }
@@ -242,7 +279,7 @@ mod tests {
         let dir = device_conversations_dir(&root, "dev-1").unwrap();
 
         assert!(!root.join("dev-1.json").exists());
-        match handle_history_request(&dir, 5, None, None) {
+        match handle_history_request(&only(&dir), 5, None, None) {
             ServerMessage::HistoryError { request_id, message } => {
                 assert_eq!(request_id, 5);
                 assert!(message.contains("failed to parse"), "message was: {message}");
@@ -253,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_conversation_that_never_existed_has_an_empty_history() {
-        let reply = handle_history_request(&temp_dir(), 3, None, Some("new-one".into()));
+        let reply = handle_history_request(&only(&temp_dir()), 3, None, Some("new-one".into()));
         assert_eq!(reply, ServerMessage::History { request_id: 3, messages: Vec::new() });
     }
 
@@ -263,7 +300,7 @@ mod tests {
         save(&dir, "c1", 1, vec![message(ChatRole::User, "hi", 1), message(ChatRole::Assistant, "hello", 2)]);
         save(&dir, "c2", 1, vec![message(ChatRole::User, "another topic", 1)]);
 
-        match handle_history_request(&dir, 4, None, Some("c1".into())) {
+        match handle_history_request(&only(&dir), 4, None, Some("c1".into())) {
             ServerMessage::History { request_id, messages } => {
                 assert_eq!(request_id, 4);
                 assert_eq!(messages.iter().map(|m| m.role).collect::<Vec<_>>(), vec![HistoryRole::User, HistoryRole::Assistant]);
@@ -272,7 +309,7 @@ mod tests {
             }
             other => panic!("expected History, got {other:?}"),
         }
-        assert_eq!(contents(handle_history_request(&dir, 4, None, Some("c2".into()))), vec!["another topic"]);
+        assert_eq!(contents(handle_history_request(&only(&dir), 4, None, Some("c2".into()))), vec!["another topic"]);
     }
 
     #[test]
@@ -280,14 +317,14 @@ mod tests {
         let dir = temp_dir();
         save(&dir, "default", 1, (1..=5).map(|i| message(ChatRole::User, &format!("m{i}"), i)).collect());
 
-        assert_eq!(contents(handle_history_request(&dir, 1, Some(2), None)), vec!["m4", "m5"]);
-        assert_eq!(contents(handle_history_request(&dir, 1, Some(10), None)).len(), 5);
-        assert!(contents(handle_history_request(&dir, 1, Some(0), None)).is_empty());
+        assert_eq!(contents(handle_history_request(&only(&dir), 1, Some(2), None)), vec!["m4", "m5"]);
+        assert_eq!(contents(handle_history_request(&only(&dir), 1, Some(10), None)).len(), 5);
+        assert!(contents(handle_history_request(&only(&dir), 1, Some(0), None)).is_empty());
     }
 
     #[test]
     fn an_invalid_conversation_id_is_a_history_error() {
-        let reply = handle_history_request(&temp_dir(), 6, None, Some("../x".into()));
+        let reply = handle_history_request(&only(&temp_dir()), 6, None, Some("../x".into()));
         assert!(matches!(reply, ServerMessage::HistoryError { request_id: 6, .. }), "{reply:?}");
     }
 
@@ -297,7 +334,7 @@ mod tests {
         save(&dir, "old", 1, Vec::new());
         save(&dir, "new", 9, Vec::new());
 
-        let reply = handle_conversation_request(&dir, ClientMessage::ListConversations { request_id: 1 }).unwrap();
+        let reply = handle_conversation_request(&only(&dir), ClientMessage::ListConversations { request_id: 1 }).unwrap();
         match reply {
             ServerMessage::ConversationList { request_id: 1, conversations } => {
                 assert_eq!(conversations.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
@@ -310,7 +347,7 @@ mod tests {
 
     #[test]
     fn a_device_without_conversations_lists_none() {
-        let reply = handle_conversation_request(&temp_dir(), ClientMessage::ListConversations { request_id: 2 }).unwrap();
+        let reply = handle_conversation_request(&only(&temp_dir()), ClientMessage::ListConversations { request_id: 2 }).unwrap();
         assert_eq!(reply, ServerMessage::ConversationList { request_id: 2, conversations: Vec::new() });
     }
 
@@ -319,10 +356,10 @@ mod tests {
         let dir = temp_dir();
         save(&dir, "c1", 1, Vec::new());
         let rename = |id: &str, title: &str| {
-            handle_conversation_request(&dir, ClientMessage::RenameConversation { request_id: 3, conversation_id: id.into(), title: title.into() })
+            handle_conversation_request(&only(&dir), ClientMessage::RenameConversation { request_id: 3, conversation_id: id.into(), title: title.into() })
                 .unwrap()
         };
-        let delete = |id: &str| handle_conversation_request(&dir, ClientMessage::DeleteConversation { request_id: 4, conversation_id: id.into() }).unwrap();
+        let delete = |id: &str| handle_conversation_request(&only(&dir), ClientMessage::DeleteConversation { request_id: 4, conversation_id: id.into() }).unwrap();
 
         assert_eq!(rename("c1", "Trip"), ServerMessage::ConversationOk { request_id: 3 });
         assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().title, "Trip");
@@ -337,6 +374,35 @@ mod tests {
 
     #[test]
     fn other_messages_are_not_conversation_requests() {
-        assert_eq!(handle_conversation_request(&temp_dir(), ClientMessage::Ping { nonce: 1 }), None);
+        assert_eq!(handle_conversation_request(&only(&temp_dir()), ClientMessage::Ping { nonce: 1 }), None);
+    }
+
+    #[test]
+    fn task_conversations_are_shared_and_listed_with_the_device_ones() {
+        let device = temp_dir();
+        let tasks = temp_dir().join("tasks");
+        let dirs = ConversationDirs { device: device.clone(), tasks: Some(tasks.clone()) };
+        save(&device, "mine", 1, vec![message(ChatRole::User, "hi", 1)]);
+        save(&tasks, "task-daily", 5, vec![message(ChatRole::Assistant, "summary", 5)]);
+
+        assert_eq!(dirs.dir_for("task-daily"), tasks);
+        assert_eq!(dirs.dir_for("mine"), device);
+        match handle_conversation_request(&dirs, ClientMessage::ListConversations { request_id: 1 }).unwrap() {
+            ServerMessage::ConversationList { conversations, .. } => {
+                assert_eq!(conversations.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["task-daily", "mine"]);
+            }
+            other => panic!("expected ConversationList, got {other:?}"),
+        }
+        assert_eq!(contents(handle_history_request(&dirs, 1, None, Some("task-daily".into()))), vec!["summary"]);
+
+        let rename = ClientMessage::RenameConversation { request_id: 2, conversation_id: "task-daily".into(), title: "Morning".into() };
+        assert_eq!(handle_conversation_request(&dirs, rename).unwrap(), ServerMessage::ConversationOk { request_id: 2 });
+        assert_eq!(load_conversation(&tasks, "task-daily").unwrap().unwrap().title, "Morning");
+        let delete = ClientMessage::DeleteConversation { request_id: 3, conversation_id: "task-daily".into() };
+        assert_eq!(handle_conversation_request(&dirs, delete).unwrap(), ServerMessage::ConversationOk { request_id: 3 });
+        assert_eq!(load_conversation(&tasks, "task-daily").unwrap(), None);
+
+        // Without a tasks directory, a `task-` id is just one of the device's own.
+        assert_eq!(only(&device).dir_for("task-daily"), device);
     }
 }

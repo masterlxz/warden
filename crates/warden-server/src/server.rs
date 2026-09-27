@@ -8,7 +8,7 @@ use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -19,17 +19,19 @@ use warden_core::skill::SkillStore;
 use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
 use warden_bootstrap::auto_sync::SyncRunner;
+use warden_bootstrap::tasks::TaskStore;
 use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
 use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
-use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id};
+use crate::conversations::{device_conversations_dir, handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::device_registry::{AuthRejection, PairingStatus, PairingStore};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
+use crate::scheduler::{scheduler_loop, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
 use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
@@ -87,6 +89,13 @@ pub struct Server {
     sync_loop: Option<Duration>,
     /// Where the Warden API's keys live (P12). `None`: no API on this hub.
     api_keys: Option<Arc<PathBuf>>,
+    /// Scheduled tasks (P92): their conversations, which every device lists, and whether this hub
+    /// also runs them (`--run-tasks`).
+    tasks: Option<TaskStore>,
+    run_tasks: bool,
+    task_tick: Duration,
+    /// Conversations changed outside any one connection (a task ran): every connection hears it.
+    changes: broadcast::Sender<String>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -118,7 +127,26 @@ impl Server {
             sync: None,
             sync_loop: None,
             api_keys: None,
+            tasks: None,
+            run_tasks: false,
+            task_tick: DEFAULT_TASK_TICK,
+            changes: broadcast::channel(64).0,
         })
+    }
+
+    /// Scheduled tasks (P92): every device lists their conversations from `store`, and with `run`
+    /// this hub also runs them — re-reading `[[tasks]]` from the settings file, so it needs
+    /// `with_settings` too. Off by default: the config syncs, and only one hub should run them.
+    pub fn with_tasks(mut self, store: TaskStore, run: bool) -> Self {
+        self.tasks = Some(store);
+        self.run_tasks = run;
+        self
+    }
+
+    /// Overrides how often the scheduler looks for due tasks — tests use a short one.
+    pub fn with_task_tick(mut self, tick: Duration) -> Self {
+        self.task_tick = tick;
+        self
     }
 
     /// Serves the Warden API (P12) on this same port: `/v1/models` and `/v1/chat/completions`,
@@ -211,6 +239,22 @@ impl Server {
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync: self.sync,
             api_keys: self.api_keys,
+            tasks_dir: self.tasks.as_ref().map(|store| Arc::new(store.conversations_dir())),
+            changes: self.changes.clone(),
+        };
+        let _scheduler = match (self.tasks, self.run_tasks, &ctx.settings) {
+            (Some(store), true, Some(settings)) => Some(AbortOnDrop(tokio::spawn(scheduler_loop(
+                store,
+                settings.clone(),
+                ctx.orchestrator.clone(),
+                self.changes,
+                self.task_tick,
+            )))),
+            (Some(_), true, None) => {
+                eprintln!("warden-server: scheduled tasks need a config file to read them from — not running any");
+                None
+            }
+            _ => None,
         };
         let _sync_loop = match (&ctx.sync, self.sync_loop) {
             (Some(runner), Some(every)) => Some(AbortOnDrop(tokio::spawn(sync_loop(runner.clone(), every, ctx.settings.clone(), ctx.orchestrator.clone())))),
@@ -257,6 +301,9 @@ struct ConnectionContext {
     settings_lock: Arc<tokio::sync::Mutex<()>>,
     sync: Option<Arc<SyncRunner>>,
     api_keys: Option<Arc<PathBuf>>,
+    /// The scheduled tasks' conversations (P92), listed next to every device's own.
+    tasks_dir: Option<Arc<PathBuf>>,
+    changes: broadcast::Sender<String>,
 }
 
 impl ConnectionContext {
@@ -410,6 +457,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         settings_lock,
         sync,
         api_keys,
+        tasks_dir,
+        changes,
     } = ctx;
     let (mut sink, mut stream) = ws.split();
 
@@ -478,6 +527,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return reject(&mut sink, "server could not open this device's conversations").await;
         }
     };
+    // P92: plus the scheduled tasks' conversations, shared by every device.
+    let conversation_dirs = Arc::new(ConversationDirs { device: conversations_dir.as_ref().clone(), tasks: tasks_dir.as_deref().cloned() });
 
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: server_name.to_string(),
@@ -506,6 +557,23 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             }
         }
     });
+
+    // P92: a task that ran changed a conversation every device lists. Through a weak sender, so this
+    // forwarder never keeps the writer alive; aborted when the connection ends.
+    let mut hub_changes = changes.subscribe();
+    let weak_tx = tx.downgrade();
+    let _forward_changes = AbortOnDrop(tokio::spawn(async move {
+        loop {
+            match hub_changes.recv().await {
+                Ok(conversation_id) => {
+                    let Some(tx) = weak_tx.upgrade() else { break };
+                    let _ = tx.send(ServerMessage::ConversationsChanged { conversation_id });
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }));
 
     // Fase 9.3: every connected device is a valid routing target for `CallDeviceTool`, whether or
     // not it advertised any `Hello.tools` — registered before the loop starts so a routed call
@@ -572,7 +640,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     };
                     // `manage_agents` and SSH hosts that need a yes ask this device.
                     let orchestrator = orchestrator.with_approver(Arc::new(approver.clone()));
-                    let conversations_dir = conversations_dir.clone();
+                    // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
+                    let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
                         let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
@@ -654,7 +723,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     // P40 — one small file read, answered inline like the skills requests. Inline
                     // also means a `Chat` sent right after this request can never land in the
                     // reply: that turn is only saved once its (spawned) model call finishes.
-                    let _ = tx.send(handle_history_request(&conversations_dir, request_id, limit, conversation_id));
+                    let _ = tx.send(handle_history_request(&conversation_dirs, request_id, limit, conversation_id));
                 }
                 Ok(ClientMessage::Transcribe { request_id, audio }) => {
                     // P78 — a Whisper call takes seconds, so it runs off the reader loop like `Chat`.
@@ -684,11 +753,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RequestUsage { request_id, tz_offset_minutes }) => {
                     // P78 — reads every device's conversations, so off the reader loop.
                     let root = conversations_root.clone();
+                    let tasks_dir = tasks_dir.clone();
                     let pairing = PairingStore::new(devices_path.as_ref().clone());
                     let guard = orchestrator.current().spend_guard().cloned();
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let _ = reply_tx.send(handle_usage_request(&root, &pairing, guard.as_deref(), request_id, tz_offset_minutes));
+                        let _ = reply_tx.send(handle_usage_request(&root, tasks_dir.as_deref().map(PathBuf::as_path), &pairing, guard.as_deref(), request_id, tz_offset_minutes));
                     });
                 }
                 Ok(ClientMessage::ExtendLimit { request_id, limit_id }) => {
@@ -760,7 +830,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
                     // P78 — small file I/O, answered inline like `RequestHistory`.
-                    if let Some(reply) = handle_conversation_request(&conversations_dir, message) {
+                    if let Some(reply) = handle_conversation_request(&conversation_dirs, message) {
                         let _ = tx.send(reply);
                     }
                 }

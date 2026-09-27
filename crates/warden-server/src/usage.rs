@@ -18,16 +18,22 @@ use crate::device_registry::PairingStore;
 /// How many days the daily series covers, today included.
 pub const USAGE_DAYS: u32 = 30;
 
+/// The row scheduled tasks (P92) get in `by_device`: their conversations live apart from any device.
+pub const TASKS_USAGE_ID: &str = "tasks";
+const TASKS_USAGE_NAME: &str = "Tarefas agendadas";
+
 /// Everything `RequestUsage` reports. `conversations_root` holds one folder per device (P78) and,
-/// for devices that haven't reconnected since, their old single `<device_id>.json`.
+/// for devices that haven't reconnected since, their old single `<device_id>.json`. `tasks_dir`
+/// holds the scheduled tasks' conversations, reported as one more row.
 pub fn build_usage_report(
     conversations_root: &Path,
+    tasks_dir: Option<&Path>,
     pairing: &PairingStore,
     guard: Option<&SpendGuard>,
     tz_offset_minutes: i32,
     now_ms: i64,
 ) -> anyhow::Result<UsageReportDto> {
-    let names: HashMap<String, String> = pairing.list().unwrap_or_default().into_iter().map(|(id, d)| (id, d.device_name)).collect();
+    let mut names: HashMap<String, String> = pairing.list().unwrap_or_default().into_iter().map(|(id, d)| (id, d.device_name)).collect();
 
     let mut per_device: Vec<(String, Vec<Conversation>)> = Vec::new();
     match std::fs::read_dir(conversations_root) {
@@ -48,6 +54,11 @@ pub fn build_usage_report(
             Some((_, conversations)) => conversations.push(legacy),
             None => per_device.push((legacy.id.clone(), vec![legacy])),
         }
+    }
+
+    if let Some(tasks_dir) = tasks_dir {
+        per_device.push((TASKS_USAGE_ID.to_string(), list_conversations(tasks_dir)?));
+        names.insert(TASKS_USAGE_ID.to_string(), TASKS_USAGE_NAME.to_string());
     }
 
     let mut by_device: Vec<DeviceUsage> = per_device
@@ -87,9 +98,16 @@ pub fn build_usage_report(
 }
 
 /// Answers `RequestUsage`.
-pub fn handle_usage_request(conversations_root: &Path, pairing: &PairingStore, guard: Option<&SpendGuard>, request_id: u64, tz_offset_minutes: i32) -> ServerMessage {
+pub fn handle_usage_request(
+    conversations_root: &Path,
+    tasks_dir: Option<&Path>,
+    pairing: &PairingStore,
+    guard: Option<&SpendGuard>,
+    request_id: u64,
+    tz_offset_minutes: i32,
+) -> ServerMessage {
     let now = warden_core::spend::now_millis() as i64;
-    match build_usage_report(conversations_root, pairing, guard, tz_offset_minutes, now) {
+    match build_usage_report(conversations_root, tasks_dir, pairing, guard, tz_offset_minutes, now) {
         Ok(report) => ServerMessage::UsageReport { request_id, report },
         Err(err) => ServerMessage::UsageError { request_id, message: format!("{err:#}") },
     }
@@ -169,7 +187,7 @@ mod tests {
         let pairing = PairingStore::new(temp_dir("devices").join("devices.json"));
         pairing.authenticate("web-1", "Browser", None, true).unwrap().unwrap();
 
-        let report = build_usage_report(&root, &pairing, None, 0, now).unwrap();
+        let report = build_usage_report(&root, None, &pairing, None, 0, now).unwrap();
         assert_eq!(report.total.total_tokens, 136);
         assert_eq!((report.conversation_count, report.message_count), (4, 5));
         let devices: Vec<_> = report.by_device.iter().map(|d| (d.device_id.as_str(), d.name.as_deref(), d.conversation_count, d.usage.total_tokens)).collect();
@@ -182,7 +200,7 @@ mod tests {
     #[test]
     fn a_hub_with_no_conversations_yet_reports_zeros() {
         let pairing = PairingStore::new(temp_dir("devices").join("devices.json"));
-        let report = build_usage_report(&temp_dir("missing"), &pairing, None, 0, 0).unwrap();
+        let report = build_usage_report(&temp_dir("missing"), None, &pairing, None, 0, 0).unwrap();
         assert_eq!((report.conversation_count, report.by_device.len()), (0, 0));
     }
 
@@ -192,7 +210,7 @@ mod tests {
         guard.record(&SpendContext::new("server").with_user("web-1"), "m", &Usage { prompt_tokens: 150, completion_tokens: 0, total_tokens: 150 });
         let pairing = PairingStore::new(temp_dir("devices").join("devices.json"));
 
-        let report = build_usage_report(&temp_dir("none"), &pairing, Some(&guard), 0, 0).unwrap();
+        let report = build_usage_report(&temp_dir("none"), None, &pairing, Some(&guard), 0, 0).unwrap();
         let day = &report.limits[0];
         assert!(report.limits_enabled && day.exceeded);
         assert_eq!((day.used_tokens, day.max_tokens, day.extend_tokens), (150, Some(100), 25));
@@ -215,5 +233,20 @@ mod tests {
         let err = anyhow::Error::new(warden_core::budget::SpendLimitReached(Box::new(status))).context("turn failed");
         assert_eq!(spend_limit_id(&err).as_deref(), Some("day"));
         assert_eq!(spend_limit_id(&anyhow::anyhow!("provider error")), None);
+    }
+
+    #[test]
+    fn scheduled_tasks_are_one_more_row() {
+        let root = temp_dir("root");
+        let tasks = temp_dir("tasks");
+        let now = warden_core::spend::now_millis() as i64;
+        save_conversation(&root.join("phone"), &conversation("default", &[10], now)).unwrap();
+        save_conversation(&tasks, &conversation("task-daily", &[7, 8], now)).unwrap();
+        let pairing = PairingStore::new(temp_dir("devices").join("devices.json"));
+
+        let report = build_usage_report(&root, Some(&tasks), &pairing, None, 0, now).unwrap();
+        assert_eq!(report.total.total_tokens, 25);
+        let row = report.by_device.iter().find(|d| d.device_id == TASKS_USAGE_ID).unwrap();
+        assert_eq!((row.name.as_deref(), row.conversation_count, row.usage.total_tokens), (Some("Tarefas agendadas"), 1, 15));
     }
 }

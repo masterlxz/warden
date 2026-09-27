@@ -6,6 +6,10 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+# P92: scheduled tasks — cron expressions, and the IANA time zone a task runs in.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+croner = "4"
 dirs.workspace = true
 rand = "0.8"
 serde.workspace = true

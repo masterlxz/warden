@@ -4,6 +4,7 @@
 
 | Decisão | Opções | Status |
 |---|---|---|
+| Tarefas agendadas (P92, Sessão 108) | Definição no `config.toml` vs arquivo próprio; resultado numa conversa vs nota no vault vs escolha por tarefa; hora perdida roda ao voltar vs pula; tool com aprovação recusa vs pede a quem estiver on vs pré-autorizada; qual hub executa | **`[[tasks]]` no `config.toml`, resultado numa conversa da tarefa, hora perdida roda uma vez ao voltar, tool com aprovação é recusada, e cada hub tem uma chave local "executar tarefas" desligada por padrão** ✓ (escolhas do usuário). Em fatias: motor + CLI, depois telas, depois `manage_tasks` com opt-in e aprovação. Ver "Tarefas agendadas" |
 | Multiusuário (P84, Sessão 107) | Root lê tudo vs root administra sem ler; restringir o agente compartilhado pelo prompt vs filtrando os dados; login por aparelho vs senha vs TruthID | **Root administra sem ler** (escolha do usuário), com backup sempre criptografado por pessoa e uma política de recuperação por workspace; **filtro por audiência das notas** (o prompt é camada extra); **todo mundo tem nome de usuário**, criado pelo root, com senha e/ou TruthID por convite. Desenho só, nada implementado. Ver "Multiusuário" |
 | Rede de nós no mesmo workspace (P86, Sessão 107) | Failover entre hubs vs rede de nós; estado com um nó âncora vs serviço externo vs sem centro; fazer agora vs em etapas | **Rede de nós, sem centro (preferência do usuário), com CRDT por tipo de dado — mas adiada**: primeiro tarefas agendadas (P92) e nós como capacidades (P93), que não precisam de estado descentralizado. Ver "Rede de nós" |
 | Tools do cliente na Warden API (P91, Sessão 107) | Oferecer ao modelo só as tools do cliente vs as do cliente e todas as do agente vs as do cliente e só memória/skills; guardar a `thought_signature` do Gemini no hub vs dentro do id da chamada | **As do cliente e todas as do agente, e a do cliente vale em nome repetido** ✓ (escolha do usuário; para limitar, a chave fica presa a um agente com `allowed_tools`). **A assinatura vai dentro do id** (`call_<hex>__ts_<base64url>`), sem estado no hub. Ver "Warden API" |
@@ -2247,3 +2248,59 @@ a esposa, "ensinando" o agente ou por uma interface.
 - O que o root vê sem ler: tamanho, gasto, último acesso.
 - A saída dos arquivos fixos do vault (P94), porque um perfil fixo por vault não faz sentido com vários usuários.
 
+## Tarefas agendadas (P92, desenho da Sessão 108)
+
+Conversa de desenho com o usuário. Hoje não existe agendador: os jobs (P46) vivem na memória de um turno. A ideia
+é o Warden fazer coisas sozinho ("todo dia às 8h resume meus e-mails", "a cada hora confere tal coisa"), com um
+agente, as tools dele e os limites de gasto do P4, num hub que fica sempre de pé.
+
+| Pergunta | Decisão |
+|---|---|
+| Onde a tarefa é definida | `[[tasks]]` no `config.toml`, como os agentes (o estudo do P86 já previa "definição = mapa"): `id`, `agent`, `prompt`, `schedule`, `enabled`. Sincroniza junto com o resto da configuração |
+| Formato do agendamento | Três formas: `every = "1h"` (intervalo), `cron = "0 8 * * 1-5"` e `once = "2026-10-01T09:00"`, no fuso configurado. O agente converte "todo dia às 8h" para uma delas |
+| Estado de execução | Última execução, próxima e o resultado ficam num arquivo do hub, **fora do sync**: é do nó que executa, não do workspace |
+| Para onde vai o resultado | **Uma conversa da tarefa** (escolha do usuário), numa área do hub compartilhada entre os aparelhos (as conversas do hub hoje são por aparelho, `<root>/<device>/`). Cada execução vira uma mensagem nela, e os aparelhos conectados recebem aviso. No celular é a notificação local da Fase 7.5 (sem push de verdade), então só chega com o app vivo |
+| Hub desligado na hora | **Roda uma vez ao voltar** (escolha do usuário), mesmo que tenha perdido várias horas marcadas. Uma tarefa `once` que passou roda ao voltar e depois se desliga |
+| Tool que pede aprovação | **Recusada** (escolha do usuário), igual Telegram e WhatsApp: ninguém está olhando. O agente segue sem ela e o resultado diz o que não conseguiu fazer |
+| Qual hub executa | **Uma chave local por hub**, "executar tarefas agendadas neste hub", fora do sync e desligada por padrão (escolha do usuário). Como o `config.toml` sincroniza, sem ela o hub do VPS e o hub embutido do desktop rodariam a mesma tarefa duas vezes |
+| Gasto | Valem os limites do P4 e as `allowed_tools` do agente escolhido. Sem limite próprio por tarefa por enquanto |
+| Agente criando tarefas | Tool `manage_tasks`, só para agentes com `can_manage_tasks` (ligado por uma pessoa), e toda criação ou mudança espera o sim do usuário. Mesmo padrão do `manage_agents` |
+| "Pode repetir" vs "no máximo uma vez" | Fica para o P86. Com um único hub executando, o campo não mudaria nada |
+
+**Fatias** (escolha do usuário):
+
+1. O motor no hub (`warden-server` e hub embutido do desktop), `[[tasks]]`, a conversa da tarefa, a chave por hub
+   e `warden-server tasks` (listar, criar, pausar, rodar agora). **Feita na Sessão 108**, menos a chave do hub
+   embutido do desktop, que precisa de tela e foi para a fatia 2.
+2. Telas na web e no desktop, e a chave "executar tarefas" do hub embutido do desktop.
+3. A tool `manage_tasks`, para criar tarefas em linguagem natural.
+
+### Como ficou a fatia 1 (Sessão 108)
+
+- **`warden-bootstrap/src/tasks.rs`**: `TaskConfig` (`id`, `agent`, `prompt`, um entre `every`/`cron`/`once`,
+  `timezone`, `enabled`), `check_tasks`, o cálculo de horário e o `run_task`. Cron de 5 campos com o crate
+  `croner` (sem segundos nem ano), fuso IANA com o `chrono-tz`; sem `timezone`, vale o fuso da máquina do hub.
+  `every` aceita `m`, `h` e `d`, no mínimo 1 minuto, e conta a partir da última execução.
+- **Estado** em `<config dir>/warden/tasks-server/state.json`, com a mesma trava de arquivo das conversas (o hub e
+  um `tasks run` em outro processo). Por tarefa: quando o hub a viu, quando rodou, quando terminou e o erro. A
+  âncora do próximo horário é a última execução ou, se nunca rodou, quando o hub a viu, então uma tarefa nova não
+  dispara na hora. Mudar o agendamento (não o prompt nem o agente) zera o estado. **Uma tarefa pausada conta a
+  partir de quando volta**, sem compensar o que pulou. Um `once` que rodou não roda mais, sem reescrever o config.
+- **A execução** usa o orquestrador do hub escopado ao agente (`scope_to_agent`, com o modelo dele), gasto no canal
+  `tasks` com o usuário `task:<id>`, **sem approver** e sem `message_agent`. A mensagem enviada é
+  `[Scheduled task '<id>', <data e hora no fuso da tarefa>]` mais o prompt, para o modelo saber que dia é. **Só as
+  últimas 20 mensagens da conversa vão como histórico** (10 execuções); a conversa guarda tudo. Um erro vira nota na
+  conversa, como no `message_agent`.
+- **Conversas das tarefas** em `<config dir>/warden/tasks-server/conversations/`, fora de `conversations-server/`
+  (as subpastas de lá são ids de aparelho, e um aparelho chamado "tasks" colidiria). No hub, `ConversationDirs`
+  manda todo id `task-*` para essa pasta: a lista de cada aparelho junta as duas, e histórico, renomear, apagar e
+  `Chat` funcionam nela. Dá para continuar o assunto na conversa da tarefa. O relatório de gasto ganha uma linha
+  "Tarefas agendadas".
+- **No hub** (`warden-server/src/scheduler.rs`): um laço a cada 30 s que relê o config (pausar ou editar vale sem
+  reiniciar), marca o que venceu e roda cada tarefa numa task própria. Uma execução que ainda não terminou faz a
+  próxima ser pulada, em vez de empilhar. Ao terminar, um `broadcast` no `Server` avisa **todas** as conexões com
+  `ConversationsChanged`, e a web, o mobile e a extensão já recarregam a lista com isso, sem mudança nos clientes.
+  `Server::with_tasks(store, run)` deixa a API pronta para o hub embutido do desktop.
+- **CLI**: `warden-server serve --run-tasks` e `warden-server tasks list|add|pause|resume|remove|run`. O `add`
+  valida com `check_tasks` e salva pelo `save_config` (mantém os comentários, P82). O `run` executa no próprio
+  processo; um `serve` rodando não avisa os aparelhos dessa execução, que aparece quando a lista recarregar.

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, PAIRING_PORTS, PAIRING_TIMEOUT};
-use warden_bootstrap::{bootstrap, Overrides};
+use warden_bootstrap::tasks::{check_tasks, next_run, run_task, TaskStore, Zone};
+use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
 
@@ -55,6 +56,65 @@ enum Command {
     /// screen gets its vault key. Safe while `serve` runs: a round started here waits for the
     /// hub's to finish (one sync at a time per vault, across processes).
     Sync(SyncArgs),
+    /// Scheduled tasks (P92): prompts an agent runs on its own, kept as `[[tasks]]` in the config
+    /// file. Only a hub started with `serve --run-tasks` runs them; each run lands in the task's
+    /// conversation, which every device lists. A running `serve` sees changes made here within
+    /// half a minute.
+    Tasks(TasksArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct TasksArgs {
+    #[command(subcommand)]
+    action: TasksCommand,
+
+    /// Path to the config file (TOML), as in `serve`.
+    #[arg(long, global = true)]
+    config: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum TasksCommand {
+    /// Every task: its schedule, agent, whether it's on, the last run and the next one.
+    List,
+    /// Adds a task. Give exactly one of --every, --cron or --once.
+    #[command(group(clap::ArgGroup::new("schedule").required(true).args(["every", "cron", "once"])))]
+    Add {
+        /// 1-59 letters, digits, '-' or '_'.
+        id: String,
+        /// What the agent is asked on every run.
+        #[arg(long)]
+        prompt: String,
+        /// The agent that runs it (none: no persona).
+        #[arg(long)]
+        agent: Option<String>,
+        /// An interval counted from the last run: 30m, 2h, 1d.
+        #[arg(long)]
+        every: Option<String>,
+        /// Five-field cron, e.g. "0 8 * * 1-5" for 8:00 on weekdays.
+        #[arg(long)]
+        cron: Option<String>,
+        /// Once, at this local date and time: 2026-10-01T09:00.
+        #[arg(long)]
+        once: Option<String>,
+        /// IANA time zone for --cron and --once (e.g. America/Sao_Paulo). Default: this machine's.
+        #[arg(long)]
+        timezone: Option<String>,
+    },
+    /// Stops a task from running until `resume`.
+    Pause { id: String },
+    /// Switches a paused task back on; it counts from now, without making up for what it skipped.
+    Resume { id: String },
+    /// Removes a task. Its conversation stays, for whoever wants to read it.
+    Remove { id: String },
+    /// Runs a task now, in this process, and prints the answer. Devices connected to a running
+    /// `serve` see it when they next reload their conversation list.
+    Run {
+        id: String,
+        /// Path to the markdown vault, as in `serve`.
+        #[arg(long)]
+        vault_path: Option<String>,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -186,6 +246,11 @@ struct ServeArgs {
     /// redefined — see `discover_hubs`). Falls back to WARDEN_SERVER_NAME, then the OS hostname.
     #[arg(long)]
     server_name: Option<String>,
+
+    /// Run the scheduled tasks (`warden-server tasks`, P92) on this hub. Off by default: the config
+    /// file syncs, so turn it on in exactly one hub — the one that's always up.
+    #[arg(long)]
+    run_tasks: bool,
 }
 
 /// Same fallback warden-telegram/the desktop app use — a background process launched by a
@@ -332,6 +397,97 @@ fn run_devices_command(action: DevicesAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn tasks_store() -> anyhow::Result<TaskStore> {
+    let dir = warden_bootstrap::default_server_tasks_dir().context("could not determine the OS config directory for scheduled tasks")?;
+    Ok(TaskStore::new(dir))
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or_default()
+}
+
+async fn run_tasks_command(args: TasksArgs) -> anyhow::Result<()> {
+    let config_path = args.config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let mut config = load_config_from_path(&config_path, args.config.is_some())?;
+    let store = tasks_store()?;
+    let position = |config: &warden_bootstrap::FileConfig, id: &str| {
+        config.tasks.iter().position(|t| t.id == id).ok_or_else(|| anyhow::anyhow!("no task named '{id}' — `warden-server tasks list` shows them"))
+    };
+    match args.action {
+        TasksCommand::List => {
+            if config.tasks.is_empty() {
+                println!("no scheduled tasks yet — add one with `warden-server tasks add <id> --prompt ... --every 1d`");
+                return Ok(());
+            }
+            let states = store.states()?;
+            let now = now_millis();
+            for task in &config.tasks {
+                let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
+                let state = states.get(&task.id);
+                let on = if task.enabled { "on" } else { "paused" };
+                let agent = task.agent.as_deref().unwrap_or("(no agent)");
+                let last = match state.and_then(|s| s.last_run_at_ms) {
+                    None => "never ran".to_string(),
+                    Some(at) => match (state.and_then(|s| s.last_finished_at_ms), state.and_then(|s| s.last_error.as_deref())) {
+                        (Some(done), None) if done >= at => format!("last ran {}", zone.format(at)),
+                        (Some(done), Some(err)) if done >= at => format!("last ran {} and failed: {err}", zone.format(at)),
+                        _ => format!("running since {}", zone.format(at)),
+                    },
+                };
+                let next = match (task.schedule(), next_run(task, state, now)) {
+                    (Err(err), _) => format!("invalid: {err:#}"),
+                    (Ok(_), Some(at)) => format!("next {}", zone.format(at)),
+                    (Ok(_), None) if !task.enabled => "not scheduled".to_string(),
+                    (Ok(_), None) => "done".to_string(),
+                };
+                println!("{}\t{on}\t{}\t{agent}\t{last}\t{next}", task.id, task.schedule_label());
+            }
+        }
+        TasksCommand::Add { id, prompt, agent, every, cron, once, timezone } => {
+            anyhow::ensure!(!config.tasks.iter().any(|t| t.id == id), "there's already a task named '{id}'");
+            let task = TaskConfig { id: id.clone(), agent, prompt, every, cron, once, timezone, enabled: true };
+            config.tasks.push(task.clone());
+            check_tasks(&config.tasks, &config.agents)?;
+            save_config(&config_path, &config)?;
+            let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
+            match next_run(&task, None, now_millis()) {
+                Some(at) => println!("task '{id}' added — first run {} (on the hub started with `serve --run-tasks`)", zone.format(at)),
+                None => println!("task '{id}' added"),
+            }
+        }
+        TasksCommand::Pause { id } => {
+            let i = position(&config, &id)?;
+            config.tasks[i].enabled = false;
+            save_config(&config_path, &config)?;
+            println!("task '{id}' paused");
+        }
+        TasksCommand::Resume { id } => {
+            let i = position(&config, &id)?;
+            config.tasks[i].enabled = true;
+            save_config(&config_path, &config)?;
+            println!("task '{id}' is on again — it counts from now");
+        }
+        TasksCommand::Remove { id } => {
+            let i = position(&config, &id)?;
+            config.tasks.remove(i);
+            save_config(&config_path, &config)?;
+            println!("task '{id}' removed — its conversation stays on the hub");
+        }
+        TasksCommand::Run { id, vault_path } => {
+            let task = config.tasks[position(&config, &id)?].clone();
+            task.schedule()?;
+            let overrides = Overrides { vault_path, ..Default::default() };
+            let orchestrator = bootstrap(args.config.as_deref(), overrides, default_vault_path()).await?;
+            let now = now_millis();
+            store.mark_started(&task, now)?;
+            let result = run_task(&orchestrator, &config, Some(&config_path), &task, &store.conversations_dir(), now).await;
+            store.record_finish(&id, now_millis(), result.as_ref().err().map(|e| format!("{e:#}")))?;
+            println!("{}", result?.content);
+        }
+    }
+    Ok(())
+}
+
 fn api_keys_path() -> anyhow::Result<PathBuf> {
     warden_bootstrap::default_api_keys_path().context("could not determine the OS config directory for the API keys")
 }
@@ -412,7 +568,21 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
         .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))))
         .with_sync(runner, Some(AUTO_SYNC_INTERVAL))
-        .with_api(api_keys_path()?);
+        .with_api(api_keys_path()?)
+        // P92 — every device lists the tasks' conversations; only `--run-tasks` runs them.
+        .with_tasks(tasks_store()?, args.run_tasks);
+    let task_count = args
+        .config
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(warden_bootstrap::default_config_path)
+        .and_then(|path| load_config_from_path(&path, false).ok())
+        .map_or(0, |config| config.tasks.len());
+    match (args.run_tasks, task_count) {
+        (true, n) => eprintln!("warden-server: running scheduled tasks on this hub ({n} configured)"),
+        (false, 0) => {}
+        (false, n) => eprintln!("warden-server: {n} scheduled task(s) configured, but this hub doesn't run them (start it with --run-tasks)"),
+    }
     if let Some(settings) = settings {
         server = server.with_settings(Arc::new(settings));
     }
@@ -467,6 +637,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Devices { action } => run_devices_command(action),
         Command::ApiKeys { action } => run_api_keys_command(action),
         Command::Sync(args) => run_sync_command(args).await,
+        Command::Tasks(args) => run_tasks_command(args).await,
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

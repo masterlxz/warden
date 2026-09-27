@@ -30,6 +30,7 @@ pub mod device_registry;
 pub mod openai_api;
 pub mod devices;
 pub mod remote_tool;
+pub mod scheduler;
 pub mod server;
 pub mod settings;
 pub mod skills;

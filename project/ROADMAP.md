@@ -493,7 +493,8 @@ sem centro: qualquer nó pode cair. O desenho de conflitos (CRDT por tipo de dad
 
 A ordem combinada, do que entrega mais com menos risco para o mais caro:
 
-1. **Tarefas agendadas** (P92): o Warden fazendo coisas sozinho, num nó sempre de pé.
+1. **Tarefas agendadas** (P92): o Warden fazendo coisas sozinho, num nó sempre de pé. Motor e CLI feitos na
+   Sessão 108; faltam as telas e o `manage_tasks`.
 2. **Nós como capacidades** (P93): outras máquinas emprestam o que têm, e o estado continua no hub.
 3. **Descentralizar só os dados fáceis**, se a queda do nó principal virar problema real: aparelhos e chaves,
    conversas e gasto. Outro nó assume a API e as conversas continuam.

@@ -622,6 +622,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // general Settings save — carry forward unchanged, same reasoning as `git_sync` above.
         embedded_server: existing.embedded_server,
         ssh_hosts,
+        // Scheduled tasks (P92) have no Settings screen yet — carry them forward.
+        tasks: existing.tasks,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

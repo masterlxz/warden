@@ -37,11 +37,13 @@ pub mod message_agent;
 pub mod settings;
 pub mod skill_gen;
 pub mod spend;
+pub mod tasks;
 pub mod usage;
 pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use message_agent::{ConversationsChanged, MessageAgentTool};
+pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
 
@@ -383,6 +385,10 @@ pub struct FileConfig {
     /// Nothing is built in — a model listed nowhere counts against token limits only.
     #[serde(default)]
     pub prices: Vec<warden_core::spend::Price>,
+    /// Scheduled tasks (P92, TOML `[[tasks]]`): a prompt an agent runs on its own, on a schedule.
+    /// Only a hub started with `--run-tasks` runs them — the file syncs, so every hub reads them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -775,6 +781,12 @@ pub fn default_whatsapp_conversations_dir() -> Option<PathBuf> {
 /// shouldn't show up in the desktop sidebar's `default_conversations_dir`.
 pub fn default_server_conversations_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("conversations-server"))
+}
+
+/// Where `warden-server` keeps its scheduled tasks' conversations and run state (P92). Not under
+/// `default_server_conversations_dir`, whose subdirectories are device ids a client picks.
+pub fn default_server_tasks_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("tasks-server"))
 }
 
 /// Where `warden-server`'s persistent device pairing registry lives (Fase 9.3) — same
@@ -1915,6 +1927,16 @@ oauth = true
                 extend_step: None,
             }]),
             prices: vec![warden_core::spend::Price { model: "gpt-4o-mini".to_string(), input_per_mtok: 0.15, output_per_mtok: 0.6 }],
+            tasks: vec![TaskConfig {
+                id: "morning".to_string(),
+                agent: Some("helper".to_string()),
+                prompt: "summarize".to_string(),
+                every: None,
+                cron: Some("0 8 * * 1-5".to_string()),
+                once: None,
+                timezone: Some("America/Sao_Paulo".to_string()),
+                enabled: false,
+            }],
         };
 
         save_config(&path, &config).unwrap();

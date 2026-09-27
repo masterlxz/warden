@@ -2,7 +2,66 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-26 (Sessão 107)
+> Última atualização: 2026-09-27 (Sessão 108)
+
+---
+
+### 2026-09-27 — Sessão 108
+
+- **Objetivo**: desenhar o P92 (tarefas agendadas) e fazer a fatia 1. Decisões do usuário no desenho: `[[tasks]]`
+  no `config.toml`; o resultado vai para uma conversa da tarefa; a hora perdida roda uma vez quando o hub volta;
+  uma tool que pede aprovação é recusada; cada hub tem uma chave local para executar, desligada por padrão; fatias
+  motor + CLI, depois telas, depois `manage_tasks` (com opt-in e aprovação). O plano da fatia 1 foi aprovado em
+  Plan mode.
+
+**O que foi feito**:
+
+- **Desenho** registrado em `ARCHITECTURE.md` ("Tarefas agendadas") e no P92.
+- **`warden-bootstrap/src/tasks.rs`** (novo):
+  - `TaskConfig` e `FileConfig.tasks`;
+  - `every` (m/h/d, mínimo 1 min), `cron` de 5 campos (crate `croner`) e `once`, com fuso IANA (`chrono-tz`) ou o
+    da máquina;
+  - `check_tasks`;
+  - `TaskStore` (estado em `tasks-server/state.json`, com a trava das conversas): `claim_due`, `mark_started`,
+    `record_finish`, `next_run`;
+  - `run_task`: escopo do agente, gasto em `tasks`/`task:<id>`, sem approver, histórico limitado a 20 mensagens e
+    erro como nota na conversa.
+- **`warden-server`**:
+  - `scheduler.rs` (laço de 30 s que relê o config);
+  - `Server::with_tasks`/`with_task_tick`;
+  - um `broadcast` que leva `ConversationsChanged` a todas as conexões;
+  - `ConversationDirs` em `conversations.rs`: ids `task-*` na pasta das tarefas, listados em todo aparelho, com
+    histórico, renomear, apagar e `Chat`;
+  - a linha "Tarefas agendadas" no relatório de gasto;
+  - `serve --run-tasks` e `warden-server tasks list|add|pause|resume|remove|run`.
+- **Desktop**: o save de Settings carrega o `tasks` do arquivo (sem isso, salvar apagaria as tarefas).
+- Docs: `ARCHITECTURE.md`, `PENDING.md` (P92), `ROADMAP.md`, `README.md`, `INDEX.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 820 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo.
+- **Testes novos**:
+  - `tasks.rs` (14): parse de `every`, `cron` e `once`; cron no fuso da tarefa; `check_tasks`; tarefa nova não
+    dispara na hora; horas perdidas viram uma execução; `once` roda uma vez e de novo quando editado; pausa conta a
+    partir da volta; tarefa removida some do estado; ida e volta pelo `render_config` com comentários; a execução
+    fala como o agente e cai na conversa; só as últimas mensagens vão ao modelo; erro vira nota;
+  - `conversations.rs` (1): ids `task-*` na pasta compartilhada;
+  - `usage.rs` (1): a linha das tarefas;
+  - integração (2), com `Server` real e dois aparelhos: as tarefas vencidas rodam como os agentes, os dois
+    aparelhos recebem `ConversationsChanged` e listam as conversas, o `manage_agents` sem ninguém para aprovar é
+    recusado e nada é salvo, dá para conversar na conversa da tarefa, e sem `--run-tasks` nada roda.
+- **Ponta a ponta** com o binário real, `XDG_CONFIG_HOME` no scratchpad (nada do `~/.config/warden` foi tocado) e um
+  modelo OpenAI-compatible falso em Python. Não havia chave de modelo real nesta máquina, então o modelo real fica
+  para a rodada de testes.
+  - `tasks add` com `--every 1m` e com `--cron` e fuso; recusou `10s`, agente inexistente e dois agendamentos.
+  - `serve --run-tasks` rodou a tarefa no minuto certo, como o agente `poet`.
+  - Um cliente WebSocket em Node listou `task-daily`, leu o histórico e recebeu o `ConversationsChanged` da execução
+    seguinte.
+  - `pause` com o hub rodando parou as execuções; `tasks run` rodou a tarefa de cron na hora; `remove` tirou a
+    tarefa e a conversa ficou.
+
+**Próximo passo**: a fatia 2 do P92 (telas na web e no desktop, e a chave do hub embutido), ou a rodada de testes
+com o usuário (P80/P87/P88, a Warden API, e agora as tarefas com um modelo real).
 
 ---
 

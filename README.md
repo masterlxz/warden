@@ -31,6 +31,8 @@ for the others.
 - **Warden API** — the hub also speaks the OpenAI chat-completions format: point any OpenAI client
   (a script, n8n, a chat app) at `http(s)://<hub>/v1` with a key created in the app, and it talks to
   your agent, vault and tools included.
+- **Scheduled tasks** — "every weekday at 8, summarize my e-mails": an agent runs a prompt on its own,
+  on the always-on hub, and each run lands in the task's conversation on every device.
 - **Sub-agents, named personas, voice, generated documents** — delegate sub-tasks to scoped sub-agents,
   configure named agents with their own personality, talk by voice, and have the model produce real
   PDF/CSV/XLSX/Markdown files as deliverables.
@@ -110,6 +112,25 @@ one of the client's tools comes back as `tool_calls` with `finish_reason: "tool_
 continues when the client sends the `tool` results back. To narrow which of the agent's own tools
 (shell, files...) such a client can reach, bind its key to an agent with `allowed_tools`.
 `tool_choice: "none"` leaves the client's tools out, and any other choice acts as `auto`.
+
+### Scheduled tasks
+
+A task is a prompt an agent runs on a schedule, kept as `[[tasks]]` in `config.toml`. Only a hub started
+with `--run-tasks` runs them (the config syncs, so switch it on in the one hub that's always up):
+
+```bash
+warden-server tasks add news --agent reader --cron "0 8 * * 1-5" --timezone America/Sao_Paulo \
+  --prompt "Summarize today's headlines"
+warden-server tasks add check --every 2h --prompt "Is the site up?"   # or --once 2026-10-01T09:00
+warden-server tasks list          # schedule, last run and next run
+warden-server tasks pause news    # resume / remove / run <id> (run it now, here)
+warden-server serve --run-tasks
+```
+
+Each run adds the prompt and the answer to the task's conversation (`task-<id>`), which every device
+lists and can keep talking in. A run missed while the hub was down happens once when it's back. Nobody
+is watching a run, so a tool that needs approval refuses, and the spending limits count it under the
+`tasks` channel. Screens in the desktop and web, and asking an agent to create a task, come next.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the
