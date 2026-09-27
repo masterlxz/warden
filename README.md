@@ -161,6 +161,11 @@ Two locks: the node chooses what it lends, the hub chooses which agents may use 
 asks you first. Every call is logged to `node_audit.jsonl`; a call cut short by the node dropping fails
 right away and is never retried.
 
+The desktop app can be a node too: **Workspace → Lend this computer** takes the hub's address, what to
+lend (shell, a folder, MCP servers, models) and the pairing key once, reconnects on its own, comes back on
+at launch, and lists what the hub's agents did on this computer. The setting stays on this computer
+(it isn't synced).
+
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the
 reasoning behind it.

@@ -11,6 +11,21 @@ use warden_core::tool::ToolSpec;
 
 use crate::protocol::{ClientMessage, NodeOfferDto, ServerMessage};
 
+/// The hub turned this client away (`AuthError`): a wrong key, or a token that was revoked. Typed so
+/// a caller that reconnects on its own (a node, P97) can tell it apart from a hub that's just away.
+#[derive(Debug)]
+pub struct AuthRejected {
+    pub reason: String,
+}
+
+impl std::fmt::Display for AuthRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "authentication rejected: {}", self.reason)
+    }
+}
+
+impl std::error::Error for AuthRejected {}
+
 /// A connection to a `warden-server`, past the Hello/HelloAck handshake.
 ///
 /// This is the reusable half of the Fase 9.2 protocol: Fase 7.2 (desktop/mobile as a client)
@@ -109,9 +124,7 @@ impl ServerConnection {
 
         match conn.recv().await? {
             Some(ServerMessage::HelloAck { device_token, .. }) => Ok((conn, device_token)),
-            Some(ServerMessage::AuthError { reason }) => {
-                anyhow::bail!("authentication rejected: {reason}")
-            }
+            Some(ServerMessage::AuthError { reason }) => Err(AuthRejected { reason }.into()),
             Some(other) => anyhow::bail!("expected HelloAck, got {other:?}"),
             None => anyhow::bail!("server closed the connection before replying to Hello"),
         }

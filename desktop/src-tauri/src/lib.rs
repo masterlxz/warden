@@ -1,6 +1,7 @@
 mod api_key_cmds;
 mod approval;
 mod git_sync_cmds;
+mod lend_cmds;
 mod node_cmds;
 mod qr;
 mod recording;
@@ -58,6 +59,8 @@ struct AppState {
     /// P61/P71 — the automatic vault sync: looped by `sync_cmds::spawn_auto_sync` and handed to the
     /// embedded hub, which answers the web's Sync screen with it, so the two never sync at once.
     sync_runner: Arc<warden_bootstrap::auto_sync::SyncRunner>,
+    /// P97 — this computer lent to a hub as a node, while on. See `lend_cmds.rs`.
+    lending: Mutex<Option<lend_cmds::LendHandle>>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -774,6 +777,7 @@ pub fn run() {
         embedded_server: Mutex::new(None),
         approvals: Arc::new(approval::ApprovalBroker::default()),
         sync_runner: sync_runner.clone(),
+        lending: Mutex::new(None),
     };
 
     // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
@@ -791,6 +795,9 @@ pub fn run() {
             }
         }
     }
+    // P97 — same for this computer lent to a hub: on at close, on again at launch. After the
+    // embedded hub, so the "that's your own hub" check sees its port.
+    lend_cmds::restore_lending(&app_state);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -852,6 +859,10 @@ pub fn run() {
             api_key_cmds::revoke_api_key,
             node_cmds::list_nodes,
             node_cmds::save_node_access,
+            lend_cmds::get_lend_status,
+            lend_cmds::lend_options,
+            lend_cmds::start_lending,
+            lend_cmds::stop_lending,
             task_cmds::list_tasks,
             task_cmds::save_task,
             task_cmds::set_task_enabled_cmd,

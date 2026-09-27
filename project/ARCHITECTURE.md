@@ -2472,3 +2472,34 @@ aparelho `Approved` e hoje não tem cliente.
   URL), e os modelos oferecidos nas listas de nós. O assistente `/models` do CLI não cria esse tipo (cadastro pelas
   telas ou no arquivo); editar um mantém o `node`.
 
+### Desktop como nó, "emprestar este computador" (P97, Sessão 109)
+
+- **O mesmo nó do CLI**: o desktop roda o `node_client` do `warden-server` (`LocalNode`, `run_node`), com a mesma
+  identidade em `node.json`. `lend_mcp_servers` e `lend_models` saíram do `main.rs` para o `node_client`, e os
+  dois lados usam a mesma validação.
+- **Onde fica**: em `HubLocalConfig.lend` (`LendConfig`), no `hub-local.json`, que fica fora do sync: ligar num
+  computador não liga em todos. Os campos são os do CLI: `hub_url`, `name` (vazio vira o host name),
+  `description`, `tags`, `shell`, `files`, `mcp` e `models`, mais o `enabled`. **A chave de pareamento não é
+  gravada**: ela só vale até o hub emitir o token, que vai para o `node.json`. Se o desktop recebe uma chave
+  tendo já um token, ele pareia de novo (o hub emite um token novo). É assim que se troca de hub.
+- **O que o motor ganhou** (vale para os dois lados):
+  - `NodeActivity`: as últimas 200 chamadas (`ActivityEntry { at, kind, summary, error }`), só na memória. O
+    `summary` leva o comando, o caminho, a tool MCP ou o modelo, nunca o conteúdo de um arquivo. Uma resposta de
+    modelo cancelada pelo hub não entra;
+  - `NodeState` (`connecting`, `connected`, `retrying { error, in_secs }`, `stopped { error }`) num
+    `tokio::sync::watch`. O `run_node` recebe `Option<watch::Sender>`, e o CLI passa `None`;
+  - **ser recusado para de tentar**: o `ServerConnection` agora devolve um erro tipado `AuthRejected` (chave
+    errada, token revogado, `AuthError` no meio da conexão), e o `run_node` para em vez de bater no hub para
+    sempre. Isso vale também para o `warden-server node`.
+- **Hub embutido ao mesmo tempo**: os dois convivem, porque o desktop pode ser hub da rede de casa e emprestar ao
+  VPS. Emprestar ao próprio hub embutido (`localhost`, `127.0.0.1` ou `::1` na porta dele, ligado ou não) é
+  recusado, porque os agentes dele já têm este computador. Outra porta na mesma máquina é outro hub e passa.
+- **Ao abrir o app**: se estava ligado, religa (`lend_cmds::restore_lending`), depois do hub embutido. Uma
+  falha (por exemplo, sem pareamento) fica como `stopped` na tela, sem travar a abertura.
+- **Tela**: a seção "Lend this computer" no Workspace, acima de Nodes. Tem o formulário (MCP e modelos marcados a
+  partir do `config.toml` desta máquina, sem os provedores `kind = "node"`), a linha de estado com o device id e
+  a lista "What the agents did here", atualizada a cada 3 s enquanto está ligado. O formulário trava enquanto
+  empresta.
+- **Limite conhecido**: o `warden-server node` e o desktop na mesma máquina dividem o `node.json`, então são o
+  mesmo nó para o hub. Os dois ligados ao mesmo tempo disputariam a conexão.
+

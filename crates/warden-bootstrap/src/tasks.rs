@@ -475,11 +475,32 @@ pub fn task_infos(tasks: &[TaskConfig], store: &TaskStore, now_ms: i64) -> anyho
 
 /// What only this machine decides about the hub it runs — kept out of `config.toml`, which syncs
 /// whole (so a switch there would turn on in every machine at once). Today: whether the desktop's
-/// embedded hub runs the scheduled tasks (`warden-server` takes `--run-tasks` instead).
+/// embedded hub runs the scheduled tasks (`warden-server` takes `--run-tasks` instead), and whether
+/// the desktop lends this computer to a hub as a node (P97).
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct HubLocalConfig {
     pub run_tasks: bool,
+    pub lend: Option<LendConfig>,
+}
+
+/// The desktop's "lend this computer" (P97): what `warden-server node` takes as flags. The pairing
+/// key isn't here — it's only needed until the hub issues a token, which lives in `node.json`.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct LendConfig {
+    pub enabled: bool,
+    pub hub_url: String,
+    /// How this computer shows up on the hub; blank is the host name.
+    pub name: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub shell: bool,
+    pub files: Option<PathBuf>,
+    /// MCP server names from this machine's `config.toml`.
+    pub mcp: Vec<String>,
+    /// Provider ids from this machine's `config.toml`.
+    pub models: Vec<String>,
 }
 
 pub fn default_hub_local_path() -> Option<PathBuf> {
@@ -818,10 +839,17 @@ mod tests {
         let dir = temp_dir();
         let path = dir.join("hub-local.json");
         assert_eq!(load_hub_local(&path).unwrap(), HubLocalConfig::default());
-        save_hub_local(&path, &HubLocalConfig { run_tasks: true }).unwrap();
+        save_hub_local(&path, &HubLocalConfig { run_tasks: true, lend: None }).unwrap();
         assert!(load_hub_local(&path).unwrap().run_tasks);
         std::fs::write(&path, "{}").unwrap();
         assert!(!load_hub_local(&path).unwrap().run_tasks);
+        // A file from before P97 (only `run_tasks`) still reads, with nothing lent.
+        std::fs::write(&path, r#"{ "run_tasks": true }"#).unwrap();
+        assert_eq!(load_hub_local(&path).unwrap(), HubLocalConfig { run_tasks: true, lend: None });
+        let lend = LendConfig { enabled: true, hub_url: "wss://vps.example.ts.net:7420".into(), shell: true, files: Some(dir.join("shared")), mcp: vec!["github".into()], ..LendConfig::default() };
+        let both = HubLocalConfig { run_tasks: true, lend: Some(lend) };
+        save_hub_local(&path, &both).unwrap();
+        assert_eq!(load_hub_local(&path).unwrap(), both);
         std::fs::remove_dir_all(&dir).ok();
     }
 

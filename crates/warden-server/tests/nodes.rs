@@ -14,7 +14,7 @@ use warden_core::memory::Vault;
 use warden_core::model::{response_stream, ChatStream, Message, ModelProvider, Response, Role, ToolCall};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::ToolSpec;
-use warden_server::node_client::{serve_once, LocalNode, NodeIdentity, NodeSession};
+use warden_server::node_client::{run_node, serve_once, LocalNode, NodeActivity, NodeIdentity, NodeSession, NodeState};
 use warden_server::{ClientMessage, PairingStore, Server, ServerConnection, ServerMessage, SettingsHost};
 use warden_server_protocol::protocol::NodeInfoDto;
 
@@ -324,4 +324,43 @@ async fn a_nodes_mcp_tools_come_and_go_with_it() {
     chat(&mut web, "hello", "ops", false).await;
     assert!(!last_offered(&hub).iter().any(|t| t == "test-node__echo_text"));
     assert!(!last_offered(&hub).iter().any(|t| t == "list_nodes"), "and so do the node tools, with no node left");
+}
+
+/// P97: the loop the desktop runs (`run_node`, watched) — its state follows the connection and every
+/// call the hub makes lands in the activity log.
+#[tokio::test]
+async fn a_watched_node_reports_its_state_and_what_agents_did() {
+    let hub = spin_up().await;
+    let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    let activity = NodeActivity::default();
+    let local = Arc::new(LocalNode::new(true, Some(hub.dir.join("shared"))).with_activity(activity.clone()));
+    let session = NodeSession { hub_url: hub.url.clone(), name: "Desk".into(), auth_key: "test-key".into(), offer: local.offer(String::new(), Vec::new()), identity_path: None };
+    let (status, mut watching) = tokio::sync::watch::channel(NodeState::Connecting);
+    let identity = NodeIdentity { device_id: NODE.into(), device_token: None };
+    let node = tokio::spawn(run_node(session, identity, local, Some(status)));
+    tokio::time::timeout(Duration::from_secs(10), watching.wait_for(|s| *s == NodeState::Connected)).await.expect("never connected").unwrap();
+
+    wait_online(&mut web, true).await;
+    PairingStore::new(hub.dir.join("devices.json")).approve(NODE).unwrap();
+    web.send(&set_access("test-key", &[], false)).await.unwrap();
+    node_reply(&mut web).await;
+    let (reply, _) = chat(&mut web, "RUN it", "ops", false).await;
+    assert!(reply.contains("from-the-node"), "{reply}");
+    let log = activity.entries();
+    assert_eq!((log[0].kind.as_str(), log[0].summary.as_str(), log[0].error.as_deref()), ("shell", "echo from-the-node", None));
+    node.abort();
+}
+
+/// A wrong pairing key isn't something retrying fixes: `run_node` stops and says so, instead of
+/// knocking on the hub forever.
+#[tokio::test]
+async fn a_node_turned_away_stops_instead_of_retrying() {
+    let hub = spin_up().await;
+    let local = Arc::new(LocalNode::new(true, None));
+    let session = NodeSession { hub_url: hub.url.clone(), name: "Desk".into(), auth_key: "not-the-key".into(), offer: local.offer(String::new(), Vec::new()), identity_path: None };
+    let (status, watching) = tokio::sync::watch::channel(NodeState::Connecting);
+    let identity = NodeIdentity { device_id: NODE.into(), device_token: None };
+    let result = tokio::time::timeout(Duration::from_secs(10), run_node(session, identity, local, Some(status))).await.expect("kept retrying");
+    assert!(result.is_err());
+    assert!(matches!(&*watching.borrow(), NodeState::Stopped { error } if error.contains("authentication rejected")), "{:?}", *watching.borrow());
 }

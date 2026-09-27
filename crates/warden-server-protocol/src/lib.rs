@@ -11,6 +11,6 @@ pub mod discovery;
 pub mod protocol;
 pub mod tls;
 
-pub use client::ServerConnection;
+pub use client::{AuthRejected, ServerConnection};
 pub use discovery::{discover_hubs, discover_hubs_on, DiscoveredHub};
 pub use protocol::{ClientMessage, ServerMessage};

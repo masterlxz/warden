@@ -2,7 +2,52 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-27 (Sessão 108)
+> Última atualização: 2026-09-27 (Sessão 109)
+
+---
+
+### 2026-09-27 — Sessão 109
+
+- **Objetivo**: o P97, desktop como nó ("emprestar este computador"), escolhido pelo usuário entre os itens do
+  roteiro. Plano aprovado em Plan mode.
+- **Decisões do desenho** (as quatro que o P97 deixou abertas):
+  - o que se empresta vai no `hub-local.json` (fora do sync), e a chave de pareamento não é gravada;
+  - o estado e o log das chamadas aparecem numa seção nova do Workspace, com o log só na memória;
+  - o hub embutido convive com o empréstimo, mas emprestar a ele mesmo é recusado;
+  - religa ao abrir o app, como o hub embutido.
+- **Motor** (`warden-server/src/node_client.rs`):
+  - `NodeActivity` (últimas 200 chamadas);
+  - `NodeState` num `watch`, e o `run_node` recebe o `Sender` opcional;
+  - `lend_mcp_servers` e `lend_models` vindos do `main.rs`.
+- **Protocolo**: erro tipado `AuthRejected` no `ServerConnection`. Com ele, o nó recusado para de tentar, também no
+  CLI.
+- **Bootstrap**: `HubLocalConfig.lend` (`LendConfig`). Os arquivos antigos continuam lidos.
+- **Desktop**:
+  - `lend_cmds.rs`: `get_lend_status`, `lend_options`, `start_lending`, `stop_lending` e `restore_lending` na
+    abertura;
+  - a `LendSection` no `WorkspaceView.tsx`.
+- **Mudança no plano**: o `forget_hub_pairing` saiu, porque o hub já emite um token novo quando recebe a chave
+  certa com um token velho. Colar a chave de novo basta para parear outra vez.
+- Docs: `ARCHITECTURE.md` ("Desktop como nó"), `PENDING.md` (**P97 fechado**, **P98** novo), `ROADMAP.md`,
+  `README.md`.
+
+**Verificação**:
+
+- `cargo test --workspace`: 859 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo, também no
+  desktop. `tsc` e `build` do desktop limpos.
+- **Testes novos**:
+  - `node_client` (2): o log guarda comando, caminho e erro, e respeita o limite; um nó sem token e sem chave para
+    na hora;
+  - integração com `Server` real (`tests/nodes.rs`, 2): o `run_node` vigiado passa para `Connected` e a chamada
+    `node_shell` de um chat aparece no log; uma chave errada termina em `Stopped` em vez de tentar para sempre;
+  - `hub-local.json` sem `lend` continua sendo lido, e a ida e volta com `lend` funciona;
+  - desktop (4): leitura da URL do hub, validação do formulário (nada emprestado, pasta que não existe, o próprio
+    hub embutido), o formulário gravado sem espaços nem vazios, e o formato do estado.
+- **Sem teste visual nem entre máquinas**: não há janela nem segundo computador nesta máquina. O que falta está no
+  **P98**.
+
+**Próximo passo**: P84 (multiusuário), P94 (arquivos fixos do vault) ou a sessão dedicada de testes (P80, P87, P88,
+P91, P95, P96, P98).
 
 ---
 

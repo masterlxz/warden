@@ -420,6 +420,7 @@ mod tests {
                 temp_dir.join("manifest.json"),
                 temp_dir.join("git-sync-repo"),
             )),
+            lending: std::sync::Mutex::new(None),
         };
 
         let server_config =

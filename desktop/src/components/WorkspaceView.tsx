@@ -424,6 +424,287 @@ function HubPairingQrSection() {
   );
 }
 
+/** Mirrors `LendConfigPayload` (P97). */
+interface LendConfig {
+  hubUrl: string;
+  name: string;
+  description: string;
+  tags: string[];
+  shell: boolean;
+  files: string | null;
+  mcp: string[];
+  models: string[];
+}
+
+/** Mirrors `NodeState` (`warden_server::node_client`). */
+type LendState =
+  | { state: "connecting" }
+  | { state: "connected" }
+  | { state: "retrying"; error: string; inSecs: number }
+  | { state: "stopped"; error: string };
+
+interface LendActivity {
+  at: number;
+  kind: string;
+  summary: string;
+  error: string | null;
+}
+
+interface LendStatus {
+  config: LendConfig | null;
+  enabled: boolean;
+  state: LendState | null;
+  deviceId: string | null;
+  paired: boolean;
+  activity: LendActivity[];
+}
+
+interface LendOptions {
+  mcpServers: string[];
+  models: string[];
+  defaultName: string;
+}
+
+const EMPTY_LEND: LendConfig = { hubUrl: "", name: "", description: "", tags: [], shell: false, files: null, mcp: [], models: [] };
+
+function lendStateLabel(state: LendState | null): string {
+  if (!state) return "Off";
+  switch (state.state) {
+    case "connecting":
+      return "Connecting…";
+    case "connected":
+      return "Connected";
+    case "retrying":
+      return `Hub unreachable, trying again in ${state.inSecs}s: ${state.error}`;
+    case "stopped":
+      return `Stopped: ${state.error}`;
+  }
+}
+
+function toggle(list: string[], item: string, on: boolean): string[] {
+  return on ? [...list, item] : list.filter((x) => x !== item);
+}
+
+/**
+ * P97 — this computer as a node of another hub (the one on your VPS): the same thing as
+ * `warden-server node`, from here. You pick what it lends; the hub still has to approve it as a
+ * device and allow it for its agents. Saved in hub-local.json, which doesn't sync, so it's only on
+ * for this computer. The pairing key is used once and never saved.
+ */
+function LendSection() {
+  const [status, setStatus] = useState<LendStatus | null>(null);
+  const [options, setOptions] = useState<LendOptions>({ mcpServers: [], models: [], defaultName: "" });
+  const [form, setForm] = useState<LendConfig>(EMPTY_LEND);
+  const [tagsText, setTagsText] = useState("");
+  const [authKey, setAuthKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function apply(next: LendStatus) {
+    setStatus(next);
+    if (next.config) {
+      setForm(next.config);
+      setTagsText(next.config.tags.join(", "));
+    }
+  }
+
+  useEffect(() => {
+    invoke<LendStatus>("get_lend_status")
+      .then(apply)
+      .catch((err) => setError(String(err)));
+    invoke<LendOptions>("lend_options")
+      .then(setOptions)
+      .catch(() => {});
+  }, []);
+
+  const running = status?.state != null;
+
+  // While on: the state and the activity move on their own.
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => {
+      invoke<LendStatus>("get_lend_status")
+        .then(setStatus)
+        .catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  async function start() {
+    setError(null);
+    setBusy(true);
+    try {
+      const config = { ...form, tags: tagsText.split(",").map((t) => t.trim()).filter(Boolean) };
+      apply(await invoke<LendStatus>("start_lending", { config, authKey: authKey.trim() || null }));
+      setAuthKey("");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stop() {
+    setError(null);
+    try {
+      apply(await invoke<LendStatus>("stop_lending"));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function pickFolder() {
+    const selected = await open({ multiple: false, directory: true });
+    if (typeof selected === "string") setForm((f) => ({ ...f, files: selected }));
+  }
+
+  return (
+    <section className="settings-section">
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">Lend this computer</h3>
+        {running ? (
+          <button type="button" className="provider-delete-btn" onClick={() => void stop()}>
+            Stop lending
+          </button>
+        ) : (
+          <button type="button" className="settings-save-btn" disabled={busy || form.hubUrl.trim() === ""} onClick={() => void start()}>
+            {busy ? "Starting…" : "Start lending"}
+          </button>
+        )}
+      </div>
+      <p className="settings-hint">
+        Lets the agents of another hub (like the one on your VPS) use this computer. On that hub, approve it in the device list and allow it under Nodes.
+      </p>
+      {error && <p className="settings-error-banner">{error}</p>}
+      {status && (
+        <p className="settings-hint">
+          <strong>{lendStateLabel(status.state)}</strong>
+          {status.deviceId ? ` · device id ${status.deviceId}` : ""}
+        </p>
+      )}
+
+      <div className="provider-card skill-editor">
+        <label className="settings-field">
+          <span className="settings-label">Hub address</span>
+          <input
+            className="settings-input"
+            type="text"
+            placeholder="wss://my-vps.tailnet.ts.net:7420"
+            value={form.hubUrl}
+            disabled={running}
+            onChange={(e) => setForm({ ...form, hubUrl: e.currentTarget.value })}
+          />
+        </label>
+        {!running && (
+          <>
+            <ApiKeyField label={status?.paired ? "Hub pairing key (only to pair again)" : "Hub pairing key (only the first time)"} value={authKey} onChange={setAuthKey} />
+            <span className="settings-hint">Used once to join the hub, never saved: the hub gives this computer its own token.</span>
+          </>
+        )}
+        <label className="settings-field">
+          <span className="settings-label">Name on the hub</span>
+          <input
+            className="settings-input"
+            type="text"
+            placeholder={options.defaultName}
+            value={form.name}
+            disabled={running}
+            onChange={(e) => setForm({ ...form, name: e.currentTarget.value })}
+          />
+        </label>
+        <label className="settings-field">
+          <span className="settings-label">Description for the agents</span>
+          <input
+            className="settings-input"
+            type="text"
+            placeholder="Home PC with the GPU and the photo archive"
+            value={form.description}
+            disabled={running}
+            onChange={(e) => setForm({ ...form, description: e.currentTarget.value })}
+          />
+        </label>
+        <label className="settings-field">
+          <span className="settings-label">Tags</span>
+          <input className="settings-input" type="text" placeholder="home, gpu" value={tagsText} disabled={running} onChange={(e) => setTagsText(e.currentTarget.value)} />
+        </label>
+        <label className="settings-field settings-checkbox-field">
+          <span className="settings-checkbox-row">
+            <input type="checkbox" checked={form.shell} disabled={running} onChange={(e) => setForm({ ...form, shell: e.currentTarget.checked })} />
+            <span className="settings-label">Its shell</span>
+          </span>
+          <span className="settings-hint">Commands run in the shared folder, or your home folder if none.</span>
+        </label>
+        <div className="settings-field">
+          <span className="settings-label">A folder</span>
+          <div className="settings-checkbox-row">
+            <input className="settings-input" type="text" readOnly placeholder="None" value={form.files ?? ""} />
+            <button type="button" className="settings-browse-btn" disabled={running} onClick={() => void pickFolder()}>
+              Choose…
+            </button>
+            {form.files && (
+              <button type="button" className="settings-browse-btn" disabled={running} onClick={() => setForm({ ...form, files: null })}>
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+        {options.mcpServers.length > 0 && (
+          <div className="settings-field">
+            <span className="settings-label">MCP servers</span>
+            <div className="skill-agent-list">
+              {options.mcpServers.map((name) => (
+                <label className="skill-agent-option" key={name}>
+                  <input type="checkbox" checked={form.mcp.includes(name)} disabled={running} onChange={(e) => setForm({ ...form, mcp: toggle(form.mcp, name, e.currentTarget.checked) })} />
+                  {name}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        {options.models.length > 0 && (
+          <div className="settings-field">
+            <span className="settings-label">Models</span>
+            <div className="skill-agent-list">
+              {options.models.map((id) => (
+                <label className="skill-agent-option" key={id}>
+                  <input type="checkbox" checked={form.models.includes(id)} disabled={running} onChange={(e) => setForm({ ...form, models: toggle(form.models, id, e.currentTarget.checked) })} />
+                  {id}
+                </label>
+              ))}
+            </div>
+            <span className="settings-hint">The hub uses a lent model through a provider of kind "A node's model".</span>
+          </div>
+        )}
+      </div>
+
+      {running && (
+        <>
+          <h4 className="settings-label">What the agents did here</h4>
+          {status.activity.length === 0 ? (
+            <p className="settings-hint">Nothing yet.</p>
+          ) : (
+            <div className="workspace-device-list">
+              {status.activity.map((entry, i) => (
+                <div className="workspace-device-row" key={`${entry.at}-${i}`}>
+                  <div className="workspace-device-info">
+                    <span className="workspace-device-name">
+                      {entry.kind} {entry.summary && <code>{entry.summary}</code>}
+                    </span>
+                    <span className="workspace-device-meta">
+                      {formatSeen(entry.at * 1000)}
+                      {entry.error ? ` · failed: ${entry.error}` : ""}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /** Mirrors `NodeInfoDto` (P93). */
 interface NodeInfo {
   deviceId: string;
@@ -707,6 +988,7 @@ function WorkspaceView() {
         </div>
       )}
 
+      <LendSection />
       <NodesSection refreshKey={refreshKey} />
     </div>
   );
