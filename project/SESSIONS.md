@@ -60,8 +60,48 @@
   - `pause` com o hub rodando parou as execuções; `tasks run` rodou a tarefa de cron na hora; `remove` tirou a
     tarefa e a conversa ficou.
 
-**Próximo passo**: a fatia 2 do P92 (telas na web e no desktop, e a chave do hub embutido), ou a rodada de testes
-com o usuário (P80/P87/P88, a Warden API, e agora as tarefas com um modelo real).
+**Continuação: fatia 2** (commit da fatia 1: `22b5547`). Plano aprovado em Plan mode. Decisões do usuário: no
+desktop o resultado aparece na tela de Tarefas (não no chat); na web toda mudança pede a chave de pareamento.
+
+- **`tasks.rs`**:
+  - `upsert_task`, `remove_task` e `set_task_enabled`;
+  - `task_status`/`task_infos` e as conversões com `TaskDto`;
+  - `HubLocalConfig` em `hub-local.json` (a chave local; o `config.toml` sincroniza inteiro).
+- **Protocolo**: `ListTasks`/`SaveTask`/`SetTaskEnabled`/`DeleteTask`/`RunTask` e as respostas
+  `TaskList`/`TaskError`.
+- **Hub**:
+  - `task_admin.rs` (mudanças com a chave de pareamento sob o `settings_lock`);
+  - `TaskRunner` no `scheduler.rs`, compartilhado pelo laço e pelo "rodar agora", exposto em
+    `Server::task_runner()`.
+- **Web**: a aba Tarefas.
+- **Desktop**:
+  - a tela Tasks e o `task_cmds.rs`;
+  - a chave que reinicia o hub embutido;
+  - "Run now" pelo runner do hub quando ele está de pé;
+  - a última resposta e o histórico em modo leitura.
+- Docs: `ARCHITECTURE.md`, `PENDING.md`, `ROADMAP.md`, `README.md`.
+
+**Verificação da fatia 2**:
+
+- `cargo test --workspace`: 825 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `tsc` e `build`
+  da web e do desktop limpos.
+- **Testes novos**:
+  - helpers (3): criar, renomear e recusar conflitos; o status separa "rodando" de "terminou"; a chave local
+    começa desligada;
+  - formato das mensagens (1);
+  - integração com `Server` real (1): chave errada recusada sem mexer no config, agente inexistente recusado,
+    criar, renomear, pausar, rodar agora num hub sem `--run-tasks` (o outro aparelho recebe o aviso e lê a
+    resposta), apagar, e rodar uma tarefa apagada dá erro.
+- **Ponta a ponta** com o `connection.ts` real da web (empacotado com esbuild para o Node) contra o binário real,
+  isolado no scratchpad, com o modelo falso: chave errada (`TaskError.authRejected`), intervalo inválido, criar,
+  renomear, pausar, rodar agora (aviso de `task-ocean` e o estado passando de `running` para terminado), a conversa
+  na lista, e apagar.
+- **Sem teste visual**: não há navegador nem janela para abrir as telas nesta máquina. O teste do hub embutido do
+  desktop com a chave ligada também ficou de fora, porque ele lê o `hub-local.json` real do usuário; a mesma
+  lógica está coberta pelos testes do `warden-server`.
+
+**Próximo passo**: a fatia 3 do P92 (`manage_tasks`), ou a rodada de testes com o usuário (P80/P87/P88, a Warden
+API, e as tarefas nas telas e com um modelo real).
 
 ---
 

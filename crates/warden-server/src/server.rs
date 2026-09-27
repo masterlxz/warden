@@ -31,7 +31,8 @@ use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
-use crate::scheduler::{scheduler_loop, DEFAULT_TICK as DEFAULT_TASK_TICK};
+use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
+use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
 use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
@@ -90,9 +91,8 @@ pub struct Server {
     /// Where the Warden API's keys live (P12). `None`: no API on this hub.
     api_keys: Option<Arc<PathBuf>>,
     /// Scheduled tasks (P92): their conversations, which every device lists, and whether this hub
-    /// also runs them (`--run-tasks`).
-    tasks: Option<TaskStore>,
-    run_tasks: bool,
+    /// also runs them on schedule (`--run-tasks`).
+    tasks: Option<TaskRunner>,
     task_tick: Duration,
     /// Conversations changed outside any one connection (a task ran): every connection hears it.
     changes: broadcast::Sender<String>,
@@ -128,7 +128,6 @@ impl Server {
             sync_loop: None,
             api_keys: None,
             tasks: None,
-            run_tasks: false,
             task_tick: DEFAULT_TASK_TICK,
             changes: broadcast::channel(64).0,
         })
@@ -138,9 +137,20 @@ impl Server {
     /// this hub also runs them — re-reading `[[tasks]]` from the settings file, so it needs
     /// `with_settings` too. Off by default: the config syncs, and only one hub should run them.
     pub fn with_tasks(mut self, store: TaskStore, run: bool) -> Self {
-        self.tasks = Some(store);
-        self.run_tasks = run;
+        self.tasks = Some(TaskRunner::new(store, self.changes.clone(), run));
         self
+    }
+
+    /// The runner `with_tasks` set up, for a "run now" from outside a connection (the desktop's
+    /// Tasks screen) that must not overlap a scheduled run of the same task.
+    pub fn task_runner(&self) -> Option<TaskRunner> {
+        self.tasks.clone()
+    }
+
+    /// Where this hub announces a conversation that changed outside any connection — a task's run.
+    /// The desktop sends one after a "run now" of its own, so the embedded hub's devices hear it.
+    pub fn conversation_changes(&self) -> broadcast::Sender<String> {
+        self.changes.clone()
     }
 
     /// Overrides how often the scheduler looks for due tasks — tests use a short one.
@@ -239,17 +249,14 @@ impl Server {
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync: self.sync,
             api_keys: self.api_keys,
-            tasks_dir: self.tasks.as_ref().map(|store| Arc::new(store.conversations_dir())),
+            tasks: self.tasks,
             changes: self.changes.clone(),
         };
-        let _scheduler = match (self.tasks, self.run_tasks, &ctx.settings) {
-            (Some(store), true, Some(settings)) => Some(AbortOnDrop(tokio::spawn(scheduler_loop(
-                store,
-                settings.clone(),
-                ctx.orchestrator.clone(),
-                self.changes,
-                self.task_tick,
-            )))),
+        let runs_tasks = ctx.tasks.as_ref().is_some_and(TaskRunner::runs_here);
+        let _scheduler = match (&ctx.tasks, runs_tasks, &ctx.settings) {
+            (Some(runner), true, Some(settings)) => {
+                Some(AbortOnDrop(tokio::spawn(scheduler_loop(runner.clone(), settings.clone(), ctx.orchestrator.clone(), self.task_tick))))
+            }
             (Some(_), true, None) => {
                 eprintln!("warden-server: scheduled tasks need a config file to read them from — not running any");
                 None
@@ -301,8 +308,8 @@ struct ConnectionContext {
     settings_lock: Arc<tokio::sync::Mutex<()>>,
     sync: Option<Arc<SyncRunner>>,
     api_keys: Option<Arc<PathBuf>>,
-    /// The scheduled tasks' conversations (P92), listed next to every device's own.
-    tasks_dir: Option<Arc<PathBuf>>,
+    /// Scheduled tasks (P92): their conversations are listed next to every device's own.
+    tasks: Option<TaskRunner>,
     changes: broadcast::Sender<String>,
 }
 
@@ -329,6 +336,26 @@ fn spawn_api_key_change(
     tokio::spawn(async move {
         let reply = handle_api_key_change(store.as_ref(), settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, change).await;
         let _ = reply_tx.send(reply);
+    });
+}
+
+/// Off the reader loop, like the API keys: a wrong key waits a second under the settings lock.
+#[allow(clippy::too_many_arguments)]
+fn spawn_task_change(
+    tasks: &Option<TaskRunner>,
+    settings: &Option<Arc<dyn SettingsHost>>,
+    shared: &SharedOrchestrator,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth_key: &Arc<str>,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+    request_id: u64,
+    pairing_key: String,
+    change: TaskChange,
+) {
+    let (tasks, settings, shared, lock, auth_key, reply_tx) = (tasks.clone(), settings.clone(), shared.clone(), lock.clone(), auth_key.clone(), tx.clone());
+    tokio::spawn(async move {
+        let access = TaskAccess { runner: tasks.as_ref(), settings: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key };
+        let _ = reply_tx.send(handle_task_change(&access, request_id, &pairing_key, change).await);
     });
 }
 
@@ -457,9 +484,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         settings_lock,
         sync,
         api_keys,
-        tasks_dir,
+        tasks,
         changes,
     } = ctx;
+    let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
 
     let Some(first) = stream.next().await else {
@@ -809,6 +837,21 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::RevokeApiKey { request_id, pairing_key, id }) => {
                     spawn_api_key_change(&api_keys, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, ApiKeyChange::Revoke { id });
+                }
+                Ok(ClientMessage::ListTasks { request_id }) => {
+                    let _ = tx.send(handle_list_tasks(tasks.as_ref(), settings.as_deref(), request_id));
+                }
+                Ok(ClientMessage::SaveTask { request_id, pairing_key, original_id, task }) => {
+                    spawn_task_change(&tasks, &settings, &shared_orchestrator, &settings_lock, &auth_key, &tx, request_id, pairing_key, TaskChange::Save { original_id, task });
+                }
+                Ok(ClientMessage::SetTaskEnabled { request_id, pairing_key, id, enabled }) => {
+                    spawn_task_change(&tasks, &settings, &shared_orchestrator, &settings_lock, &auth_key, &tx, request_id, pairing_key, TaskChange::SetEnabled { id, enabled });
+                }
+                Ok(ClientMessage::DeleteTask { request_id, pairing_key, id }) => {
+                    spawn_task_change(&tasks, &settings, &shared_orchestrator, &settings_lock, &auth_key, &tx, request_id, pairing_key, TaskChange::Delete { id });
+                }
+                Ok(ClientMessage::RunTask { request_id, pairing_key, id }) => {
+                    spawn_task_change(&tasks, &settings, &shared_orchestrator, &settings_lock, &auth_key, &tx, request_id, pairing_key, TaskChange::Run { id });
                 }
                 Ok(ClientMessage::RequestSyncStatus { request_id }) => {
                     // Computes the pending diff over the whole vault: off the reader loop.

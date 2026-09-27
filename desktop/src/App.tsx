@@ -9,6 +9,7 @@ import UsageView from "./components/UsageView";
 import SkillsView from "./components/SkillsView";
 import ApprovalModal from "./components/ApprovalModal";
 import SyncView from "./components/SyncView";
+import TasksView from "./components/TasksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
 import type { Attachment, ChatMessage, Conversation, ProviderFallback, Settings, Usage } from "./types";
@@ -74,7 +75,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "workspace">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "tasks" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -258,6 +259,7 @@ function App() {
         onOpenSync={() => setView("sync")}
         onOpenVault={() => setView("vault")}
         onOpenSkills={() => setView("skills")}
+        onOpenTasks={() => setView("tasks")}
         onOpenWorkspace={() => setView("workspace")}
         view={view}
         collapsed={sidebarCollapsed}
@@ -273,6 +275,8 @@ function App() {
         <VaultView />
       ) : view === "skills" ? (
         <SkillsView agents={settings.agents} providers={settings.providers} activeProvider={settings.activeProvider} />
+      ) : view === "tasks" ? (
+        <TasksView agents={settings.agents} />
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : (

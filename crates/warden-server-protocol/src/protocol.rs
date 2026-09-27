@@ -252,6 +252,48 @@ pub struct ApiKeyDto {
     pub agent_id: Option<String>,
 }
 
+/// One scheduled task (P92), as `[[tasks]]` keeps it. Exactly one of `every`, `cron` and `once`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDto {
+    pub id: String,
+    /// The agent that runs it; absent runs with no persona.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    pub enabled: bool,
+}
+
+/// A task and where it stands on this hub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskInfoDto {
+    #[serde(flatten)]
+    pub task: TaskDto,
+    /// Absent when paused, done (a `once` that ran) or the schedule is invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_finished_at_ms: Option<i64>,
+    /// Why the last finished run failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_error: Option<String>,
+}
+
 /// What `SetDeviceStatus` does — the same two actions as `warden-server devices approve|revoke`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -775,6 +817,37 @@ pub enum ClientMessage {
         pairing_key: String,
         id: String,
     },
+    /// Scheduled tasks (P92), answered by `TaskList`. Open to any paired device; every change below
+    /// asks for the pairing key again and is answered by the updated `TaskList`.
+    ListTasks {
+        request_id: u64,
+    },
+    /// Creates a task, or replaces `original_id` with it (a rename when the ids differ).
+    SaveTask {
+        request_id: u64,
+        pairing_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_id: Option<String>,
+        task: TaskDto,
+    },
+    /// Pauses or resumes a task.
+    SetTaskEnabled {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        enabled: bool,
+    },
+    DeleteTask {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// Runs a task now, on the hub, in the background; its conversation changing tells when it's done.
+    RunTask {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -1022,6 +1095,20 @@ pub enum ServerMessage {
     },
     /// An API key request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     ApiKeyError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
+    /// Reply to every task request (P92), in the config's order. `runs_here`: this hub runs the
+    /// tasks on schedule (`--run-tasks`, or the desktop's switch).
+    TaskList {
+        request_id: u64,
+        tasks: Vec<TaskInfoDto>,
+        runs_here: bool,
+    },
+    /// A task request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
+    TaskError {
         request_id: u64,
         message: String,
         #[serde(default)]
@@ -1630,6 +1717,39 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&created).unwrap(),
             serde_json::json!({ "type": "apiKeyCreated", "requestId": 2, "key": "wdn_x", "keys": [{ "id": "abc", "name": "n8n", "shown": "wdn_12345678", "createdAtMs": 5 }] })
+        );
+    }
+
+    #[test]
+    fn task_messages_use_the_web_shapes() {
+        let save: ClientMessage = serde_json::from_str(
+            r#"{"type":"saveTask","requestId":1,"pairingKey":"k","originalId":"old","task":{"id":"news","agentId":"reader","prompt":"p","cron":"0 8 * * *","enabled":true}}"#,
+        )
+        .unwrap();
+        let ClientMessage::SaveTask { original_id, task, .. } = save else { panic!("{save:?}") };
+        assert_eq!(original_id.as_deref(), Some("old"));
+        assert_eq!((task.agent_id.as_deref(), task.cron.as_deref(), task.every), (Some("reader"), Some("0 8 * * *"), None));
+        let run: ClientMessage = serde_json::from_str(r#"{"type":"runTask","requestId":2,"pairingKey":"k","id":"news"}"#).unwrap();
+        assert_eq!(run, ClientMessage::RunTask { request_id: 2, pairing_key: "k".into(), id: "news".into() });
+        let enabled: ClientMessage = serde_json::from_str(r#"{"type":"setTaskEnabled","requestId":3,"pairingKey":"k","id":"news","enabled":false}"#).unwrap();
+        assert!(matches!(enabled, ClientMessage::SetTaskEnabled { enabled: false, .. }));
+
+        let list = ServerMessage::TaskList {
+            request_id: 1,
+            runs_here: true,
+            tasks: vec![TaskInfoDto {
+                task: TaskDto { id: "news".into(), agent_id: None, prompt: "p".into(), every: Some("1h".into()), cron: None, once: None, timezone: None, enabled: true },
+                next_run_at_ms: Some(9),
+                last_run_at_ms: None,
+                last_finished_at_ms: None,
+                last_error: None,
+                running: false,
+                schedule_error: None,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&list).unwrap(),
+            serde_json::json!({ "type": "taskList", "requestId": 1, "runsHere": true, "tasks": [{ "id": "news", "prompt": "p", "every": "1h", "enabled": true, "nextRunAtMs": 9, "running": false }] })
         );
     }
 

@@ -14,7 +14,7 @@ use warden_core::model::{response_stream, ChatStream, Message, ModelProvider, Re
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::ToolSpec;
 use warden_server::{ClientMessage, Server, ServerConnection, ServerMessage, SettingsHost};
-use warden_server_protocol::protocol::HistoryRole;
+use warden_server_protocol::protocol::{HistoryRole, TaskDto};
 
 /// A poet writes a haiku; `CREATE` asks for `manage_agents`; a tool result is echoed back.
 struct Scripted {
@@ -214,4 +214,74 @@ async fn a_hub_without_run_tasks_runs_nothing() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(*hub.calls.lock().unwrap(), 0);
     assert!(hub.store.states().unwrap()["poem"].last_run_at_ms.is_none());
+}
+
+/// The reply to a task request, skipping whatever else arrives meanwhile.
+async fn task_reply(conn: &mut ServerConnection) -> ServerMessage {
+    loop {
+        match conn.recv().await.unwrap().expect("connection closed") {
+            msg @ (ServerMessage::TaskList { .. } | ServerMessage::TaskError { .. }) => return msg,
+            _ => continue,
+        }
+    }
+}
+
+fn dto(id: &str, agent: &str, prompt: &str) -> TaskDto {
+    TaskDto { id: id.into(), agent_id: Some(agent.into()), prompt: prompt.into(), every: Some("1d".into()), cron: None, once: None, timezone: None, enabled: true }
+}
+
+#[tokio::test]
+async fn the_web_manages_tasks_with_the_pairing_key() {
+    let hub = spin_up(false).await;
+    let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    let mut phone = ServerConnection::connect(&hub.url, "phone-1", "Phone", "test-key").await.unwrap();
+
+    web.send(&ClientMessage::ListTasks { request_id: 1 }).await.unwrap();
+    assert_eq!(task_reply(&mut web).await, ServerMessage::TaskList { request_id: 1, tasks: Vec::new(), runs_here: false });
+
+    let save = |key: &str, original: Option<&str>, task: TaskDto| ClientMessage::SaveTask { request_id: 2, pairing_key: key.into(), original_id: original.map(str::to_string), task };
+    web.send(&save("wrong", None, dto("poem", "poet", "write"))).await.unwrap();
+    assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskError { auth_rejected: true, .. }));
+    assert!(load_config_from_path(&hub.config_path, true).unwrap().tasks.is_empty());
+
+    web.send(&save("test-key", None, dto("poem", "ghost", "write"))).await.unwrap();
+    match task_reply(&mut web).await {
+        ServerMessage::TaskError { message, auth_rejected: false, .. } => assert!(message.contains("ghost"), "{message}"),
+        other => panic!("expected TaskError, got {other:?}"),
+    }
+
+    web.send(&save("test-key", None, dto("poem", "poet", "write about the sea"))).await.unwrap();
+    match task_reply(&mut web).await {
+        ServerMessage::TaskList { tasks, runs_here: false, .. } => {
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].task.id, "poem");
+            assert!(tasks[0].next_run_at_ms.is_some() && tasks[0].last_run_at_ms.is_none());
+        }
+        other => panic!("expected TaskList, got {other:?}"),
+    }
+    assert_eq!(load_config_from_path(&hub.config_path, true).unwrap().tasks[0].prompt, "write about the sea");
+
+    // Rename it, pause it: the config follows.
+    web.send(&save("test-key", Some("poem"), dto("sea", "poet", "write about the sea"))).await.unwrap();
+    task_reply(&mut web).await;
+    web.send(&ClientMessage::SetTaskEnabled { request_id: 3, pairing_key: "test-key".into(), id: "sea".into(), enabled: false }).await.unwrap();
+    task_reply(&mut web).await;
+    let saved = load_config_from_path(&hub.config_path, true).unwrap().tasks;
+    assert_eq!((saved[0].id.as_str(), saved[0].enabled), ("sea", false));
+
+    // Run now, on a hub that doesn't run tasks on schedule: every device hears when it's done.
+    web.send(&ClientMessage::RunTask { request_id: 4, pairing_key: "test-key".into(), id: "sea".into() }).await.unwrap();
+    assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskList { request_id: 4, .. }));
+    assert_eq!(changes(&mut phone, 1).await, ["task-sea"]);
+    assert_eq!(history(&mut phone, "task-sea").await[1], (HistoryRole::Assistant, "haiku!".to_string()));
+    web.send(&ClientMessage::ListTasks { request_id: 5 }).await.unwrap();
+    match task_reply(&mut web).await {
+        ServerMessage::TaskList { tasks, .. } => assert!(tasks[0].last_finished_at_ms.is_some() && !tasks[0].running && tasks[0].last_error.is_none()),
+        other => panic!("expected TaskList, got {other:?}"),
+    }
+
+    web.send(&ClientMessage::DeleteTask { request_id: 6, pairing_key: "test-key".into(), id: "sea".into() }).await.unwrap();
+    assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskList { ref tasks, .. } if tasks.is_empty()));
+    web.send(&ClientMessage::RunTask { request_id: 7, pairing_key: "test-key".into(), id: "sea".into() }).await.unwrap();
+    assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskError { auth_rejected: false, .. }));
 }

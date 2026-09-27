@@ -1,5 +1,5 @@
 import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -11,8 +11,9 @@ interface SidebarProps {
   onOpenSync: () => void;
   onOpenVault: () => void;
   onOpenSkills: () => void;
+  onOpenTasks: () => void;
   onOpenWorkspace: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "workspace";
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "tasks" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -27,6 +28,7 @@ function Sidebar({
   onOpenSync,
   onOpenVault,
   onOpenSkills,
+  onOpenTasks,
   onOpenWorkspace,
   view,
   collapsed,
@@ -117,6 +119,15 @@ function Sidebar({
         >
           <SkillsIcon size={17} />
           {!collapsed && "Skills"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "tasks" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenTasks}
+          title="Tasks"
+        >
+          <ClockIcon size={17} />
+          {!collapsed && "Tasks"}
         </button>
         <button
           type="button"

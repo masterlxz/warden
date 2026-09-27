@@ -208,6 +208,30 @@ export interface ApiKey {
   agentId?: string;
 }
 
+/** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
+export interface Task {
+  id: string;
+  /** The agent that runs it; absent runs with no persona. */
+  agentId?: string;
+  prompt: string;
+  every?: string;
+  cron?: string;
+  once?: string;
+  timezone?: string;
+  enabled: boolean;
+}
+
+/** Mirrors `TaskInfoDto`: a task and where it stands on the hub. */
+export interface TaskInfo extends Task {
+  /** Absent when paused, done (a `once` that ran) or the schedule is invalid. */
+  nextRunAtMs?: number;
+  lastRunAtMs?: number;
+  lastFinishedAtMs?: number;
+  lastError?: string;
+  running: boolean;
+  scheduleError?: string;
+}
+
 /** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
 export interface HubSettingsUpdate {
   providers: ProviderEdit[];
@@ -312,6 +336,12 @@ export type ClientMessage =
   | { type: "listApiKeys"; requestId: number }
   | { type: "createApiKey"; requestId: number; pairingKey: string; name: string; agentId?: string }
   | { type: "revokeApiKey"; requestId: number; pairingKey: string; id: string }
+  /** P92 — scheduled tasks; every change repeats the pairing key. */
+  | { type: "listTasks"; requestId: number }
+  | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
+  | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
+  | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }
+  | { type: "runTask"; requestId: number; pairingKey: string; id: string }
   | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
   /** P61 — the hub's vault sync; an action repeats the pairing key. */
   | { type: "requestSyncStatus"; requestId: number }
@@ -366,6 +396,9 @@ export type ServerMessage =
   | { type: "apiKeyList"; requestId: number; keys: ApiKey[] }
   | { type: "apiKeyCreated"; requestId: number; key: string; keys: ApiKey[] }
   | { type: "apiKeyError"; requestId: number; message: string; authRejected: boolean }
+  /** `runsHere`: this hub runs the tasks on schedule. */
+  | { type: "taskList"; requestId: number; tasks: TaskInfo[]; runsHere: boolean }
+  | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
@@ -435,6 +468,14 @@ export function decode(text: string): ServerMessage {
     case "approvalCancelled":
     case "conversationsChanged":
       return json as ServerMessage;
+    case "taskList": {
+      const raw = json as { requestId: number; tasks: Array<Omit<TaskInfo, "running"> & { running?: boolean }>; runsHere: boolean };
+      return { type: "taskList", requestId: raw.requestId, tasks: raw.tasks.map((t) => ({ ...t, running: t.running ?? false })), runsHere: raw.runsHere };
+    }
+    case "taskError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "taskError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
+    }
     case "deviceError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };
       return { type: "deviceError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };

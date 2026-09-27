@@ -2275,6 +2275,32 @@ agente, as tools dele e os limites de gasto do P4, num hub que fica sempre de p�
 2. Telas na web e no desktop, e a chave "executar tarefas" do hub embutido do desktop.
 3. A tool `manage_tasks`, para criar tarefas em linguagem natural.
 
+### Como ficou a fatia 2 (Sessão 108)
+
+- Decisões do usuário: no desktop, o resultado aparece **na tela de Tarefas** (a última resposta e o histórico em
+  modo leitura), não no chat; na web, **toda mudança pede a chave de pareamento**, como as chaves da API.
+- **Chave local**: `HubLocalConfig { run_tasks }` em `<config dir>/warden/hub-local.json`. Não pode ser campo do
+  `config.toml`, que sincroniza inteiro (inclusive `embedded_server`): a chave ligaria em todas as máquinas ao
+  mesmo tempo. O `warden-server` avulso segue com `--run-tasks`. Mudar a chave no desktop reinicia o hub embutido
+  (`restart_embedded_server`, com novas tentativas enquanto a porta é liberada).
+- **Helpers compartilhados** em `tasks.rs`: `upsert_task` (cria, edita ou renomeia, limpa campos vazios do
+  formulário e confere a lista inteira), `remove_task`, `set_task_enabled`, `task_status`/`task_infos` e as
+  conversões com `TaskDto`. O `tasks list` do CLI usa o mesmo `task_status`.
+- **Protocolo**: `ListTasks`, `SaveTask`, `SetTaskEnabled`, `DeleteTask`, `RunTask`, todas respondidas por
+  `TaskList { tasks, runsHere }` ou `TaskError { authRejected }`. `TaskInfoDto` é a tarefa mais o estado (próxima
+  e última execução, erro, `running`).
+- **Hub** (`task_admin.rs`): listar é aberto a qualquer aparelho pareado. Cada mudança confere a chave sob o
+  `settings_lock`, com a mesma espera de 1 s. Mexe só no `[[tasks]]`, sem recarregar o orquestrador. O
+  `TaskRunner` (em `scheduler.rs`, criado no `with_tasks`) é o mesmo para o laço e para o "rodar agora", então as
+  duas execuções da mesma tarefa nunca se sobrepõem. `Server::task_runner()` o expõe ao desktop.
+- **Web**: a aba **Tarefas** (`TasksView.tsx`), com a lista, o formulário (agendamento a cada / cron / uma vez, e
+  o fuso do navegador sugerido), "Abrir conversa" (o chat em `task-<id>`) e o pedido de chave. Recarrega quando
+  chega `ConversationsChanged` de um `task-*`.
+- **Desktop**: a tela **Tasks** (`TasksView.tsx`, `task_cmds.rs`) com a chave "Run scheduled tasks on this
+  computer", as mesmas ações sem pedir chave, e a última resposta e o histórico lidos da pasta local. O "Run now"
+  usa o `TaskRunner` do hub embutido quando ele está de pé (os aparelhos dele ficam sabendo); senão, um runner
+  local. A tela consulta o estado a cada 3 s enquanto alguma tarefa está rodando.
+
 ### Como ficou a fatia 1 (Sessão 108)
 
 - **`warden-bootstrap/src/tasks.rs`**: `TaskConfig` (`id`, `agent`, `prompt`, um entre `every`/`cron`/`once`,

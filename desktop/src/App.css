@@ -1857,3 +1857,26 @@ body {
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
+/* P92 — a task's last answer / history on the Tasks screen, read-only. */
+.task-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task-history-message {
+  border-left: 2px solid var(--color-border);
+  padding-left: 10px;
+}
+
+.task-history-message--assistant {
+  border-left-color: var(--color-accent);
+}
+
+.task-history-content {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+}

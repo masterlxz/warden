@@ -8,6 +8,7 @@ mod skills_cmds;
 mod spend_cmds;
 mod ssh_cmds;
 mod sync_cmds;
+mod task_cmds;
 mod vault_cmds;
 mod workspace_cmds;
 
@@ -837,6 +838,13 @@ pub fn run() {
             api_key_cmds::list_api_keys,
             api_key_cmds::create_api_key,
             api_key_cmds::revoke_api_key,
+            task_cmds::list_tasks,
+            task_cmds::save_task,
+            task_cmds::set_task_enabled_cmd,
+            task_cmds::delete_task,
+            task_cmds::run_task_now,
+            task_cmds::task_history,
+            task_cmds::set_run_tasks_here,
             workspace_cmds::list_paired_devices,
             workspace_cmds::approve_paired_device,
             workspace_cmds::revoke_paired_device,

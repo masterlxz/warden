@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use warden_core::model::Message;
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::spend::SpendContext;
+use warden_server_protocol::protocol::{TaskDto, TaskInfoDto};
 
 use crate::{
     append_messages, assistant_message, build_model_for, load_conversation, message_id, now_millis, scope_to_agent, to_message, AgentConfig, AgentExtras,
@@ -366,6 +367,142 @@ impl TaskStore {
     }
 }
 
+/// A task as a form sends it: blanks become `None` and the text is trimmed.
+fn normalized(task: TaskConfig) -> TaskConfig {
+    let clean = |value: Option<String>| value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    TaskConfig {
+        id: task.id.trim().to_string(),
+        agent: clean(task.agent),
+        prompt: task.prompt.trim().to_string(),
+        every: clean(task.every),
+        cron: clean(task.cron),
+        once: clean(task.once),
+        timezone: clean(task.timezone),
+        enabled: task.enabled,
+    }
+}
+
+/// Adds `task`, or puts it in place of `original_id` (a rename when the ids differ), and checks the
+/// whole list. `config` is left as it was on an error.
+pub fn upsert_task(config: &mut FileConfig, original_id: Option<&str>, task: TaskConfig) -> anyhow::Result<()> {
+    let task = normalized(task);
+    let mut tasks = config.tasks.clone();
+    match original_id {
+        Some(original) => {
+            let i = tasks.iter().position(|t| t.id == original).ok_or_else(|| anyhow::anyhow!("no task named '{original}'"))?;
+            tasks[i] = task;
+        }
+        None => {
+            anyhow::ensure!(!tasks.iter().any(|t| t.id == task.id), "there's already a task named '{}'", task.id);
+            tasks.push(task);
+        }
+    }
+    check_tasks(&tasks, &config.agents)?;
+    config.tasks = tasks;
+    Ok(())
+}
+
+pub fn remove_task(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let i = config.tasks.iter().position(|t| t.id == id).ok_or_else(|| anyhow::anyhow!("no task named '{id}'"))?;
+    config.tasks.remove(i);
+    Ok(())
+}
+
+pub fn set_task_enabled(config: &mut FileConfig, id: &str, enabled: bool) -> anyhow::Result<()> {
+    let task = config.tasks.iter_mut().find(|t| t.id == id).ok_or_else(|| anyhow::anyhow!("no task named '{id}'"))?;
+    task.enabled = enabled;
+    Ok(())
+}
+
+/// Where a task stands, for the screens and `tasks list`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaskStatus {
+    /// `None` when paused, done (a `once` that ran) or the schedule doesn't parse.
+    pub next_run_at_ms: Option<i64>,
+    pub last_run_at_ms: Option<i64>,
+    pub last_finished_at_ms: Option<i64>,
+    /// Why the last finished run failed.
+    pub last_error: Option<String>,
+    /// Started and not finished yet.
+    pub running: bool,
+    pub schedule_error: Option<String>,
+}
+
+pub fn task_status(task: &TaskConfig, state: Option<&TaskState>, now_ms: i64) -> TaskStatus {
+    let last_run_at_ms = state.and_then(|s| s.last_run_at_ms);
+    let last_finished_at_ms = state.and_then(|s| s.last_finished_at_ms);
+    TaskStatus {
+        next_run_at_ms: next_run(task, state, now_ms),
+        last_run_at_ms,
+        last_finished_at_ms,
+        last_error: state.and_then(|s| s.last_error.clone()),
+        running: last_run_at_ms.is_some_and(|run| last_finished_at_ms.is_none_or(|done| done < run)),
+        schedule_error: task.schedule().err().map(|err| format!("{err:#}")),
+    }
+}
+
+impl From<TaskDto> for TaskConfig {
+    fn from(dto: TaskDto) -> Self {
+        Self { id: dto.id, agent: dto.agent_id, prompt: dto.prompt, every: dto.every, cron: dto.cron, once: dto.once, timezone: dto.timezone, enabled: dto.enabled }
+    }
+}
+
+impl From<TaskConfig> for TaskDto {
+    fn from(task: TaskConfig) -> Self {
+        Self { id: task.id, agent_id: task.agent, prompt: task.prompt, every: task.every, cron: task.cron, once: task.once, timezone: task.timezone, enabled: task.enabled }
+    }
+}
+
+/// Every task of `config` with where it stands in `store`, as the screens show them.
+pub fn task_infos(tasks: &[TaskConfig], store: &TaskStore, now_ms: i64) -> anyhow::Result<Vec<TaskInfoDto>> {
+    let states = store.states()?;
+    Ok(tasks
+        .iter()
+        .map(|task| {
+            let status = task_status(task, states.get(&task.id), now_ms);
+            TaskInfoDto {
+                task: task.clone().into(),
+                next_run_at_ms: status.next_run_at_ms,
+                last_run_at_ms: status.last_run_at_ms,
+                last_finished_at_ms: status.last_finished_at_ms,
+                last_error: status.last_error,
+                running: status.running,
+                schedule_error: status.schedule_error,
+            }
+        })
+        .collect())
+}
+
+/// What only this machine decides about the hub it runs — kept out of `config.toml`, which syncs
+/// whole (so a switch there would turn on in every machine at once). Today: whether the desktop's
+/// embedded hub runs the scheduled tasks (`warden-server` takes `--run-tasks` instead).
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct HubLocalConfig {
+    pub run_tasks: bool,
+}
+
+pub fn default_hub_local_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("hub-local.json"))
+}
+
+/// A missing file is the default: nothing switched on.
+pub fn load_hub_local(path: &Path) -> anyhow::Result<HubLocalConfig> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).with_context(|| format!("failed to parse {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HubLocalConfig::default()),
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+pub fn save_hub_local(path: &Path, config: &HubLocalConfig) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(config).context("failed to serialize the hub's local settings")?;
+    std::fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
+}
+
 /// Runs `task` once and adds the prompt and the answer — or why there is none — to its
 /// conversation in `conversations_dir`. `base` is the hub's orchestrator before any agent scoping.
 pub async fn run_task(
@@ -631,6 +768,60 @@ mod tests {
             let content = format!("{persona}|{}|{last}", messages.len());
             Ok(response_stream(Response { content, tool_calls: Vec::new(), usage: None }))
         }
+    }
+
+    #[test]
+    fn upsert_creates_renames_and_refuses_clashes() {
+        let mut config = FileConfig { agents: vec![agent("ana")], ..FileConfig::default() };
+        let form = TaskConfig { id: " daily ".into(), agent: Some("".into()), timezone: Some(" ".into()), ..task("x") };
+        upsert_task(&mut config, None, form).unwrap();
+        assert_eq!((config.tasks[0].id.as_str(), config.tasks[0].agent.as_deref(), config.tasks[0].timezone.as_deref()), ("daily", None, None));
+
+        assert!(upsert_task(&mut config, None, task("daily")).is_err(), "same id");
+        upsert_task(&mut config, None, task("other")).unwrap();
+        assert!(upsert_task(&mut config, Some("other"), task("daily")).is_err(), "rename onto an existing id");
+        assert!(upsert_task(&mut config, Some("ghost"), task("x")).is_err());
+        assert!(upsert_task(&mut config, None, TaskConfig { agent: Some("bia".into()), ..task("third") }).is_err());
+        assert_eq!(config.tasks.len(), 2, "a refused change leaves the list alone");
+
+        upsert_task(&mut config, Some("daily"), TaskConfig { agent: Some("ana".into()), ..task("morning") }).unwrap();
+        assert_eq!(config.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["morning", "other"]);
+
+        set_task_enabled(&mut config, "other", false).unwrap();
+        assert!(!config.tasks[1].enabled);
+        remove_task(&mut config, "morning").unwrap();
+        assert_eq!(config.tasks.len(), 1);
+        assert!(remove_task(&mut config, "morning").is_err() && set_task_enabled(&mut config, "morning", true).is_err());
+    }
+
+    #[test]
+    fn status_tells_running_from_done() {
+        let job = task("hourly");
+        let never = task_status(&job, None, 0);
+        assert_eq!((never.next_run_at_ms, never.running, never.last_run_at_ms), (Some(HOUR), false, None));
+
+        let fingerprint = job.fingerprint();
+        let running = TaskState { fingerprint: fingerprint.clone(), seen_at_ms: 0, last_run_at_ms: Some(HOUR), ..TaskState::default() };
+        assert!(task_status(&job, Some(&running), HOUR).running);
+        let failed = TaskState { last_finished_at_ms: Some(HOUR + 5), last_error: Some("down".into()), ..running };
+        let status = task_status(&job, Some(&failed), HOUR + 10);
+        assert!(!status.running);
+        assert_eq!((status.last_error.as_deref(), status.next_run_at_ms), (Some("down"), Some(2 * HOUR)));
+
+        let broken = task_status(&TaskConfig { every: Some("soon".into()), ..task("x") }, None, 0);
+        assert!(broken.schedule_error.is_some() && broken.next_run_at_ms.is_none());
+    }
+
+    #[test]
+    fn the_local_switch_defaults_off_and_round_trips() {
+        let dir = temp_dir();
+        let path = dir.join("hub-local.json");
+        assert_eq!(load_hub_local(&path).unwrap(), HubLocalConfig::default());
+        save_hub_local(&path, &HubLocalConfig { run_tasks: true }).unwrap();
+        assert!(load_hub_local(&path).unwrap().run_tasks);
+        std::fs::write(&path, "{}").unwrap();
+        assert!(!load_hub_local(&path).unwrap().run_tasks);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

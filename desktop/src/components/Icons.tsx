@@ -90,6 +90,15 @@ export function SkillsIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function ClockIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
 export function DevicesIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">

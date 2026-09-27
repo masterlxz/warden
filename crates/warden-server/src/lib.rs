@@ -35,6 +35,7 @@ pub mod server;
 pub mod settings;
 pub mod skills;
 pub mod sync;
+pub mod task_admin;
 pub mod tls;
 pub mod usage;
 pub mod vault;

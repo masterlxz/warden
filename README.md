@@ -130,7 +130,12 @@ warden-server serve --run-tasks
 Each run adds the prompt and the answer to the task's conversation (`task-<id>`), which every device
 lists and can keep talking in. A run missed while the hub was down happens once when it's back. Nobody
 is watching a run, so a tool that needs approval refuses, and the spending limits count it under the
-`tasks` channel. Screens in the desktop and web, and asking an agent to create a task, come next.
+`tasks` channel.
+
+The same is on screen: the web's **Tarefas** tab (every change asks for the pairing key, like the API
+keys) and the desktop's **Tasks** screen, which also has this computer's own switch to run them on
+the embedded hub — kept in `hub-local.json`, outside the synced config. Asking an agent to create a
+task comes next.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

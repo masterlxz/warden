@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, PAIRING_PORTS, PAIRING_TIMEOUT};
-use warden_bootstrap::tasks::{check_tasks, next_run, run_task, TaskStore, Zone};
+use warden_bootstrap::tasks::{check_tasks, next_run, run_task, task_status, TaskStore, Zone};
 use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
@@ -423,22 +423,20 @@ async fn run_tasks_command(args: TasksArgs) -> anyhow::Result<()> {
             let now = now_millis();
             for task in &config.tasks {
                 let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
-                let state = states.get(&task.id);
+                let status = task_status(task, states.get(&task.id), now);
                 let on = if task.enabled { "on" } else { "paused" };
                 let agent = task.agent.as_deref().unwrap_or("(no agent)");
-                let last = match state.and_then(|s| s.last_run_at_ms) {
-                    None => "never ran".to_string(),
-                    Some(at) => match (state.and_then(|s| s.last_finished_at_ms), state.and_then(|s| s.last_error.as_deref())) {
-                        (Some(done), None) if done >= at => format!("last ran {}", zone.format(at)),
-                        (Some(done), Some(err)) if done >= at => format!("last ran {} and failed: {err}", zone.format(at)),
-                        _ => format!("running since {}", zone.format(at)),
-                    },
+                let last = match (status.last_run_at_ms, status.running, status.last_error.as_deref()) {
+                    (None, _, _) => "never ran".to_string(),
+                    (Some(at), true, _) => format!("running since {}", zone.format(at)),
+                    (Some(at), false, None) => format!("last ran {}", zone.format(at)),
+                    (Some(at), false, Some(err)) => format!("last ran {} and failed: {err}", zone.format(at)),
                 };
-                let next = match (task.schedule(), next_run(task, state, now)) {
-                    (Err(err), _) => format!("invalid: {err:#}"),
-                    (Ok(_), Some(at)) => format!("next {}", zone.format(at)),
-                    (Ok(_), None) if !task.enabled => "not scheduled".to_string(),
-                    (Ok(_), None) => "done".to_string(),
+                let next = match (&status.schedule_error, status.next_run_at_ms) {
+                    (Some(err), _) => format!("invalid: {err}"),
+                    (None, Some(at)) => format!("next {}", zone.format(at)),
+                    (None, None) if !task.enabled => "not scheduled".to_string(),
+                    (None, None) => "done".to_string(),
                 };
                 println!("{}\t{on}\t{}\t{agent}\t{last}\t{next}", task.id, task.schedule_label());
             }

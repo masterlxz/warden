@@ -8,6 +8,7 @@ import LoginView from "./components/LoginView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
+import TasksView from "./components/TasksView";
 import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
@@ -27,7 +28,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "devices" | "sync" | "settings";
+type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "sync" | "settings";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -412,6 +413,9 @@ export default function App() {
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
+          <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
+            Tarefas
+          </button>
           <button type="button" className={view === "devices" ? "tab tab--active" : "tab"} onClick={() => setView("devices")}>
             Aparelhos
           </button>
@@ -485,6 +489,8 @@ export default function App() {
           <VaultView conn={conn} />
         ) : view === "usage" ? (
           <UsageView conn={conn} />
+        ) : view === "tasks" ? (
+          <TasksView conn={conn} onOpenConversation={openConversation} />
         ) : view === "devices" ? (
           <DevicesView conn={conn} />
         ) : view === "sync" ? (

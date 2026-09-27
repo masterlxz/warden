@@ -43,6 +43,9 @@ pub struct EmbeddedServerHandle {
     /// The hub's orchestrator — replaced when the desktop's own Settings save (P78), so the hub
     /// runs on the new settings without a restart.
     pub(crate) orchestrator: SharedOrchestrator,
+    /// Its scheduled tasks (P92): the Tasks screen's "Run now" goes through it, so a run never
+    /// overlaps a scheduled one and the hub's devices hear when it's done.
+    pub(crate) task_runner: Option<warden_server::scheduler::TaskRunner>,
 }
 
 /// The embedded hub's web settings (P78): the desktop's own config file, built the way the desktop
@@ -68,7 +71,7 @@ impl SettingsHost for DesktopHubSettings {
 }
 
 impl EmbeddedServerHandle {
-    fn stop(self) {
+    pub(crate) fn stop(self) {
         let _ = self.shutdown_tx.send(());
         if let Some(renewal) = self.cert_renewal {
             renewal.abort();
@@ -266,6 +269,31 @@ pub fn stop_embedded_server(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Stops the embedded hub, if it's running, and starts it again from the saved config — after a
+/// change it only reads at start (the Tasks screen's "run here" switch). A hub that isn't running
+/// stays off.
+pub(crate) async fn restart_embedded_server(state: &AppState) -> Result<(), String> {
+    let Some(handle) = state.embedded_server.lock().unwrap().take() else {
+        return Ok(());
+    };
+    handle.stop();
+    let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
+    let server_config = config.embedded_server.ok_or_else(|| "the embedded hub has no saved configuration".to_string())?;
+    // The old accept loop lets go of the port a moment after the stop.
+    let mut last_error = String::new();
+    for _ in 0..30 {
+        match start_embedded_server_inner(state, &server_config).await {
+            Ok(handle) => {
+                *state.embedded_server.lock().unwrap() = Some(handle);
+                return Ok(());
+            }
+            Err(err) => last_error = format!("{err:#}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(format!("the embedded hub stopped but didn't start again: {last_error}"))
+}
+
 #[tauri::command]
 pub fn embedded_server_status(state: State<'_, AppState>) -> EmbeddedServerStatusPayload {
     match state.embedded_server.lock().unwrap().as_ref() {
@@ -317,6 +345,13 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     if let Some(path) = warden_bootstrap::default_api_keys_path() {
         server = server.with_api(path);
     }
+    // P92 — every device lists the tasks' conversations; this machine's own switch (outside the
+    // synced config) decides whether this hub also runs them on schedule.
+    if let Some(dir) = warden_bootstrap::default_server_tasks_dir() {
+        let run = crate::task_cmds::run_tasks_here();
+        server = server.with_tasks(warden_bootstrap::tasks::TaskStore::new(dir), run);
+    }
+    let task_runner = server.task_runner();
     let bound_addr = server.local_addr()?;
     let secure_url = tls.as_ref().and_then(|tls| tls.secure_url(bound_addr.port()));
     let tls_without_host = tls.is_some() && secure_url.is_none();
@@ -328,7 +363,7 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     tokio::spawn(server.serve_until(async {
         let _ = shutdown_rx.await;
     }));
-    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, tls_without_host, web_ui: config.web_ui, cert_renewal, orchestrator: shared })
+    Ok(EmbeddedServerHandle { shutdown_tx, bound_addr, server_name, secure_url, tls_without_host, web_ui: config.web_ui, cert_renewal, orchestrator: shared, task_runner })
 }
 
 #[cfg(test)]

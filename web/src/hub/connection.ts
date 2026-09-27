@@ -25,8 +25,16 @@ import {
   type ServerMessage,
   type UsageReport,
   type SkillDto,
+  type Task,
+  type TaskInfo,
   type VaultSearchHit,
 } from "./messages";
+
+/** The hub's scheduled tasks (P92), and whether it runs them on schedule. */
+export interface TaskList {
+  tasks: TaskInfo[];
+  runsHere: boolean;
+}
 
 export type ConnectionStatus =
   | { kind: "disconnected"; reason?: string }
@@ -61,6 +69,16 @@ export class SettingsError extends Error {
 
 /** A Warden API key change the hub refused (P12). `authRejected`: the pairing key was wrong. */
 export class ApiKeyError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** A scheduled-task request the hub refused (P92). `authRejected`: the pairing key was wrong. */
+export class TaskError extends Error {
   constructor(
     message: string,
     public readonly authRejected: boolean,
@@ -383,7 +401,11 @@ export class ServerConnection {
       case "apiKeyList":
       case "apiKeyCreated":
       case "syncStatus":
+      case "taskList":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "taskError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new TaskError(message.message, message.authRejected)));
         break;
       case "apiKeyError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new ApiKeyError(message.message, message.authRejected)));
@@ -565,6 +587,35 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "revokeApiKey", requestId, pairingKey, id }));
     if (reply.type !== "apiKeyList") throw new Error("resposta inesperada do hub");
     return reply.keys;
+  }
+
+  /** Scheduled tasks (P92), in the config's order, and whether this hub runs them on schedule. */
+  async listTasks(): Promise<TaskList> {
+    return this.taskRequest((requestId) => ({ type: "listTasks", requestId }));
+  }
+
+  /** Creates a task, or replaces `originalId` with it. Every change rejects with `TaskError`. */
+  async saveTask(pairingKey: string, task: Task, originalId?: string): Promise<TaskList> {
+    return this.taskRequest((requestId) => ({ type: "saveTask", requestId, pairingKey, task, ...(originalId && { originalId }) }));
+  }
+
+  async setTaskEnabled(pairingKey: string, id: string, enabled: boolean): Promise<TaskList> {
+    return this.taskRequest((requestId) => ({ type: "setTaskEnabled", requestId, pairingKey, id, enabled }));
+  }
+
+  async deleteTask(pairingKey: string, id: string): Promise<TaskList> {
+    return this.taskRequest((requestId) => ({ type: "deleteTask", requestId, pairingKey, id }));
+  }
+
+  /** Starts a run on the hub; `onConversationsChanged` with `task-<id>` tells when it's done. */
+  async runTask(pairingKey: string, id: string): Promise<TaskList> {
+    return this.taskRequest((requestId) => ({ type: "runTask", requestId, pairingKey, id }));
+  }
+
+  private async taskRequest(build: (requestId: number) => ClientMessage): Promise<TaskList> {
+    const reply = await this.request(build);
+    if (reply.type !== "taskList") throw new Error("resposta inesperada do hub");
+    return { tasks: reply.tasks, runsHere: reply.runsHere };
   }
 
   /** Approves or revokes a device; rejects with `DeviceError` on a wrong pairing key. */
