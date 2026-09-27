@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::{is_fixed_vault_file, Vault, SKILLS_DIR};
+use super::{is_fixed_vault_file, Vault, MOUNTS_DIR, SKILLS_DIR};
 
 /// Largest note these screens open or save. Notes are text a person edits in a textarea; anything
 /// bigger is almost certainly not one, and would also be a heavy message over the hub's socket.
@@ -51,18 +51,27 @@ impl Vault {
     /// everything `list_all_files` returns except the fixed files at the root (screens show those
     /// in their own section) and the root `skills/` folder.
     pub fn browse_files(&self) -> anyhow::Result<Vec<String>> {
+        let mounts = self.current_mounts();
         let mut files: Vec<String> = self
             .list_all_files()?
             .into_iter()
             .filter(|path| !is_fixed_vault_file(Path::new(""), path) && !starts_with_skills_dir(path))
+            // With mounts, `MOUNTS_DIR` is theirs (P84).
+            .filter(|path| mounts.is_none() || !path.starts_with(MOUNTS_DIR))
             .map(|path| path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
             .collect();
+        for mount in mounts.unwrap_or_default() {
+            files.extend(mount.vault.browse_files()?.into_iter().map(|f| format!("{MOUNTS_DIR}/{}/{f}", mount.prefix)));
+        }
         files.sort();
         Ok(files)
     }
 
     /// Opens a note for viewing or editing.
     pub fn read_note(&self, relative_path: &str) -> anyhow::Result<NoteFile> {
+        if let Some((mount, inner)) = self.route(relative_path)? {
+            return mount.vault.read_note(&inner);
+        }
         let path = self.note_path(relative_path)?;
         let bytes = read_capped(&path, relative_path)?.ok_or_else(|| anyhow::anyhow!("'{relative_path}' doesn't exist"))?;
         let version = content_version(&bytes);
@@ -74,6 +83,9 @@ impl Vault {
     /// `None` creates a new note and fails if the path is taken; `Some` fails with `NoteConflict`
     /// if the note changed or was deleted since.
     pub fn save_note(&self, relative_path: &str, content: &str, expected_version: Option<&str>) -> anyhow::Result<String> {
+        if let Some((mount, inner)) = self.writable_route(relative_path)? {
+            return mount.vault.save_note(&inner, content, expected_version);
+        }
         let path = self.note_path(relative_path)?;
         if content.len() > MAX_NOTE_BYTES {
             anyhow::bail!("a note can have at most {} KB", MAX_NOTE_BYTES / 1024);
@@ -101,6 +113,9 @@ impl Vault {
     /// Deletes a note, unless it changed since it was opened at `expected_version`. Already gone
     /// counts as done.
     pub fn delete_note(&self, relative_path: &str, expected_version: &str) -> anyhow::Result<()> {
+        if let Some((mount, inner)) = self.writable_route(relative_path)? {
+            return mount.vault.delete_note(&inner, expected_version);
+        }
         let path = self.note_path(relative_path)?;
         let _guard = self.note_lock.lock().unwrap_or_else(|e| e.into_inner());
         let Some(bytes) = read_capped(&path, relative_path)? else {

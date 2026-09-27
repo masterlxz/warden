@@ -9,7 +9,7 @@ use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 #[cfg(feature = "semantic-search")]
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Markdown vault on local disk (Obsidian-compatible). IPFS mirroring lands in Phase 4.
 pub struct Vault {
@@ -29,6 +29,23 @@ pub struct Vault {
     /// Makes `save_note`/`delete_note`'s version check and write one step (P78), so two editors
     /// saving the same note at once can't both pass the check.
     note_lock: Mutex<()>,
+    /// Other vaults shown inside this one under `MOUNTS_DIR/<prefix>/` (P84: the owner's shared
+    /// folders in a member's vault). `None` for an ordinary vault, where `MOUNTS_DIR` is just a
+    /// folder like any other; `Some` (even empty) makes that folder the mounts' alone.
+    mounts: RwLock<Option<Vec<Mount>>>,
+}
+
+/// Where a vault shows its mounts (P84): `compartilhado/<space>/…`.
+pub const MOUNTS_DIR: &str = "compartilhado";
+
+/// Another vault shown inside this one at `MOUNTS_DIR/<prefix>/` — a shared space (P84). Paths
+/// under it go to `vault`, relative to its own root, so its `..`/absolute-path guard still holds.
+#[derive(Clone)]
+pub struct Mount {
+    pub prefix: String,
+    pub vault: Arc<Vault>,
+    /// `false`: reading only; writing and deleting are refused.
+    pub writable: bool,
 }
 
 /// One matching line from `Vault::search`, with enough location info to cite it.
@@ -61,7 +78,44 @@ impl Vault {
             #[cfg(feature = "semantic-search")]
             index_lock: Mutex::new(()),
             note_lock: Mutex::new(()),
+            mounts: RwLock::new(None),
         }
+    }
+
+    /// Replaces the vaults shown under `MOUNTS_DIR` — from now on that folder is only theirs: a
+    /// path under it that isn't one of them is refused.
+    pub fn set_mounts(&self, mounts: Vec<Mount>) {
+        *self.mounts.write().unwrap_or_else(|e| e.into_inner()) = Some(mounts);
+    }
+
+    fn current_mounts(&self) -> Option<Vec<Mount>> {
+        self.mounts.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The mount `relative_path` is in and the path inside it, `None` for a path of this vault's
+    /// own, or an error for one under `MOUNTS_DIR` that no mount answers.
+    pub(crate) fn route(&self, relative_path: &str) -> anyhow::Result<Option<(Mount, String)>> {
+        let Some(mounts) = self.current_mounts() else { return Ok(None) };
+        let normalized = relative_path.trim_start_matches("./");
+        let Some(rest) = normalized.strip_prefix(MOUNTS_DIR) else { return Ok(None) };
+        let Some(rest) = rest.strip_prefix('/') else {
+            if rest.is_empty() {
+                anyhow::bail!("'{MOUNTS_DIR}' holds the shared spaces — pick a file inside one");
+            }
+            return Ok(None); // e.g. `compartilhados.md`: a sibling, not the folder
+        };
+        let (space, inner) = rest.split_once('/').unwrap_or((rest, ""));
+        let mount = mounts.into_iter().find(|m| m.prefix == space).ok_or_else(|| anyhow::anyhow!("there's no shared space '{space}' for you"))?;
+        anyhow::ensure!(!inner.is_empty(), "'{relative_path}' is a shared space, not a file in it");
+        Ok(Some((mount, inner.to_string())))
+    }
+
+    fn writable_route(&self, relative_path: &str) -> anyhow::Result<Option<(Mount, String)>> {
+        let routed = self.route(relative_path)?;
+        if let Some((mount, _)) = &routed {
+            anyhow::ensure!(mount.writable, "the shared space '{}' is read-only for you", mount.prefix);
+        }
+        Ok(routed)
     }
 
     pub fn root(&self) -> &PathBuf {
@@ -81,10 +135,16 @@ impl Vault {
     }
 
     pub fn read(&self, relative_path: &str) -> anyhow::Result<String> {
+        if let Some((mount, inner)) = self.route(relative_path)? {
+            return mount.vault.read(&inner);
+        }
         Ok(std::fs::read_to_string(self.path_of(relative_path)?)?)
     }
 
     pub fn write(&self, relative_path: &str, content: &str) -> anyhow::Result<()> {
+        if let Some((mount, inner)) = self.writable_route(relative_path)? {
+            return mount.vault.write(&inner, content);
+        }
         let path = self.path_of(relative_path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -95,13 +155,31 @@ impl Vault {
     /// Removes a file from the vault — how `warden-sync`'s bundle-apply (P37) deletes a note another
     /// device removed.
     pub fn delete(&self, relative_path: &str) -> anyhow::Result<()> {
+        if let Some((mount, inner)) = self.writable_route(relative_path)? {
+            return mount.vault.delete(&inner);
+        }
         Ok(std::fs::remove_file(self.path_of(relative_path)?)?)
     }
 
-    /// All markdown files in the vault, relative to its root.
+    /// All markdown files in the vault, relative to its root — the mounted ones too, under
+    /// `MOUNTS_DIR/<prefix>/`.
     pub fn list_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files = self.own_markdown_files()?;
+        for mount in self.current_mounts().unwrap_or_default() {
+            let prefix = Path::new(MOUNTS_DIR).join(&mount.prefix);
+            files.extend(mount.vault.list_files()?.into_iter().map(|f| prefix.join(f)));
+        }
+        Ok(files)
+    }
+
+    /// This vault's own markdown files — with mounts, a real `MOUNTS_DIR` folder here is left out
+    /// (it's the mounts' place).
+    fn own_markdown_files(&self) -> anyhow::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         collect_markdown_files(&self.root, &self.root, &mut files)?;
+        if self.current_mounts().is_some() {
+            files.retain(|f| !f.starts_with(MOUNTS_DIR));
+        }
         Ok(files)
     }
 
@@ -130,7 +208,7 @@ impl Vault {
         }
 
         let mut hits = Vec::new();
-        for relative in self.list_files()? {
+        for relative in self.own_markdown_files()? {
             if hits.len() >= max_hits {
                 break;
             }
@@ -148,6 +226,13 @@ impl Vault {
                     });
                 }
             }
+        }
+        for mount in self.current_mounts().unwrap_or_default() {
+            if hits.len() >= max_hits {
+                break;
+            }
+            let prefix = format!("{MOUNTS_DIR}/{}/", mount.prefix);
+            hits.extend(mount.vault.search(query, max_hits - hits.len())?.into_iter().map(|h| SearchHit { path: format!("{prefix}{}", h.path), ..h }));
         }
         Ok(hits)
     }
@@ -179,6 +264,38 @@ impl Vault {
     /// hooking every write path. Returns the same `SearchHit` shape as `search`, so callers don't
     /// need to change — `line` becomes a chunk preview rather than the literal matched line.
     pub fn search_semantic(&self, query: &str, max_hits: usize) -> anyhow::Result<Vec<SearchHit>> {
+        let own = self.search_semantic_own(query, max_hits)?;
+        let mounts = self.current_mounts().unwrap_or_default();
+        if mounts.is_empty() {
+            return Ok(own);
+        }
+        // Each vault ranks its own chunks; their scores aren't comparable across indexes, so the
+        // best of each take turns (own vault first) until `max_hits`.
+        let mut lists = vec![own];
+        for mount in mounts {
+            let prefix = format!("{MOUNTS_DIR}/{}/", mount.prefix);
+            lists.push(mount.vault.search_semantic(query, max_hits)?.into_iter().map(|h| SearchHit { path: format!("{prefix}{}", h.path), ..h }).collect());
+        }
+        let mut merged = Vec::new();
+        let mut iters: Vec<_> = lists.into_iter().map(Vec::into_iter).collect();
+        while merged.len() < max_hits {
+            let before = merged.len();
+            for it in &mut iters {
+                if merged.len() < max_hits {
+                    if let Some(hit) = it.next() {
+                        merged.push(hit);
+                    }
+                }
+            }
+            if merged.len() == before {
+                break;
+            }
+        }
+        Ok(merged)
+    }
+
+    #[cfg(feature = "semantic-search")]
+    fn search_semantic_own(&self, query: &str, max_hits: usize) -> anyhow::Result<Vec<SearchHit>> {
         if max_hits == 0 || query.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -188,7 +305,7 @@ impl Vault {
         let index = semantic::SemanticIndex::load(&index_path);
 
         let mut wanted: Vec<(String, usize, String, String)> = Vec::new();
-        for relative in self.list_files()? {
+        for relative in self.own_markdown_files()? {
             let path = relative.to_string_lossy().to_string();
             let content = std::fs::read_to_string(self.root.join(&relative))?;
             for (start_line, text) in semantic::chunk_file(&content, semantic::CHUNK_WINDOW_LINES) {
@@ -333,6 +450,68 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         Vault::new(dir)
+    }
+
+    /// P84: a member's vault with the owner's `casa` folder read-only and `trip` writable.
+    fn mounted() -> (Vault, Arc<Vault>, Arc<Vault>) {
+        let owner = temp_vault();
+        owner.write("casa/lista.md", "arroz e feijão").unwrap();
+        owner.write("private/diary.md", "segredo").unwrap();
+        let casa = Arc::new(Vault::new(owner.root().join("casa")));
+        let trip = Arc::new(Vault::new(owner.root().join("trip")));
+        let member = temp_vault();
+        member.write("mine.md", "my own note about feijão").unwrap();
+        member.set_mounts(vec![Mount { prefix: "casa".into(), vault: casa.clone(), writable: false }, Mount { prefix: "trip".into(), vault: trip.clone(), writable: true }]);
+        (member, casa, trip)
+    }
+
+    #[test]
+    fn mounted_spaces_read_list_and_search_under_their_prefix() {
+        let (member, _, _) = mounted();
+        assert_eq!(member.read("compartilhado/casa/lista.md").unwrap(), "arroz e feijão");
+        let files: Vec<String> = member.list_files().unwrap().iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert!(files.contains(&"mine.md".to_string()) && files.contains(&"compartilhado/casa/lista.md".to_string()), "{files:?}");
+        assert!(!files.iter().any(|f| f.contains("diary")), "nothing outside the shared folder");
+        let hits: Vec<String> = member.search("feijão", 10).unwrap().into_iter().map(|h| h.path).collect();
+        assert_eq!(hits, ["mine.md", "compartilhado/casa/lista.md"]);
+        assert!(member.browse_files().unwrap().contains(&"compartilhado/casa/lista.md".to_string()));
+        assert!(member.list_all_files().unwrap().iter().all(|f| !f.starts_with(MOUNTS_DIR)), "sync only carries the vault's own files");
+    }
+
+    #[test]
+    fn a_read_only_space_refuses_writes_and_a_writable_one_writes_through() {
+        let (member, casa, trip) = mounted();
+        assert!(member.write("compartilhado/casa/new.md", "x").is_err());
+        assert!(member.delete("compartilhado/casa/lista.md").is_err());
+        assert!(member.save_note("compartilhado/casa/new.md", "x", None).is_err());
+        assert!(!casa.root().join("new.md").exists());
+        member.write("compartilhado/trip/plan.md", "Lisboa").unwrap();
+        assert_eq!(trip.read("plan.md").unwrap(), "Lisboa", "it lands in the owner's folder");
+        let version = member.save_note("compartilhado/trip/notes.md", "one", None).unwrap();
+        assert_eq!(member.read_note("compartilhado/trip/notes.md").unwrap().version, version);
+    }
+
+    #[test]
+    fn the_shared_folder_is_the_mounts_alone_and_never_a_way_out() {
+        let (member, _, _) = mounted();
+        assert!(member.write("compartilhado/other/x.md", "x").is_err(), "no such space");
+        assert!(member.read("compartilhado").is_err());
+        assert!(member.read("compartilhado/casa/../../private/diary.md").is_err());
+        assert!(member.read("compartilhado/casa/../casa/lista.md").is_err());
+        member.write("compartilhados.md", "a sibling, not the folder").unwrap();
+
+        // Changing the mounts changes the access at once.
+        member.set_mounts(Vec::new());
+        assert!(member.read("compartilhado/casa/lista.md").is_err());
+        assert!(!member.list_files().unwrap().iter().any(|f| f.starts_with(MOUNTS_DIR)));
+    }
+
+    #[test]
+    fn an_ordinary_vault_keeps_its_own_compartilhado_folder() {
+        let vault = temp_vault();
+        vault.write("compartilhado/receitas.md", "bolo").unwrap();
+        assert_eq!(vault.read("compartilhado/receitas.md").unwrap(), "bolo");
+        assert_eq!(vault.list_files().unwrap().len(), 1);
     }
 
     #[test]
