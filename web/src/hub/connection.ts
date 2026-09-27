@@ -28,8 +28,15 @@ import {
   type SkillDto,
   type Task,
   type TaskInfo,
+  type UserInfo,
   type VaultSearchHit,
 } from "./messages";
+
+/** The workspace's members (P84) — with the provisional password of the one just created or reset. */
+export interface UserList {
+  users: UserInfo[];
+  tempPassword?: string;
+}
 
 /** The hub's scheduled tasks (P92), and whether it runs them on schedule. */
 export interface TaskList {
@@ -108,6 +115,17 @@ export class DeviceError extends Error {
   }
 }
 
+/** A people request the hub refused (P84). `authRejected`: the pairing key (or, for
+ * `changePassword`, the current password) was wrong. */
+export class UserError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
 /** A sync action the hub refused. `authRejected`: the pairing key was wrong. */
 export class SyncError extends Error {
   constructor(
@@ -178,6 +196,9 @@ export interface ConnectOptions {
   /** The hub's pairing key (P36) — only needed until this browser holds a `deviceToken`. */
   authKey: string;
   deviceToken?: string;
+  /** P84: pairs as this member instead of with the pairing key — also only until there's a token. */
+  username?: string;
+  password?: string;
   handshakeTimeoutMs?: number;
 }
 
@@ -229,6 +250,8 @@ export class ServerConnection {
     /** The device token the hub issued in this connection's `helloAck`, if it issued one — the
      * caller must persist it and pass it as `deviceToken` from then on. */
     public readonly issuedDeviceToken: string | undefined,
+    /** P84: the member this browser belongs to — `undefined` for the owner. */
+    public readonly user: UserInfo | undefined,
   ) {
     this.socket = socket;
     this.currentStatus = { kind: "connected", serverName };
@@ -321,7 +344,7 @@ export class ServerConnection {
         finish(() => {
           switch (reply.type) {
             case "helloAck":
-              resolve(new ServerConnection(socket, reply.serverName, reply.deviceToken));
+              resolve(new ServerConnection(socket, reply.serverName, reply.deviceToken, reply.user));
               break;
             case "authError":
               socket.close();
@@ -342,6 +365,7 @@ export class ServerConnection {
             deviceName: options.deviceName,
             authKey: options.authKey,
             ...(options.deviceToken !== undefined && { deviceToken: options.deviceToken }),
+            ...(options.username !== undefined && { username: options.username, password: options.password ?? "" }),
             tools: [],
           }),
         );
@@ -414,7 +438,12 @@ export class ServerConnection {
       case "syncStatus":
       case "taskList":
       case "nodeList":
+      case "userList":
+      case "passwordChanged":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "userError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new UserError(message.message, message.authRejected)));
         break;
       case "nodeError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new NodeError(message.message, message.authRejected)));
@@ -645,6 +674,39 @@ export class ServerConnection {
     const reply = await this.request(build);
     if (reply.type !== "taskList") throw new Error("resposta inesperada do hub");
     return { tasks: reply.tasks, runsHere: reply.runsHere };
+  }
+
+  /** P84: the member on this connection picks their own password; rejects with `UserError`
+   * (`authRejected`: the current one was wrong). */
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    const reply = await this.request((requestId) => ({ type: "changePassword", requestId, oldPassword, newPassword }));
+    if (reply.type !== "passwordChanged") throw new Error("resposta inesperada do hub");
+  }
+
+  /** P84: the workspace's members — the owner's only. */
+  async listUsers(): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "listUsers", requestId }));
+  }
+
+  /** Creates a member (`isNew`, the reply carries their provisional password once) or renames one. */
+  async saveUser(pairingKey: string, id: string, name: string, isNew: boolean): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "saveUser", requestId, pairingKey, id, name, isNew }));
+  }
+
+  /** A new provisional password for a member, in the reply once. */
+  async resetPassword(pairingKey: string, id: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "resetPassword", requestId, pairingKey, id }));
+  }
+
+  /** Removes a member and revokes their devices; their vault and conversations stay on the hub. */
+  async removeUser(pairingKey: string, id: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "removeUser", requestId, pairingKey, id }));
+  }
+
+  private async userRequest(build: (requestId: number) => ClientMessage): Promise<UserList> {
+    const reply = await this.request(build);
+    if (reply.type !== "userList") throw new Error("resposta inesperada do hub");
+    return { users: reply.users, ...(reply.tempPassword !== undefined && { tempPassword: reply.tempPassword }) };
   }
 
   /** Approves or revokes a device; rejects with `DeviceError` on a wrong pairing key. */

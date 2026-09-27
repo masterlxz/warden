@@ -188,6 +188,12 @@ button:focus-visible {
   font-weight: 400;
 }
 
+/* P84: owner (pairing key) or member (username) sign-in. */
+.login-modes {
+  display: flex;
+  gap: 0.35rem;
+}
+
 /* Shell */
 
 .app {

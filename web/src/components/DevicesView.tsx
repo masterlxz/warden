@@ -104,7 +104,8 @@ export default function DevicesView({ conn }: { conn: ServerConnection | null })
                   <span className={`devices-status devices-status--${device.status}`}>{STATUS_LABEL[device.status]}</span>
                 </div>
                 <p className="skills-item-description">
-                  <code>{device.deviceId}</code> · visto por último em {dateFormatter.format(new Date(device.lastSeenMs))}
+                  <code>{device.deviceId}</code>
+                  {device.user && ` · de ${device.user}`} · visto por último em {dateFormatter.format(new Date(device.lastSeenMs))}
                 </p>
 
                 {isAsking ? (

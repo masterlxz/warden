@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import ApprovalModal from "./components/ApprovalModal";
+import ChangePasswordView from "./components/ChangePasswordView";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
-import LoginView from "./components/LoginView";
+import LoginView, { type LoginCredentials } from "./components/LoginView";
+import PeopleView from "./components/PeopleView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
@@ -13,7 +15,7 @@ import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
-import type { Attachment, ConversationSummary } from "./hub/messages";
+import type { Attachment, ConversationSummary, UserInfo } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
 const HISTORY_LIMIT = 200;
@@ -28,7 +30,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "sync" | "settings";
+type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "people" | "sync" | "settings";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -82,6 +84,10 @@ export default function App() {
   const [agentId, setAgentId] = useState("");
   /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
+  /** P84: the member this browser belongs to — `undefined` for the owner. */
+  const [user, setUser] = useState<UserInfo | undefined>(undefined);
+  /** A member asked to change their password (the provisional one forces it without asking). */
+  const [changingPassword, setChangingPassword] = useState(false);
   /** Mirrors `conversations` for the connection's callbacks. */
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
@@ -141,19 +147,21 @@ export default function App() {
     }
   }, []);
 
-  /** Connects with the stored token, or pairs with `authKey` when given. */
+  /** Connects with the stored token, or pairs with `credentials` when given — the pairing key, or
+   * a member's username and password (P84). */
   const connect = useCallback(
-    async (authKey?: string) => {
+    async (credentials?: LoginCredentials) => {
       clearReconnect();
       const identity = identityRef.current;
-      const usingToken = authKey === undefined;
+      const usingToken = credentials === undefined;
       let connection: ServerConnection;
       try {
         connection = await ServerConnection.connect({
           url: hubUrl(),
           deviceId: identity.deviceId,
           deviceName: identity.deviceName,
-          authKey: authKey ?? "",
+          authKey: credentials?.kind === "key" ? credentials.authKey : "",
+          ...(credentials?.kind === "user" && { username: credentials.username, password: credentials.password }),
           ...(usingToken && identity.deviceToken !== undefined && { deviceToken: identity.deviceToken }),
         });
       } catch (err) {
@@ -178,6 +186,7 @@ export default function App() {
       connRef.current = connection;
       setConn(connection);
       setServerName(connection.serverName);
+      setUser(connection.user);
       setPhase({ kind: "ready", connected: true });
 
       connection.onChatMessage((entry, conversationId) => {
@@ -252,11 +261,21 @@ export default function App() {
     };
   }, [connect, clearReconnect]);
 
-  function handleLogin(authKey: string, deviceName: string) {
+  function handleLogin(credentials: LoginCredentials, deviceName: string) {
     identityRef.current = { ...identityRef.current, deviceName };
     saveIdentity(identityRef.current);
     setPhase({ kind: "connecting" });
-    void connect(authKey);
+    void connect(credentials);
+  }
+
+  /** The member's own password is in: what the provisional one kept closed can load now. */
+  function handlePasswordChanged() {
+    setUser((current) => (current ? { ...current, mustChangePassword: false } : current));
+    setChangingPassword(false);
+    const connection = connRef.current;
+    if (!connection) return;
+    void refreshAgents(connection);
+    void refreshConversations(connection).then(() => loadConversation(connection, activeIdRef.current));
   }
 
   function handleLogout() {
@@ -272,6 +291,9 @@ export default function App() {
     setApprovals([]);
     setAgentIds([]);
     setServerName(null);
+    setUser(undefined);
+    setChangingPassword(false);
+    setView("chat");
     setPhase({ kind: "login" });
   }
 
@@ -390,7 +412,22 @@ export default function App() {
     );
   }
 
+  if (conn && user && (user.mustChangePassword || changingPassword)) {
+    return (
+      <ChangePasswordView
+        conn={conn}
+        name={user.name}
+        required={user.mustChangePassword}
+        onDone={handlePasswordChanged}
+        onCancel={() => setChangingPassword(false)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? "Nova conversa";
+  /** P84: a member sees their chat, vault and skills — the rest is the owner's. */
+  const isOwner = user === undefined;
 
   return (
     <div className="app">
@@ -407,31 +444,45 @@ export default function App() {
           <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
             Vault
           </button>
-          <button type="button" className={view === "usage" ? "tab tab--active" : "tab"} onClick={() => setView("usage")}>
-            Uso
-          </button>
+          {isOwner && (
+            <button type="button" className={view === "usage" ? "tab tab--active" : "tab"} onClick={() => setView("usage")}>
+              Uso
+            </button>
+          )}
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
-          <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
-            Tarefas
-          </button>
-          <button type="button" className={view === "devices" ? "tab tab--active" : "tab"} onClick={() => setView("devices")}>
-            Aparelhos
-          </button>
-          <button type="button" className={view === "sync" ? "tab tab--active" : "tab"} onClick={() => setView("sync")}>
-            Sync
-          </button>
-          <button
-            type="button"
-            className={view === "settings" ? "tab tab--active" : "tab"}
-            onClick={() => setView("settings")}
-            aria-label="Configurações"
-            title="Configurações"
-          >
-            ⚙
-          </button>
+          {isOwner && (
+            <>
+              <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
+                Tarefas
+              </button>
+              <button type="button" className={view === "devices" ? "tab tab--active" : "tab"} onClick={() => setView("devices")}>
+                Aparelhos
+              </button>
+              <button type="button" className={view === "people" ? "tab tab--active" : "tab"} onClick={() => setView("people")}>
+                Pessoas
+              </button>
+              <button type="button" className={view === "sync" ? "tab tab--active" : "tab"} onClick={() => setView("sync")}>
+                Sync
+              </button>
+              <button
+                type="button"
+                className={view === "settings" ? "tab tab--active" : "tab"}
+                onClick={() => setView("settings")}
+                aria-label="Configurações"
+                title="Configurações"
+              >
+                ⚙
+              </button>
+            </>
+          )}
         </nav>
+        {user && (
+          <button type="button" className="link-button" onClick={() => setChangingPassword(true)} title="Trocar senha">
+            {user.name}
+          </button>
+        )}
         <button type="button" className="link-button" onClick={handleLogout}>
           Sair
         </button>
@@ -493,6 +544,8 @@ export default function App() {
           <TasksView conn={conn} onOpenConversation={openConversation} />
         ) : view === "devices" ? (
           <DevicesView conn={conn} />
+        ) : view === "people" ? (
+          <PeopleView conn={conn} />
         ) : view === "sync" ? (
           <SyncView conn={conn} />
         ) : view === "settings" ? (

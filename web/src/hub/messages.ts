@@ -201,6 +201,18 @@ export interface HubDevice {
   status: "pending" | "approved" | "revoked";
   firstSeenMs: number;
   lastSeenMs: number;
+  /** P84: the member it belongs to; absent for the owner's. */
+  user?: string;
+}
+
+/** Mirrors `UserInfoDto` (P84): a member of the workspace, never the password or its hash. */
+export interface UserInfo {
+  /** The username. */
+  id: string;
+  name: string;
+  role: string;
+  /** Still on the provisional password: the hub only accepts `changePassword` until it's changed. */
+  mustChangePassword: boolean;
 }
 
 /** Mirrors `ApiKeyDto` (P12): one Warden API key, never the key or its hash. `shown` is its start. */
@@ -326,7 +338,7 @@ export type SyncAction =
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
    * `deviceToken` from an earlier `helloAck`. */
-  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[] }
+  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[]; username?: string; password?: string }
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
@@ -381,6 +393,12 @@ export type ClientMessage =
   /** P61 — the hub's vault sync; an action repeats the pairing key. */
   | { type: "requestSyncStatus"; requestId: number }
   | { type: "syncAction"; requestId: number; pairingKey: string; action: SyncAction }
+  /** P84 — a member picks their own password; the owner manages the members with the pairing key. */
+  | { type: "changePassword"; requestId: number; oldPassword: string; newPassword: string }
+  | { type: "listUsers"; requestId: number }
+  | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
+  | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
+  | { type: "removeUser"; requestId: number; pairingKey: string; id: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -393,7 +411,7 @@ export function encode(message: ClientMessage): string {
 export type ServerMessage =
   /** `deviceToken` is present when this Hello paired with the pairing key (P36) — it replaces
    * whatever token this device held for the hub. */
-  | { type: "helloAck"; serverName: string; deviceToken?: string }
+  | { type: "helloAck"; serverName: string; deviceToken?: string; user?: UserInfo }
   | { type: "authError"; reason: string }
   | { type: "pong"; nonce: number }
   /** `conversationId` (P78) — which conversation this answers; `chat` has no `requestId`. */
@@ -438,6 +456,10 @@ export type ServerMessage =
   | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
+  /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
+  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string }
+  | { type: "passwordChanged"; requestId: number }
+  | { type: "userError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
   | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }
   /** The hub stopped waiting (deadline): close the prompt. */
@@ -504,7 +526,21 @@ export function decode(text: string): ServerMessage {
     case "approvalRequest":
     case "approvalCancelled":
     case "conversationsChanged":
+    case "passwordChanged":
       return json as ServerMessage;
+    case "userList": {
+      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword"> & { mustChangePassword?: boolean }>; tempPassword?: string };
+      return {
+        type: "userList",
+        requestId: raw.requestId,
+        users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false })),
+        ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
+      };
+    }
+    case "userError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "userError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
+    }
     case "taskList": {
       const raw = json as { requestId: number; tasks: Array<Omit<TaskInfo, "running"> & { running?: boolean }>; runsHere: boolean };
       return { type: "taskList", requestId: raw.requestId, tasks: raw.tasks.map((t) => ({ ...t, running: t.running ?? false })), runsHere: raw.runsHere };
