@@ -180,6 +180,22 @@ impl Orchestrator {
         clone
     }
 
+    /// Returns a copy of this orchestrator that reads and writes `vault` instead (P84: a person's own
+    /// memory): the vault context and standing memory come from it, and every tool that holds a
+    /// vault is rebound to it (`Tool::with_vault`), sub-agents included. A tool that holds a vault
+    /// some other way and doesn't rebind would still reach the old one — the hub only hands a person
+    /// tools it knows rebind.
+    pub fn with_vault(&self, vault: Arc<Vault>) -> Self {
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if let Some(rebound) = tool.with_vault(&vault) {
+                *tool = rebound;
+            }
+        }
+        clone.vault = vault;
+        clone
+    }
+
     /// Returns a copy of this orchestrator that only has the tools named in `allowed` (P46, tool
     /// isolation per agent); `None` keeps every tool. A tool outside the list is gone, not just
     /// hidden: the model can't be offered it and a call to it fails as an unknown tool. Tools that
@@ -857,6 +873,60 @@ mod tests {
 
         let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
         assert_eq!(result.content, "done");
+    }
+
+    /// "WRITE <path>" asks for `write_file` there; "DELEGATE <path>" hands "WRITE <path>" to a
+    /// sub-agent; a tool result ends the turn.
+    struct WritesWhereAsked;
+
+    #[async_trait]
+    impl ModelProvider for WritesWhereAsked {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let last = messages.last().unwrap();
+            let call = |name: &str, arguments: serde_json::Value| {
+                Ok(response_stream(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall { id: "c1".into(), name: name.into(), arguments, thought_signature: None }],
+                    usage: None,
+                }))
+            };
+            if last.role == Role::Tool {
+                return Ok(response_stream(Response { content: "done".into(), tool_calls: Vec::new(), usage: None }));
+            }
+            if let Some(path) = last.content.strip_prefix("WRITE ") {
+                return call("write_file", json!({ "path": path, "content": "hi" }));
+            }
+            if let Some(path) = last.content.strip_prefix("DELEGATE ") {
+                return call("delegate_task", json!({ "task": format!("WRITE {path}") }));
+            }
+            Ok(response_stream(Response { content: "plain".into(), tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    #[tokio::test]
+    async fn with_vault_moves_the_tools_and_the_sub_agents_to_the_other_vault() {
+        let (old, new) = (temp_vault(), temp_vault());
+        let model: Arc<dyn ModelProvider> = Arc::new(WritesWhereAsked);
+        let mut sub = Orchestrator::new(model.clone(), old.clone());
+        sub.register_tool(Arc::new(crate::tool::file_tools::WriteFileTool::new(old.clone())));
+        let mut root = Orchestrator::new(model, old.clone());
+        root.register_tool(Arc::new(crate::tool::file_tools::WriteFileTool::new(old.clone())));
+        root.register_tool(Arc::new(crate::tool::file_tools::ReadFileTool::new(old.clone())));
+        root.register_tool(Arc::new(crate::tool::delegate::DelegateTool::new(sub)));
+        old.write("secret.md", "the root's").unwrap();
+
+        let person = root.with_vault(new.clone());
+        assert!(Arc::ptr_eq(person.vault(), &new));
+        person.handle_message(&[], "WRITE top.md").await.unwrap();
+        person.handle_message(&[], "DELEGATE sub.md").await.unwrap();
+        assert_eq!(new.read("top.md").unwrap(), "hi");
+        assert_eq!(new.read("sub.md").unwrap(), "hi");
+        assert!(old.read("top.md").is_err() && old.read("sub.md").is_err(), "nothing lands in the old vault");
+        let read = person.tools.iter().find(|t| t.spec().name == "read_file").unwrap();
+        assert!(read.call(json!({ "path": "secret.md" })).await.is_err(), "and nothing is read from it");
+        // The original is untouched.
+        root.handle_message(&[], "WRITE root.md").await.unwrap();
+        assert_eq!(old.read("root.md").unwrap(), "hi");
     }
 
     struct AlwaysToolCallModel;

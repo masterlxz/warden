@@ -19,6 +19,10 @@ impl ReadFileTool {
 
 #[async_trait]
 impl Tool for ReadFileTool {
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(vault.clone())))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_file".to_string(),
@@ -60,6 +64,10 @@ impl WriteFileTool {
 
 #[async_trait]
 impl Tool for WriteFileTool {
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(vault.clone())))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write_file".to_string(),

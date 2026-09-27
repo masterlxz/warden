@@ -41,6 +41,7 @@ pub mod skill_gen;
 pub mod spend;
 pub mod tasks;
 pub mod usage;
+pub mod users;
 pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
@@ -426,6 +427,10 @@ pub struct FileConfig {
     /// What agents may do with each node (P93, TOML `[[nodes]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeAccessConfig>,
+    /// The members of the workspace (P84, TOML `[[users]]`) — the root isn't listed, it's whoever
+    /// holds the pairing key. See the `users` module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<users::UserConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -2046,6 +2051,7 @@ oauth = true
                 enabled: false,
             }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
+            users: Vec::new(),
         };
 
         save_config(&path, &config).unwrap();

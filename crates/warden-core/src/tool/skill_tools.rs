@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
+
+use crate::memory::Vault;
 
 use crate::skill::{validate_file_name, Skill, SkillStore, MAX_FILES_PER_SKILL, MAX_FILE_BYTES};
 use crate::tool::{Tool, ToolSpec};
@@ -32,6 +36,10 @@ impl UseSkillTool {
 
 #[async_trait]
 impl Tool for UseSkillTool {
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(SkillStore::new(vault.clone())).for_agent(self.agent.clone())))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "use_skill".to_string(),
@@ -87,6 +95,10 @@ impl ReadSkillFileTool {
 
 #[async_trait]
 impl Tool for ReadSkillFileTool {
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(SkillStore::new(vault.clone())).for_agent(self.agent.clone())))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_skill_file".to_string(),
@@ -127,6 +139,10 @@ impl ManageSkillTool {
 
 #[async_trait]
 impl Tool for ManageSkillTool {
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(SkillStore::new(vault.clone()))))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "manage_skill".to_string(),

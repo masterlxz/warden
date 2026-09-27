@@ -52,6 +52,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool that reads and writes `vault` instead of the one it was built with, or
+    /// `None` when it doesn't touch a vault. Called by `Orchestrator::with_vault` (P84: a person's
+    /// own vault): every tool that holds a vault — or a nested orchestrator — overrides it, so the
+    /// copy can never reach the old one.
+    fn with_vault(&self, _vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// A copy of this tool whose nested orchestrators (sub-agents) are charged to `budget`, or
     /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
     /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`. A tool that only needs
@@ -172,6 +180,10 @@ impl Tool for NamespacedTool {
 
     fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {
         self.inner.restricted_to(allowed).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
+        self.inner.with_vault(vault).map(|t| rename_tool(t, self.name.clone()))
     }
 
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {

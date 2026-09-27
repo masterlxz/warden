@@ -640,6 +640,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         tasks: existing.tasks,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,
+        // People (P84) are managed on the Workspace screen and the hub, not this form.
+        users: existing.users,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

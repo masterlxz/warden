@@ -7,6 +7,12 @@ members = ["crates/warden-core", "crates/warden-bootstrap", "crates/warden-cli",
 # de teste/debug deixa de pesar ~450 MB (o target/ chegou a 53 GB com debug info completo).
 debug = "line-tables-only"
 
+# P84: Argon2 sem otimização leva ~1 s por senha, o que arrasta os testes de login.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

@@ -74,6 +74,10 @@ impl Tool for DelegateTool {
         Some(Arc::new(Self { orchestrator: self.orchestrator.with_allowed_tools(Some(allowed)), jobs: self.jobs.clone() }))
     }
 
+    fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_vault(vault.clone()), jobs: self.jobs.clone() }))
+    }
+
     fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
         Some(Arc::new(Self { orchestrator: self.orchestrator.clone(), jobs: Some(board.clone()) }))
     }

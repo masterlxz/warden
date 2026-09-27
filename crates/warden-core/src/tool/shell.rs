@@ -28,6 +28,11 @@ impl ShellTool {
 
 #[async_trait]
 impl Tool for ShellTool {
+    /// Its default working directory is the vault's folder, so it follows the vault too.
+    fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self::new(vault.clone())))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "shell".to_string(),
