@@ -16,20 +16,38 @@ use warden_core::tool::ToolSpec;
 use warden_server::{ClientMessage, Server, ServerConnection, ServerMessage, SettingsHost};
 use warden_server_protocol::protocol::{HistoryRole, TaskDto};
 
-/// A poet writes a haiku; `CREATE` asks for `manage_agents`; a tool result is echoed back.
+/// The tools each model call was offered, next to the system prompt it had.
+type Offered = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+/// A poet writes a haiku; `CREATE` asks for `manage_agents`, `SCHEDULE` for `manage_tasks`; a tool
+/// result is echoed back. Records the tools each call was offered, by the persona that got them.
 struct Scripted {
     calls: Arc<Mutex<usize>>,
+    offered: Offered,
 }
 
 #[async_trait]
 impl ModelProvider for Scripted {
-    async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+    async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         *self.calls.lock().unwrap() += 1;
         let system = messages.iter().filter(|m| m.role == Role::System).map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+        self.offered.lock().unwrap().push((system.clone(), tools.iter().map(|t| t.name.clone()).collect()));
         let last = messages.last().unwrap();
         let reply = |content: String| Ok(response_stream(Response { content, tool_calls: Vec::new(), usage: None }));
         if last.role == Role::Tool {
             return reply(format!("tool said: {}", last.content));
+        }
+        if last.content.contains("SCHEDULE") {
+            return Ok(response_stream(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "manage_tasks".into(),
+                    arguments: json!({ "action": "create", "id": "digest", "agent_id": "poet", "prompt": "write a haiku", "cron": "0 8 * * 1-5", "timezone": "UTC" }),
+                    thought_signature: None,
+                }],
+                usage: None,
+            }));
         }
         if last.content.contains("CREATE") {
             return Ok(response_stream(Response {
@@ -73,6 +91,7 @@ fn agent(id: &str, persona: &str, manage: bool) -> AgentConfig {
         can_delegate_to_agents: false,
         can_manage_agents: manage,
         can_message_agents: false,
+        can_manage_tasks: manage,
         allowed_tools: None,
     }
 }
@@ -95,6 +114,7 @@ struct Hub {
     config_path: PathBuf,
     store: TaskStore,
     calls: Arc<Mutex<usize>>,
+    offered: Offered,
 }
 
 impl Hub {
@@ -120,7 +140,8 @@ async fn spin_up(run_tasks: bool) -> Hub {
     save_config(&config_path, &config).unwrap();
 
     let calls = Arc::new(Mutex::new(0));
-    let orchestrator = Orchestrator::new(Arc::new(Scripted { calls: calls.clone() }), Arc::new(Vault::new(dir.join("vault"))));
+    let offered: Offered = Arc::default();
+    let orchestrator = Orchestrator::new(Arc::new(Scripted { calls: calls.clone(), offered: offered.clone() }), Arc::new(Vault::new(dir.join("vault"))));
     let store = TaskStore::new(dir.join("tasks"));
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
         .await
@@ -130,7 +151,7 @@ async fn spin_up(run_tasks: bool) -> Hub {
         .with_task_tick(Duration::from_millis(50));
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
-    Hub { url: format!("ws://{addr}"), config_path, store, calls }
+    Hub { url: format!("ws://{addr}"), config_path, store, calls, offered }
 }
 
 /// Every `ConversationsChanged` until `wanted` ones have arrived.
@@ -284,4 +305,52 @@ async fn the_web_manages_tasks_with_the_pairing_key() {
     assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskList { ref tasks, .. } if tasks.is_empty()));
     web.send(&ClientMessage::RunTask { request_id: 7, pairing_key: "test-key".into(), id: "sea".into() }).await.unwrap();
     assert!(matches!(task_reply(&mut web).await, ServerMessage::TaskError { auth_rejected: false, .. }));
+}
+
+#[tokio::test]
+async fn an_agent_with_the_flag_schedules_a_task_once_the_device_says_yes() {
+    for approve in [false, true] {
+        let hub = spin_up(false).await;
+        let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+        web.send(&ClientMessage::Chat { message: "SCHEDULE a daily haiku".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("chief".into()) })
+            .await
+            .unwrap();
+        let mut asked = Vec::new();
+        let reply = loop {
+            match web.recv().await.unwrap().expect("connection closed") {
+                ServerMessage::ApprovalRequest { approval_id, target, action, detail } => {
+                    asked.push((target, action, detail));
+                    web.send(&ClientMessage::ResolveApproval { approval_id, approved: approve }).await.unwrap();
+                }
+                msg @ (ServerMessage::ChatResponse { .. } | ServerMessage::ChatError { .. }) => break msg,
+                _ => continue,
+            }
+        };
+        assert!(matches!(reply, ServerMessage::ChatResponse { .. }), "{reply:?}");
+        assert_eq!(asked.len(), 1, "approve={approve}");
+        let (target, action, detail) = &asked[0];
+        assert_eq!((target.as_str(), action.as_str()), ("digest", "create_task"));
+        assert!(detail.contains("Agent: poet") && detail.contains("cron 0 8 * * 1-5 (UTC)") && detail.contains("write a haiku"), "{detail}");
+
+        web.send(&ClientMessage::ListTasks { request_id: 1 }).await.unwrap();
+        match task_reply(&mut web).await {
+            ServerMessage::TaskList { tasks, .. } => assert_eq!(tasks.iter().map(|t| t.task.id.as_str()).collect::<Vec<_>>(), if approve { vec!["digest"] } else { vec![] }),
+            other => panic!("expected TaskList, got {other:?}"),
+        }
+
+        // Only the agent with the flag was offered the tool.
+        let offered = hub.offered.lock().unwrap().clone();
+        assert!(offered.iter().any(|(system, tools)| system.contains("You are the chief.") && tools.iter().any(|t| t == "manage_tasks")));
+    }
+
+    let hub = spin_up(false).await;
+    let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    web.send(&ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: Some("poet".into()) }).await.unwrap();
+    loop {
+        if let Some(ServerMessage::ChatResponse { .. }) = web.recv().await.unwrap() {
+            break;
+        }
+    }
+    let offered = hub.offered.lock().unwrap().clone();
+    assert!(offered.iter().all(|(_, tools)| !tools.iter().any(|t| t == "manage_tasks")));
 }

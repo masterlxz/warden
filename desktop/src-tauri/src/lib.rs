@@ -343,6 +343,9 @@ struct AgentPayload {
     /// Opt-in (P46) for the `message_agent` tool — see `AgentConfig::can_message_agents`.
     #[serde(default)]
     can_message_agents: bool,
+    /// Opt-in (P92) for the `manage_tasks` tool — see `AgentConfig::can_manage_tasks`.
+    #[serde(default)]
+    can_manage_tasks: bool,
     /// Tool isolation (P46) — see `AgentConfig::allowed_tools`. `None` (JSON `null`) = every tool.
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
@@ -475,6 +478,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
                 can_message_agents: a.can_message_agents,
+                can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
             })
             .collect(),
@@ -555,6 +559,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
                 can_message_agents: a.can_message_agents,
+                can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
             })
             .collect(),

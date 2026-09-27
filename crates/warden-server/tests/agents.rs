@@ -80,6 +80,7 @@ fn agent(id: &str, persona: &str, manage: bool, message: bool) -> AgentConfig {
         can_delegate_to_agents: false,
         can_manage_agents: manage,
         can_message_agents: message,
+        can_manage_tasks: false,
         allowed_tools: None,
     }
 }

@@ -2275,6 +2275,24 @@ agente, as tools dele e os limites de gasto do P4, num hub que fica sempre de p�
 2. Telas na web e no desktop, e a chave "executar tarefas" do hub embutido do desktop.
 3. A tool `manage_tasks`, para criar tarefas em linguagem natural.
 
+### Como ficou a fatia 3 (Sessão 108)
+
+- **`manage_tasks`** (`warden-bootstrap/src/manage_tasks.rs`), no molde do `manage_agents`: `list` (a hora e o
+  offset do hub, as tarefas com próxima e última execução, e os agentes que quem chama pode agendar), `create`,
+  `update` (só o que for dado; um agendamento novo substitui o anterior; `enabled` pausa ou retoma) e `delete`.
+  Sem "rodar agora": para isso o agente já trabalha na própria conversa.
+- **Flag `can_manage_tasks`** no `AgentConfig`, ligada só por uma pessoa (Settings da web e do desktop, `/agents`
+  no CLI). O `manage_agents` nunca a liga, preserva numa edição, e `manage_tasks` não pode entrar numa lista de
+  tools. A tool é anexada no `scope_to_agent`, o que cobre o hub (web, mobile, extensão), o desktop e o CLI de uma
+  vez, com a aprovação pelo mesmo caminho do `manage_agents`.
+- **Regras na tool**:
+  - pedido impossível (agendamento inválido, agente inexistente, id repetido) é recusado antes de perguntar;
+  - o cartão mostra agente, agendamento com fuso, próxima execução e o prompt inteiro (no `update`, antes e depois);
+  - sem approver recusa, então uma execução agendada não cria tarefas sozinha;
+  - **ninguém passa mais do que tem**: um agente com `allowed_tools` só agenda agentes cujas tools caibam nas dele,
+    e nunca uma tarefa sem agente (todas as tools), um agente sem limite ou um que alcança outros agentes ou muda
+    configurações (qualquer flag `can_*`).
+
 ### Como ficou a fatia 2 (Sessão 108)
 
 - Decisões do usuário: no desktop, o resultado aparece **na tela de Tarefas** (a última resposta e o histórico em

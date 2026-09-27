@@ -84,6 +84,7 @@ async fn an_agent_on_a_combo_gets_the_next_provider_when_the_first_is_down() {
             can_delegate_to_agents: false,
             can_manage_agents: false,
             can_message_agents: false,
+            can_manage_tasks: false,
             allowed_tools: None,
         }],
         ..FileConfig::default()

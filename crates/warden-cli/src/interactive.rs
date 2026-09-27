@@ -1984,9 +1984,10 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let delegate_marker = if a.can_delegate_to_agents { " [delega]" } else { "" };
             let manage_marker = if a.can_manage_agents { " [cria]" } else { "" };
             let message_marker = if a.can_message_agents { " [recados]" } else { "" };
+            let tasks_marker = if a.can_manage_tasks { " [tarefas]" } else { "" };
             let tools_marker = a.allowed_tools.as_ref().map(|t| format!(" [tools: {}]", t.len())).unwrap_or_default();
             (
-                format!("{} ({}) — {}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tools_marker),
+                format!("{} ({}) — {}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker),
                 Style::default(),
             )
         })
@@ -2068,6 +2069,10 @@ async fn prompt_agent_can_message(terminal: &mut CliTerminal, initial: bool) -> 
     .await
 }
 
+async fn prompt_agent_can_manage_tasks(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode criar e editar tarefas agendadas? (sempre com a sua aprovação) (s/n) ", initial).await
+}
+
 /// Loops a single wizard field until it's blank (= every tool) or a comma-separated list of tools
 /// that exist. Returns `Ok(None)` if the user cancels (distinct from `Ok(Some(None))`, "all tools").
 async fn prompt_agent_tools(terminal: &mut CliTerminal, known: &[String], initial: Option<&[String]>) -> anyhow::Result<Option<Option<Vec<String>>>> {
@@ -2091,7 +2096,7 @@ fn parse_agent_tools(input: &str, known: &[String]) -> Result<Option<Vec<String>
     }
     let mut tools: Vec<String> = Vec::new();
     for name in input.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-        if matches!(name, "delegate_to_agent" | "manage_agents" | "message_agent") {
+        if matches!(name, "delegate_to_agent" | "manage_agents" | "message_agent" | "manage_tasks") {
             return Err(format!("'{name}' não entra na lista — use as perguntas de delegar/criar agentes/recados"));
         }
         if !known.iter().any(|k| k == name) {
@@ -2140,6 +2145,9 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_message_agents) = prompt_agent_can_message(terminal, false).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, false).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, None).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
@@ -2152,6 +2160,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         can_delegate_to_agents,
         can_manage_agents,
         can_message_agents,
+        can_manage_tasks,
         allowed_tools,
     });
 
@@ -2184,6 +2193,9 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_message_agents) = prompt_agent_can_message(terminal, current.can_message_agents).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, current.can_manage_tasks).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, current.allowed_tools.as_deref()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
@@ -2197,6 +2209,7 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         can_delegate_to_agents,
         can_manage_agents,
         can_message_agents,
+        can_manage_tasks,
         allowed_tools,
     };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {

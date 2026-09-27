@@ -143,6 +143,8 @@ export interface AgentSettings {
   canDelegateToAgents: boolean;
   canManageAgents: boolean;
   canMessageAgents: boolean;
+  /** P92 — the `manage_tasks` tool. */
+  canManageTasks: boolean;
   allowedTools: string[] | null;
 }
 

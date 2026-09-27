@@ -134,8 +134,9 @@ is watching a run, so a tool that needs approval refuses, and the spending limit
 
 The same is on screen: the web's **Tarefas** tab (every change asks for the pairing key, like the API
 keys) and the desktop's **Tasks** screen, which also has this computer's own switch to run them on
-the embedded hub — kept in `hub-local.json`, outside the synced config. Asking an agent to create a
-task comes next.
+the embedded hub — kept in `hub-local.json`, outside the synced config. And in a chat: an agent with "can create and edit scheduled tasks"
+switched on (Settings or `/agents`) turns "every weekday at 8, summarize the news" into a task, after
+you approve the card it shows.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

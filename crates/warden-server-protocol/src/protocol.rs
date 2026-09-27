@@ -360,6 +360,9 @@ pub struct AgentSettingsDto {
     /// P46 "funcionários" mode. `#[serde(default)]`: a screen from before it existed leaves it off.
     #[serde(default)]
     pub can_message_agents: bool,
+    /// P92: the `manage_tasks` tool. `#[serde(default)]` for the same reason.
+    #[serde(default)]
+    pub can_manage_tasks: bool,
     /// `None` keeps every tool.
     pub allowed_tools: Option<Vec<String>>,
 }

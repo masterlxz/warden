@@ -32,9 +32,9 @@ use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 use crate::{load_config_from_path, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
-/// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`/`can_message_agents`,
-/// never a tool list.
-const FLAG_GATED_TOOLS: [&str; 3] = ["delegate_to_agent", "manage_agents", "message_agent"];
+/// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`/`can_message_agents`/
+/// `can_manage_tasks`, never a tool list.
+const FLAG_GATED_TOOLS: [&str; 4] = ["delegate_to_agent", "manage_agents", "message_agent", "manage_tasks"];
 /// Small enough that the approval card can show the whole persona — a reviewer must see everything
 /// that will be saved, not a truncated preview.
 const MAX_PERSONA_CHARS: usize = 4000;
@@ -144,6 +144,7 @@ impl ManageAgentsTool {
                     "can_delegate_to_agents": a.can_delegate_to_agents,
                     "can_manage_agents": a.can_manage_agents,
                     "can_message_agents": a.can_message_agents,
+                    "can_manage_tasks": a.can_manage_tasks,
                     "allowed_tools": a.allowed_tools,
                 })
             })
@@ -221,6 +222,7 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 can_delegate_to_agents: false,
                 can_manage_agents: false,
                 can_message_agents: false,
+                can_manage_tasks: false,
                 allowed_tools: Some(tools.clone()),
             });
             format!(
@@ -510,6 +512,7 @@ mod tests {
             can_delegate_to_agents: delegate,
             can_manage_agents: manage,
             can_message_agents: false,
+            can_manage_tasks: false,
             allowed_tools: None,
         }
     }
@@ -607,6 +610,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_edit_keeps_the_scheduled_tasks_flag_a_person_set() {
+        let mut planner = agent("planner", false, false);
+        planner.can_manage_tasks = true;
+        let path = write_config(vec![planner]);
+        let (tool, _) = tool_with(&path, true);
+        tool.call(json!({ "action": "update", "id": "planner", "persona": "new persona" })).await.unwrap();
+        let saved = &agents_on_disk(&path)[0];
+        assert_eq!((saved.persona.as_str(), saved.can_manage_tasks), ("new persona", true));
+    }
+
+    #[tokio::test]
     async fn a_model_cannot_smuggle_flags_in_through_extra_arguments() {
         let path = write_config(vec![]);
         let (tool, _) = tool_with(&path, true);
@@ -616,12 +630,13 @@ mod tests {
             "persona": "p",
             "can_manage_agents": true,
             "can_delegate_to_agents": true,
-            "can_message_agents": true
+            "can_message_agents": true,
+            "can_manage_tasks": true
         }))
         .await
         .unwrap();
         let created = &agents_on_disk(&path)[0];
-        assert!(!created.can_delegate_to_agents && !created.can_manage_agents && !created.can_message_agents);
+        assert!(!created.can_delegate_to_agents && !created.can_manage_agents && !created.can_message_agents && !created.can_manage_tasks);
     }
 
     #[tokio::test]

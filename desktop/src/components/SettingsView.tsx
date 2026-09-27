@@ -624,6 +624,22 @@ function AgentCard({
         <span className="settings-checkbox-row">
           <input
             type="checkbox"
+            checked={agent.canManageTasks}
+            onChange={(e) => onChange({ ...agent, canManageTasks: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can create and edit scheduled tasks</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent turn "every weekday at 8, summarize the news" into a task (see Tasks). Every creation or edit
+          is shown to you first and only happens if you approve it. An agent limited to some tools can only schedule
+          agents whose tools fit in its own.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
             checked={agent.allowedTools !== null}
             onChange={(e) => onChange({ ...agent, allowedTools: e.currentTarget.checked ? [] : null })}
           />
@@ -1049,7 +1065,7 @@ function SettingsView() {
       ...f,
       agents: [
         ...f.agents,
-        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, allowedTools: null },
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null },
       ],
     }));
   }

@@ -313,6 +313,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 can_delegate_to_agents: a.can_delegate_to_agents,
                 can_manage_agents: a.can_manage_agents,
                 can_message_agents: a.can_message_agents,
+                can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools.clone(),
             })
             .collect(),
@@ -400,6 +401,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             can_delegate_to_agents: dto.can_delegate_to_agents,
             can_manage_agents: dto.can_manage_agents,
             can_message_agents: dto.can_message_agents,
+            can_manage_tasks: dto.can_manage_tasks,
             allowed_tools: dto.allowed_tools,
         });
     }
@@ -460,6 +462,7 @@ mod tests {
             can_delegate_to_agents: false,
             can_manage_agents: false,
             can_message_agents: false,
+            can_manage_tasks: false,
             allowed_tools: None,
         }
     }

@@ -531,7 +531,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 ...d,
                 agents: [
                   ...d.agents,
-                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, allowedTools: null }),
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null }),
                 ],
               }))
             }
@@ -579,6 +579,10 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 <label className="settings-check">
                   <input type="checkbox" checked={a.canMessageAgents} onChange={(e) => patchAgent(a.key, { canMessageAgents: e.target.checked })} />
                   Pode deixar recados para outros agentes (numa conversa que você vê)
+                </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={a.canManageTasks} onChange={(e) => patchAgent(a.key, { canManageTasks: e.target.checked })} />
+                  Pode criar e editar tarefas agendadas (sempre com a sua aprovação)
                 </label>
                 <label className="settings-check">
                   <input

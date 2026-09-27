@@ -133,6 +133,8 @@ export interface AgentEntry {
   /** Opt-in (P46, "funcionários" mode) — when true, this agent gets the `message_agent` tool: it can
    * leave a message for another agent, which answers it in a conversation you see in the sidebar. */
   canMessageAgents: boolean;
+  /** P92 — the `manage_tasks` tool; only a person turns it on. */
+  canManageTasks: boolean;
   /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
    * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
   allowedTools: string[] | null;

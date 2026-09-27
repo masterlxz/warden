@@ -11,7 +11,7 @@ use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::Tool;
 
 use crate::message_agent::{ConversationsChanged, MessageAgentTool};
-use crate::{build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, FileConfig, ManageAgentsTool};
+use crate::{build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, FileConfig, ManageAgentsTool, ManageTasksTool};
 
 /// What differs per channel when scoping an agent.
 #[derive(Clone, Default)]
@@ -65,6 +65,10 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
                     .with_caller_limit(agent.allowed_tools.clone())
                     .with_agents_revision(agents_revision),
             ));
+        }
+        // P92: scheduled tasks, every change waiting for a person's yes.
+        if agent.can_manage_tasks {
+            extra.push(Arc::new(ManageTasksTool::new(path).with_caller_limit(agent.allowed_tools.clone())));
         }
         if agent.can_message_agents {
             if let Some(dir) = &extras.conversations_dir {

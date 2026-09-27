@@ -100,8 +100,37 @@ desktop o resultado aparece na tela de Tarefas (não no chat); na web toda mudan
   desktop com a chave ligada também ficou de fora, porque ele lê o `hub-local.json` real do usuário; a mesma
   lógica está coberta pelos testes do `warden-server`.
 
-**Próximo passo**: a fatia 3 do P92 (`manage_tasks`), ou a rodada de testes com o usuário (P80/P87/P88, a Warden
-API, e as tarefas nas telas e com um modelo real).
+**Continuação: fatia 3** (commit da fatia 2: `6fb9f14`). Plano aprovado em Plan mode.
+
+- **`manage_tasks`** (`warden-bootstrap/src/manage_tasks.rs`): `list`/`create`/`update`/`delete`, validação antes
+  de perguntar, cartão com agente, agendamento, próxima execução e prompt inteiro, recusa sem approver, e a regra
+  "ninguém passa mais do que tem" para agentes com `allowed_tools`.
+- **Flag `can_manage_tasks`**:
+  - `AgentConfig`, `AgentSettingsDto` e as idas e voltas em `settings.rs` e no desktop;
+  - checkbox nas Settings da web e do desktop, pergunta e marcador `[tarefas]` no `/agents` do CLI;
+  - o `manage_agents` mostra, não liga e preserva a flag, e `manage_tasks` entrou nas tools que só seguem flag.
+- Anexada no `scope_to_agent`, ao lado do `manage_agents`.
+- Docs: `ARCHITECTURE.md` (fatia 3), `PENDING.md` (P92 fechado, **P95** novo com o que falta testar), `ROADMAP.md`,
+  `README.md`.
+
+**Verificação da fatia 3**:
+
+- `cargo test --workspace`: 834 passando, 0 falhas. `cargo clippy --workspace --all-targets` limpo. `tsc` e `build`
+  da web e do desktop limpos.
+- **Testes novos**:
+  - `manage_tasks` (7): só salva depois do sim, e o cartão traz tudo; sem approver recusa; pedidos impossíveis
+    recusados antes de perguntar; a regra de tools (sem agente, agente sem limite, com `shell`, que delega, e também
+    trocando o agente numa edição); `update` parcial, pausar, trocar agendamento e limpar campos, e `delete`; o
+    `list` com a hora e as tarefas; aviso sem resposta conta como não;
+  - `manage_agents` (1, e 1 ampliado): a edição preserva a flag, e ela não entra por argumento extra;
+  - integração com `Server` real (1): um agente com a flag, num chat da web, pede a tarefa; o aparelho recebe o
+    `ApprovalRequest` com o cartão; com o não nada muda, com o sim ela aparece no `ListTasks`; um agente sem a flag
+    nunca recebe a tool.
+- **Sem ponta a ponta com modelo real**: o modelo falso não decide chamar tools sozinho. Registrado no P95, junto
+  com as telas.
+
+**Próximo passo**: a rodada de testes com o usuário (P95, P80/P87/P88, a Warden API), ou o próximo item do
+roteiro (P93, nós como capacidades).
 
 ---
 

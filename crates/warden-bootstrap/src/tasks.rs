@@ -614,6 +614,7 @@ mod tests {
             can_delegate_to_agents: false,
             can_manage_agents: false,
             can_message_agents: false,
+            can_manage_tasks: false,
             allowed_tools: None,
         }
     }

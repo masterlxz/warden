@@ -33,6 +33,7 @@ pub mod agent_scope;
 pub mod auto_sync;
 mod config_file;
 pub mod manage_agents;
+pub mod manage_tasks;
 pub mod message_agent;
 pub mod settings;
 pub mod skill_gen;
@@ -42,6 +43,7 @@ pub mod usage;
 pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
+pub use manage_tasks::ManageTasksTool;
 pub use message_agent::{ConversationsChanged, MessageAgentTool};
 pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
@@ -112,6 +114,10 @@ pub struct AgentConfig {
     /// person only — `manage_agents` never grants it.
     #[serde(default)]
     pub can_message_agents: bool,
+    /// Opt-in (P92) for the `manage_tasks` tool: list, create, edit and delete scheduled tasks, every
+    /// change waiting for the person's yes. Switched on by a person only — `manage_agents` never grants it.
+    #[serde(default)]
+    pub can_manage_tasks: bool,
     /// Tool isolation (P46): the only tools this agent may use, by name. `None` (the default, and
     /// what every config.toml written before this field means) keeps every tool. `delegate_to_agent`
     /// and `manage_agents` never belong here — they follow the two `can_*` flags above. Applied in
@@ -1887,6 +1893,7 @@ oauth = true
                 can_delegate_to_agents: true,
                 can_manage_agents: true,
                 can_message_agents: true,
+                can_manage_tasks: false,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
             }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
@@ -2434,6 +2441,7 @@ oauth = true
                 can_delegate_to_agents: false,
                 can_manage_agents: false,
                 can_message_agents: false,
+                can_manage_tasks: false,
                 allowed_tools: None,
             }],
             ..Default::default()
@@ -2558,6 +2566,7 @@ oauth = true
             can_delegate_to_agents: false,
             can_manage_agents: false,
             can_message_agents: false,
+            can_manage_tasks: false,
             allowed_tools: None,
         }
     }
