@@ -425,6 +425,8 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 

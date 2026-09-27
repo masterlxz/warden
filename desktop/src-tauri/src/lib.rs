@@ -357,6 +357,9 @@ struct AgentPayload {
     /// Tool isolation (P46) — see `AgentConfig::allowed_tools`. `None` (JSON `null`) = every tool.
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
+    /// P84 — the people this agent is shared with (`"*"` = everyone) — see `AgentConfig::shared_with`.
+    #[serde(default)]
+    shared_with: Vec<String>,
 }
 
 /// IPC shape for `GitSyncConfig` (P63/P71 Settings UI) — same "dedicated payload struct for
@@ -477,9 +480,11 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         enable_shell: config.enable_shell.unwrap_or(false),
         default_models: default_models_by_kind(),
         mcp_servers: config.mcp_servers,
+        // P84 — members' own agents are theirs: not on this screen, and kept as they are on save.
         agents: config
             .agents
             .into_iter()
+            .filter(|a| a.owner.is_none())
             .map(|a| AgentPayload {
                 id: a.id,
                 persona: a.persona,
@@ -489,6 +494,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
+                shared_with: a.shared_with,
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
@@ -570,7 +576,10 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
+                owner: None,
+                shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
             })
+            .chain(existing.agents.iter().filter(|a| a.owner.is_some()).cloned())
             .collect(),
         &providers,
         &combos,

@@ -45,6 +45,8 @@ pub enum LimitScope {
     Agent,
     Channel,
     User,
+    /// A workspace member (P84), by username, on every channel.
+    Person,
 }
 
 /// One `[[limits]]` entry.
@@ -80,6 +82,7 @@ impl LimitConfig {
             (LimitScope::Agent, Some(t)) => Scope::Agent(t.to_string()),
             (LimitScope::Channel, Some(t)) => Scope::Channel(t.to_string()),
             (LimitScope::User, Some(t)) => Scope::User(t.to_string()),
+            (LimitScope::Person, Some(t)) => Scope::Person(t.to_string()),
             (_, None) => anyhow::bail!("limit '{}': scope {:?} needs a target", self.id, self.scope),
         };
         let limit = Limit {
@@ -114,6 +117,7 @@ pub fn default_limit_configs() -> Vec<LimitConfig> {
                 Scope::Agent(t) => (LimitScope::Agent, Some(t)),
                 Scope::Channel(t) => (LimitScope::Channel, Some(t)),
                 Scope::User(t) => (LimitScope::User, Some(t)),
+                Scope::Person(t) => (LimitScope::Person, Some(t)),
             };
             LimitConfig {
                 id: limit.id,

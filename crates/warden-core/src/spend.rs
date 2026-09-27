@@ -37,6 +37,8 @@ pub enum Scope {
     Channel(String),
     /// One person on one channel, written `channel:user` (`telegram:12345`).
     User(String),
+    /// One member of the workspace (P84), on every channel they use: web, phone, the Warden API.
+    Person(String),
 }
 
 impl std::fmt::Display for Scope {
@@ -46,6 +48,7 @@ impl std::fmt::Display for Scope {
             Scope::Agent(id) => write!(f, "agent {id}"),
             Scope::Channel(name) => write!(f, "channel {name}"),
             Scope::User(key) => write!(f, "user {key}"),
+            Scope::Person(id) => write!(f, "person {id}"),
         }
     }
 }
@@ -117,7 +120,7 @@ impl Limit {
         );
         anyhow::ensure!(self.extend_step > 0.0 && self.extend_step.is_finite(), "limit '{}': extend_step must be above 0", self.id);
         match &self.scope {
-            Scope::Agent(v) | Scope::Channel(v) => anyhow::ensure!(!v.trim().is_empty(), "limit '{}': empty scope name", self.id),
+            Scope::Agent(v) | Scope::Channel(v) | Scope::Person(v) => anyhow::ensure!(!v.trim().is_empty(), "limit '{}': empty scope name", self.id),
             Scope::User(v) => anyhow::ensure!(v.contains(':'), "limit '{}': a user scope is written channel:user", self.id),
             Scope::Global => {}
         }
@@ -164,6 +167,9 @@ pub struct SpendEvent {
     pub tokens: u64,
     /// `None` when the model had no price at the time.
     pub cost_usd: Option<f64>,
+    /// The workspace member who spent it (P84) — absent for the owner, and in a ledger from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
 }
 
 impl SpendEvent {
@@ -287,11 +293,18 @@ pub struct SpendContext {
     pub channel: String,
     pub user: Option<String>,
     pub agent: Option<String>,
+    /// The workspace member (P84) whose turn this is, on whatever channel — `None` for the owner.
+    pub person: Option<String>,
 }
 
 impl SpendContext {
     pub fn new(channel: impl Into<String>) -> Self {
-        Self { channel: channel.into(), user: None, agent: None }
+        Self { channel: channel.into(), user: None, agent: None, person: None }
+    }
+
+    pub fn with_person(mut self, person: impl Into<String>) -> Self {
+        self.person = Some(person.into());
+        self
     }
 
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
@@ -314,6 +327,7 @@ impl SpendContext {
             Scope::Agent(id) => self.agent.as_deref() == Some(id),
             Scope::Channel(name) => &self.channel == name,
             Scope::User(key) => self.user_key().as_deref() == Some(key),
+            Scope::Person(id) => self.person.as_deref() == Some(id),
         }
     }
 }
@@ -324,6 +338,7 @@ fn counts_toward(scope: &Scope, event: &SpendEvent) -> bool {
         Scope::Agent(id) => event.agent.as_deref() == Some(id),
         Scope::Channel(name) => &event.channel == name,
         Scope::User(key) => event.user_key().as_deref() == Some(key),
+        Scope::Person(id) => event.person.as_deref() == Some(id),
     }
 }
 
@@ -511,6 +526,7 @@ impl SpendGuard {
             model: model.to_string(),
             tokens,
             cost_usd: self.prices.cost(model, usage),
+            person: ctx.person.clone(),
         };
         self.note(self.store.append(&Entry::Spend(event)));
     }
@@ -762,6 +778,30 @@ mod tests {
         assert_eq!(guard.status(Some(&bob)).len(), 1, "Bob is covered by the channel limit only");
     }
 
+    /// P84: a person's limit counts what they spend on every channel, and nobody else's.
+    #[test]
+    fn a_person_limit_follows_them_across_channels() {
+        let (guard, _) = guard(vec![Limit::new("ana", Scope::Person("ana".into()), 24).with_max_tokens(300)], vec![]);
+        let web = SpendContext::new("server").with_user("user-ana").with_person("ana");
+        let api = SpendContext::new("api").with_user("anas-key").with_person("ana");
+        let bruno = SpendContext::new("server").with_user("user-bruno").with_person("bruno");
+
+        guard.record(&web, "m", &usage(100, 100));
+        guard.record(&bruno, "m", &usage(500, 500));
+        assert_eq!(guard.check(&api), Check::default(), "200/300 so far, Bruno's spending isn't hers");
+        guard.record(&api, "m", &usage(100, 0));
+        assert!(guard.check(&web).exceeded.is_some(), "the web and the API add up");
+        assert_eq!(guard.check(&bruno), Check::default(), "her limit doesn't cover Bruno");
+        assert_eq!(guard.check(&cli()), Check::default(), "nor the owner");
+    }
+
+    #[test]
+    fn a_ledger_line_from_before_people_still_reads() {
+        let line = r#"{"kind":"spend","ts":1,"channel":"cli","user":null,"agent":null,"model":"m","tokens":5,"cost_usd":null}"#;
+        let entry: Entry = serde_json::from_str(line).unwrap();
+        assert!(matches!(entry, Entry::Spend(SpendEvent { person: None, .. })));
+    }
+
     #[test]
     fn the_global_limit_adds_up_every_channel_and_the_worst_limit_is_reported() {
         let (guard, _) = guard(
@@ -896,7 +936,7 @@ mod tests {
     fn opening_the_file_store_drops_entries_no_window_needs() {
         let path = temp_ledger("prune");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let old = Entry::Spend(SpendEvent { ts: 1, channel: "cli".into(), user: None, agent: None, model: "m".into(), tokens: 5, cost_usd: None });
+        let old = Entry::Spend(SpendEvent { ts: 1, channel: "cli".into(), user: None, agent: None, model: "m".into(), tokens: 5, cost_usd: None, person: None });
         let fresh = Entry::Spend(SpendEvent { ts: now_millis(), ..match old.clone() { Entry::Spend(e) => e, _ => unreachable!() } });
         let text = format!("{}\n{}\n", serde_json::to_string(&old).unwrap(), serde_json::to_string(&fresh).unwrap());
         std::fs::write(&path, text).unwrap();

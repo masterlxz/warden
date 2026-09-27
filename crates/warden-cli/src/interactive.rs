@@ -1428,6 +1428,7 @@ fn limit_scope_label(scope: LimitScope) -> &'static str {
         LimitScope::Agent => "agent",
         LimitScope::Channel => "channel",
         LimitScope::User => "user",
+        LimitScope::Person => "person",
     }
 }
 
@@ -1437,7 +1438,8 @@ fn parse_limit_scope(input: &str) -> Result<LimitScope, String> {
         "agent" => Ok(LimitScope::Agent),
         "channel" => Ok(LimitScope::Channel),
         "user" => Ok(LimitScope::User),
-        _ => Err("use global, agent, channel ou user".to_string()),
+        "person" => Ok(LimitScope::Person),
+        _ => Err("use global, agent, channel, user ou person".to_string()),
     }
 }
 
@@ -1457,6 +1459,8 @@ fn validate_limit_target(scope: LimitScope, target: &str, known_agents: &[String
         LimitScope::Channel => Ok(Some(trimmed.to_string())),
         LimitScope::User if !trimmed.contains(':') => Err("escreva como canal:usuário, ex.: telegram:12345".to_string()),
         LimitScope::User => Ok(Some(trimmed.to_string())),
+        LimitScope::Person if trimmed.is_empty() => Err("informe o usuário de uma pessoa do workspace (ex.: ana)".to_string()),
+        LimitScope::Person => Ok(Some(trimmed.to_string())),
     }
 }
 
@@ -1510,6 +1514,7 @@ async fn prompt_limit(terminal: &mut CliTerminal, config: &FileConfig, existing:
             LimitScope::Agent => " alvo (nenhum agente cadastrado ainda — veja /agents) ".to_string(),
             LimitScope::Channel => " alvo (canal — ex.: desktop, cli, telegram, whatsapp, server) ".to_string(),
             LimitScope::User => " alvo (canal:usuário, ex.: telegram:12345) ".to_string(),
+            LimitScope::Person => " alvo (usuário de uma pessoa do workspace, ex.: ana) ".to_string(),
             LimitScope::Global => unreachable!("handled above"),
         };
         let Some(target_input) = prompt_field(terminal, &hint, current.and_then(|l| l.target.as_deref()).unwrap_or("")).await? else {
@@ -1971,12 +1976,14 @@ async fn cmd_combos_remove(terminal: &mut CliTerminal, session: &mut CliSession,
 
 async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
     let config = load_fresh_config(session.config_path.as_deref())?;
-    if config.agents.is_empty() {
+    // P84: members' own agents are theirs, not listed here.
+    if !config.agents.iter().any(|a| a.owner.is_none()) {
         return render_message_card(terminal, "agentes", accent_style(), vec![("nenhum agente configurado ainda — use /agents create".to_string(), Style::default())]);
     }
     let lines = config
         .agents
         .iter()
+        .filter(|a| a.owner.is_none())
         .map(|a| {
             let preview: String = a.persona.chars().take(48).collect();
             let preview = if a.persona.chars().count() > 48 { format!("{preview}…") } else { preview };
@@ -2002,7 +2009,7 @@ async fn cmd_agents_use(terminal: &mut CliTerminal, session: &mut CliSession, id
         return render_message_card(terminal, "agentes", accent_style(), vec![("nenhum agente ativo agora".to_string(), Style::default())]);
     };
     let config = load_fresh_config(session.config_path.as_deref())?;
-    if !config.agents.iter().any(|a| a.id == id) {
+    if !config.agents.iter().any(|a| a.id == id && a.owner.is_none()) {
         return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{id}' não encontrado — use /agents pra ver a lista"), Style::default())]);
     }
     session.agent_id = Some(id.clone());
@@ -2163,6 +2170,8 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         can_message_agents,
         can_manage_tasks,
         allowed_tools,
+        owner: None,
+        shared_with: Vec::new(),
     });
 
     save_config_or_report(session, &config).await?;
@@ -2171,7 +2180,8 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
 
 async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession, target_id: String) -> anyhow::Result<()> {
     let mut config = load_fresh_config(session.config_path.as_deref())?;
-    let Some(index) = config.agents.iter().position(|a| a.id == target_id) else {
+    // P84: members' own agents are theirs — not the owner's to edit here.
+    let Some(index) = config.agents.iter().position(|a| a.id == target_id && a.owner.is_none()) else {
         return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{target_id}' não encontrado"), Style::default())]);
     };
     let current = config.agents[index].clone();
@@ -2212,6 +2222,8 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         can_message_agents,
         can_manage_tasks,
         allowed_tools,
+        owner: None,
+        shared_with: current.shared_with.clone(),
     };
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
@@ -2223,7 +2235,7 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
 
 async fn cmd_agents_remove(terminal: &mut CliTerminal, session: &mut CliSession, id: String) -> anyhow::Result<()> {
     let mut config = load_fresh_config(session.config_path.as_deref())?;
-    if !config.agents.iter().any(|a| a.id == id) {
+    if !config.agents.iter().any(|a| a.id == id && a.owner.is_none()) {
         return render_message_card(terminal, "erro", error_style(), vec![(format!("agente '{id}' não encontrado"), Style::default())]);
     }
     // Also takes the agent out of the SSH servers that named it: a server left with no agent is

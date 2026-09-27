@@ -96,6 +96,7 @@ fn limit_scope_str(scope: LimitScope) -> &'static str {
         LimitScope::Agent => "agent",
         LimitScope::Channel => "channel",
         LimitScope::User => "user",
+        LimitScope::Person => "person",
     }
 }
 
@@ -105,6 +106,7 @@ fn limit_scope_from_str(scope: &str) -> Result<LimitScope, String> {
         "agent" => Ok(LimitScope::Agent),
         "channel" => Ok(LimitScope::Channel),
         "user" => Ok(LimitScope::User),
+        "person" => Ok(LimitScope::Person),
         other => Err(format!("unknown limit scope '{other}'")),
     }
 }
@@ -315,9 +317,11 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             .collect(),
         active_provider: config.active_provider.clone().unwrap_or_default(),
         combos: config.combos.iter().map(|c| ComboDto { id: c.id.clone(), providers: c.providers.clone() }).collect(),
+        // P84: members' own agents are theirs — the owner's screen neither shows nor saves them.
         agents: config
             .agents
             .iter()
+            .filter(|a| a.owner.is_none())
             .map(|a| AgentSettingsDto {
                 original_id: None,
                 id: a.id.clone(),
@@ -328,6 +332,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools.clone(),
+                shared_with: a.shared_with.clone(),
             })
             .collect(),
         tavily_key: secret_status(config.api_keys.tavily.as_deref()),
@@ -417,12 +422,18 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             can_message_agents: dto.can_message_agents,
             can_manage_tasks: dto.can_manage_tasks,
             allowed_tools: dto.allowed_tools,
+            owner: None,
+            shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
         });
     }
     let kept: HashSet<String> = renames.iter().map(|(original, _)| original.clone()).chain(agents.iter().map(|a| a.id.trim().to_string())).collect();
-    let agents = check_agents(agents, &providers, &combos)?;
+    // P84: the members' own agents aren't on this screen; they're kept as they are, and a name they
+    // hold can't be taken by one of the owner's.
+    let member_agents: Vec<AgentConfig> = config.agents.iter().filter(|a| a.owner.is_some()).cloned().collect();
+    // `check_agents` refuses a repeated name, so an agent of the owner's can't take one of theirs.
+    let agents = check_agents(agents.into_iter().chain(member_agents).collect(), &providers, &combos)?;
 
-    let removed: Vec<String> = config.agents.iter().map(|a| a.id.clone()).filter(|id| !kept.contains(id)).collect();
+    let removed: Vec<String> = config.agents.iter().filter(|a| a.owner.is_none()).map(|a| a.id.clone()).filter(|id| !kept.contains(id)).collect();
     let mut scratch = config.agents.clone();
     for id in &removed {
         remove_agent_from(&mut scratch, &mut config.ssh_hosts, id);
@@ -506,6 +517,8 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 
@@ -572,6 +585,34 @@ mod tests {
             prices: vec![Price { model: "m".into(), input_per_mtok: 1.0, output_per_mtok: 2.0 }],
             ..Default::default()
         }
+    }
+
+    /// P84: the owner's screen neither shows nor loses the members' own agents, and shares are kept
+    /// to members that exist.
+    #[test]
+    fn a_save_keeps_the_members_own_agents_and_cleans_the_shares() {
+        let mut config = sample();
+        crate::users::add_user(&mut config, "ana", "Ana", "temporary-1").unwrap();
+        config.agents.push(AgentConfig { owner: Some("ana".into()), ..agent("anas-helper") });
+        let view = hub_settings(&config, Vec::new(), Vec::new());
+        assert!(!view.agents.iter().any(|a| a.id == "anas-helper"), "not on the owner's screen");
+
+        let mut update = untouched(&config);
+        update.agents[0].shared_with = vec!["ana".into(), "ghost".into(), "ana".into()];
+        update.agents.remove(1); // the owner deletes "chef"
+        let mut clash = untouched(&config);
+        clash.agents.push(AgentSettingsDto { original_id: None, id: "anas-helper".into(), ..clash.agents[0].clone() });
+        let saved = apply_hub_settings(config, update).unwrap();
+        let ids: Vec<&str> = saved.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["pirate", "anas-helper"]);
+        assert_eq!(saved.agents[0].shared_with, ["ana"], "unknown people and repeats dropped");
+        assert_eq!(saved.agents[1].owner.as_deref(), Some("ana"));
+
+        // A name one of Ana's agents holds can't be taken by one of the owner's.
+        let mut again = sample();
+        crate::users::add_user(&mut again, "ana", "Ana", "temporary-1").unwrap();
+        again.agents.push(AgentConfig { owner: Some("ana".into()), ..agent("anas-helper") });
+        assert!(apply_hub_settings(again, clash).is_err());
     }
 
     #[test]

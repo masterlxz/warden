@@ -216,7 +216,8 @@ pub fn check_tasks(tasks: &[TaskConfig], agents: &[AgentConfig]) -> anyhow::Resu
         anyhow::ensure!(!task.prompt.trim().is_empty(), "task '{}' has an empty prompt", task.id);
         task.schedule()?;
         if let Some(agent) = &task.agent {
-            anyhow::ensure!(agents.iter().any(|a| &a.id == agent), "task '{}' names agent '{agent}', which doesn't exist", task.id);
+            // P84: tasks are the owner's, so they run the owner's agents only.
+            anyhow::ensure!(agents.iter().any(|a| &a.id == agent && a.owner.is_none()), "task '{}' names agent '{agent}', which doesn't exist", task.id);
         }
     }
     Ok(())
@@ -637,6 +638,8 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 

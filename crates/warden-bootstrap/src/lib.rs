@@ -134,6 +134,14 @@ pub struct AgentConfig {
     /// conversation's agent or as a `delegate_to_agent` target.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// P84: the workspace member this agent belongs to — `None` is the owner's. A member's agent is
+    /// only theirs: nobody else sees it or talks to it, and it never gets the `can_*` flags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// P84: the members the owner shares this agent with, by username, or `"*"` for everyone. Only
+    /// meaningful on the owner's agents; empty keeps it the owner's alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_with: Vec<String>,
 }
 
 /// What an agent created by another agent may use unless the creator asks for more (and the user
@@ -1431,7 +1439,8 @@ fn combo_chain(config: &FileConfig, combo: &ComboConfig) -> Vec<(String, Arc<dyn
 /// shouldn't take down every other agent's ability to delegate).
 fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<NamedSubAgent> {
     let mut targets = Vec::new();
-    for agent in &config.agents {
+    // P84: a member's agent is theirs alone — never a target of the owner's chief.
+    for agent in config.agents.iter().filter(|a| a.owner.is_none()) {
         let target_orchestrator = match &agent.provider_id {
             Some(provider_id) => {
                 match build_model_for(config, provider_id, None) {
@@ -2001,6 +2010,8 @@ oauth = true
                 can_message_agents: true,
                 can_manage_tasks: false,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
+                owner: None,
+                shared_with: Vec::new(),
             }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
             legacy_fallback_providers: Vec::new(),
@@ -2551,6 +2562,8 @@ oauth = true
                 can_message_agents: false,
                 can_manage_tasks: false,
                 allowed_tools: None,
+                owner: None,
+                shared_with: Vec::new(),
             }],
             ..Default::default()
         };
@@ -2676,6 +2689,8 @@ oauth = true
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 

@@ -93,6 +93,8 @@ fn agent(id: &str, persona: &str, manage: bool) -> AgentConfig {
         can_message_agents: false,
         can_manage_tasks: manage,
         allowed_tools: None,
+        owner: None,
+        shared_with: Vec::new(),
     }
 }
 

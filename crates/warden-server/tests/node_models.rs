@@ -109,6 +109,8 @@ fn agent(id: &str, provider: &str) -> AgentConfig {
         can_message_agents: false,
         can_manage_tasks: false,
         allowed_tools: None,
+        owner: None,
+        shared_with: Vec::new(),
     }
 }
 

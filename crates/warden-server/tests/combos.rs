@@ -86,6 +86,8 @@ async fn an_agent_on_a_combo_gets_the_next_provider_when_the_first_is_down() {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }],
         ..FileConfig::default()
     };

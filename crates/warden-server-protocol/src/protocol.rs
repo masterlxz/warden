@@ -434,6 +434,9 @@ pub struct AgentSettingsDto {
     pub can_manage_tasks: bool,
     /// `None` keeps every tool.
     pub allowed_tools: Option<Vec<String>>,
+    /// P84: members this agent is shared with, by username, or `"*"` for everyone. Empty: the owner's alone.
+    #[serde(default)]
+    pub shared_with: Vec<String>,
 }
 
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`

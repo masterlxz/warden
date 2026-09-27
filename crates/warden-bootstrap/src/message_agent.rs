@@ -139,14 +139,14 @@ impl MessageAgentTool {
 
     /// The agents this one can message: everyone configured but itself.
     fn recipients(config: &FileConfig, caller: &str) -> Vec<(String, String)> {
-        config.agents.iter().filter(|a| a.id != caller).map(|a| (a.id.clone(), a.persona.clone())).collect()
+        config.agents.iter().filter(|a| a.id != caller && a.owner.is_none()).map(|a| (a.id.clone(), a.persona.clone())).collect()
     }
 
     fn check_recipient(&self, config: &FileConfig, to: &str) -> anyhow::Result<()> {
         if to == self.caller {
             anyhow::bail!("you can't leave a message for yourself — pick another agent");
         }
-        if !config.agents.iter().any(|a| a.id == to) {
+        if !config.agents.iter().any(|a| a.id == to && a.owner.is_none()) {
             let known: Vec<String> = Self::recipients(config, &self.caller).into_iter().map(|(id, _)| id).collect();
             anyhow::bail!("no agent named '{to}' — the agents you can message are: {}", known.join(", "));
         }
@@ -367,6 +367,8 @@ mod tests {
             can_message_agents: message,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 

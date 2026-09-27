@@ -83,6 +83,8 @@ async fn spin_up() -> Hub {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }],
         ..FileConfig::default()
     };

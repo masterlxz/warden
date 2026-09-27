@@ -136,6 +136,8 @@ impl ManageAgentsTool {
         let agents: Vec<Value> = config
             .agents
             .iter()
+            // P84: members' own agents are theirs, not the owner's chief's to see or change.
+            .filter(|a| a.owner.is_none())
             .map(|a| {
                 json!({
                     "id": a.id,
@@ -224,6 +226,8 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 can_message_agents: false,
                 can_manage_tasks: false,
                 allowed_tools: Some(tools.clone()),
+                owner: None,
+                shared_with: Vec::new(),
             });
             format!(
                 "New agent '{id}'\nModel provider: {}\nTools: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
@@ -232,7 +236,7 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
             )
         }
         Change::Update { id, persona, provider_id, allowed_tools } => {
-            let Some(index) = config.agents.iter().position(|a| &a.id == id) else {
+            let Some(index) = config.agents.iter().position(|a| &a.id == id && a.owner.is_none()) else {
                 anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
             };
             let current = &config.agents[index];
@@ -268,7 +272,7 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
             lines.join("\n")
         }
         Change::Delete { id } => {
-            let Some(current) = config.agents.iter().find(|a| &a.id == id) else {
+            let Some(current) = config.agents.iter().find(|a| &a.id == id && a.owner.is_none()) else {
                 anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
             };
             if current.can_delegate_to_agents || current.can_manage_agents {
@@ -514,6 +518,8 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            owner: None,
+            shared_with: Vec::new(),
         }
     }
 
