@@ -27,7 +27,7 @@ use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Tra
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, password_gate, tools_for, user_info, MemberSpace, Person};
-use crate::user_admin::{handle_change_password, handle_list_users, handle_user_change, UserChange};
+use crate::user_admin::{handle_change_password, handle_list_spaces, handle_list_users, handle_space_change, handle_user_change, SpaceChange, UserChange};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
@@ -918,6 +918,21 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::RemoveUser { request_id, pairing_key, id }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::Remove { id });
+                }
+                Ok(ClientMessage::ListSpaces { request_id }) => {
+                    let _ = tx.send(handle_list_spaces(settings.as_deref(), member.as_ref().map(|m| m.id.as_str()), request_id));
+                }
+                Ok(message @ (ClientMessage::SaveSpace { .. } | ClientMessage::DeleteSpace { .. })) => {
+                    let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let (request_id, pairing_key, change) = match message {
+                            ClientMessage::SaveSpace { request_id, pairing_key, original_id, space } => (request_id, pairing_key, SpaceChange::Save { original_id, space }),
+                            ClientMessage::DeleteSpace { request_id, pairing_key, id } => (request_id, pairing_key, SpaceChange::Delete { id }),
+                            _ => return,
+                        };
+                        let reply = handle_space_change(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, change).await;
+                        let _ = reply_tx.send(reply);
+                    });
                 }
                 Ok(ClientMessage::SetUserTools { request_id, pairing_key, id, tools }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });

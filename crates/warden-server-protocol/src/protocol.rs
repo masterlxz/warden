@@ -324,6 +324,21 @@ pub struct TaskDto {
     pub enabled: bool,
 }
 
+/// A folder of the owner's vault shared with members (P84 fatia 3). A member sees it at
+/// `compartilhado/<id>/` in their own vault.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceDto {
+    pub id: String,
+    pub folder: String,
+    /// Usernames, or `"*"` for everyone.
+    #[serde(default)]
+    pub readers: Vec<String>,
+    /// Writers also read.
+    #[serde(default)]
+    pub writers: Vec<String>,
+}
+
 /// A member of the workspace (P84), as the hub shows them — never the password hash.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1035,6 +1050,25 @@ pub enum ClientMessage {
         request_id: u64,
         id: String,
     },
+    /// P84 fatia 3: the shared spaces, answered by `SpaceList` — all of them for the owner, the ones
+    /// they're in for a member.
+    ListSpaces {
+        request_id: u64,
+    },
+    /// The owner creates (`original_id` absent) or edits a space. Answered by `SpaceList` or `UserError`.
+    SaveSpace {
+        request_id: u64,
+        pairing_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_id: Option<String>,
+        space: SpaceDto,
+    },
+    /// The owner stops sharing a folder. The folder and its notes stay in their vault.
+    DeleteSpace {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -1340,6 +1374,11 @@ pub enum ServerMessage {
     },
     PasswordChanged {
         request_id: u64,
+    },
+    /// P84 fatia 3: the shared spaces.
+    SpaceList {
+        request_id: u64,
+        spaces: Vec<SpaceDto>,
     },
     /// A user request failed. `auth_rejected`: the pairing key was wrong, or this connection isn't
     /// the root's; nothing changed.

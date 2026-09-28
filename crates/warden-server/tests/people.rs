@@ -72,7 +72,10 @@ struct Hub {
 }
 
 async fn spin_up() -> Hub {
-    let dir = std::env::temp_dir().join(format!("warden-server-people-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    // A counter too: two tests starting in the same nanosecond must not share a hub's files.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("warden-server-people-{}-{n}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let config_path = dir.join("config.toml");
     let mut config = FileConfig {

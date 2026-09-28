@@ -439,6 +439,9 @@ pub struct FileConfig {
     /// holds the pairing key. See the `users` module.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub users: Vec<users::UserConfig>,
+    /// Folders of the owner's vault shared with members (P84 fatia 3, TOML `[[spaces]]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spaces: Vec<users::SpaceConfig>,
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -2063,6 +2066,7 @@ oauth = true
             }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
+            spaces: Vec::new(),
         };
 
         save_config(&path, &config).unwrap();

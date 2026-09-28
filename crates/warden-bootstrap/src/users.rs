@@ -56,6 +56,87 @@ pub struct UserConfig {
 /// Shares an agent with every member (`AgentConfig::shared_with`).
 pub const EVERYONE: &str = "*";
 
+/// A folder of the owner's vault shared with members (P84 fatia 3, TOML `[[spaces]]`). It stays the
+/// owner's — synced and backed up with the rest of their vault; a member sees it inside their own
+/// vault at `compartilhado/<id>/`. It is also how the owner decides what an agent may know when it
+/// talks to someone else: a member's turn sees these folders and never the rest of the owner's vault.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SpaceConfig {
+    /// Its name, and the folder name members see it under: 1-32 lowercase letters, digits, `-` or `_`.
+    pub id: String,
+    /// The folder in the owner's vault, relative to its root (`casa`, `viagens/2026`).
+    pub folder: String,
+    /// Who reads it: usernames, or `"*"` for everyone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readers: Vec<String>,
+    /// Who also writes in it (writers read too).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writers: Vec<String>,
+}
+
+fn check_space_folder(folder: &str) -> anyhow::Result<()> {
+    let path = Path::new(folder);
+    anyhow::ensure!(!folder.is_empty() && folder.len() <= 200 && !folder.contains('\\'), "'{folder}' is not a folder of your vault");
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) if !name.to_string_lossy().starts_with('.') => {}
+            _ => anyhow::bail!("'{folder}' is not a folder of your vault (no '..', no leading '/', no hidden folders)"),
+        }
+    }
+    let first = path.components().next().map(|c| c.as_os_str().to_string_lossy().to_string()).unwrap_or_default();
+    anyhow::ensure!(first != warden_core::memory::SKILLS_DIR, "skills can't be shared as a space");
+    anyhow::ensure!(!warden_core::memory::FIXED_VAULT_FILES.contains(&folder), "'{folder}' is one of the fixed memory files, not a folder");
+    Ok(())
+}
+
+/// Creates (`original_id` = `None`) or replaces a space, with its people kept to members that exist.
+pub fn save_space(config: &mut FileConfig, original_id: Option<&str>, space: SpaceConfig) -> anyhow::Result<()> {
+    let id = space.id.trim().to_ascii_lowercase();
+    anyhow::ensure!(is_valid_user_id(&id), "a space's name is 1-{MAX_USER_ID_LEN} lowercase letters, digits, '-' or '_'");
+    let folder = space.folder.trim().trim_matches('/').to_string();
+    check_space_folder(&folder)?;
+    let others = config.spaces.iter().filter(|s| Some(s.id.as_str()) != original_id);
+    for other in others {
+        anyhow::ensure!(other.id != id, "there's already a space named '{id}'");
+        anyhow::ensure!(other.folder != folder, "the folder '{folder}' is already the space '{}'", other.id);
+    }
+    let writers = clean_shares(space.writers, &config.users);
+    let readers: Vec<String> = clean_shares(space.readers, &config.users).into_iter().filter(|r| !writers.contains(r)).collect();
+    let space = SpaceConfig { id, folder, readers, writers };
+    match original_id {
+        Some(original) => {
+            let i = config.spaces.iter().position(|s| s.id == original).ok_or_else(|| anyhow::anyhow!("no space named '{original}'"))?;
+            config.spaces[i] = space;
+        }
+        None => config.spaces.push(space),
+    }
+    Ok(())
+}
+
+pub fn remove_space(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let i = config.spaces.iter().position(|s| s.id == id).ok_or_else(|| anyhow::anyhow!("no space named '{id}'"))?;
+    config.spaces.remove(i);
+    Ok(())
+}
+
+/// The spaces member `user` sees, each with whether they may write in it.
+pub fn spaces_for<'a>(spaces: &'a [SpaceConfig], user: &str) -> Vec<(&'a SpaceConfig, bool)> {
+    let listed = |list: &[String]| list.iter().any(|p| p == EVERYONE || p == user);
+    spaces
+        .iter()
+        .filter_map(|s| {
+            if listed(&s.writers) {
+                Some((s, true))
+            } else if listed(&s.readers) {
+                Some((s, false))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Tools a member never gets, whatever the owner lists: each reaches past the member's own space in
 /// a way `Orchestrator::with_vault` can't close — other agents' orchestrators and conversations
 /// (`delegate_to_agent`, `message_agent`), the owner's agents and tasks (`manage_agents`,
@@ -200,6 +281,10 @@ pub fn remove_user(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
     }
     for agent in &mut config.agents {
         agent.shared_with.retain(|s| s != id);
+    }
+    for space in &mut config.spaces {
+        space.readers.retain(|s| s != id);
+        space.writers.retain(|s| s != id);
     }
     Ok(())
 }
@@ -430,6 +515,37 @@ mod tests {
         add_user(&mut config, "ana", "Ana", "temporary-1").unwrap();
         assert_eq!(clean_shares(vec![" ANA ".into(), "ghost".into(), "ana".into()], &config.users), ["ana"]);
         assert_eq!(clean_shares(vec!["ana".into(), EVERYONE.into()], &config.users), [EVERYONE]);
+    }
+
+    #[test]
+    fn spaces_are_safe_folders_shared_with_people_who_exist() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temporary-1").unwrap();
+        add_user(&mut config, "bruno", "Bruno", "temporary-2").unwrap();
+        let space = |id: &str, folder: &str, readers: &[&str], writers: &[&str]| SpaceConfig {
+            id: id.into(),
+            folder: folder.into(),
+            readers: readers.iter().map(|s| s.to_string()).collect(),
+            writers: writers.iter().map(|s| s.to_string()).collect(),
+        };
+        for folder in ["../out", ".warden", "skills/x", "_profile.md", "", "a/../b"] {
+            assert!(save_space(&mut config, None, space("x", folder, &[], &[])).is_err(), "{folder}");
+        }
+        save_space(&mut config, None, space(" Casa ", "/casa/", &["ana", "ghost", "bruno"], &["bruno"])).unwrap();
+        assert_eq!(config.spaces[0], space("casa", "casa", &["ana"], &["bruno"]), "trimmed, unknown people dropped, a writer isn't listed twice");
+        assert!(save_space(&mut config, None, space("casa", "other", &[], &[])).is_err(), "name taken");
+        assert!(save_space(&mut config, None, space("home", "casa", &[], &[])).is_err(), "folder taken");
+        save_space(&mut config, None, space("viagens", "viagens/2026", &["*"], &[])).unwrap();
+
+        let ana: Vec<(&str, bool)> = spaces_for(&config.spaces, "ana").into_iter().map(|(s, w)| (s.id.as_str(), w)).collect();
+        assert_eq!(ana, [("casa", false), ("viagens", false)]);
+        let bruno: Vec<(&str, bool)> = spaces_for(&config.spaces, "bruno").into_iter().map(|(s, w)| (s.id.as_str(), w)).collect();
+        assert_eq!(bruno, [("casa", true), ("viagens", false)]);
+
+        remove_user(&mut config, "bruno").unwrap();
+        assert!(config.spaces[0].writers.is_empty());
+        remove_space(&mut config, "casa").unwrap();
+        assert_eq!(config.spaces.len(), 1);
     }
 
     #[test]

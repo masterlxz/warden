@@ -652,6 +652,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         nodes: existing.nodes,
         // People (P84) are managed on the Workspace screen and the hub, not this form.
         users: existing.users,
+        spaces: existing.spaces,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

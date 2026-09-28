@@ -7,12 +7,13 @@
 //! Pure functions over the orchestrator, the messages and the conversations directory, kept out of
 //! `server.rs` so they're testable without a socket — same split as `conversations.rs`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use warden_bootstrap::users::{agent_visible_to, root_conversations_dir, user_conversations_dir, user_generated_path, user_vault_path, UserConfig, UserRole, ROOT_ID};
 use warden_bootstrap::{load_conversation, save_conversation, AgentConfig, Conversation, FileConfig};
-use warden_core::memory::Vault;
+use warden_core::memory::{Mount, Vault};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
 use warden_server_protocol::protocol::{AgentSettingsDto, UserInfoDto};
@@ -41,6 +42,26 @@ impl MemberSpace {
             conversations: user_conversations_dir(conversations_root, &user.id),
         }
     }
+}
+
+/// One `Vault` per shared folder of the owner's (P84 fatia 3), kept for the hub's life so a
+/// folder's semantic model loads once, not once per turn.
+pub type SpaceVaults = Arc<Mutex<HashMap<PathBuf, Arc<Vault>>>>;
+
+/// Shows member `member`'s shared spaces inside their vault, as `config` says right now —
+/// `owner_vault` is the hub's (the owner's) vault root. Called before each turn and each vault
+/// request, so a space shared or taken away counts from the next one.
+pub fn mount_member_spaces(member: &MemberSpace, config: &FileConfig, owner_vault: &Path, cache: &SpaceVaults) {
+    let mut vaults = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let mounts = warden_bootstrap::users::spaces_for(&config.spaces, &member.id)
+        .into_iter()
+        .map(|(space, writable)| {
+            let folder = owner_vault.join(&space.folder);
+            let vault = vaults.entry(folder.clone()).or_insert_with(|| Arc::new(Vault::new(folder))).clone();
+            Mount { prefix: space.id.clone(), vault, writable }
+        })
+        .collect();
+    member.vault.set_mounts(mounts);
 }
 
 /// Who a connection speaks for.
@@ -112,7 +133,9 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SaveUser { request_id, .. }
         | ClientMessage::ResetPassword { request_id, .. }
         | ClientMessage::RemoveUser { request_id, .. }
-        | ClientMessage::SetUserTools { request_id, .. } => {
+        | ClientMessage::SetUserTools { request_id, .. }
+        | ClientMessage::SaveSpace { request_id, .. }
+        | ClientMessage::DeleteSpace { request_id, .. } => {
             ServerMessage::UserError { request_id: *request_id, message: message_text, auth_rejected: true }
         }
         ClientMessage::CallDeviceTool { call_id, .. } => ServerMessage::DeviceToolError { call_id: *call_id, message: message_text },
@@ -148,6 +171,7 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
             ServerMessage::ApiKeyError { request_id: *request_id, message: text, auth_rejected: true }
         }
+        ClientMessage::ListSpaces { request_id } => ServerMessage::UserError { request_id: *request_id, message: text, auth_rejected: true },
         other => return member_refusal(other),
     })
 }

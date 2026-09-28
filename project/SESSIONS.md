@@ -2,7 +2,46 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-27 (Sessão 111)
+> Última atualização: 2026-09-27 (Sessão 112, em andamento)
+
+---
+
+### 2026-09-27 — Sessão 112 (interrompida no meio, retomar daqui)
+
+- **Objetivo**: a fatia 3 do P84 (espaços compartilhados e audiência das notas). Plano aprovado em Plan mode.
+- **Decisões do usuário**:
+  - um espaço é **uma pasta do vault do root**, com quem lê e quem escreve;
+  - a audiência é **por pasta**;
+  - **só o root** cria espaços.
+  - Consequência: espaços e audiência viram o mesmo mecanismo. Um turno de membro só enxerga as pastas do root
+    liberadas para ele, montadas no vault dele em `compartilhado/<id>/`.
+- **Feito**:
+  - **etapa 1** (`4498081`): montagens no `Vault` (`Mount`, `set_mounts`, roteamento de
+    `read`/`write`/`delete`/`read_note`/`save_note`/`delete_note`, a listagem e as buscas somando os montados,
+    `list_all_files` sem eles, escrita recusada em espaço só de leitura e sob `compartilhado/` não montado), com 5
+    testes;
+  - **etapa 2, em parte** (no commit desta sessão):
+    - `SpaceConfig` e `FileConfig.spaces`, com `save_space`, `remove_space` e `spaces_for`; o `remove_user` limpa as
+      listas; 1 teste;
+    - protocolo: `SpaceDto`, `ListSpaces`, `SaveSpace`, `DeleteSpace` e `SpaceList`;
+    - `people.rs`: `SpaceVaults` e `mount_member_spaces`;
+    - `user_admin.rs`: `handle_list_spaces` e `handle_space_change`, ligados no `server.rs`;
+    - o desktop preserva `spaces` no save;
+    - um teste intermitente de `tests/people.rs` corrigido (duas pastas temporárias podiam colidir).
+- **Falta (retomar por aqui)**:
+  1. **chamar `mount_member_spaces`** no `server.rs` antes do `Chat` de um membro e dos pedidos de vault e skills
+     (pôr um `SpaceVaults` no `ConnectionContext`; o vault do dono é `orchestrator.current().vault().root()`), e no
+     `openai_api.rs` para a chave de um membro. **Sem isso os espaços ainda não aparecem para ninguém**;
+  2. o CLI `warden-server spaces list|add <id> --folder <pasta> [--reader] [--writer]|remove`;
+  3. o teste de integração do plano (o root cria `casa` com leitura para a Ana, ela lê
+     `compartilhado/casa/…` pelo agente, a escrita é recusada até virar escritora, e tirá-la some com a pasta);
+  4. web: a seção "Espaços compartilhados" na aba Pessoas (e os métodos `listSpaces`, `saveSpace` e `deleteSpace`
+     no `connection.ts`);
+  5. desktop: a seção "Shared spaces" no Workspace (comandos em `people_cmds.rs`);
+  6. docs: "Como ficou a fatia 3" no `ARCHITECTURE.md`, o P84, um item novo de testes, o `ROADMAP.md` e o
+     `README.md`.
+- **Verificação até aqui**: `cargo test --workspace` com 881 passando e 0 falhas. Build repetido quando o toolchain
+  cai (P101).
 
 ---
 
