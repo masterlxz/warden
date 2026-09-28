@@ -6,11 +6,11 @@
 //! No pairing key is asked: this is the owner's own machine, like the rest of its settings.
 
 use serde::Serialize;
-use warden_bootstrap::users::{add_user, generate_temp_password, remove_user, rename_user, reset_password, set_user_tools};
+use warden_bootstrap::users::{add_user, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, SpaceConfig};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server::people::user_info;
 use warden_server::PairingStore;
-use warden_server_protocol::protocol::UserInfoDto;
+use warden_server_protocol::protocol::{SpaceDto, UserInfoDto};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,4 +81,35 @@ pub fn remove_person(id: String) -> Result<PeoplePayload, String> {
         warden_server::api_keys::ApiKeyStore::new(keys).revoke_user_keys(&id).map_err(|e| format!("{e:#}"))?;
     }
     Ok(payload)
+}
+
+/// P84 fatia 3: the folders of your vault shared with members, `[[spaces]]` in the same file.
+#[tauri::command]
+pub fn list_shared_spaces() -> Result<Vec<SpaceDto>, String> {
+    let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
+    Ok(config.spaces.iter().map(space_dto).collect())
+}
+
+/// Shares a folder (`original_id` absent) or changes who is in a space.
+#[tauri::command]
+pub fn save_shared_space(original_id: Option<String>, space: SpaceDto) -> Result<Vec<SpaceDto>, String> {
+    change_spaces(|config| save_space(config, original_id.as_deref(), SpaceConfig { id: space.id, folder: space.folder, readers: space.readers, writers: space.writers }))
+}
+
+/// Stops sharing a folder; it stays in your vault.
+#[tauri::command]
+pub fn remove_shared_space(id: String) -> Result<Vec<SpaceDto>, String> {
+    change_spaces(|config| remove_space(config, &id))
+}
+
+fn space_dto(space: &SpaceConfig) -> SpaceDto {
+    SpaceDto { id: space.id.clone(), folder: space.folder.clone(), readers: space.readers.clone(), writers: space.writers.clone() }
+}
+
+fn change_spaces(apply: impl FnOnce(&mut warden_bootstrap::FileConfig) -> anyhow::Result<()>) -> Result<Vec<SpaceDto>, String> {
+    let path = config_path()?;
+    let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    apply(&mut config).map_err(|e| format!("{e:#}"))?;
+    save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
+    Ok(config.spaces.iter().map(space_dto).collect())
 }

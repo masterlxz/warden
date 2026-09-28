@@ -187,7 +187,17 @@ first sign-in and gets none of the hub's administration. What else they get is u
   them in People — the shell, nodes and your MCP integrations only if you tick them;
 - **spending**: a `[[limits]]` entry with `scope = "person"` and `target = "ana"` caps her on every
   channel, and she can't approve going past it;
-- **Warden API**: keys of their own (the web's API tab), which speak as them.
+- **Warden API**: keys of their own (the web's API tab), which speak as them;
+- **your memory**: none of it, unless you share a folder of your vault with them. They see it at
+  `compartilhado/<name>/` in their own vault, reading only or writing too, from their next message:
+
+```bash
+warden-server spaces add casa --folder casa --reader ana --writer bruno   # or --reader '*' for everyone
+warden-server spaces list
+warden-server spaces remove casa   # the folder and its notes stay in your vault
+```
+
+  The web's People tab ("Espaços compartilhados") and the desktop's Workspace ("Shared spaces") do the same.
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

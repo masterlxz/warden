@@ -224,6 +224,17 @@ export interface UserInfo {
   agents: string[];
 }
 
+/** P84 fatia 3 — a folder of the owner's vault shared with members, who see it at
+ * `compartilhado/<id>/` in their own vault. To a member, `folder` is that path. */
+export interface SpaceInfo {
+  id: string;
+  folder: string;
+  /** Usernames, or `"*"` for everyone. */
+  readers: string[];
+  /** Writers also read. */
+  writers: string[];
+}
+
 /** Mirrors `ApiKeyDto` (P12): one Warden API key, never the key or its hash. `shown` is its start. */
 export interface ApiKey {
   id: string;
@@ -415,6 +426,10 @@ export type ClientMessage =
   /** A member's own agents, answered by `settings` (their view) or `settingsError`. */
   | { type: "saveOwnAgent"; requestId: number; originalId?: string; agent: AgentSettings }
   | { type: "deleteOwnAgent"; requestId: number; id: string }
+  /** P84 fatia 3 — the shared spaces; the owner changes them with the pairing key. */
+  | { type: "listSpaces"; requestId: number }
+  | { type: "saveSpace"; requestId: number; pairingKey: string; originalId?: string; space: SpaceInfo }
+  | { type: "deleteSpace"; requestId: number; pairingKey: string; id: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -475,6 +490,7 @@ export type ServerMessage =
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
   | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string }
   | { type: "passwordChanged"; requestId: number }
+  | { type: "spaceList"; requestId: number; spaces: SpaceInfo[] }
   | { type: "userError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
   | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }
@@ -552,6 +568,10 @@ export function decode(text: string): ServerMessage {
         users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false, agents: u.agents ?? [] })),
         ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
       };
+    }
+    case "spaceList": {
+      const raw = json as { requestId: number; spaces: Array<Omit<SpaceInfo, "readers" | "writers"> & { readers?: string[]; writers?: string[] }> };
+      return { type: "spaceList", requestId: raw.requestId, spaces: raw.spaces.map((s) => ({ ...s, readers: s.readers ?? [], writers: s.writers ?? [] })) };
     }
     case "userError": {
       const raw = json as { requestId: number; message: string; authRejected?: boolean };

@@ -648,7 +648,186 @@ function PeopleSection() {
           ))}
         </div>
       )}
+
+      <SharedSpacesSection people={people ?? []} />
     </section>
+  );
+}
+
+/** Mirrors `SpaceDto` (P84 fatia 3). */
+interface SharedSpace {
+  id: string;
+  folder: string;
+  /** Usernames, or `"*"` for everyone. */
+  readers: string[];
+  /** Writers also read. */
+  writers: string[];
+}
+
+const EVERYONE = "*";
+
+type SpaceAccess = "none" | "read" | "write";
+
+function spaceAccess(space: SharedSpace, who: string): SpaceAccess {
+  if (space.writers.includes(who)) return "write";
+  if (space.readers.includes(who)) return "read";
+  return "none";
+}
+
+function withSpaceAccess(space: SharedSpace, who: string, access: SpaceAccess): SharedSpace {
+  const readers = space.readers.filter((r) => r !== who);
+  const writers = space.writers.filter((w) => w !== who);
+  if (access === "read") readers.push(who);
+  if (access === "write") writers.push(who);
+  return { ...space, readers, writers };
+}
+
+/**
+ * P84 fatia 3 — folders of your vault that members see inside theirs, at `compartilhado/<name>/`:
+ * `[[spaces]]` in config.toml, synced like the people above. An agent talking to a member reads (and,
+ * if you let it, writes) only in these folders, never the rest of your vault.
+ */
+function SharedSpacesSection({ people }: { people: Person[] }) {
+  const [spaces, setSpaces] = useState<SharedSpace[] | null>(null);
+  /** `originalId` absent: a new space. */
+  const [draft, setDraft] = useState<{ originalId?: string; space: SharedSpace } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<SharedSpace[]>("list_shared_spaces")
+      .then(setSpaces)
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  async function run(command: string, args: Record<string, unknown>) {
+    setError(null);
+    try {
+      setSpaces(await invoke<SharedSpace[]>(command, args));
+      setDraft(null);
+      setConfirmRemove(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  const name = (id: string) => (id === EVERYONE ? "everyone" : (people.find((p) => p.id === id)?.name ?? id));
+  const who = (space: SharedSpace) => {
+    const parts = [];
+    if (space.writers.length > 0) parts.push(`write: ${space.writers.map(name).join(", ")}`);
+    if (space.readers.length > 0) parts.push(`read: ${space.readers.map(name).join(", ")}`);
+    return parts.length > 0 ? parts.join(" · ") : "no one yet";
+  };
+
+  const accessSelect = (space: SharedSpace, person: string) => (
+    <select className="settings-input" value={spaceAccess(space, person)} onChange={(e) => draft && setDraft({ ...draft, space: withSpaceAccess(space, person, e.currentTarget.value as SpaceAccess) })}>
+      <option value="none">Doesn&apos;t see it</option>
+      <option value="read">Reads</option>
+      <option value="write">Reads and writes</option>
+    </select>
+  );
+
+  return (
+    <>
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">Shared spaces</h3>
+        <button
+          type="button"
+          className="settings-browse-btn"
+          disabled={draft !== null || people.length === 0}
+          onClick={() => setDraft({ space: { id: "", folder: "", readers: [], writers: [] } })}
+        >
+          + Share a folder
+        </button>
+      </div>
+      <p className="settings-hint">
+        Folders of your vault the people above see inside theirs, under <code>compartilhado/</code>. An agent talking to them reads (and, if you
+        let it, writes) only in these folders, never the rest of your memory. Only you create spaces.
+      </p>
+      {error && <p className="settings-error-banner">{error}</p>}
+
+      {draft && (
+        <div className="provider-card skill-editor">
+          <label className="settings-field">
+            <span className="settings-label">Name</span>
+            <input className="settings-input" type="text" placeholder="casa" value={draft.space.id} onChange={(e) => setDraft({ ...draft, space: { ...draft.space, id: e.currentTarget.value } })} />
+            <span className="settings-hint">Lowercase letters, digits, - or _. They see it at compartilhado/{draft.space.id.trim().toLowerCase() || "name"}/.</span>
+          </label>
+          <label className="settings-field">
+            <span className="settings-label">Folder of your vault</span>
+            <input className="settings-input" type="text" placeholder="casa" value={draft.space.folder} onChange={(e) => setDraft({ ...draft, space: { ...draft.space, folder: e.currentTarget.value } })} />
+            <span className="settings-hint">Relative to the vault&apos;s root, like casa or viagens/2026. Created when someone first writes in it.</span>
+          </label>
+          <label className="settings-field">
+            <span className="settings-label">Everyone</span>
+            {accessSelect(draft.space, EVERYONE)}
+          </label>
+          {people.map((person) => (
+            <label className="settings-field" key={person.id}>
+              <span className="settings-label">{person.name}</span>
+              {accessSelect(draft.space, person.id)}
+            </label>
+          ))}
+          <div className="skill-editor-actions">
+            <button
+              type="button"
+              className="settings-save-btn"
+              disabled={draft.space.id.trim() === "" || draft.space.folder.trim() === ""}
+              onClick={() => void run("save_shared_space", { originalId: draft.originalId ?? null, space: { ...draft.space, id: draft.space.id.trim().toLowerCase(), folder: draft.space.folder.trim() } })}
+            >
+              {draft.originalId ? "Save" : "Share"}
+            </button>
+            <button type="button" className="settings-browse-btn" onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {spaces === null ? (
+        <p className="settings-hint">Loading…</p>
+      ) : spaces.length === 0 ? (
+        <p className="settings-hint">{people.length === 0 ? "Add someone before sharing a folder." : "No folder shared."}</p>
+      ) : (
+        <div className="workspace-device-list">
+          {spaces.map((space) => (
+            <div className="workspace-device-row" key={space.id}>
+              <div className="workspace-device-info">
+                <div className="workspace-device-name-row">
+                  <span className="workspace-device-name">{space.id}</span>
+                  <code>{space.folder}</code>
+                </div>
+                <span className="workspace-device-meta">{who(space)}</span>
+                {confirmRemove === space.id && (
+                  <span className="settings-hint">Whoever saw this folder stops seeing it from their next message. The folder and its notes stay in your vault.</span>
+                )}
+              </div>
+              <div className="workspace-device-actions">
+                {confirmRemove === space.id ? (
+                  <>
+                    <button type="button" className="provider-delete-btn" onClick={() => void run("remove_shared_space", { id: space.id })}>
+                      Stop sharing
+                    </button>
+                    <button type="button" className="settings-browse-btn" onClick={() => setConfirmRemove(null)}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ originalId: space.id, space })}>
+                      Edit
+                    </button>
+                    <button type="button" className="provider-delete-btn" onClick={() => setConfirmRemove(space.id)}>
+                      Stop sharing
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 

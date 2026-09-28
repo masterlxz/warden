@@ -15,7 +15,7 @@ use warden_core::memory::Vault;
 use warden_core::model::{response_stream, ChatStream, Message, ModelProvider, Response, Role, ToolCall, Usage};
 use warden_core::spend::{Limit, MemoryStore, PriceTable, Scope, SpendGuard};
 use warden_core::orchestrator::Orchestrator;
-use warden_core::tool::file_tools::WriteFileTool;
+use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
 use warden_core::tool::shell::ShellTool;
 use warden_core::tool::ToolSpec;
 use warden_server::{ClientMessage, Server, ServerConnection, ServerMessage, SettingsHost};
@@ -25,7 +25,8 @@ const TEMP: &str = "provisional-1";
 
 type Offered = Arc<Mutex<Vec<Vec<String>>>>;
 
-/// "WRITE <path>" asks for `write_file` there; a tool result ends the turn; "SPEND" costs 100 tokens.
+/// "WRITE <path>" asks for `write_file` there, "READ <path>" for `read_file`; a tool result ends the
+/// turn; "SPEND" costs 100 tokens.
 struct Scripted {
     offered: Offered,
 }
@@ -42,6 +43,13 @@ impl ModelProvider for Scripted {
             return Ok(response_stream(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCall { id: "c1".into(), name: "write_file".into(), arguments: json!({ "path": path, "content": "written" }), thought_signature: None }],
+                usage: None,
+            }));
+        }
+        if let Some(path) = last.content.strip_prefix("READ ") {
+            return Ok(response_stream(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCall { id: "c1".into(), name: "read_file".into(), arguments: json!({ "path": path }), thought_signature: None }],
                 usage: None,
             }));
         }
@@ -108,6 +116,7 @@ async fn spin_up() -> Hub {
     let vault = Arc::new(Vault::new(dir.join("vault")));
     let mut orchestrator = Orchestrator::new(Arc::new(Scripted { offered: offered.clone() }), vault.clone());
     orchestrator.register_tool(Arc::new(WriteFileTool::new(vault.clone())));
+    orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
     orchestrator.register_tool(Arc::new(ShellTool::new(vault)));
     // Fatia 2: Ana may spend 150 tokens a day, on every channel; the owner has no limit.
     let limits = vec![Limit::new("ana-day", Scope::Person("ana".into()), 24).with_max_tokens(150)];
@@ -210,7 +219,7 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
         ServerMessage::Settings { settings, .. } => {
             // The agents shared with her (not the owner's private one), and her own tools.
             assert_eq!(settings.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["helper", "family"]);
-            assert_eq!(settings.tool_names, ["write_file"]);
+            assert_eq!(settings.tool_names, ["write_file", "read_file"]);
             assert!(settings.providers.is_empty());
         }
         other => panic!("{other:?}"),
@@ -431,9 +440,93 @@ async fn a_member_keeps_api_keys_of_her_own() {
     let (status, _) = http(&hub.url, "POST", "/v1/chat/completions", &anas_key, Some(r#"{"model":"warden/private","messages":[{"role":"user","content":"hi"}]}"#)).await;
     assert_eq!(status, 404, "the owner's private agent isn't a model for her");
 
+    // Fatia 3: a space shared with her reaches her key too.
+    std::fs::create_dir_all(hub.dir.join("vault/casa")).unwrap();
+    std::fs::write(hub.dir.join("vault/casa/lista.md"), "arroz").unwrap();
+    owner.send(&ClientMessage::SaveSpace { request_id: 9, pairing_key: KEY.into(), original_id: None, space: space("casa", "casa", &["ana"], &[]) }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::SpaceList { .. }));
+    let request = r#"{"model":"warden","messages":[{"role":"user","content":"READ compartilhado/casa/lista.md"}]}"#;
+    let (status, body) = http(&hub.url, "POST", "/v1/chat/completions", &anas_key, Some(request)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("arroz"), "{body}");
+
     // Removing her takes her keys along.
-    owner.send(&ClientMessage::RemoveUser { request_id: 8, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    owner.send(&ClientMessage::RemoveUser { request_id: 10, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { .. }));
     let (status, _) = http(&hub.url, "GET", "/v1/models", &anas_key, None).await;
     assert_eq!(status, 401);
+}
+
+fn tool_said(message: ServerMessage) -> String {
+    match message {
+        ServerMessage::ChatResponse { content, .. } => content,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn space(id: &str, folder: &str, readers: &[&str], writers: &[&str]) -> warden_server_protocol::protocol::SpaceDto {
+    warden_server_protocol::protocol::SpaceDto {
+        id: id.into(),
+        folder: folder.into(),
+        readers: readers.iter().map(|s| s.to_string()).collect(),
+        writers: writers.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// Fatia 3: the owner shares a folder of their vault; Ana's agent reads it at `compartilhado/casa/`,
+/// writes there only once she's a writer, and loses it when the owner stops sharing it — never
+/// seeing the rest of the owner's vault.
+#[tokio::test]
+async fn a_member_sees_only_the_folders_the_owner_shares_with_her() {
+    let hub = spin_up().await;
+    std::fs::create_dir_all(hub.dir.join("vault/casa")).unwrap();
+    std::fs::write(hub.dir.join("vault/casa/lista.md"), "arroz, feijão").unwrap();
+    std::fs::write(hub.dir.join("vault/segredo.md"), "the owner's").unwrap();
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let mut ana = ana_ready(&hub).await;
+
+    // Nothing shared yet: the folder isn't there for her.
+    let said = tool_said(chat(&mut ana, "READ compartilhado/casa/lista.md", "s1").await);
+    assert!(said.contains("no shared space 'casa'"), "{said}");
+
+    // Only the owner shares, with the pairing key.
+    ana.send(&ClientMessage::SaveSpace { request_id: 2, pairing_key: KEY.into(), original_id: None, space: space("casa", "casa", &["ana"], &[]) }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::SaveSpace { request_id: 3, pairing_key: "wrong".into(), original_id: None, space: space("casa", "casa", &["ana"], &[]) }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::SaveSpace { request_id: 4, pairing_key: KEY.into(), original_id: None, space: space("casa", "../vault", &["ana"], &[]) }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: false, .. }));
+    owner.send(&ClientMessage::SaveSpace { request_id: 5, pairing_key: KEY.into(), original_id: None, space: space("casa", "casa", &["ana"], &[]) }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::SpaceList { spaces, .. } if spaces == [space("casa", "casa", &["ana"], &[])]));
+
+    // She sees it as hers to read, where it shows up in her vault.
+    ana.send(&ClientMessage::ListSpaces { request_id: 6 }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SpaceList { spaces, .. } if spaces == [space("casa", "compartilhado/casa", &["ana"], &[])]));
+    ana.send(&ClientMessage::ListVaultFiles { request_id: 7 }).await.unwrap();
+    match reply(&mut ana).await {
+        ServerMessage::VaultFileList { files, .. } => assert_eq!(files, ["compartilhado/casa/lista.md"], "and nothing else of the owner's"),
+        other => panic!("{other:?}"),
+    }
+    let said = tool_said(chat(&mut ana, "READ compartilhado/casa/lista.md", "s1").await);
+    assert!(said.contains("arroz, feijão"), "{said}");
+    let said = tool_said(chat(&mut ana, "READ ../../../vault/segredo.md", "s1").await);
+    assert!(!said.contains("the owner's"), "{said}");
+
+    // Reading only: her agent's write is refused.
+    let said = tool_said(chat(&mut ana, "WRITE compartilhado/casa/nova.md", "s1").await);
+    assert!(said.contains("read-only"), "{said}");
+    assert!(!hub.dir.join("vault/casa/nova.md").exists());
+
+    // A writer now: the note lands in the owner's folder.
+    owner.send(&ClientMessage::SaveSpace { request_id: 8, pairing_key: KEY.into(), original_id: Some("casa".into()), space: space("casa", "casa", &[], &["ana"]) }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::SpaceList { .. }));
+    tool_said(chat(&mut ana, "WRITE compartilhado/casa/nova.md", "s1").await);
+    assert_eq!(std::fs::read_to_string(hub.dir.join("vault/casa/nova.md")).unwrap(), "written");
+
+    // No longer shared: gone for her, while the folder stays the owner's.
+    owner.send(&ClientMessage::DeleteSpace { request_id: 9, pairing_key: KEY.into(), id: "casa".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::SpaceList { spaces, .. } if spaces.is_empty()));
+    let said = tool_said(chat(&mut ana, "READ compartilhado/casa/lista.md", "s1").await);
+    assert!(said.contains("no shared space 'casa'"), "{said}");
+    assert!(hub.dir.join("vault/casa/lista.md").exists() && hub.dir.join("vault/casa/nova.md").exists());
 }

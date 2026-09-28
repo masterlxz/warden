@@ -35,7 +35,7 @@ use warden_core::spend::SpendContext;
 use warden_core::tool::ToolSpec;
 
 use crate::api_keys::{ApiKey, ApiKeyStore};
-use crate::people::{member_orchestrator, tools_for, MemberSpace};
+use crate::people::{member_orchestrator, mount_member_spaces, tools_for, MemberSpace, SpaceVaults};
 use crate::settings::{SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
 use crate::usage::spend_limit_id;
 use crate::web_ui::{write_response, RequestHead};
@@ -63,6 +63,8 @@ pub(crate) struct ApiContext {
     pub users_dir: Option<Arc<PathBuf>>,
     /// The hub's conversations directory — only to describe a member's space; the API saves none.
     pub conversations_root: Arc<PathBuf>,
+    /// The owner's shared folders' vaults (P84 fatia 3), for a member's key.
+    pub space_vaults: SpaceVaults,
 }
 
 /// A failure, answered in OpenAI's error format.
@@ -378,6 +380,7 @@ fn scope_model(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestra
     let member = config.users.iter().find(|u| &u.id == user).ok_or_else(gone)?;
     let space = MemberSpace::new(member, users_dir, &api.conversations_root);
     let tools = tools_for(&orchestrator, &config, user);
+    mount_member_spaces(&space, &config, orchestrator.vault().root(), &api.space_vaults);
     Ok((member_orchestrator(&orchestrator, &space, &tools, "api", &key.name), persona))
 }
 

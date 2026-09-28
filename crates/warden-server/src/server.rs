@@ -26,7 +26,7 @@ use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
-use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, password_gate, tools_for, user_info, MemberSpace, Person};
+use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
 use crate::user_admin::{handle_change_password, handle_list_spaces, handle_list_users, handle_space_change, handle_user_change, SpaceChange, UserChange};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
@@ -286,6 +286,7 @@ impl Server {
             nodes: self.nodes.clone(),
             node_tools: None,
             users_dir: self.users_dir.map(Arc::new),
+            space_vaults: SpaceVaults::default(),
         };
         // P84: conversations are a person's, not a device's — every device's move to the root's,
         // once, before any connection can read them.
@@ -372,6 +373,8 @@ struct ConnectionContext {
     node_tools: Option<NodeToolFactory>,
     /// Where members' own vaults live (P84); `None` when members can't sign in here.
     users_dir: Option<Arc<PathBuf>>,
+    /// The owner's shared folders' vaults (P84 fatia 3), shared by every connection and the API.
+    space_vaults: SpaceVaults,
 }
 
 impl ConnectionContext {
@@ -382,8 +385,18 @@ impl ConnectionContext {
             keys_path: self.api_keys.clone(),
             users_dir: self.users_dir.clone(),
             conversations_root: self.conversations_dir.clone(),
+            space_vaults: self.space_vaults.clone(),
         }
     }
+}
+
+/// The vault a person's requests read and write: the owner's, or the member's with the spaces
+/// shared with them right now (P84 fatia 3).
+fn person_vault(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHost>, owner: &Orchestrator, space_vaults: &SpaceVaults) -> Arc<warden_core::memory::Vault> {
+    let Some(member) = member else { return owner.vault().clone() };
+    let config = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
+    mount_member_spaces(member, &config, owner.vault().root(), space_vaults);
+    member.vault.clone()
 }
 
 /// Off the reader loop: a wrong key waits a second under the settings lock.
@@ -666,6 +679,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         nodes,
         node_tools,
         users_dir,
+        space_vaults,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -978,6 +992,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         Some(member) => {
                             let config = settings.as_deref().and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
                             let tools = tools_for(&orchestrator, &config, &member.id);
+                            mount_member_spaces(member, &config, orchestrator.vault().root(), &space_vaults);
                             member_orchestrator(&orchestrator, member, &tools, "server", &format!("user-{}", member.id))
                         }
                         // `manage_agents`, SSH hosts and spending limits that need a yes ask this device.
@@ -1057,7 +1072,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(message @ (ClientMessage::ListSkills { .. } | ClientMessage::SaveSkill { .. } | ClientMessage::DeleteSkill { .. })) => {
                     // Short local file I/O, answered inline (no spawn) — P72.
-                    let vault = member.as_ref().map(|m| m.vault.clone()).unwrap_or_else(|| orchestrator.current().vault().clone());
+                    let vault = person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults);
                     let store = SkillStore::new(vault);
                     if let Some(reply) = handle_skill_request(&store, message) {
                         let _ = tx.send(reply);
@@ -1086,7 +1101,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 ) => {
                     // P78 — listing and searching walk the whole vault, so this runs on the
                     // blocking pool instead of holding up this connection's reader loop.
-                    let vault = member.as_ref().map(|m| m.vault.clone()).unwrap_or_else(|| orchestrator.current().vault().clone());
+                    let vault = person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults);
                     let reply_tx = tx.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Some(reply) = handle_vault_request(&vault, message) {

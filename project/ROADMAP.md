@@ -479,8 +479,9 @@ Warden API, backup sem leitura, conversas compartilháveis, audiência nas notas
 convite. Serve para família e para empresa. Dividido em cinco fatias na Sessão 110 (`ARCHITECTURE.md`); a **fatia 1,
 pessoas e login, foi feita na Sessão 110**: membros com usuário e senha, cada um com o próprio vault e as próprias
 conversas, e sem a administração do hub. **A fatia 2, permissões nos agentes, foi feita na Sessão 111**: agentes
-compartilhados, tools e limite de gasto por pessoa, agentes próprios e chaves da API por pessoa. Registro original
-abaixo.
+compartilhados, tools e limite de gasto por pessoa, agentes próprios e chaves da API por pessoa. **A fatia 3, espaços compartilhados, foi feita nas Sessões 112 e 113**:
+pastas do vault do root que os membros veem em `compartilhado/`, lendo ou escrevendo, e que são também a audiência
+da memória do root. Registro original abaixo.
 
 Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo
 workspace, com **permissões configuráveis**. Hoje o hub tem um dono (a chave de pareamento) e os devices são

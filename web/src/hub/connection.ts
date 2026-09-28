@@ -27,6 +27,7 @@ import {
   type UsageReport,
   type NodeInfo,
   type SkillDto,
+  type SpaceInfo,
   type Task,
   type TaskInfo,
   type UserInfo,
@@ -440,6 +441,7 @@ export class ServerConnection {
       case "taskList":
       case "nodeList":
       case "userList":
+      case "spaceList":
       case "passwordChanged":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
@@ -721,6 +723,27 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "deleteOwnAgent", requestId, id }));
     if (reply.type !== "settings") throw new Error("resposta inesperada do hub");
     return { settings: reply.settings, version: reply.version, secretsWritable: reply.secretsWritable };
+  }
+
+  /** P84 fatia 3: the shared spaces — every one for the owner, a member's own for them. */
+  async listSpaces(): Promise<SpaceInfo[]> {
+    return this.spaceRequest((requestId) => ({ type: "listSpaces", requestId }));
+  }
+
+  /** The owner shares a folder (`originalId` absent) or changes a space. Rejects with `UserError`. */
+  async saveSpace(pairingKey: string, space: SpaceInfo, originalId?: string): Promise<SpaceInfo[]> {
+    return this.spaceRequest((requestId) => ({ type: "saveSpace", requestId, pairingKey, space, ...(originalId && { originalId }) }));
+  }
+
+  /** Stops sharing a folder; it stays in the owner's vault. */
+  async deleteSpace(pairingKey: string, id: string): Promise<SpaceInfo[]> {
+    return this.spaceRequest((requestId) => ({ type: "deleteSpace", requestId, pairingKey, id }));
+  }
+
+  private async spaceRequest(build: (requestId: number) => ClientMessage): Promise<SpaceInfo[]> {
+    const reply = await this.request(build);
+    if (reply.type !== "spaceList") throw new Error("resposta inesperada do hub");
+    return reply.spaces;
   }
 
   private async userRequest(build: (requestId: number) => ClientMessage): Promise<UserList> {

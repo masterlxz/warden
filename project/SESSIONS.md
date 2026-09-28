@@ -2,11 +2,39 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-27 (Sessão 112, em andamento)
+> Última atualização: 2026-09-28 (Sessão 113)
 
 ---
 
-### 2026-09-27 — Sessão 112 (interrompida no meio, retomar daqui)
+### 2026-09-28 — Sessão 113
+
+- **Objetivo**: registrar ideias novas do usuário e terminar a fatia 3 do P84 (o "Falta" da Sessão 112).
+- **Ideias registradas** (`96983c5`, só registro): P102 (pasta de trabalho na conversa), P103 (projetos; o foco é
+  o estilo Projects do Claude/ChatGPT, com o projeto de código depois), P104 (estudar o Hermes Agent para o
+  aprendizado dos agentes), P105 (o que o OpenClaw tem e o Warden não), P106 (usar o Warden sem abrir o app, junto
+  do P9). O modo de conversa "code" com o opencode entrou no P89, e responde a pergunta que tinha ficado aberta lá
+  (dentro da tela do Warden).
+- **Fatia 3 terminada** (os seis itens do "Falta"):
+  1. `mount_member_spaces` ligado: `SpaceVaults` no `ConnectionContext` e no `ApiContext`; antes do turno de um
+     membro, dos pedidos de vault e de skills (`person_vault` no `server.rs`) e da Warden API pela chave de um
+     membro;
+  2. `warden-server spaces list|add|remove` (o `add` de um nome existente muda o espaço);
+  3. teste de integração `a_member_sees_only_the_folders_the_owner_shares_with_her`, e o teste das chaves da API
+     lendo um espaço. O `Scripted` dos testes ganhou `READ <caminho>` e o hub de teste, o `read_file`;
+  4. web: `SharedSpacesSection` na aba Pessoas, e `listSpaces`, `saveSpace` e `deleteSpace` no `connection.ts`;
+  5. desktop: "Shared spaces" dentro da seção People, com `list_shared_spaces`, `save_shared_space` e
+     `remove_shared_space` em `people_cmds.rs`;
+  6. docs: "Como ficou a fatia 3" no `ARCHITECTURE.md`, P84 atualizado, **P107** novo (testes), `ROADMAP.md` e
+     `README.md`.
+- **Verificação**: `cargo test --workspace` com 882 passando e 0 falhas, `cargo clippy` limpo no `warden-server` e no desktop, `tsc` e `vite build` da web, `tsc` do
+  desktop e `cargo build -p desktop`. O CLI rodado contra um config temporário, com as recusas (`../out`, espaço
+  que não existe). Nenhuma tela aberta: está no P107.
+- **Próximo passo**: a fatia 4 do P84 (criptografia, backup e recuperação) ou a sessão dedicada de testes (P80,
+  P87, P88, P91, P95, P96, P98, P99, P100, P107).
+
+---
+
+### 2026-09-27 — Sessão 112 (interrompida no meio, terminada na Sessão 113)
 
 - **Objetivo**: a fatia 3 do P84 (espaços compartilhados e audiência das notas). Plano aprovado em Plan mode.
 - **Decisões do usuário**:

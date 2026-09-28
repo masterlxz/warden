@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserError, type ServerConnection } from "../hub/connection";
 import type { UserInfo } from "../hub/messages";
+import SharedSpacesSection from "./SharedSpacesSection";
 
 // People (P84): the members of this workspace besides the owner. Each signs in with a username and
 // password, and has their own vault and conversations on this hub. Every change asks for the pairing
@@ -259,6 +260,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
           })}
         </ul>
       )}
+
+      <SharedSpacesSection conn={conn} users={users ?? []} />
     </div>
   );
 }

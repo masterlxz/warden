@@ -82,6 +82,37 @@ enum Command {
         #[arg(long, global = true)]
         config: Option<String>,
     },
+    /// Folders of your vault shared with members (P84), kept as `[[spaces]]` in the config file. A
+    /// member sees one at `compartilhado/<name>/` in their own vault, and never the rest of yours.
+    Spaces {
+        #[command(subcommand)]
+        action: SpacesAction,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long, global = true)]
+        config: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SpacesAction {
+    /// Every space, its folder and who reads and writes in it.
+    List,
+    /// Shares a folder of your vault, or changes who is in a space that already exists.
+    Add {
+        /// Its name, which members see it under: lowercase letters, digits, - or _.
+        id: String,
+        /// The folder in your vault, relative to its root (`casa`, `viagens/2026`).
+        #[arg(long)]
+        folder: String,
+        /// A member who reads it (repeat for more), or `*` for everyone.
+        #[arg(long = "reader")]
+        readers: Vec<String>,
+        /// A member who also writes in it (repeat for more), or `*` for everyone.
+        #[arg(long = "writer")]
+        writers: Vec<String>,
+    },
+    /// Stops sharing a folder. The folder and its notes stay in your vault.
+    Remove { id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -585,6 +616,39 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
     Ok(())
 }
 
+fn run_spaces_command(action: SpacesAction, config: Option<String>) -> anyhow::Result<()> {
+    use warden_bootstrap::users::{remove_space, save_space, SpaceConfig};
+    let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let mut file = load_config_from_path(&config_path, config.is_some())?;
+    let people = |list: &[String]| if list.is_empty() { "no one".to_string() } else { list.join(", ") };
+    match action {
+        SpacesAction::List => {
+            if file.spaces.is_empty() {
+                println!("nothing shared yet — share a folder with `warden-server spaces add <name> --folder <folder> --reader <username>`");
+            }
+            for space in &file.spaces {
+                println!("{}\t{}\treaders: {}\twriters: {}", space.id, space.folder, people(&space.readers), people(&space.writers));
+            }
+        }
+        SpacesAction::Add { id, folder, readers, writers } => {
+            let wanted = id.trim().to_ascii_lowercase();
+            let existing = file.spaces.iter().any(|s| s.id == wanted).then_some(wanted.as_str());
+            save_space(&mut file, existing, SpaceConfig { id: id.clone(), folder, readers, writers })?;
+            save_config(&config_path, &file)?;
+            let space = file.spaces.iter().find(|s| s.id == wanted).expect("just saved");
+            let verb = if existing.is_some() { "updated" } else { "shared" };
+            println!("'{}' {verb}: {} — readers: {}; writers: {}", space.id, space.folder, people(&space.readers), people(&space.writers));
+            println!("Members see it at {}/{}/ in their vault, from their next message.", warden_core::memory::MOUNTS_DIR, space.id);
+        }
+        SpacesAction::Remove { id } => {
+            remove_space(&mut file, &id)?;
+            save_config(&config_path, &file)?;
+            println!("'{id}' is no longer shared — the folder and its notes stay in your vault");
+        }
+    }
+    Ok(())
+}
+
 fn run_nodes_command(action: NodesAction, config: Option<String>) -> anyhow::Result<()> {
     let config_path = config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
     match action {
@@ -854,6 +918,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Node(args) => run_node_command(args).await,
         Command::Nodes { action, config } => run_nodes_command(action, config),
         Command::Users { action, config } => run_users_command(action, config),
+        Command::Spaces { action, config } => run_spaces_command(action, config),
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

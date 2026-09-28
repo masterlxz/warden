@@ -2268,7 +2268,8 @@ a esposa, "ensinando" o agente ou por uma interface.
   - as conversas passam a ser **da pessoa**, as mesmas em todos os aparelhos dela, e as que já existiam viram do
     root;
   - um membro que usa um agente do root leva a persona e as tools do agente, mas **com a memória dele**. Usar a
-    memória do root com outra pessoa espera a audiência (fatia 3).
+    memória do root com outra pessoa espera a audiência (fatia 3, feita nas Sessões 112 e 113 como pastas
+    compartilhadas).
 - **Root**: continua sendo quem tem a chave de pareamento. Não aparece no `[[users]]`, e os aparelhos pareados com
   a chave são dele (`PairedDevice.user = None`). As telas de administração seguem pedindo a chave. Sem
   `[[users]]`, nada muda para quem já usava.
@@ -2379,6 +2380,52 @@ a esposa, "ensinando" o agente ou por uma interface.
   - desktop: "Shared with", as tools na seção People (`set_person_tools`), o escopo "One member of the workspace"
     nos limites e o dono das chaves;
   - mobile: sem mudança, porque ele já lê os agentes pela visão do hub.
+
+### Como ficou a fatia 3 (Sessões 112 e 113)
+
+- **Decisões do usuário**:
+  - um espaço é **uma pasta do vault do root**, com quem lê e quem escreve;
+  - a audiência é **por pasta**, não por nota nem por etiqueta;
+  - **só o root** cria espaços.
+  - Consequência: espaços e audiência viram o mesmo mecanismo. O turno de um membro enxerga só o vault dele e as
+    pastas do root liberadas para ele, então o root decide o que um agente sabe quando fala com outra pessoa
+    mexendo em pastas, e não em instruções no prompt.
+- **Config** (`warden_bootstrap::users`): `[[spaces]]` com `SpaceConfig { id, folder, readers, writers }`.
+  - `id` segue a regra dos usernames. A pasta é relativa à raiz do vault, sem `..`, sem `/` no começo, sem pasta
+    oculta, sem `skills/` e sem os arquivos fixos (`check_space_folder`);
+  - nome e pasta únicos. As pessoas passam pelo `clean_shares` (só quem existe, ou `"*"`), e um escritor não fica
+    também na lista de leitores;
+  - `save_space`, `remove_space` e `spaces_for(spaces, membro)`, que devolve cada espaço com "pode escrever";
+  - `remove_user` tira a pessoa de todos os espaços.
+- **Montagens no `Vault`** (núcleo, `Mount { prefix, vault, writable }` e `set_mounts`):
+  - com montagens, `compartilhado/` é só delas: `compartilhado/<id>/…` vai para o vault montado, relativo à raiz
+    dele (o bloqueio de `..` e de caminho absoluto continua valendo lá dentro), e um `<id>` sem montagem é recusado;
+  - `read`, `write`, `delete`, `read_note`, `save_note` e `delete_note` seguem a rota. A escrita num espaço só de
+    leitura é recusada ("read-only for you");
+  - a listagem e as buscas (texto e semântica) somam os montados com o prefixo. O `list_all_files`, que o sync usa,
+    **não** soma: a pasta continua sendo do root e sincroniza com o vault dele;
+  - um vault sem `set_mounts` (o do root) não muda nada: `compartilhado/` é uma pasta como outra qualquer.
+- **No hub** (`people.rs`):
+  - `SpaceVaults`, um `Vault` por pasta compartilhada, guardado enquanto o hub vive. Assim o modelo semântico de uma
+    pasta carrega uma vez, e não a cada turno. Fica no `ConnectionContext` e no `ApiContext`;
+  - `mount_member_spaces(membro, config, vault do root, cache)` refaz as montagens pelo config de agora. É chamada
+    antes de cada turno de membro (junto com as tools), antes de cada pedido de vault e de skills (`person_vault` no
+    `server.rs`) e em cada chamada da Warden API pela chave de um membro. Um espaço dado ou tirado vale na próxima
+    mensagem, sem reconectar.
+- **Protocolo**: `SpaceDto`, `ListSpaces` (todos para o root; para um membro, só os dele, com `folder` já como
+  `compartilhado/<id>` e sem mostrar quem mais está), `SaveSpace` e `DeleteSpace` com a chave de pareamento,
+  respondidos por `SpaceList` ou `UserError`. Um membro que tenta salvar é recusado pelo `member_refusal`.
+- **Telas e CLI**:
+  - web: a seção "Espaços compartilhados" na aba Pessoas (`SharedSpacesSection`), com as pastas do vault como
+    sugestão e, por pessoa (e para "todo mundo"), "Não vê", "Só lê" ou "Lê e escreve";
+  - desktop: "Shared spaces" dentro da seção People do Workspace (`list_shared_spaces`, `save_shared_space` e
+    `remove_shared_space`), pelo `config.toml` local e sem pedir a chave, como o resto da seção;
+  - CLI: `warden-server spaces list|add <nome> --folder <pasta> [--reader <u>]… [--writer <u>]…|remove`. O `add`
+    de um nome que já existe muda o espaço;
+  - o membro vê os espaços no próprio vault (a aba Vault da web e o celular), sem tela nova.
+- **Fora desta fatia**: o agente do root não enxerga o vault do membro (nem precisa, os espaços são do root); não
+  há espaço criado por membro nem pasta do vault de um membro compartilhada com outro; as skills de um espaço não
+  são carregadas (`skills/` não pode ser espaço); e a memória fixa do root (`_profile.md` etc.) nunca entra.
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 
