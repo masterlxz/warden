@@ -9,6 +9,7 @@ import ApiKeysSection from "./components/ApiKeysSection";
 import LoginView, { type LoginCredentials } from "./components/LoginView";
 import MyAgentsView from "./components/MyAgentsView";
 import PeopleView from "./components/PeopleView";
+import RecoveryCodeView from "./components/RecoveryCodeView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
@@ -90,6 +91,9 @@ export default function App() {
   const [user, setUser] = useState<UserInfo | undefined>(undefined);
   /** A member asked to change their password (the provisional one forces it without asking). */
   const [changingPassword, setChangingPassword] = useState(false);
+  /** P84 fatia 4: a recovery code of the member's encrypted data, waiting to be shown once. `replacing`: it
+   * takes the place of an earlier one. */
+  const [recoveryCode, setRecoveryCode] = useState<{ code: string; replacing: boolean } | null>(null);
   /** Mirrors `conversations` for the connection's callbacks. */
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
@@ -202,6 +206,11 @@ export default function App() {
         if (event.kind === "prompt") setApprovals((queue) => [...queue, event.prompt]);
         else setApprovals((queue) => queue.filter((p) => p.approvalId !== event.approvalId));
       });
+      // Signing in turned encryption on for this member's data (P84 fatia 4): the code is shown once.
+      connection.onRecoveryCode((code) => {
+        setRecoveryCode({ code, replacing: false });
+        setUser((current) => (current ? { ...current, encrypted: true } : current));
+      });
       // An agent left a message for another, or answered one (P46): new or changed conversations.
       connection.onConversationsChanged((conversationId) => {
         void refreshConversations(connection);
@@ -271,8 +280,10 @@ export default function App() {
   }
 
   /** The member's own password is in: what the provisional one kept closed can load now. */
-  function handlePasswordChanged() {
-    setUser((current) => (current ? { ...current, mustChangePassword: false } : current));
+  function handlePasswordChanged(newRecoveryCode?: string) {
+    // The change opened their data key (or made it), so it's no longer shut either.
+    setUser((current) => (current ? { ...current, mustChangePassword: false, needsRecovery: false, locked: false, encrypted: current.encrypted || newRecoveryCode !== undefined } : current));
+    if (newRecoveryCode !== undefined) setRecoveryCode({ code: newRecoveryCode, replacing: false });
     setChangingPassword(false);
     const connection = connRef.current;
     if (!connection) return;
@@ -295,6 +306,7 @@ export default function App() {
     setServerName(null);
     setUser(undefined);
     setChangingPassword(false);
+    setRecoveryCode(null);
     setView("chat");
     setPhase({ kind: "login" });
   }
@@ -414,13 +426,24 @@ export default function App() {
     );
   }
 
+  // The code comes before anything else: it's shown once, and the person has to say they kept it.
+  if (conn && recoveryCode) {
+    return <RecoveryCodeView code={recoveryCode.code} replacing={recoveryCode.replacing} onDone={() => setRecoveryCode(null)} />;
+  }
+
   if (conn && user && (user.mustChangePassword || changingPassword)) {
     return (
       <ChangePasswordView
         conn={conn}
         name={user.name}
         required={user.mustChangePassword}
+        needsRecovery={user.needsRecovery}
+        encrypted={user.encrypted}
         onDone={handlePasswordChanged}
+        onNewCode={(code) => {
+          setRecoveryCode({ code, replacing: true });
+          setChangingPassword(false);
+        }}
         onCancel={() => setChangingPassword(false)}
         onLogout={handleLogout}
       />
@@ -501,6 +524,9 @@ export default function App() {
       </header>
 
       {!phase.connected && <p className="banner">A conexão com o hub caiu. Reconectando…</p>}
+      {user?.locked && (
+        <p className="banner">Os seus dados estão trancados: o hub reiniciou e só abre a chave com a sua senha. Saia e entre de novo com a senha para abri-los.</p>
+      )}
 
       <main className="app-main">
         {view === "chat" ? (

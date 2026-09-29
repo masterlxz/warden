@@ -481,7 +481,10 @@ pessoas e login, foi feita na Sessão 110**: membros com usuário e senha, cada 
 conversas, e sem a administração do hub. **A fatia 2, permissões nos agentes, foi feita na Sessão 111**: agentes
 compartilhados, tools e limite de gasto por pessoa, agentes próprios e chaves da API por pessoa. **A fatia 3, espaços compartilhados, foi feita nas Sessões 112 e 113**:
 pastas do vault do root que os membros veem em `compartilhado/`, lendo ou escrevendo, e que são também a audiência
-da memória do root. Registro original abaixo.
+da memória do root. **A fatia 4, parte A, foi feita na Sessão 114**: o vault (conteúdo e nomes), as conversas e o
+índice de busca de cada membro ficam criptografados no disco do hub com uma chave que só a senha do membro ou o
+código de recuperação dele abrem, com `warden-server backup` e `restore`; faltam a parte B (Shamir e recuperação de
+empresa) e a fatia 5. Registro original abaixo.
 
 Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo
 workspace, com **permissões configuráveis**. Hoje o hub tem um dono (a chave de pareamento) e os devices são

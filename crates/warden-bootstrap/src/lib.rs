@@ -34,6 +34,7 @@ pub mod auto_sync;
 mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;
+pub mod member_crypto;
 pub mod node_model;
 pub mod message_agent;
 pub mod settings;
@@ -776,7 +777,23 @@ pub fn save_conversation(dir: &Path, conversation: &Conversation) -> anyhow::Res
         .with_context(|| format!("failed to create conversations directory at {}", dir.display()))?;
     let path = dir.join(format!("{}.json", conversation.id));
     let contents = serde_json::to_string_pretty(conversation).context("failed to serialize conversation")?;
-    std::fs::write(&path, contents).with_context(|| format!("failed to write conversation file at {}", path.display()))
+    let on_disk = match member_crypto::dir_state(dir) {
+        member_crypto::DirState::Plain => contents.into_bytes(),
+        member_crypto::DirState::Unlocked(cipher) => cipher.seal(contents.as_bytes()),
+        member_crypto::DirState::Locked => anyhow::bail!(warden_core::memory::LOCKED_MESSAGE),
+    };
+    std::fs::write(&path, on_disk).with_context(|| format!("failed to write conversation file at {}", path.display()))
+}
+
+/// What a conversation file holds, decrypted when the folder is a member's encrypted one. A plain
+/// file in an encrypted folder is read as it is: it's one the migration hasn't reached yet.
+fn conversation_text(dir: &Path, bytes: Vec<u8>) -> anyhow::Result<String> {
+    let bytes = match member_crypto::dir_state(dir) {
+        member_crypto::DirState::Locked => anyhow::bail!(warden_core::memory::LOCKED_MESSAGE),
+        member_crypto::DirState::Unlocked(cipher) if warden_core::memory::VaultCipher::is_sealed(&bytes) => cipher.open(&bytes)?,
+        _ => bytes,
+    };
+    Ok(String::from_utf8(bytes)?)
 }
 
 /// Lists every persisted conversation, newest-updated first. A directory that doesn't exist yet
@@ -784,6 +801,9 @@ pub fn save_conversation(dir: &Path, conversation: &Conversation) -> anyhow::Res
 /// non-required case. A file that fails to parse is skipped rather than failing the whole list,
 /// so one corrupt conversation can't make every other one disappear from the sidebar.
 pub fn list_conversations(dir: &Path) -> anyhow::Result<Vec<Conversation>> {
+    if matches!(member_crypto::dir_state(dir), member_crypto::DirState::Locked) {
+        anyhow::bail!(warden_core::memory::LOCKED_MESSAGE);
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -798,7 +818,7 @@ pub fn list_conversations(dir: &Path) -> anyhow::Result<Vec<Conversation>> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(contents) = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|bytes| conversation_text(dir, bytes)) {
             if let Ok(conversation) = serde_json::from_str::<Conversation>(&contents) {
                 conversations.push(conversation);
             }
@@ -816,8 +836,9 @@ pub fn list_conversations(dir: &Path) -> anyhow::Result<Vec<Conversation>> {
 /// other conversation's file on every incoming message.
 pub fn load_conversation(dir: &Path, id: &str) -> anyhow::Result<Option<Conversation>> {
     let path = dir.join(format!("{id}.json"));
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let contents = conversation_text(dir, bytes).with_context(|| format!("failed to read conversation file at {}", path.display()))?;
             let conversation = serde_json::from_str(&contents)
                 .with_context(|| format!("failed to parse conversation file at {}", path.display()))?;
             Ok(Some(conversation))
@@ -2190,6 +2211,33 @@ oauth = true
         assert!(delete_conversation(&dir, "c1").unwrap());
         assert_eq!(load_conversation(&dir, "c1").unwrap(), None);
         assert!(!delete_conversation(&dir, "c1").unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P84 fatia 4: a member's conversations are encrypted on disk, and locked without the key.
+    #[test]
+    fn conversations_of_an_encrypted_folder_are_sealed_and_locked_without_the_key() {
+        let dir = temp_dir("sealed");
+        let key = member_crypto::new_key();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(member_crypto::MARKER), b"1").unwrap();
+        member_crypto::unlock(&[&dir], &key);
+
+        let conversation = sample_conversation("c1", 100);
+        save_conversation(&dir, &conversation).unwrap();
+        let on_disk = std::fs::read(dir.join("c1.json")).unwrap();
+        assert!(warden_core::memory::VaultCipher::is_sealed(&on_disk));
+        assert!(!String::from_utf8_lossy(&on_disk).contains(&conversation.title), "the title is on disk");
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), Some(conversation.clone()));
+        assert_eq!(list_conversations(&dir).unwrap(), vec![conversation.clone()]);
+        assert!(rename_conversation(&dir, "c1", "Novo").unwrap());
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().title, "Novo");
+
+        member_crypto::lock(&[&dir]);
+        assert!(load_conversation(&dir, "c1").is_err());
+        assert!(list_conversations(&dir).is_err());
+        assert!(save_conversation(&dir, &conversation).is_err(), "nothing readable is written while locked");
+        assert_eq!(std::fs::read(dir.join("c1.json")).unwrap()[..4], *b"WRD1");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -48,6 +48,13 @@ fastembed = { version = "6.0.3", optional = true, default-features = false, feat
 # Not optional since P78: note versions (`memory::content_version`) use it without semantic search.
 sha2 = "0.10"
 dirs = { workspace = true, optional = true }
+# P84 fatia 4: encryption at rest of a member's vault (`memory/cipher.rs`). Same versions as
+# warden-truthid/warden-sync (`aes-gcm`, `hkdf`) so no second major compiles in; `aes-gcm-siv` is
+# for file and folder names, which must encrypt to the same text every time. Pure Rust, so it still
+# cross-compiles for Android like the rest of this crate.
+aes-gcm = "0.10"
+aes-gcm-siv = "0.11"
+hkdf = "0.12"
 # generate_document's PDF support (P64 fatia 3). Chosen over `printpdf` (its current major dropped
 # base-14-font support and now requires embedding a TTF/OTF asset just to write plain text — a
 # licensing/binary-asset question we don't need) — `lopdf` writes PDFs referencing a standard

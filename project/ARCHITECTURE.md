@@ -2257,7 +2257,8 @@ a esposa, "ensinando" o agente ou por uma interface.
    próprios e chaves da Warden API por pessoa.
 3. **Espaços compartilhados e audiência das notas**: o agente do root falando com outra pessoa só enxerga o que foi
    liberado para ela.
-4. **Criptografia, backup e recuperação**, com as três políticas acima.
+4. **Criptografia, backup e recuperação**, com as três políticas acima. **Parte A feita na Sessão 114**
+   (criptografia, backup e "privado de verdade"); a parte B (Shamir e recuperação de empresa) falta.
 5. **Convite pelo TruthID.**
 
 ### Como ficou a fatia 1 (Sessão 110)
@@ -2426,6 +2427,87 @@ a esposa, "ensinando" o agente ou por uma interface.
 - **Fora desta fatia**: o agente do root não enxerga o vault do membro (nem precisa, os espaços são do root); não
   há espaço criado por membro nem pasta do vault de um membro compartilhada com outro; as skills de um espaço não
   são carregadas (`skills/` não pode ser espaço); e a memória fixa do root (`_profile.md` etc.) nunca entra.
+
+### Como ficou a fatia 4, parte A (Sessão 114)
+
+A fatia 4 foi dividida por escolha do usuário. A **parte A** (esta) é a criptografia do que é de cada membro, o
+backup e a política "privado de verdade". A **parte B** fica para depois: Shamir 2 de 3 ("recuperável com
+consentimento") e recuperação de empresa com registro e aviso.
+
+- **Decisões do usuário**:
+  - a chave abre no login e **fica só na memória do hub**: token e chave da Warden API funcionam enquanto o hub
+    está de pé, e depois de reiniciar o membro entra uma vez com a senha;
+  - cifrar o vault (conteúdo **e nomes de arquivo e de pasta**), as conversas e os arquivos gerados.
+    Os arquivos gerados **não entraram** (veja "Fora desta parte");
+  - o recorte em duas partes.
+- **A chave** (`warden_bootstrap::member_crypto` e `users.rs`):
+  - uma chave aleatória de 32 bytes por membro. Ela nunca vai para o disco em claro: o `[[users]]` guarda a
+    chave **embrulhada duas vezes** (`key.by_password` e `key.by_recovery`, em base64), e qualquer uma das duas a
+    abre. O embrulho é AES-256-GCM sob uma chave derivada por Argon2id (a senha, ou o código de recuperação) com sal
+    próprio. O `config.toml` sincroniza, então os embrulhos acompanham o membro entre as máquinas do root, mas sem
+    a senha ou o código ninguém abre;
+  - **ela nasce da senha do próprio membro, nunca da provisória**, senão o root abriria o vault. Membro novo: na
+    troca de senha obrigatória. Membro de antes da fatia 4, com dados em claro: no primeiro login com a senha
+    própria, com migração;
+  - troca de senha normal abre a chave com a antiga e embrulha com a nova, mantendo chave e código;
+  - **reset do root**: `reset_password` marca `key_needs_recovery`. O root não abre a chave, então o membro entra com
+    a provisória e a troca de senha passa a exigir o **código de recuperação**, que abre o segundo embrulho. Sem o
+    código, os dados são irrecuperáveis: é a política "privado de verdade";
+  - o **código de recuperação** são 160 bits em base32 (`ABCD-EFGH-…`), mostrado uma vez. O membro pede outro
+    (`RegenerateRecoveryCode`, com a senha) e o antigo deixa de valer.
+- **Chave em uso**: uma tabela no processo (`member_crypto`, por pasta) que o login preenche. Fica por pasta, e não
+  por conexão, para as funções de conversa (que recebem só um `Path`) acharem a chave sem mudar 20 chamadas. Uma
+  pasta com a marca `.encrypted` e sem chave na tabela está **trancada**: vault e conversas respondem
+  "your data is locked…", nada em claro é escrito ao lado dos arquivos cifrados (`Vault::new_locked`), e o
+  `HelloAck` diz `locked`. Entrar com a senha abre. Remover o membro trava.
+- **`Vault` cifrado** (`warden-core`, `memory/cipher.rs`): `Vault::new_encrypted(raiz, cifrador)`.
+  - conteúdo: AES-256-GCM, nonce novo a cada escrita, formato `WRD1 + nonce + cifra + tag`. Duas subchaves saem da
+    chave do membro por HKDF (conteúdo e nomes);
+  - nomes: AES-256-GCM-SIV com nonce fixo, de propósito: um nome precisa dar o mesmo texto sempre, porque um
+    caminho é achado cifrando-o, e o SIV é o modo que aguenta nonce repetido (só revela que dois nomes são iguais).
+    Cada pasta e cada arquivo é cifrado à parte e escrito em base32 minúsculo com prefixo `w1-`. Um nome tem no
+    máximo 120 bytes;
+  - `path_of` vira o mapa caminho legível → caminho no disco. Toda listagem decifra os nomes e ignora o que não é
+    cifrado. Busca de texto, busca semântica (o índice `.warden/semantic_index.json` também vai cifrado),
+    `read_note`/`save_note` (a versão continua sobre o texto claro) e a escrita atômica passam pela mesma camada;
+  - as skills faziam IO direto no disco e foram para dentro do `Vault` (`files_in`, `is_file`, `remove_dir_all`,
+    `remove_dir_if_empty`);
+  - as montagens da fatia 3 seguem iguais: `compartilhado/<id>/` vai para o vault do root, em claro, que é do root.
+- **Conversas**: `save_conversation`, `load_conversation` e `list_conversations` cifram e decifram pelo estado da
+  pasta. Um arquivo em claro numa pasta cifrada é lido como está (é um que a migração ainda não alcançou). O nome
+  do arquivo é o id da conversa, que o cliente escolhe, e **continua legível**; o título e as mensagens não.
+- **Migração** (`encrypt_member_data`, idempotente): cifra conteúdo e nome de cada arquivo do vault e cada conversa,
+  pulando o que já está cifrado, e só no fim grava a marca `.encrypted`. Um `.encrypting` fica enquanto roda, então
+  uma migração interrompida é retomada no próximo login. Um nome longo demais fica de fora e é listado.
+- **No hub**: `open_member_data_at_sign_in` (no `Hello` com senha, **antes** de a conexão ganhar o vault: abre a chave
+  ou, para um membro de antes, cria a chave, migra e manda o código no `RecoveryCode` com `request_id` 0 logo após o
+  `HelloAck`) e `handle_change_password` (cria ou reabre a chave e refaz o `MemberSpace` da conexão, que tinha
+  nascido com o vault em claro).
+- **Só com cliente que mostra o código**: o `Hello` ganhou `recoveryCodes`. O hub só liga a criptografia de alguém
+  vindo de um cliente que diz que mostra o código, porque um código que ninguém vê é uma chave que ninguém tem. A
+  web diz que sim. O **celular não diz** (o app em Flutter não mostra o código e não deu para mudá-lo nesta
+  sessão), então um membro que só usa o celular continua sem criptografia até entrar pela web.
+- **Protocolo**: `UserInfoDto` ganhou `encrypted`, `needsRecovery` e `locked`; `ChangePassword` ganhou
+  `recoveryCode`; `PasswordChanged` ganhou `recoveryCode` (o código de uma chave recém-criada);
+  `RegenerateRecoveryCode` e `RecoveryCode`.
+- **Backup** (`warden-server backup --out <pasta> [--user <id>]`, `restore <pasta> [--user] [--force]`,
+  `member_backup.rs`): como o disco já é cifrado, o backup é uma cópia do vault e das conversas do membro mais um
+  `members.toml` com o `[[users]]` dele (a chave embrulhada pela senha e pelo código). Fica ilegível para o root e
+  volta em outra máquina, ou depois de remover o membro por engano, abrindo só com a senha ou o código. Membro sem
+  chave ainda é deixado de fora e dito. `generated/` também fica de fora, por não ser cifrado. O `restore` recusa
+  sobrescrever dados, ou trocar um membro que tem outra chave, sem `--force`.
+- **Remover um membro** apaga os embrulhos junto com o `[[users]]`: os arquivos ficam no disco, cifrados com uma
+  chave que não existe mais. Sem um backup feito antes, ninguém os abre de novo. O `users remove` e a web avisam.
+- **Telas**: web: `RecoveryCodeView` (o código aparece uma vez e a tela só sai depois de "guardei"), o campo do
+  código na troca de senha depois de um reset, "gerar um novo código" e o aviso de dados trancados; a aba Pessoas
+  mostra o estado de cada membro (sem criptografia, cifrado, precisa do código). O desktop não mudou: o estado só
+  aparece no `warden-server users list`.
+- **Fora desta parte**: Shamir e recuperação de empresa (parte B); os **documentos gerados** (`generate_document` é
+  uma tool padrão de membro, mas é criada uma vez com a pasta `generated` do root, então um documento de membro cai
+  ali, em claro e misturado com os do root; é uma falha anterior à fatia 4); backup agendado; apagar os dados de
+  quem sai; o extrato de gasto; o `shell` de um membro (se o root liberar) enxerga o disco cifrado; a chave
+  sobreviver a um reinício do hub sem a senha; o nome do arquivo de conversa; o relatório de uso do root perde a
+  linha de um membro trancado; e o celular (acima).
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 

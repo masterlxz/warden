@@ -2,7 +2,42 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-28 (Sessão 113)
+> Última atualização: 2026-09-29 (Sessão 114)
+
+---
+
+### 2026-09-29 — Sessão 114
+
+- **Objetivo**: a fatia 4 do P84 (criptografia, backup e recuperação), em duas partes; esta fez a **parte A**.
+  Plano aprovado em Plan mode. A parte B (Shamir 2 de 3 e recuperação de empresa) fica para depois.
+- **Decisões do usuário**: a chave abre no login e fica só na memória do hub; cifrar vault (conteúdo e nomes),
+  conversas e arquivos gerados; o recorte em duas partes.
+- **Feito** (detalhes em `ARCHITECTURE.md`, "Como ficou a fatia 4, parte A"):
+  1. `warden-core`: `VaultCipher` (conteúdo em AES-GCM, nomes em AES-GCM-SIV), `Vault::new_encrypted` e
+     `Vault::new_locked`, listagens e buscas decifrando os nomes, índice semântico cifrado, e as skills passando a
+     usar o `Vault` em vez de tocar no disco;
+  2. `warden-bootstrap`: `member_crypto` (chave, embrulho por senha e por código, tabela de chaves em uso,
+     migração idempotente), os campos `key` e `key_needs_recovery` no `[[users]]`, `change_password`,
+     `enable_encryption`, `open_key` e `regenerate_recovery_code`, e as conversas cifradas por pasta;
+  3. `warden-server`: abrir a chave no login antes da conexão ganhar o vault, `ChangePassword` criando ou abrindo
+     a chave, `RegenerateRecoveryCode`, o `HelloAck` dizendo `locked`, `warden-server backup` e `restore`;
+  4. protocolo: `UserInfoDto` (`encrypted`, `needsRecovery`, `locked`), `recoveryCode` no `ChangePassword` e no
+     `PasswordChanged`, `RegenerateRecoveryCode`, `RecoveryCode`, e `recoveryCodes` no `Hello`;
+  5. web: `RecoveryCodeView`, o campo do código depois de um reset, "gerar um novo código", o aviso de trancado e o
+     estado de cada membro na aba Pessoas;
+  6. docs: `ARCHITECTURE.md`, `PENDING.md` (P84 atualizado, **P108** testes, **P109** celular, **P110** documentos
+     gerados, **P111** remover destrói a chave), `ROADMAP.md` e `README.md`.
+- **Achados no caminho**: (a) o app do celular não mostra o código, então o hub só liga a criptografia de quem
+  entra por um cliente que diz que mostra (`recoveryCodes`, P109); (b) `generate_document` de um membro grava na
+  pasta `generated` do root, em claro, coisa anterior à fatia 4 (P110), e por isso `generated/` ficou fora da
+  criptografia e do backup; (c) remover um membro apaga a chave dele junto (P111).
+- **Verificação**: `cargo test --workspace` com 911 passando e 0 falhas (51 suítes), `cargo clippy --all-targets`
+  limpo em core, bootstrap, server e protocolo, `tsc` e `vite build` da web, e o desktop compilando junto do
+  workspace. O `/home` encheu no meio (18 GB de `target/debug/incremental` apagados, é cache). Nenhuma tela aberta,
+  hub reiniciado de verdade nem modelo real: está no P108. Um `git stash` que escapou num comando foi desfeito na
+  hora (`git stash pop`), sem perda.
+- **Próximo passo**: a sessão dedicada de testes (P108 e os anteriores), com um backup antes de migrar dados
+  reais; depois a parte B da fatia 4 ou a fatia 5.
 
 ---
 

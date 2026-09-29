@@ -357,6 +357,18 @@ pub struct UserInfoDto {
     /// Their own agents' ids — the owner sees that they exist, not what they say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
+    /// P84 fatia 4: their data is encrypted on this hub, with a key only they (and their recovery
+    /// code) can open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub encrypted: bool,
+    /// The owner reset their password: the data opens only with the recovery code, given when they
+    /// choose the new password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_recovery: bool,
+    /// Only in `HelloAck`: the hub doesn't hold their key (it restarted since they last signed in
+    /// with the password), so their data can't be opened until they do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 /// A task and where it stands on this hub.
@@ -728,6 +740,11 @@ pub enum ClientMessage {
         username: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
+        /// P84 fatia 4: this client can show a member's recovery code, once, and make them keep it.
+        /// The hub only turns encryption on for someone's data from a client that says so: a code
+        /// nobody sees is a key nobody has.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        recovery_codes: bool,
     },
     Ping {
         nonce: u64,
@@ -1001,6 +1018,16 @@ pub enum ClientMessage {
         request_id: u64,
         old_password: String,
         new_password: String,
+        /// P84 fatia 4: needed only after the owner reset the password of a member whose data is
+        /// encrypted — it's what opens the data, since the old password can't.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_code: Option<String>,
+    },
+    /// P84 fatia 4: the member asks for a new recovery code (the old one stops working), with their
+    /// password. Answered by `RecoveryCode` or `UserError`.
+    RegenerateRecoveryCode {
+        request_id: u64,
+        password: String,
     },
     /// The workspace's members, answered by `UserList`. The root's only.
     ListUsers {
@@ -1374,6 +1401,17 @@ pub enum ServerMessage {
     },
     PasswordChanged {
         request_id: u64,
+        /// P84 fatia 4: the member's data is encrypted from this change on, and this is the
+        /// recovery code that opens it if they lose the password. Sent once, never stored in the
+        /// clear: the client has to make them write it down.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_code: Option<String>,
+    },
+    /// A recovery code, shown once: the answer to `RegenerateRecoveryCode`, or (`request_id` 0)
+    /// sent right after `HelloAck` when signing in turned encryption on for a member from before.
+    RecoveryCode {
+        request_id: u64,
+        code: String,
     },
     /// P84 fatia 3: the shared spaces.
     SpaceList {
@@ -1460,6 +1498,7 @@ mod tests {
             node: None,
             username: None,
             password: None,
+            recovery_codes: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1511,6 +1550,7 @@ mod tests {
             node: None,
             username: None,
             password: None,
+            recovery_codes: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(

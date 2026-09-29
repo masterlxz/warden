@@ -30,6 +30,13 @@ function toolsLabel(user: UserInfo): string {
   return `ferramentas: ${user.tools.join(", ")}`;
 }
 
+/** P84 fatia 4: whether a person's data is encrypted on the hub — the owner sees the state, never the data. */
+function dataLabel(user: UserInfo): string {
+  if (!user.encrypted) return "dados ainda sem criptografia (a pessoa precisa entrar uma vez com a senha dela)";
+  if (user.needsRecovery) return "dados criptografados; a pessoa precisa do código de recuperação dela";
+  return "dados criptografados";
+}
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -196,6 +203,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                 <p className="skills-item-description">
                   <code>{user.id}</code> · {toolsLabel(user)}
                   {user.agents.length > 0 && ` · agentes próprios: ${user.agents.join(", ")}`}
+                  {` · ${dataLabel(user)}`}
                 </p>
                 {mine?.kind === "rename" &&
                   keyForm(
@@ -236,7 +244,10 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     "Remover",
                     true,
                     <p className="error-banner">
-                      {user.name} sai do workspace e os aparelhos dela são desconectados. O vault e as conversas dela ficam guardados no hub.
+                      {user.name} sai do workspace e os aparelhos são desconectados.{" "}
+                      {user.encrypted
+                        ? "O vault e as conversas ficam no disco do hub, mas criptografados com uma chave que sai do config junto: sem um backup feito antes (warden-server backup), ninguém abre esses dados de novo."
+                        : "O vault e as conversas ficam guardados no hub."}
                     </p>,
                   )}
                 {!mine && (

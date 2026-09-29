@@ -27,7 +27,10 @@ use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Tra
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
-use crate::user_admin::{handle_change_password, handle_list_spaces, handle_list_users, handle_space_change, handle_user_change, SpaceChange, UserChange};
+use crate::user_admin::{
+    handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange,
+    UserChange,
+};
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
@@ -515,16 +518,18 @@ fn spawn_user_change(
     api_keys: &Option<Arc<PathBuf>>,
     lock: &Arc<tokio::sync::Mutex<()>>,
     auth_key: &Arc<str>,
+    data_dirs: &Option<(PathBuf, PathBuf)>,
     tx: &mpsc::UnboundedSender<ServerMessage>,
     request_id: u64,
     pairing_key: String,
     change: UserChange,
 ) {
-    let (settings, lock, auth_key, reply_tx) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
+    let (settings, lock, auth_key, reply_tx, data_dirs) = (settings.clone(), lock.clone(), auth_key.clone(), tx.clone(), data_dirs.clone());
     let pairing = PairingStore::new(devices_path.as_ref().clone());
     let keys = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
     tokio::spawn(async move {
-        let reply = handle_user_change(settings.as_deref(), &pairing, keys.as_ref(), &lock, &auth_key, request_id, &pairing_key, change).await;
+        let dirs = data_dirs.as_ref().map(|(users_dir, conversations_root)| DataDirs { users_dir, conversations_root });
+        let reply = handle_user_change(settings.as_deref(), &pairing, keys.as_ref(), &lock, &auth_key, request_id, &pairing_key, dirs, change).await;
         let _ = reply_tx.send(reply);
     });
 }
@@ -702,7 +707,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             node,
             username,
             password,
-        }) => (device_id, device_name, provided, device_token, tools, node, username.zip(password)),
+            recovery_codes,
+        }) => (device_id, device_name, provided, device_token, tools, node, username.zip(password), recovery_codes),
         // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
@@ -720,14 +726,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key, device_token, tools, node_offer, credentials) = hello;
+    let (device_id, device_name, provided_key, device_token, tools, node_offer, credentials, can_show_recovery_code) = hello;
 
     // P36: the shared key only pairs; a paired device authenticates with its own token. The
     // pairing status itself (Pending/Approved) stays silent here — a `Pending` device still gets a
     // normal `HelloAck` and can chat; only `CallDeviceTool` checks for `Approved` (Fase 9.3).
     let pairing_key_ok = !provided_key.is_empty() && provided_key.as_str() == auth_key.as_ref();
     // P84: the members, read fresh — a member added or removed a moment ago counts.
-    let members = match settings.as_deref() {
+    let mut members = match settings.as_deref() {
         Some(host) => load_config_from_path(&host.config_path(), false).map(|c| c.users).unwrap_or_default(),
         None => Vec::new(),
     };
@@ -746,6 +752,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         None if pairing_key_ok => PairingProof::PairingKey,
         None => PairingProof::Nothing,
     };
+    // Only a sign-in with the password (not a token that came with a stale one) can open a
+    // member's data key below.
+    let signed_in_member = match &proof {
+        PairingProof::Member(id) => Some(id.clone()),
+        _ => None,
+    };
     let store = PairingStore::new(devices_path.as_ref().clone());
     let (issued_token, owner) = match store.authenticate_as(&device_id, &device_name, device_token.as_deref(), proof) {
         Ok(Ok(outcome)) => (outcome.issued_token, outcome.user),
@@ -758,11 +770,33 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return reject(&mut sink, "server could not check this device's pairing").await;
         }
     };
+    // P84 fatia 4: signing in with the password is the one moment the hub can open the member's
+    // data key, so it happens here, before their connection gets a vault. A member from before
+    // gets a key now (and their recovery code, sent below).
+    let mut recovery_code_to_show = None;
+    if let (Some(id), Some(users_dir), Some((_, password))) = (&signed_in_member, users_dir.as_deref(), &credentials) {
+        let dirs = DataDirs { users_dir, conversations_root: &conversations_dir };
+        match open_member_data_at_sign_in(settings.as_deref(), &settings_lock, dirs, id, password, can_show_recovery_code).await {
+            Ok(code) => recovery_code_to_show = code,
+            Err(err) => eprintln!("warden-server: couldn't open {id}'s data at sign-in: {err:#}"),
+        }
+        // A key may have just been created: show them the file as it is now.
+        if let Some(host) = settings.as_deref() {
+            if let Ok(config) = load_config_from_path(&host.config_path(), false) {
+                members = config.users;
+            }
+        }
+    }
     // Who this connection speaks for. A member's device whose member is gone is turned away.
     let (person, mut must_change_password, user) = match (&owner, users_dir.as_deref()) {
         (None, _) => (Person::Root, false, None),
         (Some(id), Some(users_dir)) => match members.iter().find(|u| &u.id == id) {
-            Some(member) => (Person::Member(MemberSpace::new(member, users_dir, &conversations_dir)), member.must_change_password, Some(user_info(member, &[]))),
+            Some(member) => {
+                let space = MemberSpace::new(member, users_dir, &conversations_dir);
+                // Encrypted, and the hub doesn't hold the key (it restarted): they have to sign in.
+                let locked = matches!(warden_bootstrap::member_crypto::dir_state(&users_dir.join(&member.id)), warden_bootstrap::member_crypto::DirState::Locked);
+                (Person::Member(space), member.must_change_password, Some(warden_server_protocol::protocol::UserInfoDto { locked, ..user_info(member, &[]) }))
+            }
             None => return reject(&mut sink, "this person is no longer part of the workspace").await,
         },
         (Some(_), None) => return reject(&mut sink, "this hub doesn't host other people any more").await,
@@ -785,10 +819,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         Person::Member(member) => ConversationDirs { device: member.conversations.clone(), tasks: None },
     });
     let conversations_dir = Arc::new(conversation_dirs.device.clone());
-    let member = match &person {
+    let mut member = match &person {
         Person::Member(member) => Some(member.clone()),
         Person::Root => None,
     };
+    // Where this hub keeps people's data, to open a member's after they change their password.
+    let data_dirs: Option<(PathBuf, PathBuf)> = users_dir.as_deref().map(|dir| (dir.clone(), conversations_root.as_ref().clone()));
 
     send(&mut sink, &ServerMessage::HelloAck {
         server_name: server_name.to_string(),
@@ -796,6 +832,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         user,
     })
     .await?;
+    // P84 fatia 4: this sign-in turned encryption on for a member from before — the code is shown
+    // once, and the client has to make them write it down.
+    if let Some(code) = recovery_code_to_show {
+        send(&mut sink, &ServerMessage::RecoveryCode { request_id: 0, code }).await?;
+    }
 
     // From here on, outgoing messages go through a channel to a dedicated writer task instead of
     // straight to `sink` — a `Chat` message can take a long time (real model latency, 10s-70s+
@@ -906,32 +947,46 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = tx.send(reply);
                     }
                 }
-                Ok(ClientMessage::ChangePassword { request_id, old_password, new_password }) => {
+                Ok(ClientMessage::ChangePassword { request_id, old_password, new_password, recovery_code }) => {
                     match &member {
                         None => {
                             let _ = tx.send(ServerMessage::UserError { request_id, message: "the workspace's owner signs in with the pairing key, which has no password to change".into(), auth_rejected: false });
                         }
-                        Some(member) => {
-                            let reply = handle_change_password(settings.as_deref(), &settings_lock, &member.id, request_id, &old_password, &new_password).await;
+                        Some(current) => {
+                            let dirs = data_dirs.as_ref().map(|(users_dir, conversations_root)| DataDirs { users_dir, conversations_root });
+                            let reply = handle_change_password(settings.as_deref(), &settings_lock, dirs, &current.id, request_id, &old_password, &new_password, recovery_code.as_deref(), can_show_recovery_code).await;
                             if matches!(reply, ServerMessage::PasswordChanged { .. }) {
                                 must_change_password = false;
+                                // Their data key may have just been created or opened: from now on the
+                                // connection's vault is the encrypted one, not the plain one it began with.
+                                if let Some((users_dir, conversations_root)) = &data_dirs {
+                                    member = Some(current.reopened(users_dir, conversations_root));
+                                }
                             }
                             let _ = tx.send(reply);
                         }
                     }
                 }
+                Ok(ClientMessage::RegenerateRecoveryCode { request_id, password }) => match &member {
+                    None => {
+                        let _ = tx.send(ServerMessage::UserError { request_id, message: "only a member has a recovery code — the owner's data isn't encrypted this way".into(), auth_rejected: false });
+                    }
+                    Some(member) => {
+                        let _ = tx.send(handle_regenerate_recovery_code(settings.as_deref(), &settings_lock, &member.id, request_id, &password).await);
+                    }
+                },
                 Ok(ClientMessage::ListUsers { request_id }) => {
                     let _ = tx.send(handle_list_users(settings.as_deref(), request_id));
                 }
                 Ok(ClientMessage::SaveUser { request_id, pairing_key, id, name, is_new }) => {
                     let change = if is_new { UserChange::Create { id, name } } else { UserChange::Rename { id, name } };
-                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, change);
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, change);
                 }
                 Ok(ClientMessage::ResetPassword { request_id, pairing_key, id }) => {
-                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::ResetPassword { id });
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::ResetPassword { id });
                 }
                 Ok(ClientMessage::RemoveUser { request_id, pairing_key, id }) => {
-                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::Remove { id });
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Remove { id });
                 }
                 Ok(ClientMessage::ListSpaces { request_id }) => {
                     let _ = tx.send(handle_list_spaces(settings.as_deref(), member.as_ref().map(|m| m.id.as_str()), request_id));
@@ -949,7 +1004,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     });
                 }
                 Ok(ClientMessage::SetUserTools { request_id, pairing_key, id, tools }) => {
-                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
                 }
                 Ok(message @ (ClientMessage::SaveOwnAgent { .. } | ClientMessage::DeleteOwnAgent { .. })) => {
                     let (settings, shared, lock, auth_key, reply_tx, member) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone(), member.clone());

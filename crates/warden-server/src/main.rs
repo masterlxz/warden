@@ -91,6 +91,35 @@ enum Command {
         #[arg(long, global = true)]
         config: Option<String>,
     },
+    /// Copies the members' data (P84) into a folder. It's encrypted with each member's own key, so
+    /// you can keep the copy anywhere and still can't read it; with it, a member you removed by
+    /// mistake, or a hub you lost, comes back and opens with their password or recovery code.
+    Backup {
+        /// An empty folder to write the backup into.
+        #[arg(long)]
+        out: PathBuf,
+        /// Only this member; every member by default.
+        #[arg(long)]
+        user: Option<String>,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long)]
+        config: Option<String>,
+    },
+    /// Puts members back from a backup made by `backup`: their data, and their entry in the config
+    /// file if it's gone. Restart the hub afterwards if it's running.
+    Restore {
+        /// The folder `backup` wrote.
+        from: PathBuf,
+        /// Only this member; everyone in the backup by default.
+        #[arg(long)]
+        user: Option<String>,
+        /// Replace data this hub already has, or a member entry with another key.
+        #[arg(long)]
+        force: bool,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long)]
+        config: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -129,7 +158,9 @@ enum UsersAction {
     },
     /// Gives a member a new provisional password (printed once), for a forgotten one.
     ResetPassword { id: String },
-    /// Removes a member and revokes their devices. Their vault and conversations stay on disk.
+    /// Removes a member and revokes their devices. Their vault and conversations stay on disk, but
+    /// their key leaves the config file with them: without a `backup` made before, that data can't
+    /// be opened again.
     Remove { id: String },
 }
 
@@ -589,7 +620,12 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
             }
             for user in &file.users {
                 let password = if user.must_change_password { "provisional password" } else { "own password" };
-                println!("{}\t{}\t{password}", user.id, user.name);
+                let data = match (&user.key, user.key_needs_recovery) {
+                    (None, _) => "not encrypted yet",
+                    (Some(_), true) => "encrypted, needs the recovery code",
+                    (Some(_), false) => "encrypted",
+                };
+                println!("{}\t{}\t{password}\t{data}", user.id, user.name);
             }
         }
         UsersAction::Add { id, name } => {
@@ -610,7 +646,7 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
             remove_user(&mut file, &id)?;
             save_config(&config_path, &file)?;
             let revoked = PairingStore::new(devices_path()?).revoke_user_devices(&id)?;
-            println!("'{id}' removed and {revoked} device(s) of theirs revoked — their vault and conversations stay on disk");
+            println!("'{id}' removed and {revoked} device(s) of theirs revoked — their vault and conversations stay on disk, encrypted with a key that's gone from the config file (`backup` before removing keeps a way back)");
         }
     }
     Ok(())
@@ -646,6 +682,35 @@ fn run_spaces_command(action: SpacesAction, config: Option<String>) -> anyhow::R
             println!("'{id}' is no longer shared — the folder and its notes stay in your vault");
         }
     }
+    Ok(())
+}
+
+/// Where the hub keeps the members' data, from the OS config directory as `serve` does.
+fn member_data_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
+    let users_dir = warden_bootstrap::users::default_users_dir().context("could not determine the OS config directory")?;
+    let conversations = warden_bootstrap::default_server_conversations_dir().context("could not determine the OS config directory")?;
+    Ok((users_dir, conversations))
+}
+
+fn run_backup_command(out: &std::path::Path, user: Option<&str>, config: Option<String>) -> anyhow::Result<()> {
+    let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let (users_dir, conversations) = member_data_dirs()?;
+    let report = warden_server::member_backup::backup_members(&config_path, &users_dir, &conversations, out, user)?;
+    for id in &report.backed_up {
+        println!("'{id}' backed up");
+    }
+    for (id, reason) in &report.skipped {
+        println!("'{id}' left out: {reason}");
+    }
+    println!("{} member(s) in {}. What's in it stays unreadable without each member's password or recovery code.", report.backed_up.len(), out.display());
+    Ok(())
+}
+
+fn run_restore_command(from: &std::path::Path, user: Option<&str>, force: bool, config: Option<String>) -> anyhow::Result<()> {
+    let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let (users_dir, conversations) = member_data_dirs()?;
+    let restored = warden_server::member_backup::restore_members(&config_path, &users_dir, &conversations, from, user, force)?;
+    println!("restored: {}. If the hub is running, restart it so it opens their data.", restored.join(", "));
     Ok(())
 }
 
@@ -919,6 +984,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Nodes { action, config } => run_nodes_command(action, config),
         Command::Users { action, config } => run_users_command(action, config),
         Command::Spaces { action, config } => run_spaces_command(action, config),
+        Command::Backup { out, user, config } => run_backup_command(&out, user.as_deref(), config),
+        Command::Restore { from, user, force, config } => run_restore_command(&from, user.as_deref(), force, config),
         Command::GenKey => {
             println!("{}", warden_bootstrap::generate_auth_key());
             Ok(())

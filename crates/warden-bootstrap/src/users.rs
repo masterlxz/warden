@@ -14,6 +14,7 @@ use argon2::Argon2;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use crate::member_crypto::{self, MemberKey};
 use crate::{AgentConfig, FileConfig};
 
 /// Kept for the root's own directories (`conversations-server/root`); no member can take it.
@@ -51,6 +52,22 @@ pub struct UserConfig {
     /// ignored, and `NEVER_FOR_MEMBERS` stays out whatever the list says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// The key to this member's data, wrapped (P84 fatia 4). `None`: their data isn't encrypted yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<KeyWraps>,
+    /// The owner reset the password, which the password wrap can't follow: only the recovery code
+    /// opens the data now, and the member gives it when they choose their new password.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub key_needs_recovery: bool,
+}
+
+/// One key, wrapped twice (`member_crypto`): whoever knows the password, or the recovery code,
+/// opens it. Base64 text; neither the key nor either secret is in it.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyWraps {
+    pub by_password: String,
+    pub by_recovery: String,
 }
 
 /// Shares an agent with every member (`AgentConfig::shared_with`).
@@ -236,6 +253,8 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         password_hash: hash_password(temp_password)?,
         must_change_password: true,
         tools: None,
+        key: None,
+        key_needs_recovery: false,
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -257,17 +276,101 @@ pub fn reset_password(config: &mut FileConfig, id: &str, temp_password: &str) ->
     let user = find_mut(config, id)?;
     user.password_hash = hash;
     user.must_change_password = true;
+    // The owner can't open the member's key, so the password wrap is now dead weight.
+    user.key_needs_recovery = user.key.is_some();
     Ok(())
 }
 
-/// The member picks their own password; `old` has to be the current one.
-pub fn change_password(config: &mut FileConfig, id: &str, old: &str, new: &str) -> anyhow::Result<()> {
+/// What `change_password` hands back when the member's data is now (or still) encrypted.
+pub struct PasswordChange {
+    /// The member's key, for the hub to hold.
+    pub key: Option<MemberKey>,
+    /// A recovery code made now — only when this change turned encryption on. Shown once.
+    pub new_recovery_code: Option<String>,
+}
+
+/// The member picks their own password; `old` has to be the current one. Their data key follows:
+/// created from `new` if they have none (never from a provisional password, which the owner
+/// knows), re-wrapped by `new` if they do. After an owner's reset the old password can't open it,
+/// so `recovery_code` has to.
+pub fn change_password(config: &mut FileConfig, id: &str, old: &str, new: &str, recovery_code: Option<&str>) -> anyhow::Result<PasswordChange> {
+    change_password_with(config, id, old, new, recovery_code, true)
+}
+
+/// `change_password`, where `create_key` is whether the client can show the recovery code that comes
+/// with a new key: when it can't, a member without a key stays without one (a code nobody sees is a
+/// key nobody has) and gets it later, from a client that can.
+pub fn change_password_with(config: &mut FileConfig, id: &str, old: &str, new: &str, recovery_code: Option<&str>, create_key: bool) -> anyhow::Result<PasswordChange> {
     let user = find_mut(config, id)?;
     anyhow::ensure!(verify_password(&user.password_hash, old), "the current password is wrong");
     anyhow::ensure!(old != new, "pick a password different from the current one");
-    user.password_hash = hash_password(new)?;
+    let hash = hash_password(new)?;
+    // Everything that can fail comes before anything changes.
+    let (key, wraps, new_recovery_code) = match &user.key {
+        None if !create_key => (None, None, None),
+        None => {
+            let (key, wraps, code) = new_key_wraps(new)?;
+            (Some(key), Some(wraps), Some(code))
+        }
+        Some(current) if user.key_needs_recovery => {
+            let code = recovery_code.filter(|c| !c.trim().is_empty()).ok_or_else(|| anyhow::anyhow!("the owner reset your password: give your recovery code to keep your data"))?;
+            let key = member_crypto::unwrap_with_code(&current.by_recovery, code)?;
+            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, by_recovery: current.by_recovery.clone() };
+            (Some(key), Some(wraps), None)
+        }
+        Some(current) => {
+            let key = member_crypto::unwrap_with_password(&current.by_password, old)?;
+            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, by_recovery: current.by_recovery.clone() };
+            (Some(key), Some(wraps), None)
+        }
+    };
+    user.password_hash = hash;
     user.must_change_password = false;
-    Ok(())
+    user.key = wraps;
+    user.key_needs_recovery = false;
+    Ok(PasswordChange { key, new_recovery_code })
+}
+
+/// A new key, wrapped by `password` and by a new recovery code (returned, to be shown once).
+fn new_key_wraps(password: &str) -> anyhow::Result<(MemberKey, KeyWraps, String)> {
+    let key = member_crypto::new_key();
+    let code = member_crypto::generate_recovery_code();
+    let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, password)?, by_recovery: member_crypto::wrap_with_code(&key, &code)? };
+    Ok((key, wraps, code))
+}
+
+/// A member from before fatia 4, signing in with their own password: turns encryption on with a
+/// new key and recovery code. `None` when there's nothing to do (they have a key, or still have
+/// the owner's provisional password — `change_password` creates it then).
+pub fn enable_encryption(config: &mut FileConfig, id: &str, password: &str) -> anyhow::Result<Option<(MemberKey, String)>> {
+    let user = find_mut(config, id)?;
+    if user.key.is_some() || user.must_change_password {
+        return Ok(None);
+    }
+    anyhow::ensure!(verify_password(&user.password_hash, password), "the current password is wrong");
+    let (key, wraps, code) = new_key_wraps(password)?;
+    user.key = Some(wraps);
+    Ok(Some((key, code)))
+}
+
+/// The member's key at sign-in. `None` when they have none yet, or need their recovery code first.
+pub fn open_key(user: &UserConfig, password: &str) -> anyhow::Result<Option<MemberKey>> {
+    match &user.key {
+        Some(wraps) if !user.key_needs_recovery => Ok(Some(member_crypto::unwrap_with_password(&wraps.by_password, password)?)),
+        _ => Ok(None),
+    }
+}
+
+/// The member asks for a new recovery code (the old one stops working). Needs their password.
+pub fn regenerate_recovery_code(config: &mut FileConfig, id: &str, password: &str) -> anyhow::Result<String> {
+    let user = find_mut(config, id)?;
+    anyhow::ensure!(verify_password(&user.password_hash, password), "the current password is wrong");
+    let wraps = user.key.as_ref().filter(|_| !user.key_needs_recovery).ok_or_else(|| anyhow::anyhow!("your data isn't encrypted with a key of yours yet"))?;
+    let key = member_crypto::unwrap_with_password(&wraps.by_password, password)?;
+    let code = member_crypto::generate_recovery_code();
+    let by_recovery = member_crypto::wrap_with_code(&key, &code)?;
+    user.key = Some(KeyWraps { by_password: wraps.by_password.clone(), by_recovery });
+    Ok(code)
 }
 
 /// Takes the member out of the file, with their own agents and every share naming them. Their vault
@@ -429,8 +532,8 @@ mod tests {
         assert!(authenticate_user(&config.users, "ana", "wrong-password").is_none());
         assert!(authenticate_user(&config.users, "bruno", &temp).is_none());
 
-        assert!(change_password(&mut config, "ana", "wrong-password", "her own pass").is_err());
-        change_password(&mut config, "ana", &temp, "her own pass").unwrap();
+        assert!(change_password(&mut config, "ana", "wrong-password", "her own pass", None).is_err());
+        change_password(&mut config, "ana", &temp, "her own pass", None).unwrap();
         assert!(!config.users[0].must_change_password);
         assert!(authenticate_user(&config.users, "ana", "her own pass").is_some());
 
@@ -439,6 +542,104 @@ mod tests {
         rename_user(&mut config, "ana", "Ana S.").unwrap();
         remove_user(&mut config, "ana").unwrap();
         assert!(config.users.is_empty() && remove_user(&mut config, "ana").is_err());
+    }
+
+    fn config_with_ana(temp: &str) -> FileConfig {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", temp).unwrap();
+        config
+    }
+
+    #[test]
+    fn the_key_is_born_with_the_members_own_password_and_never_with_the_provisional_one() {
+        let mut config = config_with_ana("provisional-1");
+        assert!(config.users[0].key.is_none(), "the owner's provisional password never makes a key");
+        assert!(enable_encryption(&mut config, "ana", "provisional-1").unwrap().is_none(), "still on the provisional password");
+
+        let change = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let (key, code) = (change.key.unwrap(), change.new_recovery_code.unwrap());
+        let wraps = config.users[0].key.clone().unwrap();
+        assert!(member_crypto::unwrap_with_password(&wraps.by_password, "provisional-1").is_err(), "the owner can't open it");
+        assert_eq!(*open_key(&config.users[0], "anas-own-pass").unwrap().unwrap(), *key);
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &code).unwrap(), *key);
+    }
+
+    #[test]
+    fn changing_the_password_keeps_the_same_key_and_the_same_recovery_code() {
+        let mut config = config_with_ana("provisional-1");
+        let first = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let (key, code) = (first.key.unwrap(), first.new_recovery_code.unwrap());
+
+        let second = change_password(&mut config, "ana", "anas-own-pass", "anas-newer-pass", None).unwrap();
+        assert!(second.new_recovery_code.is_none(), "no second code");
+        assert_eq!(*second.key.unwrap(), *key);
+        assert!(open_key(&config.users[0], "anas-own-pass").is_err(), "the old password no longer opens it");
+        assert_eq!(*open_key(&config.users[0], "anas-newer-pass").unwrap().unwrap(), *key);
+        let wraps = config.users[0].key.clone().unwrap();
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &code).unwrap(), *key, "the code still works");
+    }
+
+    #[test]
+    fn after_an_owner_reset_only_the_recovery_code_brings_the_data_back() {
+        let mut config = config_with_ana("provisional-1");
+        let first = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let (key, code) = (first.key.unwrap(), first.new_recovery_code.unwrap());
+
+        reset_password(&mut config, "ana", "provisional-2").unwrap();
+        assert!(config.users[0].key_needs_recovery);
+        assert!(open_key(&config.users[0], "provisional-2").unwrap().is_none(), "the hub can't open it for the provisional password");
+
+        let before = config.users.clone();
+        assert!(change_password(&mut config, "ana", "provisional-2", "anas-third-pass", None).is_err(), "no code, no data");
+        assert!(change_password(&mut config, "ana", "provisional-2", "anas-third-pass", Some("  ")).is_err());
+        let wrong = member_crypto::generate_recovery_code();
+        assert!(change_password(&mut config, "ana", "provisional-2", "anas-third-pass", Some(&wrong)).is_err(), "a wrong code");
+        assert_eq!(config.users, before, "a failed change leaves everything as it was");
+
+        let back = change_password(&mut config, "ana", "provisional-2", "anas-third-pass", Some(&code.to_ascii_lowercase())).unwrap();
+        assert_eq!(*back.key.unwrap(), *key, "the very same key");
+        assert!(!config.users[0].key_needs_recovery && !config.users[0].must_change_password);
+        assert_eq!(*open_key(&config.users[0], "anas-third-pass").unwrap().unwrap(), *key);
+    }
+
+    #[test]
+    fn a_client_that_cannot_show_the_code_does_not_get_a_key_made() {
+        let mut config = config_with_ana("provisional-1");
+        let change = change_password_with(&mut config, "ana", "provisional-1", "anas-own-pass", None, false).unwrap();
+        assert!(change.key.is_none() && change.new_recovery_code.is_none() && config.users[0].key.is_none());
+        assert!(!config.users[0].must_change_password && authenticate_user(&config.users, "ana", "anas-own-pass").is_some(), "the password still changed");
+
+        // A client that can gets it on the next change.
+        let later = change_password_with(&mut config, "ana", "anas-own-pass", "anas-newer-pass", None, true).unwrap();
+        assert!(later.key.is_some() && later.new_recovery_code.is_some());
+    }
+
+    #[test]
+    fn a_member_from_before_gets_a_key_at_sign_in_and_a_new_recovery_code_replaces_the_old() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "provisional-1").unwrap();
+        config.users[0].must_change_password = false; // a member from before fatia 4, on their own password
+        assert!(enable_encryption(&mut config, "ana", "wrong-password").is_err());
+        let (key, old_code) = enable_encryption(&mut config, "ana", "provisional-1").unwrap().unwrap();
+        assert!(enable_encryption(&mut config, "ana", "provisional-1").unwrap().is_none(), "only once");
+        assert_eq!(*open_key(&config.users[0], "provisional-1").unwrap().unwrap(), *key);
+
+        assert!(regenerate_recovery_code(&mut config, "ana", "wrong-password").is_err());
+        let new_code = regenerate_recovery_code(&mut config, "ana", "provisional-1").unwrap();
+        let wraps = config.users[0].key.clone().unwrap();
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &new_code).unwrap(), *key);
+        assert!(member_crypto::unwrap_with_code(&wraps.by_recovery, &old_code).is_err(), "the old code stopped working");
+    }
+
+    #[test]
+    fn a_user_with_a_key_round_trips_through_toml_and_never_shows_a_secret() {
+        let mut config = config_with_ana("provisional-1");
+        let change = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let text = toml::to_string(&config).unwrap();
+        assert!(!text.contains("anas-own-pass") && !text.contains(&change.new_recovery_code.unwrap()));
+        assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users, config.users);
+        let plain = toml::to_string(&config_with_ana("provisional-1")).unwrap();
+        assert!(!plain.contains("by_password") && !plain.contains("key_needs_recovery"), "a member without a key adds no fields: {plain}");
     }
 
     fn agent(id: &str, owner: Option<&str>, shared_with: &[&str]) -> AgentConfig {

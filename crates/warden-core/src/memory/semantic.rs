@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::path::Path;
 
 /// Identifies which embedding model produced an index — bumped whenever the model choice changes,
@@ -43,21 +44,30 @@ impl SemanticIndex {
 
     /// Missing file, unreadable JSON, or an index built with a different model all collapse to a
     /// fresh empty index — the caller repopulates it from scratch, same cost as a first run.
+    #[cfg(test)]
     pub fn load(path: &Path) -> Self {
-        let loaded = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|content| serde_json::from_str::<Self>(&content).ok());
+        Self::from_bytes(std::fs::read(path).ok().as_deref())
+    }
+
+    /// The same as `load` for bytes the vault already read (and, for a member's vault, decrypted).
+    pub fn from_bytes(bytes: Option<&[u8]>) -> Self {
+        let loaded = bytes.and_then(|bytes| serde_json::from_slice::<Self>(bytes).ok());
         match loaded {
             Some(index) if index.model_id == MODEL_ID => index,
             _ => Self::new(),
         }
     }
 
+    #[cfg(test)]
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        Ok(std::fs::write(path, serde_json::to_string(self)?)?)
+        Ok(std::fs::write(path, self.to_bytes()?)?)
+    }
+
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
     }
 }
 

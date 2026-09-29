@@ -73,7 +73,7 @@ impl Vault {
             return mount.vault.read_note(&inner);
         }
         let path = self.note_path(relative_path)?;
-        let bytes = read_capped(&path, relative_path)?.ok_or_else(|| anyhow::anyhow!("'{relative_path}' doesn't exist"))?;
+        let bytes = self.read_capped(&path, relative_path)?.ok_or_else(|| anyhow::anyhow!("'{relative_path}' doesn't exist"))?;
         let version = content_version(&bytes);
         let content = String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("'{relative_path}' is not a text file"))?;
         Ok(NoteFile { content, version })
@@ -92,7 +92,7 @@ impl Vault {
         }
 
         let _guard = self.note_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let current = read_capped(&path, relative_path)?.map(|bytes| content_version(&bytes));
+        let current = self.read_capped(&path, relative_path)?.map(|bytes| content_version(&bytes));
         match (expected_version, current.as_deref()) {
             (None, None) => {}
             (None, Some(_)) => return Err(NoteConflict(format!("'{relative_path}' already exists")).into()),
@@ -106,7 +106,7 @@ impl Vault {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        write_atomically(&path, content.as_bytes())?;
+        write_atomically(&path, &self.encode(content.as_bytes()))?;
         Ok(content_version(content.as_bytes()))
     }
 
@@ -118,7 +118,7 @@ impl Vault {
         }
         let path = self.note_path(relative_path)?;
         let _guard = self.note_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(bytes) = read_capped(&path, relative_path)? else {
+        let Some(bytes) = self.read_capped(&path, relative_path)? else {
             return Ok(());
         };
         if content_version(&bytes) != expected_version {
@@ -145,7 +145,7 @@ impl Vault {
             anyhow::bail!("skills are edited on the Skills screen");
         }
 
-        let path = self.root.join(relative);
+        let path = self.physical(relative)?;
         // A symlink inside the vault may point anywhere. Resolve the deepest part of the path that
         // exists (the note itself, or the folder it will be created in) and require it to still
         // be under the resolved vault root.
@@ -162,21 +162,29 @@ fn starts_with_skills_dir(relative: &Path) -> bool {
     relative.components().next().is_some_and(|c| c.as_os_str() == SKILLS_DIR) && relative.components().count() > 1
 }
 
-/// The file's bytes, `None` if it doesn't exist, or an error if it's over `MAX_NOTE_BYTES`.
-fn read_capped(path: &Path, relative_path: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => anyhow::bail!("'{relative_path}' is a folder"),
-        Ok(meta) if meta.len() > MAX_NOTE_BYTES as u64 => {
-            anyhow::bail!("'{relative_path}' is too large to open here ({} KB)", meta.len() / 1024)
+impl Vault {
+    /// The file's content (decrypted, for a member's vault), `None` if it doesn't exist, or an
+    /// error if it's over `MAX_NOTE_BYTES`.
+    fn read_capped(&self, path: &Path, relative_path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => anyhow::bail!("'{relative_path}' is a folder"),
+            Ok(meta) if meta.len() > MAX_NOTE_BYTES as u64 + if self.is_encrypted() { SEALED_OVERHEAD } else { 0 } => {
+                anyhow::bail!("'{relative_path}' is too large to open here ({} KB)", meta.len() / 1024)
+            }
+            Ok(_) => Ok(Some(self.decode(std::fs::read(path)?)?)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err.into()),
         }
-        Ok(_) => Ok(Some(std::fs::read(path)?)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err.into()),
     }
 }
 
-/// Writes through a temporary dotfile next to the note and renames it over, so a reader (sync, the
-/// model's search) never sees a half-written note. Dotfiles are skipped by every vault listing.
+/// What an encrypted file adds to its content: the marker, the nonce and the tag. Far more than
+/// that, and the file is over the cap either way.
+const SEALED_OVERHEAD: u64 = 64;
+
+/// Writes `content` (already encrypted, for a member's vault) through a temporary dotfile next to
+/// the note and renames it over, so a reader (sync, the model's search) never sees a half-written
+/// note. Dotfiles are skipped by every vault listing.
 fn write_atomically(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let tmp = path.with_file_name(format!(".{name}.warden-tmp"));

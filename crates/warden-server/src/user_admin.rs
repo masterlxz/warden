@@ -5,7 +5,13 @@
 //!
 //! `ChangePassword` is the member's own: checked against their current password instead of the key.
 
-use warden_bootstrap::users::{add_user, change_password, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, spaces_for, SpaceConfig};
+use std::path::{Path, PathBuf};
+
+use warden_bootstrap::member_crypto::{self, MemberKey};
+use warden_bootstrap::users::{
+    add_user, change_password_with, enable_encryption, generate_temp_password, open_key, regenerate_recovery_code, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools,
+    spaces_for, user_conversations_dir, PasswordChange, SpaceConfig,
+};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server_protocol::protocol::SpaceDto;
 use warden_server_protocol::ServerMessage;
@@ -56,6 +62,7 @@ pub async fn handle_user_change(
     auth_key: &str,
     request_id: u64,
     pairing_key: &str,
+    dirs: Option<DataDirs<'_>>,
     change: UserChange,
 ) -> ServerMessage {
     let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
@@ -89,6 +96,9 @@ pub async fn handle_user_change(
         }
         save_config(&config_path, &config)?;
         if let Some(id) = removed {
+            if let Some(dirs) = dirs {
+                dirs.lock(&id);
+            }
             pairing.revoke_user_devices(&id)?;
             if let Some(keys) = api_keys {
                 keys.revoke_user_keys(&id)?;
@@ -102,18 +112,133 @@ pub async fn handle_user_change(
     }
 }
 
-/// Answers a member's `ChangePassword`. A wrong current password waits like a wrong key does.
-pub async fn handle_change_password(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64, old: &str, new: &str) -> ServerMessage {
+/// Where the hub keeps people's data, to open a member's (P84 fatia 4).
+#[derive(Clone, Copy)]
+pub struct DataDirs<'a> {
+    /// Every member's folder (`warden_bootstrap::users::default_users_dir`).
+    pub users_dir: &'a Path,
+    /// Every person's conversations.
+    pub conversations_root: &'a Path,
+}
+
+impl DataDirs<'_> {
+    fn of(&self, id: &str) -> (PathBuf, PathBuf) {
+        (self.users_dir.join(id), user_conversations_dir(self.conversations_root, id))
+    }
+
+    /// The hub forgets a member's key: a person that was taken out of the workspace.
+    fn lock(&self, id: &str) {
+        let (user_dir, conversations) = self.of(id);
+        member_crypto::lock(&[&user_dir, &conversations]);
+    }
+
+    /// Puts a member's key to use: encrypts what they have on disk the first time (or after a run
+    /// cut short), and from then on holds the key so their vault and conversations open.
+    async fn use_key(&self, id: &str, key: MemberKey) -> anyhow::Result<()> {
+        let (user_dir, conversations) = self.of(id);
+        tokio::task::spawn_blocking(move || member_crypto::open_member_data(&user_dir, &conversations, &key))
+            .await
+            .map_err(|err| anyhow::anyhow!("the encryption of their data was interrupted: {err}"))?
+    }
+}
+
+/// Signing in with the password is the one moment the hub can open a member's key, so it does it
+/// here, before the connection gets a vault: it opens the key (and holds it), or — for a member
+/// from before fatia 4 who's on their own password — creates one and encrypts what they have.
+/// Returns the recovery code when that turned encryption on: shown to them once. `Ok(None)` when
+/// there's nothing to open (no key yet, or the owner reset the password and the recovery code has
+/// to open it first).
+pub async fn open_member_data_at_sign_in(
+    settings: Option<&dyn SettingsHost>,
+    lock: &tokio::sync::Mutex<()>,
+    dirs: DataDirs<'_>,
+    id: &str,
+    password: &str,
+    can_show_code: bool,
+) -> anyhow::Result<Option<String>> {
+    let Some(settings) = settings else { return Ok(None) };
+    let (key, new_code) = {
+        let _serialized = lock.lock().await;
+        let config_path = settings.config_path();
+        let mut config = load_config_from_path(&config_path, false)?;
+        let user = config.users.iter().find(|u| u.id == id).ok_or_else(|| anyhow::anyhow!("no user named '{id}'"))?;
+        match open_key(user, password)? {
+            Some(key) => (key, None),
+            // A client that can't show the code they'd have to keep leaves the data as it is.
+            None if !can_show_code => return Ok(None),
+            None => match enable_encryption(&mut config, id, password)? {
+                Some((key, code)) => {
+                    save_config(&config_path, &config)?;
+                    (key, Some(code))
+                }
+                None => return Ok(None),
+            },
+        }
+    };
+    dirs.use_key(id, key).await?;
+    Ok(new_code)
+}
+
+/// Answers a member's `ChangePassword`. A wrong current password waits like a wrong key does. It's
+/// also where a new member's data key is born (from their own password, if `can_show_code`: the
+/// client can show the recovery code that comes with it), and where an owner's reset is undone with
+/// the recovery code.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_change_password(
+    settings: Option<&dyn SettingsHost>,
+    lock: &tokio::sync::Mutex<()>,
+    dirs: Option<DataDirs<'_>>,
+    user: &str,
+    request_id: u64,
+    old: &str,
+    new: &str,
+    recovery_code: Option<&str>,
+    can_show_code: bool,
+) -> ServerMessage {
     let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
     let _serialized = lock.lock().await;
     let config_path = settings.config_path();
-    let result = (|| -> anyhow::Result<()> {
+    let result = (|| -> anyhow::Result<PasswordChange> {
         let mut config = load_config_from_path(&config_path, false)?;
-        change_password(&mut config, user, old, new)?;
-        save_config(&config_path, &config)
+        let change = change_password_with(&mut config, user, old, new, recovery_code, can_show_code)?;
+        save_config(&config_path, &config)?;
+        Ok(change)
     })();
     match result {
-        Ok(()) => ServerMessage::PasswordChanged { request_id },
+        Ok(change) => {
+            if let (Some(key), Some(dirs)) = (change.key, dirs) {
+                // The password is changed either way; if this fails, the next sign-in finishes it.
+                if let Err(err) = dirs.use_key(user, key).await {
+                    return user_error(request_id, format!("your password changed, but your data couldn't be encrypted yet: {err:#} — sign in again to finish"), false);
+                }
+            }
+            ServerMessage::PasswordChanged { request_id, recovery_code: change.new_recovery_code }
+        }
+        Err(err) => {
+            let message = format!("{err:#}");
+            let wrong = message.contains("current password is wrong");
+            if wrong {
+                tokio::time::sleep(WRONG_KEY_DELAY).await;
+            }
+            user_error(request_id, message, wrong)
+        }
+    }
+}
+
+/// Answers a member's `RegenerateRecoveryCode`: a new code, shown once, and the old one stops
+/// working. A wrong password waits like it does anywhere else.
+pub async fn handle_regenerate_recovery_code(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64, password: &str) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let _serialized = lock.lock().await;
+    let config_path = settings.config_path();
+    let result = (|| -> anyhow::Result<String> {
+        let mut config = load_config_from_path(&config_path, false)?;
+        let code = regenerate_recovery_code(&mut config, user, password)?;
+        save_config(&config_path, &config)?;
+        Ok(code)
+    })();
+    match result {
+        Ok(code) => ServerMessage::RecoveryCode { request_id, code },
         Err(err) => {
             let message = format!("{err:#}");
             let wrong = message.contains("current password is wrong");

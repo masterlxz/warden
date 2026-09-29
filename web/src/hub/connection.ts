@@ -235,6 +235,8 @@ export class ServerConnection {
   private readonly chatListeners = new Set<ChatListener>();
   private readonly approvalListeners = new Set<ApprovalListener>();
   private readonly conversationsListeners = new Set<ConversationsListener>();
+  private recoveryCodeListener: ((code: string) => void) | null = null;
+  private unclaimedRecoveryCode: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private nextNonce = 0;
   private pendingPingNonce: number | null = null;
@@ -305,6 +307,21 @@ export class ServerConnection {
     return () => this.conversationsListeners.delete(listener);
   }
 
+  /** P84 fatia 4: the hub turned encryption on for this member's data when they signed in and sent the
+   * recovery code that goes with it. It may have arrived before anyone listened, so the first listener
+   * gets it right away. */
+  onRecoveryCode(listener: (code: string) => void): () => void {
+    this.recoveryCodeListener = listener;
+    if (this.unclaimedRecoveryCode !== null) {
+      const code = this.unclaimedRecoveryCode;
+      this.unclaimedRecoveryCode = null;
+      listener(code);
+    }
+    return () => {
+      if (this.recoveryCodeListener === listener) this.recoveryCodeListener = null;
+    };
+  }
+
   static connect(options: ConnectOptions): Promise<ServerConnection> {
     let socket: WebSocket;
     try {
@@ -368,6 +385,8 @@ export class ServerConnection {
             authKey: options.authKey,
             ...(options.deviceToken !== undefined && { deviceToken: options.deviceToken }),
             ...(options.username !== undefined && { username: options.username, password: options.password ?? "" }),
+            // This UI shows a member's recovery code (RecoveryCodeView), so the hub may encrypt their data.
+            recoveryCodes: true,
             tools: [],
           }),
         );
@@ -444,6 +463,16 @@ export class ServerConnection {
       case "spaceList":
       case "passwordChanged":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        break;
+      case "recoveryCode":
+        if (message.requestId === 0) {
+          // Sent by the hub on its own, right after the handshake — the screen may not be listening yet.
+          const listener = this.recoveryCodeListener;
+          if (listener) listener(message.code);
+          else this.unclaimedRecoveryCode = message.code;
+        } else {
+          this.settleRequest(message.requestId, (pending) => pending.resolve(message));
+        }
         break;
       case "userError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new UserError(message.message, message.authRejected)));
@@ -681,9 +710,24 @@ export class ServerConnection {
 
   /** P84: the member on this connection picks their own password; rejects with `UserError`
    * (`authRejected`: the current one was wrong). */
-  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
-    const reply = await this.request((requestId) => ({ type: "changePassword", requestId, oldPassword, newPassword }));
+  async changePassword(oldPassword: string, newPassword: string, recoveryCode?: string): Promise<{ recoveryCode?: string }> {
+    const reply = await this.request((requestId) => ({
+      type: "changePassword",
+      requestId,
+      oldPassword,
+      newPassword,
+      ...(recoveryCode && { recoveryCode }),
+    }));
     if (reply.type !== "passwordChanged") throw new Error("resposta inesperada do hub");
+    return { ...(reply.recoveryCode !== undefined && { recoveryCode: reply.recoveryCode }) };
+  }
+
+  /** P84 fatia 4: a new recovery code, shown once; the old one stops working. Rejects with `UserError`
+   * (`authRejected`: the password was wrong). */
+  async regenerateRecoveryCode(password: string): Promise<string> {
+    const reply = await this.request((requestId) => ({ type: "regenerateRecoveryCode", requestId, password }));
+    if (reply.type !== "recoveryCode") throw new Error("resposta inesperada do hub");
+    return reply.code;
   }
 
   /** P84: the workspace's members — the owner's only. */

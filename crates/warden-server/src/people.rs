@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use warden_bootstrap::member_crypto::{self, DirState};
 use warden_bootstrap::users::{agent_visible_to, root_conversations_dir, user_conversations_dir, user_generated_path, user_vault_path, UserConfig, UserRole, ROOT_ID};
 use warden_bootstrap::{load_conversation, save_conversation, AgentConfig, Conversation, FileConfig};
 use warden_core::memory::{Mount, Vault};
@@ -32,12 +33,27 @@ pub struct MemberSpace {
 }
 
 impl MemberSpace {
+    /// The same member with their vault opened again from the folder's current state — after their
+    /// data key was created or opened (a connection's first vault was plain, or locked).
+    pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false };
+        Self::new(&user, users_dir, conversations_root)
+    }
+
     /// `users_dir` holds every member's folder (`warden_bootstrap::users::default_users_dir`).
     pub fn new(user: &UserConfig, users_dir: &Path, conversations_root: &Path) -> Self {
+        let vault_path = user_vault_path(users_dir, &user.id);
+        // P84 fatia 4: an encrypted member's vault opens with the key the hub holds, and is locked
+        // (refuses everything) when it doesn't — never a plain vault beside encrypted files.
+        let vault = match member_crypto::dir_state(&users_dir.join(&user.id)) {
+            DirState::Plain => Vault::new(vault_path),
+            DirState::Unlocked(cipher) => Vault::new_encrypted(vault_path, cipher),
+            DirState::Locked => Vault::new_locked(vault_path),
+        };
         Self {
             id: user.id.clone(),
             name: user.name.clone(),
-            vault: Arc::new(Vault::new(user_vault_path(users_dir, &user.id))),
+            vault: Arc::new(vault),
             generated: user_generated_path(users_dir, &user.id),
             conversations: user_conversations_dir(conversations_root, &user.id),
         }
@@ -82,6 +98,9 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig]) -> UserInfoDto {
         must_change_password: user.must_change_password,
         tools: user.tools.clone(),
         agents: agents.iter().filter(|a| a.owner.as_deref() == Some(user.id.as_str())).map(|a| a.id.clone()).collect(),
+        encrypted: user.key.is_some(),
+        needs_recovery: user.key_needs_recovery,
+        locked: false,
     }
 }
 
@@ -171,7 +190,9 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
             ServerMessage::ApiKeyError { request_id: *request_id, message: text, auth_rejected: true }
         }
-        ClientMessage::ListSpaces { request_id } => ServerMessage::UserError { request_id: *request_id, message: text, auth_rejected: true },
+        ClientMessage::ListSpaces { request_id } | ClientMessage::RegenerateRecoveryCode { request_id, .. } => {
+            ServerMessage::UserError { request_id: *request_id, message: text, auth_rejected: true }
+        }
         other => return member_refusal(other),
     })
 }
@@ -376,7 +397,7 @@ mod tests {
         assert!(member_refusal(&ClientMessage::RequestSettings { request_id: 4 }).is_none());
         // On a provisional password, only changing it goes through.
         assert!(matches!(password_gate(&ClientMessage::ListConversations { request_id: 5 }), Some(ServerMessage::ConversationError { .. })));
-        assert!(password_gate(&ClientMessage::ChangePassword { request_id: 6, old_password: "a".into(), new_password: "b".into() }).is_none());
+        assert!(password_gate(&ClientMessage::ChangePassword { request_id: 6, old_password: "a".into(), new_password: "b".into(), recovery_code: None }).is_none());
         assert!(matches!(password_gate(&ClientMessage::ListDevices { request_id: 7 }), Some(ServerMessage::DeviceError { .. })));
     }
 }

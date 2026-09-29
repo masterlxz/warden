@@ -198,6 +198,17 @@ warden-server spaces remove casa   # the folder and its notes stay in your vault
 ```
 
   The web's People tab ("Espaços compartilhados") and the desktop's Workspace ("Shared spaces") do the same.
+- **their data is theirs**: a member's vault (contents and file names), search index and conversations are
+  encrypted on the hub's disk with a key made from *their own* password, never the provisional one. You can't
+  read them, and neither can a copy of the disk. They get a **recovery code** once, on the web, for the day they
+  forget the password or you reset it; without it a reset means the data is gone. The hub keeps the key in memory
+  from sign-in until it restarts, and a member signs in with the password once after that. The web says so, and
+  the honest limit stays: whoever controls the hub's machine can see what an agent sees while it works.
+
+```bash
+warden-server backup --out ~/warden-backup [--user ana]   # encrypted; unreadable without each member's password or code
+warden-server restore ~/warden-backup [--user ana]        # also brings back a member you removed by mistake
+```
 
 Configuration lives in `config.toml` (path resolved per-OS via `dirs::config_dir()`, e.g.
 `~/.config/warden/config.toml` on Linux) — see `project/ARCHITECTURE.md` for the full schema and the

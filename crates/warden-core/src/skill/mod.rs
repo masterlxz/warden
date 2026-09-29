@@ -165,17 +165,15 @@ impl SkillStore {
 
     /// Every skill, sorted by name. Unreadable files are skipped — one bad file must not hide the rest.
     pub fn list(&self) -> Vec<Skill> {
-        let dir = self.vault.root().join(SKILLS_DIR);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(files) = self.vault.files_in(SKILLS_DIR) else {
             return Vec::new();
         };
-        let mut skills: Vec<Skill> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                let name = skill_name_from_path(&path)?;
+        let mut skills: Vec<Skill> = files
+            .into_iter()
+            .filter_map(|file| {
+                let name = skill_name_from_path(Path::new(&file))?;
                 validate_name(&name).ok()?;
-                let raw = std::fs::read_to_string(&path).ok()?;
+                let raw = self.vault.read(&format!("{SKILLS_DIR}/{file}")).ok()?;
                 Some(Skill::parse(&name, &raw))
             })
             .collect();
@@ -203,11 +201,11 @@ impl SkillStore {
     /// Absolute path of a skill's file (the skill needn't exist yet) — for pointing the user at the
     /// file so they can edit a long body in their own editor or Obsidian.
     pub fn path_of(&self, name: &str) -> anyhow::Result<PathBuf> {
-        Ok(self.vault.root().join(Self::relative_path(name)?))
+        self.vault.path_of(&Self::relative_path(name)?)
     }
 
     pub fn exists(&self, name: &str) -> bool {
-        Self::relative_path(name).is_ok_and(|p| self.vault.root().join(p).is_file())
+        Self::relative_path(name).is_ok_and(|p| self.vault.is_file(&p))
     }
 
     pub fn save(&self, skill: &Skill) -> anyhow::Result<()> {
@@ -220,7 +218,7 @@ impl SkillStore {
     pub fn delete(&self, name: &str) -> anyhow::Result<()> {
         let path = Self::relative_path(name)?;
         self.vault.delete(&path).map_err(|_| anyhow!("no skill named '{name}'"))?;
-        let _ = std::fs::remove_dir_all(self.vault.root().join(Self::files_dir(name)));
+        let _ = self.vault.remove_dir_all(&Self::files_dir(name));
         Ok(())
     }
 
@@ -239,15 +237,7 @@ impl SkillStore {
     /// Names of the skill's attachments, sorted. Empty when there are none (or the skill is unknown).
     pub fn list_files(&self, name: &str) -> anyhow::Result<Vec<String>> {
         validate_name(name)?;
-        let Ok(entries) = std::fs::read_dir(self.vault.root().join(Self::files_dir(name))) else {
-            return Ok(Vec::new());
-        };
-        let mut files: Vec<String> = entries
-            .flatten()
-            .filter(|e| e.path().is_file())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|f| validate_file_name(f).is_ok())
-            .collect();
+        let mut files: Vec<String> = self.vault.files_in(&Self::files_dir(name))?.into_iter().filter(|f| validate_file_name(f).is_ok()).collect();
         files.sort();
         Ok(files)
     }
@@ -283,7 +273,7 @@ impl SkillStore {
         let path = Self::file_relative_path(name, file)?;
         self.vault.delete(&path).map_err(|_| anyhow!("skill '{name}' has no attachment '{file}'"))?;
         // Drop the directory with its last file so `<name>.files/` doesn't linger empty.
-        let _ = std::fs::remove_dir(self.vault.root().join(Self::files_dir(name)));
+        self.vault.remove_dir_if_empty(&Self::files_dir(name));
         Ok(())
     }
 
@@ -592,5 +582,29 @@ mod tests {
         assert!(synced.contains(&"skills/x.files/notes.md".to_string()), "{synced:?}");
         assert!(store.vault.list_files().unwrap().iter().all(|p| !p.starts_with("skills")));
         assert!(store.vault.search("needle", 5).unwrap().is_empty());
+    }
+
+    /// P84 fatia 4: a member's skills live in an encrypted vault and work the same.
+    #[test]
+    fn skills_and_attachments_work_in_an_encrypted_vault() {
+        let dir = std::env::temp_dir().join(format!(
+            "warden-skill-enc-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = SkillStore::new(Arc::new(Vault::new_encrypted(&dir, Arc::new(crate::memory::VaultCipher::new(&[3; 32])))));
+        store.save(&sample("review-pr")).unwrap();
+        store.save_file("review-pr", "notes.md", "# needle").unwrap();
+
+        assert!(store.exists("review-pr"));
+        assert_eq!(store.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["review-pr"]);
+        assert_eq!(store.get("review-pr").unwrap().body, "Step 1.\nStep 2.");
+        assert_eq!(store.list_files("review-pr").unwrap(), ["notes.md"]);
+        assert_eq!(store.read_file("review-pr", "notes.md").unwrap(), "# needle");
+
+        store.delete_file("review-pr", "notes.md").unwrap();
+        assert!(store.list_files("review-pr").unwrap().is_empty());
+        store.save_file("review-pr", "again.md", "x").unwrap();
+        store.delete("review-pr").unwrap();
+        assert!(!store.exists("review-pr") && store.list().is_empty() && store.list_files("review-pr").unwrap().is_empty());
     }
 }

@@ -109,6 +109,7 @@ impl ServerConnection {
             node,
             username: None,
             password: None,
+            recovery_codes: false,
         };
         let (conn, token, _) = Self::hello(url, hello, tls).await?;
         Ok((conn, token))
@@ -134,6 +135,8 @@ impl ServerConnection {
             node: None,
             username: Some(username.to_string()),
             password: Some(password.to_string()),
+            // This client hands the recovery code back to its caller, who has to show it.
+            recovery_codes: true,
         };
         Self::hello(url, hello, tls).await
     }

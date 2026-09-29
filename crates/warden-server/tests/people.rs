@@ -187,15 +187,16 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
         ServerMessage::ChatError { message, .. } => assert!(message.contains("your own password"), "{message}"),
         other => panic!("{other:?}"),
     }
-    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: "wrong-one".into(), new_password: "anas-own-pass".into() }).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: "wrong-one".into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
     assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
-    ana.send(&ClientMessage::ChangePassword { request_id: 2, old_password: TEMP.into(), new_password: "anas-own-pass".into() }).await.unwrap();
-    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { request_id: 2 }));
+    ana.send(&ClientMessage::ChangePassword { request_id: 2, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { request_id: 2, .. }));
 
     // Her agent writes to her vault, with none of the owner's tools.
     let answer = chat(&mut ana, "WRITE notes/ana.md", "ana-chat").await;
     assert!(matches!(answer, ServerMessage::ChatResponse { .. }), "{answer:?}");
-    assert_eq!(std::fs::read_to_string(hub.dir.join("users/ana/vault/notes/ana.md")).unwrap(), "written");
+    assert_eq!(ana_vault(&hub, "anas-own-pass").read("notes/ana.md").unwrap(), "written");
+    assert!(!hub.dir.join("users/ana/vault/notes/ana.md").exists(), "what she writes is encrypted on disk, name and all");
     assert!(!hub.dir.join("vault/notes/ana.md").exists(), "never the owner's vault");
     assert!(last_offered(&hub).contains(&"write_file".to_string()));
     assert!(!last_offered(&hub).contains(&"shell".to_string()), "{:?}", last_offered(&hub));
@@ -241,6 +242,8 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
     }
     owner.send(&ClientMessage::RemoveUser { request_id: 7, pairing_key: "wrong".into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    // Her key leaves the file with her, so the vault is opened here, before she goes.
+    let her_vault = ana_vault(&hub, "anas-own-pass");
     owner.send(&ClientMessage::RemoveUser { request_id: 8, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users.is_empty()));
     let closed = tokio::time::timeout(Duration::from_secs(5), async {
@@ -254,7 +257,7 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
     .await;
     assert!(closed.is_ok(), "her open connection was closed");
     assert!(member(&hub, "", Some(token)).await.is_err(), "and her token no longer works");
-    assert!(hub.dir.join("users/ana/vault/notes/ana.md").exists(), "her things stay on disk");
+    assert!(her_vault.read("notes/ana.md").is_ok(), "her things stay on disk");
 }
 
 #[tokio::test]
@@ -282,7 +285,7 @@ async fn the_owner_creates_and_resets_members_with_a_password_shown_once() {
     };
     assert_ne!(reset, temp);
     // The owner has no password to change.
-    owner.send(&ClientMessage::ChangePassword { request_id: 3, old_password: "x".into(), new_password: "y-long-enough".into() }).await.unwrap();
+    owner.send(&ClientMessage::ChangePassword { request_id: 3, old_password: "x".into(), new_password: "y-long-enough".into(), recovery_code: None }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: false, .. }));
 }
 
@@ -294,9 +297,18 @@ async fn chat_as(conn: &mut ServerConnection, message: &str, conversation: &str,
 /// Ana, past her provisional password.
 async fn ana_ready(hub: &Hub) -> ServerConnection {
     let (mut ana, _, _) = member(hub, TEMP, None).await.unwrap();
-    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: TEMP.into(), new_password: "anas-own-pass".into() }).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
     assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
     ana
+}
+
+/// Ana's vault as the hub opens it: her data is encrypted on disk, so the test needs her password
+/// (P84 fatia 4) to read what her agent wrote.
+fn ana_vault(hub: &Hub, password: &str) -> Vault {
+    let config = warden_bootstrap::load_config_from_path(&hub.dir.join("config.toml"), false).unwrap();
+    let user = config.users.iter().find(|u| u.id == "ana").unwrap();
+    let key = warden_bootstrap::users::open_key(user, password).unwrap().expect("her data has a key");
+    Vault::new_encrypted(hub.dir.join("users/ana/vault"), Arc::new(warden_core::memory::VaultCipher::new(&key)))
 }
 
 fn agent_ids(message: &ServerMessage) -> Vec<(String, Option<String>)> {
@@ -435,7 +447,7 @@ async fn a_member_keeps_api_keys_of_her_own() {
     let request = r#"{"model":"warden","messages":[{"role":"user","content":"WRITE notes/from-api.md"}]}"#;
     let (status, body) = http(&hub.url, "POST", "/v1/chat/completions", &anas_key, Some(request)).await;
     assert_eq!(status, 200, "{body}");
-    assert!(hub.dir.join("users/ana/vault/notes/from-api.md").exists());
+    assert!(ana_vault(&hub, "anas-own-pass").read("notes/from-api.md").is_ok());
     assert!(!hub.dir.join("vault/notes/from-api.md").exists());
     let (status, _) = http(&hub.url, "POST", "/v1/chat/completions", &anas_key, Some(r#"{"model":"warden/private","messages":[{"role":"user","content":"hi"}]}"#)).await;
     assert_eq!(status, 404, "the owner's private agent isn't a model for her");
@@ -529,4 +541,168 @@ async fn a_member_sees_only_the_folders_the_owner_shares_with_her() {
     let said = tool_said(chat(&mut ana, "READ compartilhado/casa/lista.md", "s1").await);
     assert!(said.contains("no shared space 'casa'"), "{said}");
     assert!(hub.dir.join("vault/casa/lista.md").exists() && hub.dir.join("vault/casa/nova.md").exists());
+}
+
+// ---- fatia 4: a member's data is encrypted on disk ----------------------------------------------
+
+/// Every folder and file name under `dir`, and every file's bytes, as one string.
+fn everything_on_disk(dir: &std::path::Path) -> String {
+    let mut seen = String::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        seen.push_str(&path.file_name().unwrap().to_string_lossy());
+        if path.is_dir() {
+            seen.push_str(&everything_on_disk(&path));
+        } else {
+            seen.push_str(&String::from_utf8_lossy(&std::fs::read(&path).unwrap()));
+        }
+    }
+    seen
+}
+
+/// What the hub's memory forgets when it restarts: Ana's key.
+fn forget_anas_key(hub: &Hub) {
+    warden_bootstrap::member_crypto::lock(&[&hub.dir.join("users/ana"), &hub.dir.join("conversations/users/ana")]);
+}
+
+/// Ana on a fresh hub, past her provisional password: her token, her recovery code and her connection.
+async fn ana_with_a_code(hub: &Hub) -> (ServerConnection, String, String) {
+    let (mut ana, token, _) = member(hub, TEMP, None).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    match reply(&mut ana).await {
+        ServerMessage::PasswordChanged { recovery_code: Some(code), .. } => (ana, token.unwrap(), code),
+        other => panic!("her first password change hands her a recovery code: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_members_data_is_encrypted_on_disk_and_locked_when_the_hub_no_longer_holds_her_key() {
+    let hub = spin_up().await;
+    let (mut ana, token, code) = ana_with_a_code(&hub).await;
+    assert_eq!(code.len(), 39, "{code}");
+
+    // Her agent writes and talks; nothing readable reaches the disk, not even the file's name.
+    tool_said(chat(&mut ana, "WRITE notes/segredo-da-ana.md", "conversa").await);
+    let disk = format!("{}{}", everything_on_disk(&hub.dir.join("users/ana")), everything_on_disk(&hub.dir.join("conversations/users/ana")));
+    for secret in ["segredo-da-ana", "written", "WRITE", "notes"] {
+        assert!(!disk.contains(secret), "'{secret}' is readable on disk");
+    }
+    assert_eq!(ana_vault(&hub, "anas-own-pass").read("notes/segredo-da-ana.md").unwrap(), "written");
+    assert!(warden_bootstrap::users::open_key(&warden_bootstrap::load_config_from_path(&hub.dir.join("config.toml"), false).unwrap().users[0], TEMP).is_err(), "the owner's provisional password never opens it");
+
+    // The hub restarts: her token gets her in, but her data stays shut.
+    forget_anas_key(&hub);
+    let (mut back, _, user) = member(&hub, "", Some(token.clone())).await.unwrap();
+    let user = user.unwrap();
+    assert!(user.encrypted && user.locked, "{user:?}");
+    match chat(&mut back, "hello", "conversa").await {
+        ServerMessage::ChatError { message, .. } => assert!(message.contains("locked"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    back.send(&ClientMessage::ListConversations { request_id: 1 }).await.unwrap();
+    assert!(matches!(reply(&mut back).await, ServerMessage::ConversationError { message, .. } if message.contains("locked")));
+    back.send(&ClientMessage::ListVaultFiles { request_id: 2 }).await.unwrap();
+    assert!(matches!(reply(&mut back).await, ServerMessage::VaultError { message, .. } if message.contains("locked")));
+    assert!(!everything_on_disk(&hub.dir.join("users/ana")).contains("hello") && !hub.dir.join("users/ana/vault/notes").exists(), "nothing plain is written while it's shut");
+
+    // Signing in with the password opens it again.
+    let (mut open, _, user) = member(&hub, "anas-own-pass", Some(token)).await.unwrap();
+    assert!(!user.unwrap().locked);
+    assert_eq!(conversation_ids(&mut open).await, ["conversa"]);
+    let said = tool_said(chat(&mut open, "READ notes/segredo-da-ana.md", "conversa").await);
+    assert!(said.contains("written"), "{said}");
+}
+
+#[tokio::test]
+async fn after_the_owner_resets_her_password_only_her_recovery_code_brings_the_data_back() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, token, code) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+    forget_anas_key(&hub);
+
+    owner.send(&ClientMessage::ResetPassword { request_id: 1, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    let temp = match reply(&mut owner).await {
+        ServerMessage::UserList { temp_password, users, .. } => {
+            assert!(users[0].needs_recovery, "the owner sees that she needs her code, not what she has");
+            temp_password.unwrap()
+        }
+        other => panic!("{other:?}"),
+    };
+    let config = warden_bootstrap::load_config_from_path(&hub.dir.join("config.toml"), false).unwrap();
+    assert!(warden_bootstrap::users::open_key(&config.users[0], &temp).unwrap().is_none(), "the temporary password opens nothing");
+
+    // She signs in with it: still locked, and choosing a new password needs the code.
+    let (mut ana, _, user) = member(&hub, &temp, Some(token)).await.unwrap();
+    let user = user.unwrap();
+    assert!(user.must_change_password && user.needs_recovery && user.locked, "{user:?}");
+    let change = |request_id, recovery_code: Option<String>| ClientMessage::ChangePassword { request_id, old_password: temp.clone(), new_password: "anas-new-pass".into(), recovery_code };
+    ana.send(&change(1, None)).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { message, .. } if message.contains("recovery code")));
+    ana.send(&change(2, Some(warden_bootstrap::member_crypto::generate_recovery_code()))).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { .. }), "a wrong code");
+    ana.send(&change(3, Some(code))).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { request_id: 3, recovery_code: None }), "she keeps the code she has");
+
+    // Everything is back, on the new password.
+    let said = tool_said(chat(&mut ana, "READ notes/segredo.md", "conversa").await);
+    assert!(said.contains("written"), "{said}");
+    assert_eq!(conversation_ids(&mut ana).await, ["conversa"]);
+    assert_eq!(ana_vault(&hub, "anas-new-pass").read("notes/segredo.md").unwrap(), "written");
+}
+
+#[tokio::test]
+async fn a_member_from_before_gets_her_data_encrypted_when_she_signs_in() {
+    let hub = spin_up().await;
+    // Ana as she was before fatia 4: her own password, plain files and a plain conversation.
+    let config_path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+    config.users[0].must_change_password = false;
+    config.users[0].password_hash = warden_bootstrap::users::hash_password("anas-own-pass").unwrap();
+    save_config(&config_path, &config).unwrap();
+    std::fs::create_dir_all(hub.dir.join("users/ana/vault/notes")).unwrap();
+    std::fs::write(hub.dir.join("users/ana/vault/notes/velha.md"), "nota antiga da ana").unwrap();
+    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None }).unwrap();
+
+    let (mut ana, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
+    assert!(user.unwrap().encrypted, "the sign-in turned it on");
+    let code = match reply(&mut ana).await {
+        ServerMessage::RecoveryCode { request_id: 0, code } => code,
+        other => panic!("she's handed a recovery code right after signing in: {other:?}"),
+    };
+    assert_eq!(code.len(), 39);
+
+    let disk = format!("{}{}", everything_on_disk(&hub.dir.join("users/ana")), everything_on_disk(&hub.dir.join("conversations/users/ana")));
+    assert!(!disk.contains("nota antiga") && !disk.contains("Conversa antiga") && !disk.contains("velha.md"), "her old files were encrypted in place");
+    let said = tool_said(chat(&mut ana, "READ notes/velha.md", "nova").await);
+    assert!(said.contains("nota antiga da ana"), "{said}");
+    assert_eq!(conversation_ids(&mut ana).await, ["nova", "velha"]);
+
+    // Signing in again keeps the same key, and hands out no second code.
+    let (mut again, _, _) = member(&hub, "anas-own-pass", None).await.unwrap();
+    assert_eq!(conversation_ids(&mut again).await, ["nova", "velha"], "no stray message before the reply");
+}
+
+#[tokio::test]
+async fn a_member_asks_for_a_new_recovery_code_with_her_password() {
+    let hub = spin_up().await;
+    let (mut ana, _, first) = ana_with_a_code(&hub).await;
+    ana.send(&ClientMessage::RegenerateRecoveryCode { request_id: 5, password: "not-her-password".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    ana.send(&ClientMessage::RegenerateRecoveryCode { request_id: 6, password: "anas-own-pass".into() }).await.unwrap();
+    let second = match reply(&mut ana).await {
+        ServerMessage::RecoveryCode { request_id: 6, code } => code,
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(first, second);
+
+    let config = warden_bootstrap::load_config_from_path(&hub.dir.join("config.toml"), false).unwrap();
+    let wraps = config.users[0].key.clone().unwrap();
+    assert!(warden_bootstrap::member_crypto::unwrap_with_code(&wraps.by_recovery, &second).is_ok());
+    assert!(warden_bootstrap::member_crypto::unwrap_with_code(&wraps.by_recovery, &first).is_err(), "the old code stopped working");
+
+    // The owner has no recovery code of this kind.
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    owner.send(&ClientMessage::RegenerateRecoveryCode { request_id: 7, password: "x".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { .. }));
 }

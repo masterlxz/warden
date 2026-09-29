@@ -51,7 +51,9 @@ pub fn build_usage_report(
                             if member.is_dir() {
                                 let id = format!("user:{}", member.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
                                 names.insert(id.clone(), id.trim_start_matches("user:").to_string());
-                                per_device.push((id, list_conversations(&member)?));
+                                // P84 fatia 4: a member whose data is locked (the hub restarted since they
+                                // signed in) has no row until they do, instead of failing the whole report.
+                                per_device.push((id, list_conversations(&member).unwrap_or_default()));
                             }
                         }
                         continue;

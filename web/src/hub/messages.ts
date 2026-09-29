@@ -222,6 +222,12 @@ export interface UserInfo {
   tools?: string[] | null;
   /** Their own agents' names. */
   agents: string[];
+  /** P84 fatia 4 — their data is encrypted on the hub with a key only they (or their recovery code) can open. */
+  encrypted?: boolean;
+  /** The owner reset their password: the data opens only with the recovery code, given when they pick a new password. */
+  needsRecovery?: boolean;
+  /** Only in `helloAck`: the hub doesn't hold their key (it restarted), so their data is shut until they sign in with the password. */
+  locked?: boolean;
 }
 
 /** P84 fatia 3 — a folder of the owner's vault shared with members, who see it at
@@ -360,7 +366,7 @@ export type SyncAction =
 export type ClientMessage =
   /** `authKey` is the hub's pairing key (P36), only needed until this device holds a
    * `deviceToken` from an earlier `helloAck`. */
-  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[]; username?: string; password?: string }
+  | { type: "hello"; deviceId: string; deviceName: string; authKey: string; deviceToken?: string; tools: ToolSpec[]; username?: string; password?: string; recoveryCodes?: boolean }
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
@@ -416,7 +422,9 @@ export type ClientMessage =
   | { type: "requestSyncStatus"; requestId: number }
   | { type: "syncAction"; requestId: number; pairingKey: string; action: SyncAction }
   /** P84 — a member picks their own password; the owner manages the members with the pairing key. */
-  | { type: "changePassword"; requestId: number; oldPassword: string; newPassword: string }
+  | { type: "changePassword"; requestId: number; oldPassword: string; newPassword: string; recoveryCode?: string }
+  /** P84 fatia 4 — a new recovery code, with the password; the old one stops working. */
+  | { type: "regenerateRecoveryCode"; requestId: number; password: string }
   | { type: "listUsers"; requestId: number }
   | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
   | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
@@ -489,7 +497,11 @@ export type ServerMessage =
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
   | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string }
-  | { type: "passwordChanged"; requestId: number }
+  /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
+  | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
+  /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after
+   * `helloAck` when signing in turned encryption on for a member from before. */
+  | { type: "recoveryCode"; requestId: number; code: string }
   | { type: "spaceList"; requestId: number; spaces: SpaceInfo[] }
   | { type: "userError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
@@ -559,6 +571,7 @@ export function decode(text: string): ServerMessage {
     case "approvalCancelled":
     case "conversationsChanged":
     case "passwordChanged":
+    case "recoveryCode":
       return json as ServerMessage;
     case "userList": {
       const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string };
