@@ -55,16 +55,27 @@ const PDF_AVG_CHAR_WIDTH: f32 = PDF_FONT_SIZE * 0.5;
 /// pushes and confuse `search`/`search_semantic` with binary-flavored content).
 pub struct GenerateDocumentTool {
     root: PathBuf,
+    /// P84: a member's documents are encrypted like the rest of their data — set from their vault by
+    /// `with_vault`, `None` for everyone else's.
+    cipher: Option<std::sync::Arc<crate::memory::VaultCipher>>,
 }
 
 impl GenerateDocumentTool {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self { root, cipher: None }
     }
 }
 
 #[async_trait]
 impl Tool for GenerateDocumentTool {
+    fn with_vault(&self, vault: &std::sync::Arc<crate::memory::Vault>) -> Option<std::sync::Arc<dyn Tool>> {
+        Some(std::sync::Arc::new(Self { root: self.root.clone(), cipher: vault.cipher() }))
+    }
+
+    fn with_media_root(&self, root: &Path) -> Option<std::sync::Arc<dyn Tool>> {
+        Some(std::sync::Arc::new(Self { root: root.to_path_buf(), cipher: self.cipher.clone() }))
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "generate_document".to_string(),
@@ -144,25 +155,27 @@ impl Tool for GenerateDocumentTool {
         std::fs::create_dir_all(&self.root)?;
         let path = self.root.join(filename);
 
-        if extension.as_deref() == Some("xlsx") {
+        // Built in memory and written once, so a member's document never sits on disk in the clear.
+        let bytes = if extension.as_deref() == Some("xlsx") {
             let sheets_value = args.get("sheets").ok_or_else(|| anyhow::anyhow!("missing required 'sheets' argument for a .xlsx file"))?;
             let sheets: Vec<SheetSpec> = serde_json::from_value(sheets_value.clone()).map_err(|e| anyhow::anyhow!("invalid 'sheets' argument: {e}"))?;
-            write_xlsx(&path, &sheets)?;
+            write_xlsx(&sheets)?
         } else {
             let content = args.get("content").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'content' argument"))?;
             if extension.as_deref() == Some("pdf") {
-                write_pdf(&path, content)?;
+                write_pdf(content)?
             } else {
-                std::fs::write(&path, content)?;
+                content.as_bytes().to_vec()
             }
-        }
+        };
+        std::fs::write(&path, self.cipher.as_ref().map_or(bytes.clone(), |cipher| cipher.seal(&bytes)))?;
         Ok(json!({ "status": "ok", "path": path.display().to_string() }))
     }
 }
 
 /// Renders `content` as a simple paginated PDF (A4, Helvetica base-14 font, no embedding — see
 /// module-level layout constants) and writes it to `path`.
-fn write_pdf(path: &Path, content: &str) -> anyhow::Result<()> {
+fn write_pdf(content: &str) -> anyhow::Result<Vec<u8>> {
     let wrap_columns = ((PDF_PAGE_WIDTH - 2.0 * PDF_MARGIN) / PDF_AVG_CHAR_WIDTH) as usize;
     let lines = wrap_lines(content, wrap_columns.max(1));
     let lines_per_page = (((PDF_PAGE_HEIGHT - 2.0 * PDF_MARGIN) / PDF_LEADING) as usize).max(1);
@@ -218,15 +231,16 @@ fn write_pdf(path: &Path, content: &str) -> anyhow::Result<()> {
     });
     doc.trailer.set("Root", catalog_id);
     doc.compress();
-    doc.save(path)?;
-    Ok(())
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Writes `sheets` as a real `.xlsx` workbook — one worksheet per entry, a fixed bold/highlighted
 /// header row, an optional per-column display format, and real Excel formulas for any cell string
 /// starting with `=` (written verbatim; Excel/LibreOffice computes the result on open — no Rust
 /// crate evaluates formulas itself). See module-level `XLSX_HEADER_BG`.
-fn write_xlsx(path: &Path, sheets: &[SheetSpec]) -> anyhow::Result<()> {
+fn write_xlsx(sheets: &[SheetSpec]) -> anyhow::Result<Vec<u8>> {
     let mut workbook = Workbook::new();
     let header_format = Format::new().set_bold().set_background_color(Color::RGB(XLSX_HEADER_BG)).set_font_color(Color::White);
 
@@ -258,8 +272,7 @@ fn write_xlsx(path: &Path, sheets: &[SheetSpec]) -> anyhow::Result<()> {
         }
     }
 
-    workbook.save(path)?;
-    Ok(())
+    Ok(workbook.save_to_buffer()?)
 }
 
 /// Maps a `columns[].format` hint to an Excel display format. Not localized (e.g. `currency`
@@ -356,6 +369,37 @@ mod tests {
             "warden-generate-document-test-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ))
+    }
+
+    /// P110/P84: a member's copy of the tool writes in their own folder, sealed with their key — the
+    /// owner's copy keeps its folder and its plain files.
+    #[tokio::test]
+    async fn a_members_documents_go_to_their_own_folder_and_are_sealed() {
+        use crate::memory::{Vault, VaultCipher};
+        use std::sync::Arc;
+
+        let (owner_root, member_root) = (temp_root(), temp_root().join("member"));
+        let owner: Arc<dyn Tool> = Arc::new(GenerateDocumentTool::new(owner_root.clone()));
+        let cipher = Arc::new(VaultCipher::new(&[9; 32]));
+        let vault = Arc::new(Vault::new_encrypted(temp_root().join("vault"), cipher.clone()));
+        let member = owner.with_vault(&vault).unwrap().with_media_root(&member_root).unwrap();
+
+        member.call(json!({ "filename": "plano.txt", "content": "segredo do feijão" })).await.unwrap();
+        member.call(json!({ "filename": "plano.pdf", "content": "segredo em pdf" })).await.unwrap();
+        member.call(json!({ "filename": "contas.xlsx", "sheets": [{ "columns": [{ "header": "Item" }], "rows": [["feijão"]] }] })).await.unwrap();
+
+        assert!(!owner_root.exists(), "nothing lands in the owner's folder");
+        for name in ["plano.txt", "plano.pdf", "contas.xlsx"] {
+            let bytes = std::fs::read(member_root.join(name)).unwrap();
+            assert!(VaultCipher::is_sealed(&bytes), "{name} is sealed");
+            assert!(!String::from_utf8_lossy(&bytes).contains("segredo"));
+        }
+        assert_eq!(cipher.open(&std::fs::read(member_root.join("plano.txt")).unwrap()).unwrap(), "segredo do feijão".as_bytes());
+        assert!(cipher.open(&std::fs::read(member_root.join("plano.pdf")).unwrap()).unwrap().starts_with(b"%PDF"));
+
+        // The owner's own copy is unchanged: plain, in its folder.
+        owner.call(json!({ "filename": "meu.txt", "content": "aberto" })).await.unwrap();
+        assert_eq!(std::fs::read_to_string(owner_root.join("meu.txt")).unwrap(), "aberto");
     }
 
     #[tokio::test]

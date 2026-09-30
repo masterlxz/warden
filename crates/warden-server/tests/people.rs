@@ -242,8 +242,6 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
     }
     owner.send(&ClientMessage::RemoveUser { request_id: 7, pairing_key: "wrong".into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
-    // Her key leaves the file with her, so the vault is opened here, before she goes.
-    let her_vault = ana_vault(&hub, "anas-own-pass");
     owner.send(&ClientMessage::RemoveUser { request_id: 8, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users.is_empty()));
     let closed = tokio::time::timeout(Duration::from_secs(5), async {
@@ -257,6 +255,12 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
     .await;
     assert!(closed.is_ok(), "her open connection was closed");
     assert!(member(&hub, "", Some(token)).await.is_err(), "and her token no longer works");
+    // Her data stays on disk, and her entry — the wrapped key — is kept as a removed member's, so the
+    // same password still opens it (and `users restore` can bring her back).
+    let config = warden_bootstrap::load_config_from_path(&hub.dir.join("config.toml"), false).unwrap();
+    assert!(config.users.is_empty());
+    let key = warden_bootstrap::users::open_key(&config.removed_users[0], "anas-own-pass").unwrap().expect("her key is kept");
+    let her_vault = Vault::new_encrypted(hub.dir.join("users/ana/vault"), Arc::new(warden_core::memory::VaultCipher::new(&key)));
     assert!(her_vault.read("notes/ana.md").is_ok(), "her things stay on disk");
 }
 

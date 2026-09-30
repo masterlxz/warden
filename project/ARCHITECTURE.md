@@ -2438,7 +2438,7 @@ consentimento") e recuperação de empresa com registro e aviso.
   - a chave abre no login e **fica só na memória do hub**: token e chave da Warden API funcionam enquanto o hub
     está de pé, e depois de reiniciar o membro entra uma vez com a senha;
   - cifrar o vault (conteúdo **e nomes de arquivo e de pasta**), as conversas e os arquivos gerados.
-    Os arquivos gerados **não entraram** (veja "Fora desta parte");
+    Os arquivos gerados entraram numa segunda passada da mesma sessão (veja "Documentos gerados");
   - o recorte em duas partes.
 - **A chave** (`warden_bootstrap::member_crypto` e `users.rs`):
   - uma chave aleatória de 32 bytes por membro. Ela nunca vai para o disco em claro: o `[[users]]` guarda a
@@ -2494,20 +2494,30 @@ consentimento") e recuperação de empresa com registro e aviso.
   `member_backup.rs`): como o disco já é cifrado, o backup é uma cópia do vault e das conversas do membro mais um
   `members.toml` com o `[[users]]` dele (a chave embrulhada pela senha e pelo código). Fica ilegível para o root e
   volta em outra máquina, ou depois de remover o membro por engano, abrindo só com a senha ou o código. Membro sem
-  chave ainda é deixado de fora e dito. `generated/` também fica de fora, por não ser cifrado. O `restore` recusa
-  sobrescrever dados, ou trocar um membro que tem outra chave, sem `--force`.
-- **Remover um membro** apaga os embrulhos junto com o `[[users]]`: os arquivos ficam no disco, cifrados com uma
-  chave que não existe mais. Sem um backup feito antes, ninguém os abre de novo. O `users remove` e a web avisam.
+  chave ainda é deixado de fora e dito. O `restore` recusa sobrescrever dados, ou trocar um membro que tem outra
+  chave, sem `--force`.
+- **Remover um membro** (P111, segunda passada): se os dados dele são cifrados, o `[[users]]` vai para
+  `[[removed_users]]` em vez de sumir, com o embrulho da chave, e os arquivos ficam no disco. Nada se perde:
+  `warden-server users removed` lista, `users restore <id>` traz de volta com a mesma senha e os mesmos dados (os
+  aparelhos foram revogados, ele pareia de novo; os agentes próprios e os espaços saíram com a remoção), e
+  `users purge <id> --yes` apaga os dados e a chave de vez. Enquanto um membro está arquivado, o nome dele não pode
+  ser usado por outra pessoa (`add_user` recusa), para ela não herdar a pasta. Quem não tinha dados cifrados some
+  como antes.
+- **Documentos gerados** (P110, segunda passada): `generate_document` é uma tool padrão de membro e era criada uma
+  vez com a pasta do root. Ganhou o gancho `Tool::with_media_root`, chamado pelo `Orchestrator::with_media_root`
+  (as sub-tarefas de `delegate_task` também): o turno de um membro grava em `users/<id>/generated`. O `with_vault`
+  da tool leva a cifra do vault do membro, e o arquivo (txt, pdf ou xlsx) é montado na memória e gravado já
+  cifrado, sem passar pelo disco em claro. A mídia grande de MCP (`spill_oversized_media`) usa a mesma cifra. A
+  migração cifra o que já houvesse em `generated/`, e o backup agora leva a pasta. Os **nomes** dos arquivos
+  gerados continuam legíveis (o modelo os escolhe) e um cliente não tem como baixar um documento gerado de membro
+  (já era assim: só o desktop do root abre o caminho).
 - **Telas**: web: `RecoveryCodeView` (o código aparece uma vez e a tela só sai depois de "guardei"), o campo do
   código na troca de senha depois de um reset, "gerar um novo código" e o aviso de dados trancados; a aba Pessoas
   mostra o estado de cada membro (sem criptografia, cifrado, precisa do código). O desktop não mudou: o estado só
   aparece no `warden-server users list`.
-- **Fora desta parte**: Shamir e recuperação de empresa (parte B); os **documentos gerados** (`generate_document` é
-  uma tool padrão de membro, mas é criada uma vez com a pasta `generated` do root, então um documento de membro cai
-  ali, em claro e misturado com os do root; é uma falha anterior à fatia 4); backup agendado; apagar os dados de
-  quem sai; o extrato de gasto; o `shell` de um membro (se o root liberar) enxerga o disco cifrado; a chave
-  sobreviver a um reinício do hub sem a senha; o nome do arquivo de conversa; o relatório de uso do root perde a
-  linha de um membro trancado; e o celular (acima).
+- **Fora desta parte**: Shamir e recuperação de empresa (parte B); backup agendado; o extrato de gasto; o `shell`
+  de um membro (se o root liberar) enxerga o disco cifrado; a chave sobreviver a um reinício do hub sem a senha; o
+  nome do arquivo de conversa; o relatório de uso do root perde a linha de um membro trancado; e o celular (acima).
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 

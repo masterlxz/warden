@@ -78,6 +78,10 @@ impl Tool for DelegateTool {
         Some(Arc::new(Self { orchestrator: self.orchestrator.with_vault(vault.clone()), jobs: self.jobs.clone() }))
     }
 
+    fn with_media_root(&self, root: &std::path::Path) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_media_root(root.to_path_buf()), jobs: self.jobs.clone() }))
+    }
+
     fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
         Some(Arc::new(Self { orchestrator: self.orchestrator.clone(), jobs: Some(board.clone()) }))
     }

@@ -196,6 +196,9 @@ pub fn encrypt_member_data(user_dir: &Path, conversations_dir: &Path, key: &Memb
         }
         remove_empty_plain_dirs(&vault);
     }
+    // What their agent made: documents and big media. Names stay as they are (the model chose them),
+    // the contents are sealed.
+    seal_files_in_place(&cipher, &user_dir.join("generated"), &mut done)?;
     if let Ok(entries) = std::fs::read_dir(conversations_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -225,6 +228,30 @@ pub fn open_member_data(user_dir: &Path, conversations_dir: &Path, key: &MemberK
         encrypt_member_data(user_dir, conversations_dir, key)?;
     } else {
         unlock(&[user_dir, conversations_dir], key);
+    }
+    Ok(())
+}
+
+/// Seals the contents of every file under `dir` that isn't sealed yet, where it is. A folder that
+/// isn't there is nothing to do.
+fn seal_files_in_place(cipher: &VaultCipher, dir: &Path, done: &mut Migration) -> anyhow::Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            seal_files_in_place(cipher, &path, done)?;
+        } else if !entry.file_name().to_string_lossy().ends_with(".warden-tmp") {
+            let bytes = std::fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+            if !VaultCipher::is_sealed(&bytes) {
+                write_sealed(&path, &cipher.seal(&bytes))?;
+                done.encrypted += 1;
+            }
+        }
     }
     Ok(())
 }
@@ -336,10 +363,15 @@ mod tests {
         std::fs::write(vault.join("solta.md"), "outra nota").unwrap();
         std::fs::write(vault.join(format!("{}.md", "n".repeat(MAX_NAME_BYTES))), "nome grande demais").unwrap();
         std::fs::write(conversations.join("c1.json"), r#"{"title":"segredo"}"#).unwrap();
+        std::fs::create_dir_all(user_dir.join("generated/mcp-media")).unwrap();
+        std::fs::write(user_dir.join("generated/relatorio.txt"), "relatório do feijão").unwrap();
+        std::fs::write(user_dir.join("generated/mcp-media/1.png"), "bytes de imagem").unwrap();
 
         let key = new_key();
         let first = encrypt_member_data(&user_dir, &conversations, &key).unwrap();
-        assert_eq!((first.encrypted, first.skipped.len()), (3, 1), "{first:?}");
+        assert_eq!((first.encrypted, first.skipped.len()), (5, 1), "{first:?}");
+        let report = std::fs::read(user_dir.join("generated/relatorio.txt")).unwrap();
+        assert!(VaultCipher::is_sealed(&report) && !String::from_utf8_lossy(&report).contains("feijão"), "generated files are sealed too");
         let again = encrypt_member_data(&user_dir, &conversations, &key).unwrap();
         assert_eq!(again.encrypted, 0, "nothing left to do");
 

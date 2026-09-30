@@ -440,6 +440,11 @@ pub struct FileConfig {
     /// holds the pairing key. See the `users` module.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub users: Vec<users::UserConfig>,
+    /// Members the owner removed whose data is encrypted (P84 fatia 4, TOML `[[removed_users]]`): their
+    /// entry — and with it the wrapped key — is kept, so the data left on disk can still be opened
+    /// by them (`users restore`) instead of being lost for good. `users purge` ends it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_users: Vec<users::UserConfig>,
     /// Folders of the owner's vault shared with members (P84 fatia 3, TOML `[[spaces]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spaces: Vec<users::SpaceConfig>,
@@ -2087,6 +2092,7 @@ oauth = true
             }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
+            removed_users: Vec::new(),
             spaces: Vec::new(),
         };
 

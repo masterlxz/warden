@@ -311,8 +311,18 @@ impl Orchestrator {
     /// instead of dropping it — same cheap-clone reasoning as `with_model`/`with_tool`. Called
     /// once by `warden-bootstrap::bootstrap()` with the same "generated" directory
     /// `generate_document` already writes into.
+    ///
+    /// The tools that make files (`generate_document`) and the sub-agents follow (`Tool::with_media_root`),
+    /// so a person's documents go in their folder and never in another's (P84).
     pub fn with_media_root(&self, root: PathBuf) -> Self {
-        Self { media_root: Some(root), ..self.clone() }
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if let Some(rebound) = tool.with_media_root(&root) {
+                *tool = rebound;
+            }
+        }
+        clone.media_root = Some(root);
+        clone
     }
 
     /// Returns a copy whose turns also offer the caller's own tools (P91). A tool of this
@@ -607,7 +617,7 @@ impl Orchestrator {
             for tool_call in &response.tool_calls {
                 let content = match self.run_tool(tool_call).await {
                     Ok(value) => {
-                        let (content, extracted, files) = extract_media_from_tool_result(&value, self.media_root.as_deref());
+                        let (content, extracted, files) = extract_media_from_tool_result(&value, self.media_root.as_deref(), self.vault.cipher().as_deref());
                         attachments.extend(extracted);
                         generated_files.extend(files);
                         content
@@ -673,7 +683,7 @@ fn generated_file_path(value: &Value) -> Option<String> {
 /// `resource_link` (a URI, no inline bytes) is deliberately never auto-fetched — fetching an
 /// arbitrary URL an MCP server hands back would be an outbound network call driven by untrusted
 /// tool output (SSRF-shaped risk) — so it always falls through as text, regardless of size.
-fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (String, Vec<Attachment>, Vec<String>) {
+fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>, cipher: Option<&crate::memory::VaultCipher>) -> (String, Vec<Attachment>, Vec<String>) {
     let known_type = |item: &Value| matches!(item.get("type").and_then(Value::as_str), Some("text" | "image" | "audio" | "resource" | "resource_link"));
     let Some(content) = value.get("content").and_then(Value::as_array).filter(|blocks| blocks.iter().all(known_type)) else {
         return (value.to_string(), Vec::new(), generated_file_path(value).into_iter().collect());
@@ -700,7 +710,7 @@ fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (
                         text_parts.push(format!("[{block_type} attached: {mime_type}]"));
                     }
                     (Some(data), Some(mime_type)) => {
-                        let (text, path) = spill_oversized_media(media_root, block_type, mime_type, data);
+                        let (text, path) = spill_oversized_media(media_root, cipher, block_type, mime_type, data);
                         generated_files.extend(path);
                         text_parts.push(text);
                     }
@@ -718,7 +728,7 @@ fn extract_media_from_tool_result(value: &Value, media_root: Option<&Path>) -> (
                         text_parts.push(format!("[resource attached: {mime_type}]"));
                     }
                     (Some(data), Some(mime_type)) if is_media_mime(mime_type) => {
-                        let (text, path) = spill_oversized_media(media_root, "resource", mime_type, data);
+                        let (text, path) = spill_oversized_media(media_root, cipher, "resource", mime_type, data);
                         generated_files.extend(path);
                         text_parts.push(text);
                     }
@@ -767,7 +777,7 @@ fn extension_for_mime(mime_type: &str) -> String {
 /// scrape the path back out of that placeholder text. Never panics and never falls back to
 /// dumping the raw block — a decode/write failure just yields a short error placeholder and
 /// `None` instead.
-fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type: &str, base64_data: &str) -> (String, Option<String>) {
+fn spill_oversized_media(media_root: Option<&Path>, cipher: Option<&crate::memory::VaultCipher>, block_type: &str, mime_type: &str, base64_data: &str) -> (String, Option<String>) {
     use base64::Engine;
 
     let bytes = match base64::engine::general_purpose::STANDARD.decode(base64_data) {
@@ -792,7 +802,8 @@ fn spill_oversized_media(media_root: Option<&Path>, block_type: &str, mime_type:
     let counter = MEDIA_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = dir.join(format!("{nanos}-{counter}.{}", extension_for_mime(mime_type)));
 
-    match std::fs::write(&path, &bytes) {
+    // A member's media is encrypted like the rest of their data (P84).
+    match std::fs::write(&path, cipher.map_or(bytes.clone(), |cipher| cipher.seal(&bytes))) {
         Ok(()) => {
             let path = path.display().to_string();
             (format!("[{block_type} too large to attach inline: {mime_type}, {size} bytes — saved to {path}]"), Some(path))

@@ -258,6 +258,14 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
+    // Their encrypted data is still in that name's folder: a new person must not inherit it.
+    anyhow::ensure!(
+        !config.removed_users.iter().any(|u| u.id == user.id),
+        "'{}' is a removed member whose data is kept — `warden-server users restore {}` brings them back, `users purge {}` deletes their data for good",
+        user.id,
+        user.id,
+        user.id
+    );
     users.push(user);
     check_users(&users)?;
     config.users = users;
@@ -373,11 +381,15 @@ pub fn regenerate_recovery_code(config: &mut FileConfig, id: &str, password: &st
     Ok(code)
 }
 
-/// Takes the member out of the file, with their own agents and every share naming them. Their vault
-/// and conversations stay on disk.
+/// Takes the member out of the workspace, with their own agents and every share naming them. Their
+/// vault and conversations stay on disk; if those are encrypted, the entry — the wrapped key — goes
+/// to `removed_users` so they aren't lost for good (`restore_user`, `purge_removed_user`).
 pub fn remove_user(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
     let i = config.users.iter().position(|u| u.id == id).ok_or_else(|| anyhow::anyhow!("no user named '{id}'"))?;
-    config.users.remove(i);
+    let user = config.users.remove(i);
+    if user.key.is_some() {
+        config.removed_users.push(user);
+    }
     let theirs: Vec<String> = config.agents.iter().filter(|a| a.owner.as_deref() == Some(id)).map(|a| a.id.clone()).collect();
     for agent in theirs {
         crate::remove_agent_references(config, &agent);
@@ -389,6 +401,24 @@ pub fn remove_user(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
         space.readers.retain(|s| s != id);
         space.writers.retain(|s| s != id);
     }
+    Ok(())
+}
+
+/// Brings a removed member back, with the same password, key and data. Their own agents and shares
+/// don't come back: those went with the removal.
+pub fn restore_user(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let i = config.removed_users.iter().position(|u| u.id == id).ok_or_else(|| anyhow::anyhow!("no removed member named '{id}' — `warden-server users removed` lists them"))?;
+    anyhow::ensure!(!config.users.iter().any(|u| u.id == id), "there's already a user named '{id}'");
+    let user = config.removed_users.remove(i);
+    config.users.push(user);
+    check_users(&config.users)
+}
+
+/// Forgets a removed member for good: the entry goes, and with it the only way to open their data —
+/// the caller deletes the folders. Returns whether there was one.
+pub fn purge_removed_user(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let i = config.removed_users.iter().position(|u| u.id == id).ok_or_else(|| anyhow::anyhow!("no removed member named '{id}' — `warden-server users removed` lists them"))?;
+    config.removed_users.remove(i);
     Ok(())
 }
 
@@ -600,6 +630,32 @@ mod tests {
         assert_eq!(*back.key.unwrap(), *key, "the very same key");
         assert!(!config.users[0].key_needs_recovery && !config.users[0].must_change_password);
         assert_eq!(*open_key(&config.users[0], "anas-third-pass").unwrap().unwrap(), *key);
+    }
+
+    #[test]
+    fn removing_a_member_with_encrypted_data_keeps_the_key_so_they_can_come_back() {
+        let mut config = config_with_ana("provisional-1");
+        add_user(&mut config, "bruno", "Bruno", "provisional-2").unwrap();
+        let change = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let key = change.key.unwrap();
+
+        remove_user(&mut config, "ana").unwrap();
+        remove_user(&mut config, "bruno").unwrap();
+        assert!(config.users.is_empty());
+        assert_eq!(config.removed_users.iter().map(|u| u.id.as_str()).collect::<Vec<_>>(), ["ana"], "only the one with encrypted data is kept");
+        assert!(add_user(&mut config, "ana", "Another Ana", "provisional-3").is_err(), "a new person must not inherit her data folder");
+        assert!(add_user(&mut config, "bruno", "Bruno again", "provisional-4").is_ok(), "a name with nothing to protect is free");
+
+        restore_user(&mut config, "ana").unwrap();
+        assert!(config.removed_users.is_empty());
+        let ana = config.users.iter().find(|u| u.id == "ana").unwrap();
+        assert_eq!(*open_key(ana, "anas-own-pass").unwrap().unwrap(), *key, "the same password opens the same data");
+        assert!(restore_user(&mut config, "ana").is_err());
+
+        remove_user(&mut config, "ana").unwrap();
+        purge_removed_user(&mut config, "ana").unwrap();
+        assert!(config.removed_users.is_empty() && purge_removed_user(&mut config, "ana").is_err());
+        assert!(add_user(&mut config, "ana", "New Ana", "provisional-5").is_ok(), "purged: the name is free");
     }
 
     #[test]

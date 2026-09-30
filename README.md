@@ -176,6 +176,9 @@ warden-server users add ana --name "Ana"   # prints a provisional password, once
 warden-server users list
 warden-server users reset-password ana
 warden-server users remove ana             # revokes her devices; her vault and conversations stay on disk
+warden-server users removed                # removed members whose encrypted data is still there
+warden-server users restore ana            # brings her back, same password, same data
+warden-server users purge ana --yes        # deletes her data and the key for good
 ```
 
 The web's People tab and the desktop's Workspace do the same. A member picks their own password on the

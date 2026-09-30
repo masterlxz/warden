@@ -246,7 +246,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     <p className="error-banner">
                       {user.name} sai do workspace e os aparelhos são desconectados.{" "}
                       {user.encrypted
-                        ? "O vault e as conversas ficam no disco do hub, mas criptografados com uma chave que sai do config junto: sem um backup feito antes (warden-server backup), ninguém abre esses dados de novo."
+                        ? "O vault e as conversas ficam no disco do hub, criptografados. A pessoa fica guardada como removida, com a chave que abre os dados: warden-server users restore traz de volta, e users purge apaga tudo de vez."
                         : "O vault e as conversas ficam guardados no hub."}
                     </p>,
                   )}

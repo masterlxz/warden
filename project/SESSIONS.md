@@ -36,6 +36,19 @@
   workspace. O `/home` encheu no meio (18 GB de `target/debug/incremental` apagados, é cache). Nenhuma tela aberta,
   hub reiniciado de verdade nem modelo real: está no P108. Um `git stash` que escapou num comando foi desfeito na
   hora (`git stash pop`), sem perda.
+- **Segunda passada (P110 e P111)**, a pedido do usuário depois do commit da parte A:
+  1. **P110**: `Tool::with_media_root`, o `Orchestrator::with_media_root` e a `delegate_task` repassando a pasta;
+     o `generate_document` de um membro grava em `users/<id>/generated`, montado na memória e gravado cifrado
+     (txt, pdf e xlsx); a mídia grande de MCP usa a mesma cifra; a migração cifra o que já havia; o backup passou a
+     levar `generated/`. Antes, o documento de um membro caía na pasta do root, em claro;
+  2. **P111**: remover um membro com dados cifrados o arquiva em `[[removed_users]]` com a chave, em vez de perder
+     os dados; `warden-server users removed|restore|purge --yes`; o nome fica reservado enquanto arquivado; o
+     desktop preserva `removed_users` ao salvar (senão apagaria as chaves).
+  Verificação da segunda passada: `cargo test --workspace --no-fail-fast` com 913 passando e 0 falhas, clippy e
+  `tsc`/`vite build` limpos. Um teste de nós (`a_node_that_drops_mid_command…`) falhou uma vez com a máquina
+  carregada e passou 3 de 3 isolado, então é instável e não tem relação com esta fatia.
+  Testes: o do documento sealed e na pasta do membro, o da migração de `generated/`, o do arquivamento e da
+  restauração no `users.rs`, e o de integração da remoção (a chave continua abrindo os dados).
 - **Próximo passo**: a sessão dedicada de testes (P108 e os anteriores), com um backup antes de migrar dados
   reais; depois a parte B da fatia 4 ou a fatia 5.
 

@@ -158,10 +158,21 @@ enum UsersAction {
     },
     /// Gives a member a new provisional password (printed once), for a forgotten one.
     ResetPassword { id: String },
-    /// Removes a member and revokes their devices. Their vault and conversations stay on disk, but
-    /// their key leaves the config file with them: without a `backup` made before, that data can't
-    /// be opened again.
+    /// Removes a member and revokes their devices. Their vault and conversations stay on disk. If
+    /// their data is encrypted, the member is kept under `users removed` — with the key that opens
+    /// it — so `users restore` can bring them back.
     Remove { id: String },
+    /// Members you removed whose encrypted data is still on disk.
+    Removed,
+    /// Brings a removed member back, with the same password and all their data.
+    Restore { id: String },
+    /// Deletes a removed member's data for good — their vault and conversations — and the key with it.
+    Purge {
+        id: String,
+        /// Confirms it: this can't be undone.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(clap::Args, Debug)]
@@ -610,7 +621,7 @@ fn session_tool_count(local: &warden_server::node_client::LocalNode) -> usize {
 }
 
 fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Result<()> {
-    use warden_bootstrap::users::{add_user, generate_temp_password, remove_user, reset_password};
+    use warden_bootstrap::users::{add_user, generate_temp_password, purge_removed_user, remove_user, reset_password, restore_user};
     let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
     let mut file = load_config_from_path(&config_path, config.is_some())?;
     match action {
@@ -646,7 +657,36 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
             remove_user(&mut file, &id)?;
             save_config(&config_path, &file)?;
             let revoked = PairingStore::new(devices_path()?).revoke_user_devices(&id)?;
-            println!("'{id}' removed and {revoked} device(s) of theirs revoked — their vault and conversations stay on disk, encrypted with a key that's gone from the config file (`backup` before removing keeps a way back)");
+            if file.removed_users.iter().any(|u| u.id == id) {
+                println!("'{id}' removed and {revoked} device(s) of theirs revoked — their encrypted vault and conversations stay on disk, and `warden-server users restore {id}` brings them back");
+            } else {
+                println!("'{id}' removed and {revoked} device(s) of theirs revoked — their vault and conversations stay on disk");
+            }
+        }
+        UsersAction::Removed => {
+            if file.removed_users.is_empty() {
+                println!("no removed members with data on disk");
+            }
+            for user in &file.removed_users {
+                println!("{}\t{}", user.id, user.name);
+            }
+        }
+        UsersAction::Restore { id } => {
+            restore_user(&mut file, &id)?;
+            save_config(&config_path, &file)?;
+            println!("'{id}' is back, with the password they had. Their devices were revoked when they were removed: they pair again.");
+        }
+        UsersAction::Purge { id, yes } => {
+            anyhow::ensure!(yes, "this deletes '{id}'s vault and conversations for good — run it again with --yes");
+            purge_removed_user(&mut file, &id)?;
+            let (users_dir, conversations) = member_data_dirs()?;
+            for dir in [users_dir.join(&id), warden_bootstrap::users::user_conversations_dir(&conversations, &id)] {
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir).with_context(|| format!("failed to delete {}", dir.display()))?;
+                }
+            }
+            save_config(&config_path, &file)?;
+            println!("'{id}' and their data are gone for good");
         }
     }
     Ok(())

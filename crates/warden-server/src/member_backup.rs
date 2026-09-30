@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! members.toml                 [[users]] of every member in it
-//! users/<id>/…                 their folder (the vault and the encrypted marker; not `generated/`)
+//! users/<id>/…                 their folder (the vault, the generated files, the encrypted marker)
 //! conversations/<id>/…         their conversations
 //! ```
 //!
@@ -60,8 +60,6 @@ pub fn backup_members(config_path: &Path, users_dir: &Path, conversations_root: 
             continue;
         }
         copy_tree(&folder, &out.join("users").join(&user.id))?;
-        // Generated files aren't encrypted (yet), so they don't go into a backup meant to be unreadable.
-        std::fs::remove_dir_all(out.join("users").join(&user.id).join("generated")).ok();
         copy_tree(&user_conversations_dir(conversations_root, &user.id), &out.join("conversations").join(&user.id))?;
         file.users.push(user.clone());
         report.backed_up.push(user.id.clone());
@@ -109,6 +107,8 @@ pub fn restore_members(config_path: &Path, users_dir: &Path, conversations_root:
             Some(i) => config.users[i] = user.clone(),
             None => config.users.push(user.clone()),
         }
+        // Back among the members: no longer one that was removed.
+        config.removed_users.retain(|u| u.id != user.id);
         restored.push(user.id.clone());
     }
     save_config(config_path, &config)?;
@@ -171,11 +171,12 @@ mod tests {
 
         let ana_conversations = user_conversations_dir(&conversations, "ana");
         let key = change.key.unwrap();
+        // A document her agent made before her data was encrypted: the migration seals it too.
+        std::fs::create_dir_all(users_dir.join("ana/generated")).unwrap();
+        std::fs::write(users_dir.join("ana/generated/relatorio.txt"), "relatório em texto simples").unwrap();
         member_crypto::encrypt_member_data(&users_dir.join("ana"), &ana_conversations, &key).unwrap();
         let vault = warden_core::memory::Vault::new_encrypted(users_dir.join("ana/vault"), std::sync::Arc::new(warden_core::memory::VaultCipher::new(&key)));
         vault.write("notes/segredo.md", "o feijão da ana").unwrap();
-        std::fs::create_dir_all(users_dir.join("ana/generated")).unwrap();
-        std::fs::write(users_dir.join("ana/generated/relatorio.txt"), "relatório em texto simples").unwrap();
         std::fs::create_dir_all(users_dir.join("bruno/vault")).unwrap();
         std::fs::write(users_dir.join("bruno/vault/plain.md"), "texto simples do bruno").unwrap();
         Setup { dir, config_path, users_dir, conversations, code: change.new_recovery_code.unwrap() }
@@ -201,7 +202,7 @@ mod tests {
         assert!(report.skipped[0].0 == "bruno" && report.skipped[0].1.contains("isn't encrypted yet"), "{report:?}");
 
         let contents = everything(&out);
-        for secret in ["feijão", "segredo", "notes", "anas-own-pass", "texto simples", "relatório", "generated"] {
+        for secret in ["feijão", "segredo", "notes", "anas-own-pass", "texto simples", "relatório"] {
             assert!(!contents.contains(secret), "'{secret}' is readable in the backup");
         }
         assert!(!contents.contains(&s.code), "the recovery code itself isn't in it");
@@ -225,6 +226,7 @@ mod tests {
 
         assert_eq!(restore_members(&s.config_path, &s.users_dir, &s.conversations, &out, None, false).unwrap(), ["ana"]);
         let config = load_config_from_path(&s.config_path, false).unwrap();
+        assert!(config.removed_users.is_empty(), "and she's no longer listed as removed");
         let ana = config.users.iter().find(|u| u.id == "ana").expect("her entry is back");
         assert!(warden_bootstrap::users::authenticate_user(&config.users, "ana", "anas-own-pass").is_some());
         let key = warden_bootstrap::users::open_key(ana, "anas-own-pass").unwrap().unwrap();
@@ -247,6 +249,7 @@ mod tests {
         // Another Ana with another key is in the file now.
         let mut config = load_config_from_path(&s.config_path, false).unwrap();
         warden_bootstrap::users::remove_user(&mut config, "ana").unwrap();
+        warden_bootstrap::users::purge_removed_user(&mut config, "ana").unwrap(); // the name is reserved until then
         add_user(&mut config, "ana", "Ana again", "provisional-3").unwrap();
         change_password(&mut config, "ana", "provisional-3", "another-password", None).unwrap();
         save_config(&s.config_path, &config).unwrap();

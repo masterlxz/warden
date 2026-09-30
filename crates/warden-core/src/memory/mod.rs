@@ -181,6 +181,12 @@ impl Vault {
         self.cipher.is_some()
     }
 
+    /// The cipher of an encrypted vault: what a tool that writes files for this person (outside the
+    /// vault) uses to keep them encrypted too.
+    pub fn cipher(&self) -> Option<Arc<VaultCipher>> {
+        self.cipher.clone()
+    }
+
     /// What `bytes` look like on disk.
     pub(crate) fn encode(&self, bytes: &[u8]) -> Vec<u8> {
         match &self.cipher {

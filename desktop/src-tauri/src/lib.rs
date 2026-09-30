@@ -652,6 +652,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         nodes: existing.nodes,
         // People (P84) are managed on the Workspace screen and the hub, not this form.
         users: existing.users,
+        // Removed members keep their wrapped key here (P84 fatia 4): dropping it would lose their data.
+        removed_users: existing.removed_users,
         spaces: existing.spaces,
     };
 

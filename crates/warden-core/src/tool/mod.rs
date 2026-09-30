@@ -60,6 +60,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool that saves the files it makes under `root` instead of where it was built
+    /// to, or `None` when it makes none. Called by `Orchestrator::with_media_root` (P84: a person's
+    /// own folder, so what their agent generates never lands in someone else's): a tool that writes
+    /// files, or runs a nested orchestrator (`delegate_task`), overrides it.
+    fn with_media_root(&self, _root: &std::path::Path) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// A copy of this tool whose nested orchestrators (sub-agents) are charged to `budget`, or
     /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
     /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`. A tool that only needs
@@ -184,6 +192,10 @@ impl Tool for NamespacedTool {
 
     fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
         self.inner.with_vault(vault).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn with_media_root(&self, root: &std::path::Path) -> Option<Arc<dyn Tool>> {
+        self.inner.with_media_root(root).map(|t| rename_tool(t, self.name.clone()))
     }
 
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
