@@ -45,7 +45,17 @@ fn merge_table(old: &mut Table, new: &Table, next_position: &mut isize) {
             None if is_empty(new_item) => {}
             None => {
                 let mut item = new_item.clone();
-                place_at_end(&mut item, next_position);
+                // A table added under one that's already in the file (a member's `[users.key]`)
+                // prints with that table, not at the end of the file, where it would read as
+                // belonging to whichever entry of the array comes last.
+                match max_position(old) {
+                    Some(anchor) => match &mut item {
+                        Item::Table(table) => set_position_deep(table, Some(anchor)),
+                        Item::ArrayOfTables(array) => array.iter_mut().for_each(|table| set_position_deep(table, Some(anchor))),
+                        _ => {}
+                    },
+                    None => place_at_end(&mut item, next_position),
+                }
                 old.insert(key, item);
             }
         }
@@ -121,9 +131,9 @@ fn merge_array_of_tables(old: &mut ArrayOfTables, new: &ArrayOfTables, next_posi
             }
             None => {
                 let mut table = new_table.clone();
-                // Right after the entry before it (ties print in array order), or at the end of
-                // the file when it's the first one.
-                match merged.iter().last().and_then(Table::position) {
+                // Right after the entry before it and everything under it (ties print in array
+                // order), or at the end of the file when it's the first one.
+                match merged.iter().last().and_then(max_position) {
                     Some(previous) => set_position_deep(&mut table, Some(previous)),
                     None => set_positions_from(&mut table, next_position),
                 }
@@ -308,5 +318,46 @@ model = "gemini-3.5-pro"
         let plain = toml::to_string_pretty(&original()).unwrap();
         assert_eq!(render_config(None, &original()).unwrap(), plain);
         assert_eq!(render_config(Some("this is = = not toml"), &original()).unwrap(), plain);
+    }
+
+    fn member(id: &str, invite: bool) -> crate::users::UserConfig {
+        crate::users::UserConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            role: Default::default(),
+            password_hash: "hash".to_string(),
+            must_change_password: false,
+            tools: None,
+            key: None,
+            key_needs_recovery: false,
+            recoveries: Vec::new(),
+            truthid: None,
+            invite: invite.then(|| crate::users::Invite { secret_hash: "secret".to_string(), expires_at: 9 }),
+        }
+    }
+
+    /// Saves `config` over `text` and checks the result reads back as `config`.
+    fn save_over(text: &str, config: &FileConfig) -> String {
+        let next = render_config(Some(text), config).unwrap();
+        round_trips(&next, config);
+        next
+    }
+
+    #[test]
+    fn a_table_added_to_a_member_in_the_middle_stays_with_that_member() {
+        let mut config = FileConfig { users: vec![member("ana", false), member("bruno", false)], ..Default::default() };
+        let text = save_over("", &config);
+        config.users[0] = member("ana", true);
+        save_over(&text, &config);
+    }
+
+    #[test]
+    fn a_member_added_after_one_with_a_table_does_not_steal_it() {
+        let mut config = FileConfig { users: vec![member("ana", true)], ..Default::default() };
+        let text = save_over("", &config);
+        config.users.push(member("bruno", false));
+        let text = save_over(&text, &config);
+        config.users.push(member("carla", true));
+        save_over(&text, &config);
     }
 }
