@@ -391,7 +391,12 @@ async fn what_a_member_may_use_is_what_the_owner_shares_and_allows() {
     assert!(matches!(chat_as(&mut ana, "SPEND", "a3", "family").await, ServerMessage::ChatResponse { .. }));
     assert!(matches!(chat_as(&mut ana, "SPEND", "a3", "family").await, ServerMessage::ChatResponse { .. }));
     match chat_as(&mut ana, "SPEND", "a3", "family").await {
-        ServerMessage::ChatError { spend_limit_id, .. } => assert_eq!(spend_limit_id.as_deref(), Some("ana-day")),
+        // She can't allow more, so she's told to ask the owner, with no limit for her to extend.
+        ServerMessage::ChatError { spend_limit_id, message, .. } => {
+            assert_eq!(spend_limit_id, None);
+            assert!(message.contains("ana-day") && message.contains("Ask whoever runs this Warden to allow more"), "{message}");
+            assert!(!message.contains("desktop") && !message.contains("Usage tab"), "{message}");
+        }
         other => panic!("{other:?}"),
     }
     assert!(matches!(chat_as(&mut owner, "SPEND", "o2", "helper").await, ServerMessage::ChatResponse { .. }));
@@ -933,4 +938,41 @@ async fn an_invite_for_a_truthid_that_does_not_exist_is_kept_for_another_try() {
     assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { message, .. } if message.contains("no TruthID named")));
     owner.send(&ClientMessage::ListUsers { request_id: 3 }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users[0].invite_open && users[0].truthid.is_empty()));
+}
+
+#[tokio::test]
+async fn the_owner_brings_back_a_removed_member_whose_encrypted_data_was_kept() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+
+    owner.send(&ClientMessage::RemoveUser { request_id: 1, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::UserList { users, removed, .. } => {
+            assert!(users.is_empty());
+            assert_eq!(removed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["ana"], "kept with the key that opens her data");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(member(&hub, "anas-own-pass", None).await.is_err(), "while removed she can't sign in");
+
+    owner.send(&ClientMessage::RestoreUser { request_id: 2, pairing_key: "wrong".into(), id: "ana".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::RestoreUser { request_id: 3, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::UserList { users, removed, .. } => assert_eq!((users.len(), removed.len()), (1, 0)),
+        other => panic!("{other:?}"),
+    }
+
+    // She signs in with the password she had, and what she wrote is still there.
+    // Her old phone was revoked when she was removed, so it's a new device that pairs.
+    assert!(member(&hub, "anas-own-pass", None).await.is_err(), "the revoked device stays revoked");
+    let (mut again, _, _) =
+        ServerConnection::handshake_as_member(&hub.url, "ana-new-phone", "Ana's new phone", "ana", "anas-own-pass", None, warden_server_protocol::tls::default_client_config()).await.unwrap();
+    assert_eq!(ana_vault(&hub, "anas-own-pass").read("notes/segredo.md").unwrap(), "written");
+
+    // A member can't restore anyone.
+    again.send(&ClientMessage::RestoreUser { request_id: 4, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    assert!(matches!(reply(&mut again).await, ServerMessage::UserError { auth_rejected: true, .. }));
 }

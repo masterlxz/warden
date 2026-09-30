@@ -242,6 +242,12 @@ export interface UserInfo {
   inviteOpen?: boolean;
 }
 
+/** Mirrors `RemovedUserDto` (P84 fatia 4): removed, with their encrypted data still on the hub's disk. */
+export interface RemovedUser {
+  id: string;
+  name: string;
+}
+
 /** Mirrors `RecoveryEventDto` (P84 fatia 4 parte B). */
 export interface RecoveryEvent {
   /** Milliseconds since the epoch. */
@@ -457,6 +463,8 @@ export type ClientMessage =
   | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
   | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
   | { type: "removeUser"; requestId: number; pairingKey: string; id: string }
+  /** P84 fatia 4 — the owner brings back a removed member whose encrypted data was kept. */
+  | { type: "restoreUser"; requestId: number; pairingKey: string; id: string }
   /** P84 fatia 5 — the owner makes an invite to link a TruthID (shown once, in `userList`) or unties one; a member
    * links theirs with the invite `code` and their TruthID `username`. */
   | { type: "createInvite"; requestId: number; pairingKey: string; id: string }
@@ -529,7 +537,7 @@ export type ServerMessage =
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
-  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string }
+  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string; removed?: RemovedUser[] }
   /** P84 fatia 5 — the member's TruthID is linked. */
   | { type: "truthIdLinked"; requestId: number; username: string }
   /** `secret`: the owner's recovery key, only when one was just made — shown once, never kept. */
@@ -618,13 +626,14 @@ export function decode(text: string): ServerMessage {
     case "truthIdLinked":
       return json as ServerMessage;
     case "userList": {
-      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string };
+      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string; removed?: RemovedUser[] };
       return {
         type: "userList",
         requestId: raw.requestId,
         users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false, agents: u.agents ?? [] })),
         ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
         ...(raw.inviteCode !== undefined && { inviteCode: raw.inviteCode }),
+        removed: raw.removed ?? [],
         ...(raw.recoveryPolicy !== undefined && { recoveryPolicy: raw.recoveryPolicy }),
       };
     }

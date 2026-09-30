@@ -35,6 +35,9 @@
   `ServerConnection`, `member_account.dart` (código de recuperação, troca de senha com o código, política, aviso de
   recuperação, conta e TruthID) e o portão do `ConnectionScreen`; 14 testes novos, e o Dart contra o hub real achou que
   o `requestId` 0 (reservado ao código que o hub empurra) era usado no primeiro pedido.
+- **Pequenas pendências**: a mensagem do limite por pessoa para o membro (sem o "allow more" que ele não tem) e o botão
+  de restaurar um membro removido na web (`RestoreUser`, `removed` no `UserList`, seção "Pessoas removidas"), com um teste
+  do hub real e a tela testada no Chrome headless.
 
 ---
 

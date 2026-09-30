@@ -30,6 +30,7 @@ import {
   type SpaceInfo,
   type Task,
   type TaskInfo,
+  type RemovedUser,
   type UserInfo,
   type VaultSearchHit,
 } from "./messages";
@@ -40,6 +41,8 @@ export interface UserList {
   tempPassword?: string;
   /** The invite just made for a TruthID link (P84 fatia 5), shown once. */
   inviteCode?: string;
+  /** Members removed whose encrypted data is still on the hub; `restoreUser` brings them back. */
+  removed: RemovedUser[];
   /** The workspace's recovery policy (P84 fatia 4 parte B): "private", "consent" or "company". */
   recoveryPolicy?: string;
 }
@@ -753,6 +756,11 @@ export class ServerConnection {
     return this.userRequest((requestId) => ({ type: "resetPassword", requestId, pairingKey, id }));
   }
 
+  /** Brings back a removed member whose encrypted data was kept, with the password they had. */
+  async restoreUser(pairingKey: string, id: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "restoreUser", requestId, pairingKey, id }));
+  }
+
   /** P84 fatia 5: an invite for a member to link their TruthID, in the reply once. */
   async createInvite(pairingKey: string, id: string): Promise<UserList> {
     return this.userRequest((requestId) => ({ type: "createInvite", requestId, pairingKey, id }));
@@ -822,6 +830,7 @@ export class ServerConnection {
       users: reply.users,
       ...(reply.tempPassword !== undefined && { tempPassword: reply.tempPassword }),
       ...(reply.inviteCode !== undefined && { inviteCode: reply.inviteCode }),
+      removed: reply.removed ?? [],
       ...(reply.recoveryPolicy !== undefined && { recoveryPolicy: reply.recoveryPolicy }),
     };
   }

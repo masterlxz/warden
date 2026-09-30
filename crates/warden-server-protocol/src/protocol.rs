@@ -392,6 +392,14 @@ pub struct UserInfoDto {
     pub invite_open: bool,
 }
 
+/// A member the owner removed whose encrypted data is still on disk, with the key that opens it (P84 fatia 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedUserDto {
+    pub id: String,
+    pub name: String,
+}
+
 /// The owner recovered someone's data with the workspace's recovery key (P84 fatia 4, parte B).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1135,6 +1143,14 @@ pub enum ClientMessage {
         code: String,
         username: String,
     },
+    /// P84 fatia 4: the owner brings back a member they removed whose encrypted data was kept, with the
+    /// password they had. Their devices were revoked when they were removed: they pair again. Answered
+    /// by `UserList`.
+    RestoreUser {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// Removes a member and revokes their devices. Their vault and conversations stay on the hub's disk.
     RemoveUser {
         request_id: u64,
@@ -1490,6 +1506,9 @@ pub enum ServerMessage {
         /// P84 fatia 4 parte B: the workspace's recovery policy (empty from a hub that predates it).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         recovery_policy: String,
+        /// Members the owner removed whose encrypted data is still on disk: `RestoreUser` brings them back.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<RemovedUserDto>,
     },
     /// The workspace's recovery policy after `SetRecoveryPolicy`. `secret` is the owner's recovery key,
     /// present only when one was just made — shown once and never kept: it's typed in for each recovery.

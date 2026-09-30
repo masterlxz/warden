@@ -11,10 +11,10 @@ use warden_bootstrap::member_crypto::{self, MemberKey};
 use warden_bootstrap::recovery::RecoveryPolicy;
 use warden_bootstrap::users::{
     ack_recovery_notices, add_user, create_invite, redeem_invite, unlink_truthid, TruthIdLink, change_password_with, enable_encryption, generate_temp_password, open_key, recover_member, regenerate_recovery_code, remove_space, remove_user, rename_user,
-    reset_password, save_space, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
+    reset_password, restore_user, save_space, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
 };
 use warden_bootstrap::{load_config_from_path, save_config};
-use warden_server_protocol::protocol::SpaceDto;
+use warden_server_protocol::protocol::{RemovedUserDto, SpaceDto};
 use warden_server_protocol::ServerMessage;
 
 use crate::api_keys::ApiKeyStore;
@@ -37,6 +37,7 @@ fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<Stri
         temp_password,
         invite_code,
         recovery_policy: policy.as_str().to_string(),
+        removed: config.removed_users.iter().map(|u| RemovedUserDto { id: u.id.clone(), name: u.name.clone() }).collect(),
     })
 }
 
@@ -56,6 +57,8 @@ pub enum UserChange {
     Remove { id: String },
     /// Fatia 2: the tools they may use; `None` is the safe default.
     SetTools { id: String, tools: Option<Vec<String>> },
+    /// Fatia 4: brings back a removed member whose encrypted data was kept.
+    Restore { id: String },
     /// Fatia 5: an invite to link a TruthID, shown once.
     Invite { id: String },
     /// Fatia 5: unties a member's TruthID and cancels an open invite.
@@ -108,6 +111,7 @@ pub async fn handle_user_change(
                 removed = Some(id);
             }
             UserChange::SetTools { id, tools } => set_user_tools(&mut config, &id, tools)?,
+            UserChange::Restore { id } => restore_user(&mut config, &id)?,
             UserChange::Invite { id } => invite = Some(create_invite(&mut config, &id, unix_now())?),
             UserChange::UnlinkTruthId { id } => unlink_truthid(&mut config, &id)?,
             UserChange::Recover { id, recovery_key, code } => {

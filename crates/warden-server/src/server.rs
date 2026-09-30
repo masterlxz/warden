@@ -33,7 +33,7 @@ use crate::user_admin::{
 };
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
-use crate::usage::{handle_extend_limit, handle_usage_request, spend_limit_id};
+use crate::usage::{handle_extend_limit, handle_usage_request, member_limit_message, spend_limit_id};
 use crate::vault::handle_vault_request;
 use crate::remote_tool::{RemoteTool, RemoteToolChannel, DEFAULT_TIMEOUT as REMOTE_TOOL_TIMEOUT};
 use crate::node_tools::NodeToolFactory;
@@ -1008,6 +1008,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RecoverMember { request_id, pairing_key, id, recovery_key, code }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Recover { id, recovery_key, code });
                 }
+                Ok(ClientMessage::RestoreUser { request_id, pairing_key, id }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Restore { id });
+                }
                 Ok(ClientMessage::CreateInvite { request_id, pairing_key, id }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Invite { id });
                 }
@@ -1106,6 +1109,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
                     let reply_tx = tx.clone();
+                    let is_member = member.is_some();
                     tokio::spawn(async move {
                         let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
                         let reply = match warden_bootstrap::handle_agent_turn(
@@ -1126,10 +1130,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                                 conversation_id: Some(conversation_id),
                                 fallbacks: outcome.fallbacks.into_iter().map(Into::into).collect(),
                             },
-                            Err(err) => ServerMessage::ChatError {
-                                message: format!("{err:#}"),
-                                conversation_id: Some(conversation_id),
-                                spend_limit_id: spend_limit_id(&err),
+                            // A member can't allow more, so the pause tells them to ask, with nothing to extend.
+                            Err(err) => match is_member.then(|| member_limit_message(&err)).flatten() {
+                                Some(message) => ServerMessage::ChatError { message, conversation_id: Some(conversation_id), spend_limit_id: None },
+                                None => ServerMessage::ChatError { message: format!("{err:#}"), conversation_id: Some(conversation_id), spend_limit_id: spend_limit_id(&err) },
                             },
                         };
                         let _ = reply_tx.send(reply);

@@ -169,6 +169,7 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SetUserTools { request_id, .. }
         | ClientMessage::SetRecoveryPolicy { request_id, .. }
         | ClientMessage::RecoverMember { request_id, .. }
+        | ClientMessage::RestoreUser { request_id, .. }
         | ClientMessage::CreateInvite { request_id, .. }
         | ClientMessage::UnlinkTruthId { request_id, .. }
         | ClientMessage::SaveSpace { request_id, .. }

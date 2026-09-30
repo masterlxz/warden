@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserError, type ServerConnection } from "../hub/connection";
-import type { UserInfo } from "../hub/messages";
+import type { RemovedUser, UserInfo } from "../hub/messages";
 import RecoveryPolicySection from "./RecoveryPolicySection";
 import SharedSpacesSection from "./SharedSpacesSection";
 
@@ -13,6 +13,7 @@ type Asking =
   | { kind: "rename"; user: UserInfo; name: string }
   | { kind: "reset"; user: UserInfo }
   | { kind: "remove"; user: UserInfo }
+  | { kind: "restore"; user: RemovedUser }
   | { kind: "invite"; user: UserInfo }
   | { kind: "unlink"; user: UserInfo }
   /** `null`: back to the safe default. */
@@ -46,6 +47,8 @@ function message(err: unknown): string {
 
 export default function PeopleView({ conn }: { conn: ServerConnection | null }) {
   const [users, setUsers] = useState<UserInfo[] | null>(null);
+  /** Removed members whose encrypted data the hub kept (P84 fatia 4). */
+  const [removed, setRemoved] = useState<RemovedUser[]>([]);
   /** The workspace's recovery policy (P84 fatia 4 parte B). */
   const [recoveryPolicy, setRecoveryPolicy] = useState("private");
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +68,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
     try {
       const list = await conn.listUsers();
       setUsers(list.users);
+      setRemoved(list.removed);
       setRecoveryPolicy(list.recoveryPolicy ?? "private");
       setError(null);
     } catch (err) {
@@ -100,12 +104,15 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
               ? await conn.resetPassword(pairingKey, asking.user.id)
               : asking.kind === "tools"
                 ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
-                : asking.kind === "invite"
+                : asking.kind === "restore"
+                  ? await conn.restoreUser(pairingKey, asking.user.id)
+                  : asking.kind === "invite"
                   ? await conn.createInvite(pairingKey, asking.user.id)
                   : asking.kind === "unlink"
                     ? await conn.unlinkTruthId(pairingKey, asking.user.id)
                     : await conn.removeUser(pairingKey, asking.user.id);
       setUsers(reply.users);
+      setRemoved(reply.removed);
       if (reply.inviteCode && asking.kind === "invite") setInvite({ id: asking.user.id, code: reply.inviteCode });
       if (reply.tempPassword) {
         setShown({ id: asking.kind === "create" ? asking.id.trim().toLowerCase() : asking.kind === "reset" ? asking.user.id : "", password: reply.tempPassword });
@@ -313,6 +320,39 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
             );
           })}
         </ul>
+      )}
+
+      {removed.length > 0 && (
+        <>
+          <h3>Pessoas removidas</h3>
+          <p className="skills-hint">
+            Saíram do workspace, mas os dados criptografados delas continuam no disco do hub, com a chave que os abre guardada. Restaurar traz a
+            pessoa de volta com a senha que ela tinha; os aparelhos dela foram desconectados na remoção, então ela entra de novo. Apagar de vez é só
+            pela linha de comando: <code>warden-server users purge</code>.
+          </p>
+          <ul className="skills-list">
+            {removed.map((gone) => (
+              <li key={gone.id} className="skills-item">
+                <div className="skills-item-header">
+                  <span className="skills-item-name">{gone.name}</span>
+                  <span className="devices-status devices-status--pending">Removida</span>
+                </div>
+                <p className="skills-item-description">
+                  <code>{gone.id}</code>
+                </p>
+                {asking?.kind === "restore" && asking.user.id === gone.id ? (
+                  keyForm("Restaurar")
+                ) : (
+                  <div className="skills-actions">
+                    <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "restore", user: gone })}>
+                      Restaurar
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       <SharedSpacesSection conn={conn} users={users ?? []} />

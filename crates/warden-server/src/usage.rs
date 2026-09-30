@@ -152,6 +152,17 @@ pub fn spend_limit_id(err: &anyhow::Error) -> Option<String> {
     err.downcast_ref::<warden_core::budget::SpendLimitReached>().map(|reached| reached.0.id.clone())
 }
 
+/// What a member is told when a limit stops their turn (P84). `SpendLimitReached`'s own text sends the
+/// reader to the desktop, the CLI or the Usage tab — none of which a member has — so theirs says to
+/// ask whoever runs this Warden, and carries no limit id (nothing for them to extend).
+pub fn member_limit_message(err: &anyhow::Error) -> Option<String> {
+    let reached = err.downcast_ref::<warden_core::budget::SpendLimitReached>()?;
+    Some(format!(
+        "spending limit reached — {}. The turn was stopped before calling the model again. Ask whoever runs this Warden to allow more.",
+        reached.0.describe()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
