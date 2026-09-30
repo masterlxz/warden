@@ -10,7 +10,7 @@ void main() {
       const msg = HelloMessage(deviceId: 'dev-1', deviceName: 'Test Device', authKey: 'secret');
       expect(
         msg.encode(),
-        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[]}',
+        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret","tools":[],"recoveryCodes":true}',
       );
     });
 
@@ -18,7 +18,7 @@ void main() {
       const msg = HelloMessage(deviceId: 'dev-1', deviceName: 'Test Device', authKey: '', deviceToken: 'tok');
       expect(
         msg.encode(),
-        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"","deviceToken":"tok","tools":[]}',
+        '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"","deviceToken":"tok","tools":[],"recoveryCodes":true}',
       );
     });
 
@@ -34,7 +34,7 @@ void main() {
       expect(
         msg.encode(),
         '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"secret",'
-        '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}]}',
+        '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}],"recoveryCodes":true}',
       );
     });
 
@@ -197,6 +197,44 @@ void main() {
       final list = ServerMessage.decode(
           '{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"T","createdAt":1,"updatedAt":2,"agentId":"chief"}]}');
       expect((list as ConversationListMessage).conversations.single.agentId, 'chief');
+    });
+  });
+
+  group('P84 recovery and TruthID messages', () {
+    test('the client messages are the ones the hub expects', () {
+      expect(const ChangePasswordMessage(1, 'old', 'new').encode(), '{"type":"changePassword","requestId":1,"oldPassword":"old","newPassword":"new"}');
+      expect(
+        const ChangePasswordMessage(1, 'old', 'new', recoveryCode: 'AAAA').encode(),
+        '{"type":"changePassword","requestId":1,"oldPassword":"old","newPassword":"new","recoveryCode":"AAAA"}',
+      );
+      expect(const RegenerateRecoveryCodeMessage(2, 'pw').encode(), '{"type":"regenerateRecoveryCode","requestId":2,"password":"pw"}');
+      expect(const AcceptRecoveryPolicyMessage(3, 'pw').encode(), '{"type":"acceptRecoveryPolicy","requestId":3,"password":"pw"}');
+      expect(const AckRecoveryNoticesMessage(4).encode(), '{"type":"ackRecoveryNotices","requestId":4}');
+      expect(const RedeemInviteMessage(5, 'ana:x', 'ana.silva').encode(), '{"type":"redeemInvite","requestId":5,"code":"ana:x","username":"ana.silva"}');
+    });
+
+    test('the server messages decode', () {
+      expect(ServerMessage.decode('{"type":"passwordChanged","requestId":1,"recoveryCode":"CODE"}'), isA<PasswordChangedMessage>().having((m) => m.recoveryCode, 'code', 'CODE'));
+      expect(ServerMessage.decode('{"type":"passwordChanged","requestId":1}'), isA<PasswordChangedMessage>().having((m) => m.recoveryCode, 'code', isNull));
+      expect(ServerMessage.decode('{"type":"recoveryCode","requestId":0,"code":"C"}'), isA<RecoveryCodeMessage>().having((m) => m.requestId, 'id', 0));
+      expect(ServerMessage.decode('{"type":"recoveryPolicyAccepted","requestId":2}'), isA<RecoveryPolicyAcceptedMessage>());
+      expect(ServerMessage.decode('{"type":"recoveryNoticesAcked","requestId":3}'), isA<RecoveryNoticesAckedMessage>());
+      expect(ServerMessage.decode('{"type":"truthIdLinked","requestId":4,"username":"ana.silva"}'), isA<TruthIdLinkedMessage>().having((m) => m.username, 'username', 'ana.silva'));
+    });
+
+    test('a HelloAck user carries the state of their data', () {
+      final ack = ServerMessage.decode(
+        '{"type":"helloAck","serverName":"hub","user":{"id":"ana","name":"Ana","role":"member","mustChangePassword":false,'
+        '"encrypted":true,"needsRecovery":true,"locked":true,"memberPolicy":"private","policyPending":true,"recoveryPolicy":"company",'
+        '"recoveries":[{"atMs":5,"kind":"company","seen":false},{"atMs":4,"kind":"consent","seen":true}],"truthid":"ana.silva"}}',
+      ) as HelloAckMessage;
+      final user = ack.user!;
+      expect((user.encrypted, user.needsRecovery, user.locked, user.policyPending), (true, true, true, true));
+      expect((user.memberPolicy, user.recoveryPolicy, user.truthid), ('private', 'company', 'ana.silva'));
+      expect(user.unseenRecoveries.map((e) => e.atMs), [5]);
+      // A hub from before knows none of it.
+      final old = (ServerMessage.decode('{"type":"helloAck","serverName":"hub","user":{"id":"ana","name":"Ana","role":"member"}}') as HelloAckMessage).user!;
+      expect((old.encrypted, old.locked, old.recoveries.isEmpty, old.truthid), (false, false, true, ''));
     });
   });
 }

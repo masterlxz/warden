@@ -10,6 +10,7 @@ import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
 import '../src/rust/api/discovery.dart';
 import 'chat_screen.dart';
+import 'member_account.dart';
 import 'qr_scan_screen.dart';
 import 'skills_screen.dart';
 import 'sync_screen.dart';
@@ -142,15 +143,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
       _passwordController.clear();
 
-      // P84 — a member on the provisional password the owner gave them picks their own first:
-      // until then the hub turns everything else away.
-      if (connection.user?.mustChangePassword ?? false) {
-        final changed = mounted && await _askNewPassword(connection);
-        if (!changed) {
-          await connection.goodbye('password not changed');
-          if (mounted) setState(() => _status = const ConnectionFailure('Choose your own password to continue'));
-          return;
-        }
+      // P84 — what a member has to get through before the chat: their own password, the recovery
+      // code of their data, the workspace's recovery policy and any recovery the owner made.
+      if (connection.user != null) {
+        final proceed = await _memberGate(connection);
+        if (!proceed) return;
       }
 
       await _statusSubscription?.cancel();
@@ -183,14 +180,57 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     }
   }
 
-  /// P84 — the provisional password for one of the member's own. True once the hub took it.
-  Future<bool> _askNewPassword(ServerConnection connection) async {
-    final changed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _ChangePasswordDialog(connection: connection, name: connection.user?.name ?? ''),
-    );
-    return changed ?? false;
+  /// P84 — the screens a member passes before the chat. False when they stopped and the connection was closed.
+  Future<bool> _memberGate(ServerConnection connection) async {
+    final user = connection.user!;
+    // The hub restarted and doesn't hold their key: a token can't open it, only the password can.
+    if (user.locked && !user.mustChangePassword) {
+      await connection.goodbye('data locked');
+      if (mounted) {
+        setState(() {
+          _useAccount = true;
+          _status = const ConnectionFailure('Your data is locked because the hub restarted. Sign in with your username and password once to unlock it.');
+        });
+      }
+      return false;
+    }
+    if (user.mustChangePassword) {
+      final change = mounted
+          ? await showDialog<PasswordChange>(
+              context: context,
+              barrierDismissible: false,
+              builder: (_) => ChangePasswordDialog(connection: connection, name: user.name, needsRecovery: user.needsRecovery),
+            )
+          : null;
+      if (change == null) {
+        await connection.goodbye('password not changed');
+        if (mounted) setState(() => _status = const ConnectionFailure('Choose your own password to continue'));
+        return false;
+      }
+      final code = change.recoveryCode;
+      if (code != null && mounted) await showRecoveryCode(context, code);
+    }
+    // Encryption that signing in turned on for a member from before (the hub pushes the code on its own).
+    final pushed = connection.takeUnclaimedRecoveryCode();
+    if (pushed != null && mounted) await showRecoveryCode(context, pushed);
+    // A recovery policy weaker than the one their data follows waits for their yes.
+    if (user.policyPending && mounted) {
+      final code = await showDialog<String>(context: context, builder: (_) => AcceptPolicyDialog(connection: connection, policy: user.recoveryPolicy));
+      if (code != null && code.isNotEmpty && mounted) await showRecoveryCode(context, code, replacing: true);
+    }
+    // The owner recovered their data: they're told, once.
+    final unseen = user.unseenRecoveries;
+    if (unseen.isNotEmpty && mounted) {
+      final seen = await showDialog<bool>(context: context, builder: (_) => RecoveryNoticeDialog(events: unseen));
+      if (seen ?? false) {
+        try {
+          await connection.ackRecoveryNotices();
+        } on PasswordException {
+          // They'll see it again next time — not worth stopping the sign-in for.
+        }
+      }
+    }
+    return true;
   }
 
   // Fase 9.1 (redefined) — sweeps the LAN instead of asking the user to already know the IP.
@@ -288,6 +328,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               tooltip: 'Scan QR to fill in connection',
               onPressed: _scanQr,
             ),
+          // P84 — a member's own password, recovery code and TruthID, once connected as one.
+          if (_isConnected && _connection?.user != null)
+            IconButton(
+              key: const Key('account-button'),
+              icon: const Icon(Icons.account_circle),
+              tooltip: 'My account',
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => AccountScreen(connection: _connection!))),
+            ),
           // Fase 4.4 — sync doesn't depend on being connected to warden-server (it only talks to
           // a paired device over LAN and to Arweave/TruthID), so it's reachable independent of
           // this screen's connection state.
@@ -379,83 +427,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// P84 — swaps the provisional password for the member's own. Pops `true` once the hub took it.
-class _ChangePasswordDialog extends StatefulWidget {
-  const _ChangePasswordDialog({required this.connection, required this.name});
-
-  final ServerConnection connection;
-  final String name;
-
-  @override
-  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
-}
-
-class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
-  static const _minLength = 8;
-
-  final _current = TextEditingController();
-  final _next = TextEditingController();
-  final _again = TextEditingController();
-  String? _error;
-  bool _busy = false;
-
-  Future<void> _submit() async {
-    if (_next.text.length < _minLength) {
-      setState(() => _error = 'The new password needs at least $_minLength characters.');
-      return;
-    }
-    if (_next.text != _again.text) {
-      setState(() => _error = "The two new passwords don't match.");
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await widget.connection.changePassword(_current.text, _next.text);
-      if (mounted) Navigator.of(context).pop(true);
-    } on PasswordException catch (e) {
-      if (mounted) setState(() => _error = e.wrongPassword ? 'The provisional password is wrong.' : e.message);
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _current.dispose();
-    _next.dispose();
-    _again.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Choose your password'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Hi ${widget.name}. Before you start, replace the provisional password with one of your own.'),
-            TextField(controller: _current, obscureText: true, decoration: const InputDecoration(labelText: 'Provisional password')),
-            TextField(controller: _next, obscureText: true, decoration: const InputDecoration(labelText: 'New password')),
-            TextField(controller: _again, obscureText: true, decoration: const InputDecoration(labelText: 'New password again')),
-            if (_error != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: Colors.red))),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: _busy ? null : () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-        FilledButton(onPressed: _busy ? null : _submit, child: const Text('Save')),
-      ],
     );
   }
 }

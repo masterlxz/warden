@@ -29,6 +29,12 @@
 - **Achado**: vincular não prova que a pessoa controla aquele TruthID (só digita o username). Não há risco agora, porque
   nada usa o vínculo; o login futuro exigirá a assinatura de um aparelho daquela identidade.
 - **Próximo passo**: a rodada de testes (P112 e anteriores) ou o login por TruthID (P113).
+- **Depois (mesma sessão)**: rodada de testes (P114) num hub real isolado, com a CLI, o `connection.ts` em Node, a web num
+  Chrome headless e um modelo real (`deepseek/deepseek-v4.1-flash`, US$ 0,0035); achou e corrigiu um bug do
+  `render_config` (sub-tabela de um membro indo parar no último). Em seguida o **P109** (celular): o protocolo, o
+  `ServerConnection`, `member_account.dart` (código de recuperação, troca de senha com o código, política, aviso de
+  recuperação, conta e TruthID) e o portão do `ConnectionScreen`; 14 testes novos, e o Dart contra o hub real achou que
+  o `requestId` 0 (reservado ao código que o hub empurra) era usado no primeiro pedido.
 
 ---
 

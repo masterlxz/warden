@@ -23,6 +23,7 @@ final class HelloMessage extends ClientMessage {
     this.tools = const [],
     this.username,
     this.password,
+    this.recoveryCodes = true,
   });
 
   final String deviceId;
@@ -46,6 +47,10 @@ final class HelloMessage extends ClientMessage {
   final String? username;
   final String? password;
 
+  /// P84 fatia 4 — this app can show a recovery code, so the hub may turn a member's encryption on
+  /// (a code nobody sees is a key nobody has). Always true: the screens for it are here.
+  final bool recoveryCodes;
+
   @override
   Map<String, dynamic> toJson() => {
         'type': 'hello',
@@ -56,20 +61,79 @@ final class HelloMessage extends ClientMessage {
         'tools': tools,
         if (username != null) 'username': username,
         if (username != null) 'password': password ?? '',
+        if (recoveryCodes) 'recoveryCodes': true,
       };
 }
 
 /// P84 — the member on this connection picks their own password. Answered by
 /// [PasswordChangedMessage] or [UserErrorMessage].
 final class ChangePasswordMessage extends ClientMessage {
-  const ChangePasswordMessage(this.requestId, this.oldPassword, this.newPassword);
+  const ChangePasswordMessage(this.requestId, this.oldPassword, this.newPassword, {this.recoveryCode});
 
   final int requestId;
   final String oldPassword;
   final String newPassword;
 
+  /// P84 fatia 4 — after the owner reset the password of someone whose data is encrypted, only the
+  /// recovery code opens it again.
+  final String? recoveryCode;
+
   @override
-  Map<String, dynamic> toJson() => {'type': 'changePassword', 'requestId': requestId, 'oldPassword': oldPassword, 'newPassword': newPassword};
+  Map<String, dynamic> toJson() => {
+        'type': 'changePassword',
+        'requestId': requestId,
+        'oldPassword': oldPassword,
+        'newPassword': newPassword,
+        if (recoveryCode != null) 'recoveryCode': recoveryCode,
+      };
+}
+
+/// P84 fatia 4 — a new recovery code (the old one stops working), with the password. Answered by
+/// [RecoveryCodeMessage] or [UserErrorMessage].
+final class RegenerateRecoveryCodeMessage extends ClientMessage {
+  const RegenerateRecoveryCodeMessage(this.requestId, this.password);
+
+  final int requestId;
+  final String password;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'regenerateRecoveryCode', 'requestId': requestId, 'password': password};
+}
+
+/// P84 fatia 4 parte B — yes to the workspace's recovery policy after a change to a weaker one, with
+/// the password. Answered by [RecoveryPolicyAcceptedMessage] or [UserErrorMessage].
+final class AcceptRecoveryPolicyMessage extends ClientMessage {
+  const AcceptRecoveryPolicyMessage(this.requestId, this.password);
+
+  final int requestId;
+  final String password;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'acceptRecoveryPolicy', 'requestId': requestId, 'password': password};
+}
+
+/// P84 fatia 4 parte B — the member has seen the recoveries the owner made. Answered by
+/// [RecoveryNoticesAckedMessage].
+final class AckRecoveryNoticesMessage extends ClientMessage {
+  const AckRecoveryNoticesMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'ackRecoveryNotices', 'requestId': requestId};
+}
+
+/// P84 fatia 5 — links the member's TruthID with the owner's invite [code]. Answered by
+/// [TruthIdLinkedMessage] or [UserErrorMessage].
+final class RedeemInviteMessage extends ClientMessage {
+  const RedeemInviteMessage(this.requestId, this.code, this.username);
+
+  final int requestId;
+  final String code;
+  final String username;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'redeemInvite', 'requestId': requestId, 'code': code, 'username': username};
 }
 
 final class PingMessage extends ClientMessage {
@@ -302,7 +366,11 @@ sealed class ServerMessage {
           deviceToken: json['deviceToken'] as String?,
           user: json['user'] == null ? null : UserInfo.fromJson(json['user'] as Map<String, dynamic>),
         ),
-      'passwordChanged' => PasswordChangedMessage(json['requestId'] as int),
+      'passwordChanged' => PasswordChangedMessage(json['requestId'] as int, recoveryCode: json['recoveryCode'] as String?),
+      'recoveryCode' => RecoveryCodeMessage(json['requestId'] as int, json['code'] as String),
+      'recoveryPolicyAccepted' => RecoveryPolicyAcceptedMessage(json['requestId'] as int, recoveryCode: json['recoveryCode'] as String?),
+      'recoveryNoticesAcked' => RecoveryNoticesAckedMessage(json['requestId'] as int),
+      'truthIdLinked' => TruthIdLinkedMessage(json['requestId'] as int, json['username'] as String),
       'userError' => UserErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'authError' => AuthErrorMessage(json['reason'] as String),
       'pong' => PongMessage(json['nonce'] as int),
@@ -371,7 +439,19 @@ final class HelloAckMessage extends ServerMessage {
 
 /// Mirrors `UserInfoDto` (P84): a member of the workspace, never their password.
 final class UserInfo {
-  const UserInfo({required this.id, required this.name, required this.mustChangePassword});
+  const UserInfo({
+    required this.id,
+    required this.name,
+    required this.mustChangePassword,
+    this.encrypted = false,
+    this.needsRecovery = false,
+    this.locked = false,
+    this.memberPolicy = '',
+    this.policyPending = false,
+    this.recoveryPolicy = '',
+    this.recoveries = const [],
+    this.truthid = '',
+  });
 
   /// The username.
   final String id;
@@ -380,20 +460,137 @@ final class UserInfo {
   /// Still on the provisional password the owner gave them: the hub only lets them change it.
   final bool mustChangePassword;
 
+  /// P84 fatia 4 — their data is encrypted on the hub with a key only they (or their recovery code) open.
+  final bool encrypted;
+
+  /// The owner reset their password, so the data opens only with the recovery code.
+  final bool needsRecovery;
+
+  /// The hub doesn't hold their key (it restarted): the data is shut until they sign in with the password.
+  final bool locked;
+
+  /// Who besides them may open their data right now — `private`, `consent` or `company` — empty while it
+  /// isn't encrypted (parte B).
+  final String memberPolicy;
+
+  /// The workspace's policy changed to a weaker one they haven't accepted yet.
+  final bool policyPending;
+
+  /// The workspace's recovery policy.
+  final String recoveryPolicy;
+
+  /// Every time the owner recovered their data with the workspace's recovery key.
+  final List<RecoveryEvent> recoveries;
+
+  /// P84 fatia 5 — the TruthID username they linked; empty if none.
+  final String truthid;
+
+  UserInfo withTruthId(String username) => UserInfo(
+        id: id,
+        name: name,
+        mustChangePassword: mustChangePassword,
+        encrypted: encrypted,
+        needsRecovery: needsRecovery,
+        locked: locked,
+        memberPolicy: memberPolicy,
+        policyPending: policyPending,
+        recoveryPolicy: recoveryPolicy,
+        recoveries: recoveries,
+        truthid: username,
+      );
+
+  /// The recoveries they haven't been told about yet.
+  List<RecoveryEvent> get unseenRecoveries => [for (final event in recoveries) if (!event.seen) event];
+
   static UserInfo fromJson(Map<String, dynamic> json) => UserInfo(
         id: json['id'] as String,
         name: json['name'] as String,
         mustChangePassword: json['mustChangePassword'] as bool? ?? false,
+        encrypted: json['encrypted'] as bool? ?? false,
+        needsRecovery: json['needsRecovery'] as bool? ?? false,
+        locked: json['locked'] as bool? ?? false,
+        memberPolicy: json['memberPolicy'] as String? ?? '',
+        policyPending: json['policyPending'] as bool? ?? false,
+        recoveryPolicy: json['recoveryPolicy'] as String? ?? '',
+        recoveries: [for (final e in (json['recoveries'] as List<dynamic>? ?? const [])) RecoveryEvent.fromJson(e as Map<String, dynamic>)],
+        truthid: json['truthid'] as String? ?? '',
       );
 
-  UserInfo withOwnPassword() => UserInfo(id: id, name: name, mustChangePassword: false);
+  /// After a password change: the same person, no longer on the provisional password and (if the owner
+  /// had reset it) with their data opened again.
+  UserInfo withOwnPassword({bool? encrypted}) => UserInfo(
+        id: id,
+        name: name,
+        mustChangePassword: false,
+        encrypted: encrypted ?? this.encrypted,
+        memberPolicy: memberPolicy,
+        policyPending: policyPending,
+        recoveryPolicy: recoveryPolicy,
+        recoveries: recoveries,
+        truthid: truthid,
+      );
+}
+
+/// Mirrors `RecoveryEventDto` (P84 fatia 4 parte B): the owner recovered someone's data.
+final class RecoveryEvent {
+  const RecoveryEvent({required this.atMs, required this.kind, required this.seen});
+
+  /// Milliseconds since the epoch.
+  final int atMs;
+
+  /// The policy it was done under: `consent` or `company`.
+  final String kind;
+
+  /// The person has seen it.
+  final bool seen;
+
+  static RecoveryEvent fromJson(Map<String, dynamic> json) => RecoveryEvent(
+        atMs: json['atMs'] as int,
+        kind: json['kind'] as String,
+        seen: json['seen'] as bool? ?? false,
+      );
 }
 
 /// P84 — the password change went through.
 final class PasswordChangedMessage extends ServerMessage {
-  const PasswordChangedMessage(this.requestId);
+  const PasswordChangedMessage(this.requestId, {this.recoveryCode});
 
   final int requestId;
+
+  /// P84 fatia 4 — this change turned encryption on for their data: shown once, they have to write it down.
+  final String? recoveryCode;
+}
+
+/// A recovery code, shown once: the answer to [RegenerateRecoveryCodeMessage], or ([requestId] 0) sent right
+/// after the `HelloAck` when signing in turned encryption on for a member from before.
+final class RecoveryCodeMessage extends ServerMessage {
+  const RecoveryCodeMessage(this.requestId, this.code);
+
+  final int requestId;
+  final String code;
+}
+
+/// P84 fatia 4 parte B — the member accepted the policy. [recoveryCode]: entering or leaving `consent`
+/// made a new one, shown once.
+final class RecoveryPolicyAcceptedMessage extends ServerMessage {
+  const RecoveryPolicyAcceptedMessage(this.requestId, {this.recoveryCode});
+
+  final int requestId;
+  final String? recoveryCode;
+}
+
+final class RecoveryNoticesAckedMessage extends ServerMessage {
+  const RecoveryNoticesAckedMessage(this.requestId);
+
+  final int requestId;
+}
+
+/// P84 fatia 5 — the member's TruthID is linked.
+final class TruthIdLinkedMessage extends ServerMessage {
+  const TruthIdLinkedMessage(this.requestId, this.username);
+
+  final int requestId;
+  final String username;
 }
 
 /// P84 — a people request failed. [authRejected]: the current password was wrong.

@@ -149,7 +149,10 @@ class ServerConnection implements ConversationBackend {
   final String? issuedDeviceToken;
 
   /// P84 — the member this device belongs to, as the hub said in `HelloAck`; null for the owner.
-  final UserInfo? user;
+  ///
+  /// Kept up to date with what this connection changes about them (a password change that turned
+  /// encryption on, a TruthID linked).
+  UserInfo? user;
   final Map<String, ToolHandler> _toolHandlers;
 
   final _statusController = StreamController<ConnectionStatus>.broadcast();
@@ -170,7 +173,10 @@ class ServerConnection implements ConversationBackend {
   final _pendingHistory = <int, Completer<List<HistoryEntry>>>{};
   // P78 — in-flight conversation list/rename/delete calls, same keying.
   final _pendingConversation = <int, Completer<ServerMessage>>{};
-  int _nextRequestId = 0;
+  // P84 fatia 4 — the recovery code the hub pushed on its own after the HelloAck, until a screen takes it.
+  String? _unclaimedRecoveryCode;
+  // Starts at 1: a `RecoveryCode` with request id 0 is the one the hub pushes on its own (P84 fatia 4).
+  int _nextRequestId = 1;
 
   Timer? _heartbeatTimer;
   int _nextNonce = 0;
@@ -322,6 +328,10 @@ class ServerConnection implements ConversationBackend {
               ConversationsChangedMessage() ||
               UnknownServerMessage() ||
               PasswordChangedMessage() ||
+              RecoveryCodeMessage() ||
+              RecoveryPolicyAcceptedMessage() ||
+              RecoveryNoticesAckedMessage() ||
+              TruthIdLinkedMessage() ||
               UserErrorMessage() ||
               ConversationErrorMessage():
           await subscription.cancel();
@@ -361,8 +371,19 @@ class ServerConnection implements ConversationBackend {
         _approvalController.add(msg);
       case SettingsMessage(:final requestId) || SettingsErrorMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
-      case PasswordChangedMessage(:final requestId) || UserErrorMessage(:final requestId):
+      case PasswordChangedMessage(:final requestId) ||
+            RecoveryPolicyAcceptedMessage(:final requestId) ||
+            RecoveryNoticesAckedMessage(:final requestId) ||
+            TruthIdLinkedMessage(:final requestId) ||
+            UserErrorMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
+      case RecoveryCodeMessage(:final requestId, :final code):
+        if (requestId == 0) {
+          // Sent by the hub on its own right after the HelloAck, before any screen listens.
+          _unclaimedRecoveryCode = code;
+        } else {
+          _pendingConversation.remove(requestId)?.complete(msg);
+        }
       case UnknownServerMessage():
         break;
       case ToolCallRequestMessage(:final callId, :final tool, :final arguments):
@@ -421,11 +442,70 @@ class ServerConnection implements ConversationBackend {
 
   /// P84 — the member on this connection picks their own password. Throws a [PasswordException]
   /// (with `wrongPassword` when the current one didn't match) if the hub refuses.
-  Future<void> changePassword(String oldPassword, String newPassword) async {
-    final reply = await _conversationRequest((requestId) => ChangePasswordMessage(requestId, oldPassword, newPassword));
-    if (reply case UserErrorMessage(:final message, :final authRejected)) {
-      throw PasswordException(message, wrongPassword: authRejected);
-    }
+  /// Returns the recovery code when this change turned encryption on for their data (shown once). After the
+  /// owner reset the password of someone whose data is encrypted, [recoveryCode] is what opens it again.
+  Future<String?> changePassword(String oldPassword, String newPassword, {String? recoveryCode}) async {
+    final reply = await _conversationRequest((requestId) => ChangePasswordMessage(requestId, oldPassword, newPassword, recoveryCode: recoveryCode));
+    return switch (reply) {
+      UserErrorMessage(:final message, :final authRejected) => throw PasswordException(message, wrongPassword: authRejected),
+      PasswordChangedMessage(:final recoveryCode) => _afterPasswordChange(recoveryCode),
+      _ => null,
+    };
+  }
+
+  String? _afterPasswordChange(String? recoveryCode) {
+    user = user?.withOwnPassword(encrypted: (user?.encrypted ?? false) || recoveryCode != null);
+    return recoveryCode;
+  }
+
+  /// P84 fatia 4 — the recovery code the hub sent right after the sign-in (it turned encryption on for a
+  /// member from before). Taken once: null if there's none or it was already shown.
+  String? takeUnclaimedRecoveryCode() {
+    final code = _unclaimedRecoveryCode;
+    _unclaimedRecoveryCode = null;
+    return code;
+  }
+
+  /// A new recovery code, with the password; the old one stops working. Throws a [PasswordException].
+  Future<String> regenerateRecoveryCode(String password) async {
+    final reply = await _conversationRequest((requestId) => RegenerateRecoveryCodeMessage(requestId, password));
+    return switch (reply) {
+      RecoveryCodeMessage(:final code) => code,
+      UserErrorMessage(:final message, :final authRejected) => throw PasswordException(message, wrongPassword: authRejected),
+      _ => throw PasswordException('unexpected answer from the hub'),
+    };
+  }
+
+  /// Yes to a weaker recovery policy. Returns the new recovery code when entering or leaving `consent` made
+  /// one (shown once). Throws a [PasswordException].
+  Future<String?> acceptRecoveryPolicy(String password) async {
+    final reply = await _conversationRequest((requestId) => AcceptRecoveryPolicyMessage(requestId, password));
+    return switch (reply) {
+      UserErrorMessage(:final message, :final authRejected) => throw PasswordException(message, wrongPassword: authRejected),
+      RecoveryPolicyAcceptedMessage(:final recoveryCode) => recoveryCode,
+      _ => null,
+    };
+  }
+
+  /// The member has seen the recoveries the owner made.
+  Future<void> ackRecoveryNotices() async {
+    final reply = await _conversationRequest(AckRecoveryNoticesMessage.new);
+    if (reply case UserErrorMessage(:final message)) throw PasswordException(message);
+  }
+
+  String _afterLink(String username) {
+    user = user?.withTruthId(username);
+    return username;
+  }
+
+  /// P84 fatia 5 — links the member's TruthID with the owner's invite. Returns the username the registry has.
+  Future<String> redeemInvite(String code, String username) async {
+    final reply = await _conversationRequest((requestId) => RedeemInviteMessage(requestId, code, username));
+    return switch (reply) {
+      TruthIdLinkedMessage(:final username) => _afterLink(username),
+      UserErrorMessage(:final message) => throw PasswordException(message),
+      _ => throw PasswordException('unexpected answer from the hub'),
+    };
   }
 
   /// P87 — the person's answer to an [ApprovalRequestMessage].

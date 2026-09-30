@@ -34,7 +34,7 @@ void main() {
     final sentHello = await fromClient.next as String;
     expect(
       sentHello,
-      '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key","tools":[]}',
+      '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key","tools":[],"recoveryCodes":true}',
     );
 
     controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
@@ -76,6 +76,58 @@ void main() {
     final second = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
     controller.local.sink.add('{"type":"passwordChanged","requestId":${second['requestId']}}');
     await right;
+  });
+
+  test('a member gets the recovery code, regenerates it, accepts a policy and links a TruthID (P84)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+    final future = ServerConnection.connectOverChannel(channel: controller.foreign, deviceId: 'd', deviceName: 'D', authKey: '', username: 'ana', password: 'provisional-1');
+    final hello = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect(hello['recoveryCodes'], true, reason: 'the phone can show the code, so the hub may turn encryption on');
+    controller.local.sink.add('{"type":"helloAck","serverName":"hub","user":{"id":"ana","name":"Ana","role":"member","mustChangePassword":true,"needsRecovery":true}}');
+    // The hub pushes a code on its own right after the ack: kept for a screen to take, once.
+    controller.local.sink.add('{"type":"recoveryCode","requestId":0,"code":"PUSHED"}');
+    final conn = await future;
+    await Future<void>.delayed(Duration.zero);
+    expect(conn.takeUnclaimedRecoveryCode(), 'PUSHED');
+    expect(conn.takeUnclaimedRecoveryCode(), isNull);
+
+    // After an owner's reset, the recovery code goes with the new password; the answer may carry a code.
+    final change = conn.changePassword('temp', 'her-own-pass', recoveryCode: 'OLD-CODE');
+    final m1 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect(m1['recoveryCode'], 'OLD-CODE');
+    controller.local.sink.add('{"type":"passwordChanged","requestId":${m1['requestId']},"recoveryCode":"FRESH"}');
+    expect(await change, 'FRESH');
+    expect((conn.user?.mustChangePassword, conn.user?.encrypted), (false, true));
+
+    final regenerate = conn.regenerateRecoveryCode('her-own-pass');
+    final m2 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect((m2['type'], m2['password']), ('regenerateRecoveryCode', 'her-own-pass'));
+    controller.local.sink.add('{"type":"recoveryCode","requestId":${m2['requestId']},"code":"NEW"}');
+    expect(await regenerate, 'NEW');
+
+    final wrong = conn.acceptRecoveryPolicy('nope');
+    final m3 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect(m3['type'], 'acceptRecoveryPolicy');
+    controller.local.sink.add('{"type":"userError","requestId":${m3['requestId']},"message":"your password doesn\'t open your data","authRejected":true}');
+    await expectLater(wrong, throwsA(isA<PasswordException>().having((e) => e.wrongPassword, 'wrong', true)));
+    final accepted = conn.acceptRecoveryPolicy('her-own-pass');
+    final m4 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    controller.local.sink.add('{"type":"recoveryPolicyAccepted","requestId":${m4['requestId']}}');
+    expect(await accepted, isNull);
+
+    final ack = conn.ackRecoveryNotices();
+    final m5 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect(m5['type'], 'ackRecoveryNotices');
+    controller.local.sink.add('{"type":"recoveryNoticesAcked","requestId":${m5['requestId']}}');
+    await ack;
+
+    final link = conn.redeemInvite('ana:secret', '@ana.silva');
+    final m6 = jsonDecode(await fromClient.next as String) as Map<String, dynamic>;
+    expect((m6['type'], m6['code'], m6['username']), ('redeemInvite', 'ana:secret', '@ana.silva'));
+    controller.local.sink.add('{"type":"truthIdLinked","requestId":${m6['requestId']},"username":"ana.silva"}');
+    expect(await link, 'ana.silva');
+    expect(conn.user?.truthid, 'ana.silva');
   });
 
   test('the owner has no user in HelloAck', () async {
@@ -242,7 +294,7 @@ void main() {
     expect(
       sentHello,
       '{"type":"hello","deviceId":"dev-1","deviceName":"Test Device","authKey":"test-key",'
-      '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}]}',
+      '"tools":[{"name":"list_files","description":"List files","parameters":{"type":"object"}}],"recoveryCodes":true}',
     );
 
     controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
@@ -331,9 +383,9 @@ void main() {
     final conn = await future;
 
     final history = conn.fetchHistory(limit: 100);
-    expect(await fromClient.next as String, '{"type":"requestHistory","requestId":0,"limit":100}');
+    expect(await fromClient.next as String, '{"type":"requestHistory","requestId":1,"limit":100}');
 
-    controller.local.sink.add('{"type":"history","requestId":0,"messages":['
+    controller.local.sink.add('{"type":"history","requestId":1,"messages":['
         '{"role":"user","content":"hi","createdAt":1,"attachments":[]},'
         '{"role":"assistant","content":"hello","createdAt":2,"attachments":[{"mimeType":"image/png","data":"aGk="}]}]}');
 
@@ -359,7 +411,7 @@ void main() {
 
     final history = conn.fetchHistory();
     await fromClient.next; // RequestHistory
-    controller.local.sink.add('{"type":"historyError","requestId":0,"message":"failed to parse"}');
+    controller.local.sink.add('{"type":"historyError","requestId":1,"message":"failed to parse"}');
 
     await expectLater(
       history,
@@ -404,19 +456,19 @@ void main() {
     final conn = await future;
 
     final list = conn.listConversations();
-    expect(await fromClient.next as String, '{"type":"listConversations","requestId":0}');
+    expect(await fromClient.next as String, '{"type":"listConversations","requestId":1}');
     controller.local.sink.add(
-        '{"type":"conversationList","requestId":0,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}');
+        '{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}');
     expect((await list).single.title, 'Trip');
 
     final rename = conn.renameConversation('c1', 'Lisbon');
-    expect(await fromClient.next as String, '{"type":"renameConversation","requestId":1,"conversationId":"c1","title":"Lisbon"}');
-    controller.local.sink.add('{"type":"conversationOk","requestId":1}');
+    expect(await fromClient.next as String, '{"type":"renameConversation","requestId":2,"conversationId":"c1","title":"Lisbon"}');
+    controller.local.sink.add('{"type":"conversationOk","requestId":2}');
     await rename;
 
     final delete = conn.deleteConversation('gone');
-    expect(await fromClient.next as String, '{"type":"deleteConversation","requestId":2,"conversationId":"gone"}');
-    controller.local.sink.add('{"type":"conversationError","requestId":2,"message":"no conversation with id \'gone\'"}');
+    expect(await fromClient.next as String, '{"type":"deleteConversation","requestId":3,"conversationId":"gone"}');
+    controller.local.sink.add('{"type":"conversationError","requestId":3,"message":"no conversation with id \'gone\'"}');
     await expectLater(delete, throwsA(isA<ConversationException>().having((e) => e.message, 'message', contains('gone'))));
 
     conn.sendChat('hi', conversationId: 'c1');
