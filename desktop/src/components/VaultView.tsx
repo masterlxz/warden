@@ -4,18 +4,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MarkdownLink } from "./MessageBubble";
 
-/** Same 3 reserved filenames/order as `warden_core::memory::FIXED_VAULT_FILES` and the headings
- * `Vault::standing_memory` builds from them — hardcoded here rather than fetched, since this is a
- * stable, documented contract (P52 part 1) unlikely to change. Labels are in Portuguese, matching
- * the actual template each file is seeded with (its own first line is a Portuguese `# ` title) —
- * screen chrome around them stays English, same split already used elsewhere (agent personas,
- * vault content, are whatever language the user wrote them in; the app's own UI text is English). */
-const FIXED_FILES: { file: string; label: string }[] = [
-  { file: "_profile.md", label: "Perfil do usuário" },
-  { file: "_behavior.md", label: "Comportamento da IA" },
-  { file: "_feedback.md", label: "Feedback e lições aprendidas" },
-];
-
 interface TreeNode {
   name: string;
   path: string;
@@ -255,7 +243,6 @@ function VaultView() {
 
   const tree = buildTree(files);
   const selectedPath = open.kind === "none" || open.kind === "new" ? null : open.path;
-  const isFixedFile = FIXED_FILES.some((f) => f.file === selectedPath);
   const isMarkdown = selectedPath?.toLowerCase().endsWith(".md") ?? false;
 
   return (
@@ -316,18 +303,6 @@ function VaultView() {
             </>
           ) : (
             <>
-              <div className="vault-nav-section-label">Fixed memory</div>
-              {FIXED_FILES.map(({ file, label }) => (
-                <button
-                  key={file}
-                  type="button"
-                  className={`conversation-list-item${selectedPath === file ? " conversation-list-item--active" : ""}`}
-                  onClick={() => selectFile(file)}
-                >
-                  {label}
-                </button>
-              ))}
-
               {tree.length > 0 && (
                 <>
                   <div className="vault-nav-section-label">Vault</div>
@@ -342,15 +317,14 @@ function VaultView() {
           {(open.kind === "note" || open.kind === "new") && (
             <div className="vault-content-header">
               <span className="vault-content-title">
-                {open.kind === "new" ? "New note" : (FIXED_FILES.find((f) => f.file === open.path)?.label ?? open.path)}
+                {open.kind === "new" ? "New note" : open.path}
               </span>
               {open.kind === "note" && open.draft === null && (
                 <span className="vault-content-actions">
                   <button type="button" className="settings-browse-btn" onClick={() => setOpen({ ...open, draft: open.note.content })}>
                     Edit
                   </button>
-                  {!isFixedFile &&
-                    (confirmDelete ? (
+                  {confirmDelete ? (
                       <>
                         <button type="button" className="provider-delete-btn" disabled={saving} onClick={() => void remove()}>
                           Really delete
@@ -363,7 +337,7 @@ function VaultView() {
                       <button type="button" className="provider-delete-btn" onClick={() => setConfirmDelete(true)}>
                         Delete
                       </button>
-                    ))}
+                    )}
                 </span>
               )}
             </div>

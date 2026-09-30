@@ -213,6 +213,7 @@ P51, substitui/evolui P12.
 Implementado nas duas partes — ver `PENDING.md` P52 (resolvida) e `ARCHITECTURE.md`. Parte 1:
 `_profile.md`/`_behavior.md`/`_feedback.md` na raiz do vault, sempre injetados no prompt. Parte 2:
 tela "Vault" no desktop, só leitura, com os 3 fixos destacados no topo da navegação.
+**Superado pelo P94 (Sessão 115)**: os 3 arquivos fixos, o bloco sempre injetado e o painel foram removidos.
 
 ### Canal Terminal (estilo Claude Code)
 

@@ -466,17 +466,6 @@ impl Orchestrator {
             }
         }
 
-        // Fixed/standard memory (P52) — unlike the search block below, not keyed off relevance to
-        // this turn's input: always injected in full when non-empty, so the model has standing
-        // context (user profile, behavior rules, accumulated feedback) on every single turn, not
-        // just when a grep/embedding match happens to surface it.
-        let standing_memory = self.vault.standing_memory();
-        if !standing_memory.is_empty() {
-            messages.push(Message::system(format!(
-                "Standing memory from the user's vault (always included, not relevance-dependent):\n\n{standing_memory}"
-            )));
-        }
-
         // Skill catalog (P16) — names + descriptions only; bodies load on demand via `use_skill`.
         // Read fresh from the vault each turn so a skill created mid-conversation shows up on the
         // next turn without rebuilding the orchestrator. Skipped when `use_skill` isn't registered
@@ -1022,30 +1011,26 @@ mod tests {
         }
     }
 
+    /// P94: the old `_profile.md` is an ordinary note now. It never becomes a message of its own: if it shows up at
+    /// all, it's as one hit among the search results, like any other note.
     #[tokio::test]
-    async fn standing_memory_is_injected_between_persona_and_history() {
+    async fn the_old_fixed_files_are_not_injected_as_standing_memory() {
         let vault = temp_vault();
-        vault.write("_profile.md", "Name: Ada.").unwrap();
+        vault.write("_profile.md", "Name: Ada, who keeps zebras.").unwrap();
         let orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault);
 
         let history = [Message::user("earlier message".to_string())];
         let result =
-            orchestrator.handle_turn(&history, "hi", Vec::new(), Some("You are a pirate.")).await.unwrap();
+            orchestrator.handle_turn(&history, "hello there", Vec::new(), Some("You are a pirate.")).await.unwrap();
 
         let parts: Vec<&str> = result.content.split('|').collect();
         assert_eq!(parts[0], "System:You are a pirate.");
-        assert_eq!(parts[1], "System:Standing memory from the user's vault (always included, not relevance-dependent):\n\n## User profile\n\nName: Ada.");
-        assert_eq!(parts[2], "User:earlier message");
-        assert_eq!(parts[3], "User:hi");
-    }
-
-    #[tokio::test]
-    async fn no_standing_memory_message_when_vault_has_none_of_the_fixed_files() {
-        let orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), temp_vault());
-
-        let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
-
-        assert_eq!(result.content, "User:hi");
+        assert!(!result.content.contains("Standing memory"), "{}", result.content);
+        // Whatever comes between the persona and the history is the search context, and only that.
+        for part in &parts[1..parts.len() - 2] {
+            assert!(part.starts_with("System:Relevant context found in the user's memory vault"), "{part}");
+        }
+        assert_eq!(&parts[parts.len() - 2..], ["User:earlier message", "User:hello there"]);
     }
 
     fn vault_with_skill() -> Arc<Vault> {
@@ -1063,9 +1048,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_catalog_is_injected_after_standing_memory_when_use_skill_is_registered() {
+    async fn skill_catalog_is_injected_right_after_the_persona_when_use_skill_is_registered() {
         let vault = vault_with_skill();
-        vault.write("_profile.md", "Name: Ada.").unwrap();
         let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
         orchestrator.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(
             crate::skill::SkillStore::new(vault),
@@ -1074,10 +1058,9 @@ mod tests {
         let result = orchestrator.handle_turn(&[], "hi", Vec::new(), None).await.unwrap();
 
         let parts: Vec<&str> = result.content.split('|').collect();
-        assert!(parts[0].starts_with("System:Standing memory"));
-        assert!(parts[1].starts_with("System:Available skills"));
-        assert!(parts[1].contains("- review-pr: Reviews a PR"));
-        assert_eq!(parts[2], "User:hi");
+        assert!(parts[0].starts_with("System:Available skills"));
+        assert!(parts[0].contains("- review-pr: Reviews a PR"));
+        assert_eq!(parts[1], "User:hi");
     }
 
     #[tokio::test]

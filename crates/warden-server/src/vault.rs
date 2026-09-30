@@ -73,7 +73,6 @@ mod tests {
     #[test]
     fn create_list_read_edit_and_delete_echo_the_request_id() {
         let vault = temp_vault();
-        vault.write("_profile.md", "fixed").unwrap();
         let v1 = saved_version(handle_vault_request(&vault, save("notes/a.md", "one", None)));
 
         assert_eq!(

@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::{is_fixed_vault_file, Vault, MOUNTS_DIR, SKILLS_DIR};
+use super::{Vault, MOUNTS_DIR, SKILLS_DIR};
 
 /// Largest note these screens open or save. Notes are text a person edits in a textarea; anything
 /// bigger is almost certainly not one, and would also be a heavy message over the hub's socket.
@@ -48,14 +48,13 @@ pub fn content_version(content: &[u8]) -> String {
 
 impl Vault {
     /// Every file a person can browse, relative to the vault root with `/` separators, sorted:
-    /// everything `list_all_files` returns except the fixed files at the root (screens show those
-    /// in their own section) and the root `skills/` folder.
+    /// everything `list_all_files` returns except the root `skills/` folder.
     pub fn browse_files(&self) -> anyhow::Result<Vec<String>> {
         let mounts = self.current_mounts();
         let mut files: Vec<String> = self
             .list_all_files()?
             .into_iter()
-            .filter(|path| !is_fixed_vault_file(Path::new(""), path) && !starts_with_skills_dir(path))
+            .filter(|path| !starts_with_skills_dir(path))
             // With mounts, `MOUNTS_DIR` is theirs (P84).
             .filter(|path| mounts.is_none() || !path.starts_with(MOUNTS_DIR))
             .map(|path| path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
@@ -212,12 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn browse_hides_root_fixed_files_skills_and_dotfiles_but_keeps_nested_namesakes() {
+    fn browse_hides_skills_and_dotfiles_but_lists_every_other_note() {
         let vault = temp_vault();
         for path in ["_profile.md", "a.md", "notes/b.md", "notes/_profile.md", "notes/skills/c.md", "skills/review.md", "img.png", ".syncignore"] {
             vault.write(path, "x").unwrap();
         }
-        assert_eq!(vault.browse_files().unwrap(), vec!["a.md", "img.png", "notes/_profile.md", "notes/b.md", "notes/skills/c.md"]);
+        assert_eq!(vault.browse_files().unwrap(), vec!["_profile.md", "a.md", "img.png", "notes/_profile.md", "notes/b.md", "notes/skills/c.md"]);
     }
 
     #[test]
@@ -258,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_files_are_editable() {
+    fn a_note_named_like_an_old_fixed_file_is_editable() {
         let vault = temp_vault();
         vault.write("_profile.md", "# Perfil").unwrap();
         let note = vault.read_note("_profile.md").unwrap();

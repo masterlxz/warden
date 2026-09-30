@@ -2323,8 +2323,8 @@ a esposa, "ensinando" o agente ou por uma interface.
   - desktop: a seção People no Workspace, pelo `config.toml` local e sem pedir a chave;
   - CLI: `warden-server users list|add|reset-password|remove`.
 - **Fora desta fatia**: a extensão e o CLI remoto seguem só com a chave (root). O chat do próprio desktop é do root.
-  O membro não cria agentes e não tem Warden API. A memória fixa (`_profile.md` etc.) do vault do membro nasce
-  vazia (P94).
+  O membro não cria agentes e não tem Warden API. A memória fixa (`_profile.md` etc.) do vault do membro nascia
+  vazia; o P94 (Sessão 115) acabou com ela.
 
 ### Como ficou a fatia 2 (Sessão 111)
 
@@ -2427,7 +2427,7 @@ a esposa, "ensinando" o agente ou por uma interface.
   - o membro vê os espaços no próprio vault (a aba Vault da web e o celular), sem tela nova.
 - **Fora desta fatia**: o agente do root não enxerga o vault do membro (nem precisa, os espaços são do root); não
   há espaço criado por membro nem pasta do vault de um membro compartilhada com outro; as skills de um espaço não
-  são carregadas (`skills/` não pode ser espaço); e a memória fixa do root (`_profile.md` etc.) nunca entra.
+  são carregadas (`skills/` não pode ser espaço); e (até o P94, que acabou com a memória fixa) a memória fixa do root nunca entrava.
 
 ### Como ficou a fatia 4, parte A (Sessão 114)
 
@@ -2865,4 +2865,18 @@ aparelho `Approved` e hoje não tem cliente.
   lido de volta pelo `recoverPersonalSignatureAddress` do SDK Dart; a assinatura é determinística e a nossa sai
   idêntica byte a byte.
 - **O que não faz**: não abre a chave de dados (ver o P113); não há login do dono por TruthID; só a web tem a aba.
+
+### Fim da memória fixa do vault (Sessão 115, P94)
+
+- **O que saiu**: `FIXED_VAULT_FILES`, `Vault::standing_memory` (o bloco "Standing memory from the user's vault" que o
+  `Orchestrator` punha depois da persona em toda mensagem), `seed_default_vault_files` (o `bootstrap()` não cria mais
+  os 3 arquivos), `is_fixed_vault_file` (a busca de texto e a semântica e a árvore deixam de pular os nomes
+  reservados) e o painel "Memória fixa" das telas do Vault (web e desktop). Isso substitui as decisões do P52 acima.
+- **Por quê**: um perfil fixo por vault não serve a um workspace com várias pessoas. O vault de cada membro nascia com
+  os mesmos 3 arquivos, e a memória fixa do root nunca entrava num espaço compartilhado.
+- **O que ocupa o lugar** (escolha do usuário): nada. O que é permanente (quem é a pessoa, como a IA deve agir) vai
+  na persona do agente, que já existe e é por agente; o resto fica em notas comuns, que entram pelo contexto da busca
+  quando são relevantes.
+- **Vaults que já tinham os arquivos**: nada é movido nem apagado; eles viram notas como as outras. Por isso o conteúdo
+  deles **deixa de entrar automaticamente** em toda conversa, e vale copiar o que importa para a persona.
 

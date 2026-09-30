@@ -162,7 +162,6 @@ fn check_space_folder(folder: &str) -> anyhow::Result<()> {
     }
     let first = path.components().next().map(|c| c.as_os_str().to_string_lossy().to_string()).unwrap_or_default();
     anyhow::ensure!(first != warden_core::memory::SKILLS_DIR, "skills can't be shared as a space");
-    anyhow::ensure!(!warden_core::memory::FIXED_VAULT_FILES.contains(&folder), "'{folder}' is one of the fixed memory files, not a folder");
     Ok(())
 }
 
@@ -1260,7 +1259,7 @@ mod tests {
             readers: readers.iter().map(|s| s.to_string()).collect(),
             writers: writers.iter().map(|s| s.to_string()).collect(),
         };
-        for folder in ["../out", ".warden", "skills/x", "_profile.md", "", "a/../b"] {
+        for folder in ["../out", ".warden", "skills/x", "", "a/../b"] {
             assert!(save_space(&mut config, None, space("x", folder, &[], &[])).is_err(), "{folder}");
         }
         save_space(&mut config, None, space(" Casa ", "/casa/", &["ana", "ghost", "bruno"], &["bruno"])).unwrap();

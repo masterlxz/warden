@@ -68,14 +68,7 @@ pub struct SearchHit {
     pub line: String,
 }
 
-/// Reserved vault-root filenames for the "fixed/standard" memory (P52) — always injected via
-/// `Vault::standing_memory`, never surfaced through `search`/`search_semantic` (would otherwise
-/// double up with the standing-memory block and eat into the free-form notes' hit budget).
-/// `warden-bootstrap::seed_default_vault_files` seeds these with a starter template on first use.
-pub const FIXED_VAULT_FILES: [&str; 3] = ["_profile.md", "_behavior.md", "_feedback.md"];
-
-/// Vault-root directory holding skills (P16), one `<name>.md` each — see `crate::skill`. Like the
-/// fixed files, kept out of `list_files`/`search`/`search_semantic` (a skill's body is instructions,
+/// Vault-root directory holding skills (P16), one `<name>.md` each — see `crate::skill`. Kept out of `list_files`/`search`/`search_semantic` (a skill's body is instructions,
 /// loaded on demand through `use_skill`, not a memory to surface as a hit) but still returned by
 /// `list_all_files`, so sync carries skills across devices without any change to `warden-sync`.
 pub const SKILLS_DIR: &str = "skills";
@@ -316,7 +309,7 @@ impl Vault {
 
     /// Walks `dir` (on disk; `readable_dir` is the same folder as this vault names it) and pushes
     /// the files under it by their readable path. `markdown_only` is `list_files`' walk: `.md`
-    /// files, without the fixed ones or `skills/`. Otherwise it's `list_all_files`': everything
+    /// files, without `skills/`. Otherwise it's `list_all_files`': everything
     /// but dotfiles. Symlinks are never followed: one pointing out of the vault would put outside
     /// files in search results and sync, and one pointing at an ancestor would recurse until the
     /// OS path limit.
@@ -335,7 +328,7 @@ impl Vault {
                     continue;
                 }
                 self.collect_files(&path, &readable, markdown_only, out)?;
-            } else if !markdown_only || (readable.extension().and_then(|e| e.to_str()) == Some("md") && !is_fixed_vault_file(Path::new(""), &readable)) {
+            } else if !markdown_only || (readable.extension().and_then(|e| e.to_str()) == Some("md")) {
                 out.push(readable);
             }
         }
@@ -384,25 +377,6 @@ impl Vault {
             hits.extend(mount.vault.search(query, max_hits - hits.len())?.into_iter().map(|h| SearchHit { path: format!("{prefix}{}", h.path), ..h }));
         }
         Ok(hits)
-    }
-
-    /// The "fixed/standard" memory block (P52) — unlike `search`/`search_semantic`, not keyed off
-    /// any query: always reads `FIXED_VAULT_FILES` in order and returns one combined block, with a
-    /// heading per file, skipping any that's missing or blank (an unseeded vault, or one where the
-    /// user cleared a section on purpose). Returns an empty string when all three are empty/absent,
-    /// so callers can skip injecting an empty system message.
-    pub fn standing_memory(&self) -> String {
-        const HEADINGS: [&str; 3] = ["User profile", "AI behavior", "Feedback / lessons learned"];
-        let mut sections = Vec::new();
-        for (name, heading) in FIXED_VAULT_FILES.iter().zip(HEADINGS) {
-            if let Ok(content) = self.read(name) {
-                let content = content.trim();
-                if !content.is_empty() {
-                    sections.push(format!("## {heading}\n\n{content}"));
-                }
-            }
-        }
-        sections.join("\n\n")
     }
 
     #[cfg(feature = "semantic-search")]
@@ -539,14 +513,6 @@ impl Vault {
 #[cfg(feature = "semantic-search")]
 fn model_cache_dir() -> PathBuf {
     dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("warden").join("models")
-}
-
-/// True for `_profile.md`/`_behavior.md`/`_feedback.md` at the vault root specifically — a
-/// same-named file nested under a subdirectory (e.g. a user's own `notes/_profile.md`) is a
-/// regular note, not the reserved one, so only the root-level match is excluded from search.
-fn is_fixed_vault_file(root: &Path, path: &Path) -> bool {
-    path.parent() == Some(root)
-        && path.file_name().and_then(|n| n.to_str()).is_some_and(|name| FIXED_VAULT_FILES.contains(&name))
 }
 
 #[cfg(test)]
@@ -720,8 +686,10 @@ mod tests {
         assert!(capped.is_empty());
     }
 
+    /// P94: `_profile.md` and its siblings were reserved names once (P52); now they're notes like any other —
+    /// listed, searched, and nothing special at the root.
     #[test]
-    fn fixed_vault_files_excluded_from_list_and_search_but_not_a_nested_same_name_file() {
+    fn a_file_named_like_the_old_fixed_files_is_an_ordinary_note() {
         let vault = temp_vault();
         vault.write("_profile.md", "name: dentist appointment person").unwrap();
         vault.write("notes/_profile.md", "a real note that happens to share the name").unwrap();
@@ -730,10 +698,10 @@ mod tests {
         let mut files: Vec<String> =
             vault.list_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
         files.sort();
-        assert_eq!(files, vec!["a.md".to_string(), "notes/_profile.md".to_string()]);
+        assert_eq!(files, vec!["_profile.md".to_string(), "a.md".to_string(), "notes/_profile.md".to_string()]);
 
         let hits = vault.search("dentist appointment", 10).unwrap();
-        assert!(hits.iter().all(|h| h.path != "_profile.md"));
+        assert!(hits.iter().any(|h| h.path == "_profile.md"), "found by the search now");
         assert!(hits.iter().any(|h| h.path == "a.md"));
     }
 
@@ -755,30 +723,6 @@ mod tests {
         let all: Vec<String> =
             vault.list_all_files().unwrap().into_iter().map(|p| p.to_string_lossy().to_string()).collect();
         assert!(all.contains(&"skills/review.md".to_string()));
-    }
-
-    #[test]
-    fn standing_memory_skips_missing_and_blank_files() {
-        let vault = temp_vault();
-        assert_eq!(vault.standing_memory(), "");
-
-        vault.write("_profile.md", "  \n").unwrap(); // blank after trim
-        assert_eq!(vault.standing_memory(), "");
-
-        vault.write("_behavior.md", "Be concise.").unwrap();
-        assert_eq!(vault.standing_memory(), "## AI behavior\n\nBe concise.");
-    }
-
-    #[test]
-    fn standing_memory_joins_present_sections_in_fixed_order() {
-        let vault = temp_vault();
-        vault.write("_feedback.md", "Prefers terse answers.").unwrap();
-        vault.write("_profile.md", "Name: Ada.").unwrap();
-
-        assert_eq!(
-            vault.standing_memory(),
-            "## User profile\n\nName: Ada.\n\n## Feedback / lessons learned\n\nPrefers terse answers."
-        );
     }
 
     /// P84 fatia 4: a member's vault, encrypted on disk.
@@ -813,9 +757,10 @@ mod tests {
         vault.write("skills/x.md", "instruções").unwrap();
 
         assert_eq!(vault.read("reuniões/março.md").unwrap(), "o segredo é feijão");
-        assert_eq!(vault.standing_memory(), "## User profile\n\nNome: Ada");
-        let files: Vec<String> = vault.list_files().unwrap().iter().map(|p| p.to_string_lossy().to_string()).collect();
-        assert_eq!(files, ["reuniões/março.md"], "the fixed file and skills/ stay out, as in a plain vault");
+        assert_eq!(vault.read("_profile.md").unwrap(), "Nome: Ada");
+        let mut files: Vec<String> = vault.list_files().unwrap().iter().map(|p| p.to_string_lossy().to_string()).collect();
+        files.sort();
+        assert_eq!(files, ["_profile.md", "reuniões/março.md"], "skills/ stays out, as in a plain vault");
         let all: Vec<String> = vault.list_all_files().unwrap().iter().map(|p| p.to_string_lossy().to_string()).collect();
         assert!(all.contains(&"skills/x.md".to_string()) && all.contains(&"reuniões/março.md".to_string()), "{all:?}");
         let hits = vault.search("feijão", 10).unwrap();

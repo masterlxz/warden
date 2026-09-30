@@ -4,17 +4,9 @@ import remarkGfm from "remark-gfm";
 import { VaultConflictError, type ServerConnection, type VaultNote } from "../hub/connection";
 import type { VaultSearchHit } from "../hub/messages";
 
-// The hub's vault (P78): the fixed memory files, a folder tree of the rest, word search, and an
+// The hub's vault (P78): a folder tree, word search, and an
 // editor. Every save carries the version the note was opened at, so a change the model (or sync,
 // or another screen) made meanwhile comes back as a conflict instead of being overwritten.
-
-/** Same files and order as `warden_core::memory::FIXED_VAULT_FILES`; labels match the titles the
- * hub seeds them with. */
-const FIXED_FILES: { path: string; label: string }[] = [
-  { path: "_profile.md", label: "Perfil do usuário" },
-  { path: "_behavior.md", label: "Comportamento da IA" },
-  { path: "_feedback.md", label: "Feedback e lições aprendidas" },
-];
 
 interface TreeNode {
   name: string;
@@ -230,7 +222,6 @@ export default function VaultView({ conn }: { conn: ServerConnection | null }) {
 
   const selectedPath = open.kind === "none" || open.kind === "new" ? null : open.path;
   const isMarkdown = selectedPath?.toLowerCase().endsWith(".md") ?? false;
-  const fixedLabel = FIXED_FILES.find((f) => f.path === selectedPath)?.label;
 
   return (
     <div className={open.kind === "none" ? "vault-layout" : "vault-layout vault-layout--note-open"}>
@@ -275,18 +266,6 @@ export default function VaultView({ conn }: { conn: ServerConnection | null }) {
         ) : (
           <>
             <section>
-              <div className="vault-section-label">Memória fixa</div>
-              <ul className="vault-tree">
-                {FIXED_FILES.map(({ path, label }) => (
-                  <li key={path}>
-                    <button type="button" className={path === selectedPath ? "vault-item vault-item--active" : "vault-item"} onClick={() => openFile(path)}>
-                      {label}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <section>
               <div className="vault-section-label">Notas</div>
               {files === null ? (
                 <p className="skills-hint">Carregando…</p>
@@ -305,14 +284,13 @@ export default function VaultView({ conn }: { conn: ServerConnection | null }) {
           <button type="button" className="link-button vault-back" onClick={closeNote}>
             ← Arquivos
           </button>
-          <span className="chat-title">{open.kind === "new" ? "Nova nota" : (fixedLabel ?? selectedPath ?? "")}</span>
+          <span className="chat-title">{open.kind === "new" ? "Nova nota" : (selectedPath ?? "")}</span>
           {open.kind === "note" && open.draft === null && (
             <span className="vault-actions">
               <button type="button" className="link-button" disabled={!conn} onClick={() => setOpen({ ...open, draft: open.note.content })}>
                 Editar
               </button>
-              {!fixedLabel &&
-                (confirmDelete ? (
+              {confirmDelete ? (
                   <>
                     <button type="button" className="link-button skills-danger" disabled={saving || !conn} onClick={() => void remove()}>
                       Apagar mesmo
@@ -325,7 +303,7 @@ export default function VaultView({ conn }: { conn: ServerConnection | null }) {
                   <button type="button" className="link-button" onClick={() => setConfirmDelete(true)}>
                     Apagar
                   </button>
-                ))}
+                )}
             </span>
           )}
         </div>

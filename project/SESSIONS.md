@@ -40,6 +40,9 @@
   (logins esperando, `POST /auth/truthid`), `truthid_public_url` no config, e a aba "TruthID" com QR na web. O login só
   autentica: o TruthID abrir a chave de dados não cabe no protocolo (nonce novo por login). Testado com um celular falso
   no hub real (3 testes), no Chrome headless, e o núcleo contra o SDK Dart.
+- **P94 (arquivos fixos do vault)**: a memória fixa acabou (`standing_memory`, o seeding, a exclusão da busca e da
+  árvore e o painel das telas), sem nada no lugar e com os arquivos existentes como notas comuns (escolha do usuário);
+  o que for permanente vai na persona do agente.
 - **Pequenas pendências**: a mensagem do limite por pessoa para o membro (sem o "allow more" que ele não tem) e o botão
   de restaurar um membro removido na web (`RestoreUser`, `removed` no `UserList`, seção "Pessoas removidas"), com um teste
   do hub real e a tela testada no Chrome headless.
