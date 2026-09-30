@@ -38,6 +38,8 @@ import {
 export interface UserList {
   users: UserInfo[];
   tempPassword?: string;
+  /** The workspace's recovery policy (P84 fatia 4 parte B): "private", "consent" or "company". */
+  recoveryPolicy?: string;
 }
 
 /** The hub's scheduled tasks (P92), and whether it runs them on schedule. */
@@ -462,6 +464,9 @@ export class ServerConnection {
       case "userList":
       case "spaceList":
       case "passwordChanged":
+      case "recoveryPolicy":
+      case "recoveryPolicyAccepted":
+      case "recoveryNoticesAcked":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
       case "recoveryCode":
@@ -793,7 +798,38 @@ export class ServerConnection {
   private async userRequest(build: (requestId: number) => ClientMessage): Promise<UserList> {
     const reply = await this.request(build);
     if (reply.type !== "userList") throw new Error("resposta inesperada do hub");
-    return { users: reply.users, ...(reply.tempPassword !== undefined && { tempPassword: reply.tempPassword }) };
+    return {
+      users: reply.users,
+      ...(reply.tempPassword !== undefined && { tempPassword: reply.tempPassword }),
+      ...(reply.recoveryPolicy !== undefined && { recoveryPolicy: reply.recoveryPolicy }),
+    };
+  }
+
+  /** P84 fatia 4 parte B: the owner sets the workspace's recovery policy. `secret` is the owner's recovery
+   * key, only when one was just made — shown once, never kept. Rejects with `UserError`. */
+  async setRecoveryPolicy(pairingKey: string, policy: string, newKey = false): Promise<{ policy: string; secret?: string }> {
+    const reply = await this.request((requestId) => ({ type: "setRecoveryPolicy", requestId, pairingKey, policy, newKey }));
+    if (reply.type !== "recoveryPolicy") throw new Error("resposta inesperada do hub");
+    return { policy: reply.policy, ...(reply.secret !== undefined && { secret: reply.secret }) };
+  }
+
+  /** The owner opens a member's data with the workspace's recovery key (`consent` also needs the person's
+   * `code`) and gives them a new provisional password (`tempPassword` in the answer, shown once). */
+  async recoverMember(pairingKey: string, id: string, recoveryKey: string, code?: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "recoverMember", requestId, pairingKey, id, recoveryKey, ...(code && { code }) }));
+  }
+
+  /** A member says yes to a weaker recovery policy. `recoveryCode`: entering or leaving "consent" made a new one. */
+  async acceptRecoveryPolicy(password: string): Promise<{ recoveryCode?: string }> {
+    const reply = await this.request((requestId) => ({ type: "acceptRecoveryPolicy", requestId, password }));
+    if (reply.type !== "recoveryPolicyAccepted") throw new Error("resposta inesperada do hub");
+    return { ...(reply.recoveryCode !== undefined && { recoveryCode: reply.recoveryCode }) };
+  }
+
+  /** A member has seen the recoveries the owner made. */
+  async ackRecoveryNotices(): Promise<void> {
+    const reply = await this.request((requestId) => ({ type: "ackRecoveryNotices", requestId }));
+    if (reply.type !== "recoveryNoticesAcked") throw new Error("resposta inesperada do hub");
   }
 
   /** Approves or revokes a device; rejects with `DeviceError` on a wrong pairing key. */

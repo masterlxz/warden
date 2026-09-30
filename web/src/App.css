@@ -206,6 +206,13 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* A form inside a login card (P84 fatia 4 parte B: accepting a recovery policy). */
+.login-card-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
 .login-card .checkbox-row {
   flex-direction: row;
   align-items: center;

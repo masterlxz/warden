@@ -9,12 +9,15 @@
 use std::path::{Path, PathBuf};
 
 use argon2::password_hash::rand_core::OsRng;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::member_crypto::{self, MemberKey};
+use crate::recovery::{self, RecoveryPolicy};
 use crate::{AgentConfig, FileConfig};
 
 /// Kept for the root's own directories (`conversations-server/root`); no member can take it.
@@ -59,6 +62,9 @@ pub struct UserConfig {
     /// opens the data now, and the member gives it when they choose their new password.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub key_needs_recovery: bool,
+    /// Every time the owner recovered their data with the workspace's recovery key (parte B).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recoveries: Vec<RecoveryEvent>,
 }
 
 /// One key, wrapped twice (`member_crypto`): whoever knows the password, or the recovery code,
@@ -67,7 +73,32 @@ pub struct UserConfig {
 #[serde(deny_unknown_fields)]
 pub struct KeyWraps {
     pub by_password: String,
+    /// Opens with the recovery code alone — except under `consent`, where it holds the key already
+    /// sealed to the owner, so the code only gets one to the owner's half.
     pub by_recovery: String,
+    /// The recovery policy these wraps implement — the one the person accepted (parte B).
+    #[serde(default, skip_serializing_if = "RecoveryPolicy::is_private")]
+    pub policy: RecoveryPolicy,
+    /// `company` only: the key sealed to the owner's public key, which their private key alone opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_escrow: Option<String>,
+    /// Which of the owner's public keys the seals above used (`recovery::escrow_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrow_id: Option<String>,
+}
+
+/// The owner recovered a member's data with the workspace's recovery key (parte B): recorded, and
+/// shown to the person at their next sign-in.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryEvent {
+    /// When, in milliseconds since the epoch.
+    pub at_ms: i64,
+    /// The policy it was done under: `consent` or `company`.
+    pub kind: RecoveryPolicy,
+    /// The person has seen it.
+    #[serde(default)]
+    pub seen: bool,
 }
 
 /// Shares an agent with every member (`AgentConfig::shared_with`).
@@ -255,6 +286,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         tools: None,
         key: None,
         key_needs_recovery: false,
+        recoveries: Vec::new(),
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -309,6 +341,7 @@ pub fn change_password(config: &mut FileConfig, id: &str, old: &str, new: &str, 
 /// with a new key: when it can't, a member without a key stays without one (a code nobody sees is a
 /// key nobody has) and gets it later, from a client that can.
 pub fn change_password_with(config: &mut FileConfig, id: &str, old: &str, new: &str, recovery_code: Option<&str>, create_key: bool) -> anyhow::Result<PasswordChange> {
+    let (policy, escrow_pub) = effective_policy(config);
     let user = find_mut(config, id)?;
     anyhow::ensure!(verify_password(&user.password_hash, old), "the current password is wrong");
     anyhow::ensure!(old != new, "pick a password different from the current one");
@@ -317,18 +350,22 @@ pub fn change_password_with(config: &mut FileConfig, id: &str, old: &str, new: &
     let (key, wraps, new_recovery_code) = match &user.key {
         None if !create_key => (None, None, None),
         None => {
-            let (key, wraps, code) = new_key_wraps(new)?;
+            let (key, wraps, code) = new_key_wraps(new, policy, escrow_pub.as_deref())?;
             (Some(key), Some(wraps), Some(code))
         }
         Some(current) if user.key_needs_recovery => {
+            anyhow::ensure!(
+                current.policy != RecoveryPolicy::Consent,
+                "the owner reset your password, and this workspace's recovery needs the owner's recovery key together with your code — ask them to recover your data"
+            );
             let code = recovery_code.filter(|c| !c.trim().is_empty()).ok_or_else(|| anyhow::anyhow!("the owner reset your password: give your recovery code to keep your data"))?;
             let key = member_crypto::unwrap_with_code(&current.by_recovery, code)?;
-            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, by_recovery: current.by_recovery.clone() };
+            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, ..current.clone() };
             (Some(key), Some(wraps), None)
         }
         Some(current) => {
             let key = member_crypto::unwrap_with_password(&current.by_password, old)?;
-            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, by_recovery: current.by_recovery.clone() };
+            let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, new)?, ..current.clone() };
             (Some(key), Some(wraps), None)
         }
     };
@@ -339,11 +376,47 @@ pub fn change_password_with(config: &mut FileConfig, id: &str, old: &str, new: &
     Ok(PasswordChange { key, new_recovery_code })
 }
 
-/// A new key, wrapped by `password` and by a new recovery code (returned, to be shown once).
-fn new_key_wraps(password: &str) -> anyhow::Result<(MemberKey, KeyWraps, String)> {
+/// The workspace's recovery policy and the owner's public key it needs. A policy that needs the key
+/// with none set counts as `private`: nobody's data is left waiting for a key that isn't there.
+fn effective_policy(config: &FileConfig) -> (RecoveryPolicy, Option<String>) {
+    match (config.recovery_policy, &config.recovery_public_key) {
+        (RecoveryPolicy::Private, _) | (_, None) => (RecoveryPolicy::Private, None),
+        (policy, Some(public)) => (policy, Some(public.clone())),
+    }
+}
+
+/// The recovery policy the workspace is really under: what `config` says, unless it needs the
+/// owner's recovery key and none is set.
+pub fn workspace_policy(config: &FileConfig) -> RecoveryPolicy {
+    effective_policy(config).0
+}
+
+/// What the recovery code wraps under `policy`: the key itself, or — under `consent` — the key
+/// already sealed to the owner, so the code alone gets nobody to the data.
+fn recovery_wrap(key: &MemberKey, code: &str, policy: RecoveryPolicy, escrow_pub: Option<&str>) -> anyhow::Result<String> {
+    match (policy, escrow_pub) {
+        (RecoveryPolicy::Consent, Some(public)) => member_crypto::wrap_blob_with_code(&recovery::escrow_seal(key, public)?, code),
+        (RecoveryPolicy::Consent, None) => anyhow::bail!("the recovery policy needs the owner's recovery key, and none is set"),
+        _ => member_crypto::wrap_with_code(key, code),
+    }
+}
+
+/// A new key, wrapped by `password` and by a new recovery code (returned, to be shown once), as
+/// `policy` asks: for `company`, also sealed to the owner's key.
+fn new_key_wraps(password: &str, policy: RecoveryPolicy, escrow_pub: Option<&str>) -> anyhow::Result<(MemberKey, KeyWraps, String)> {
     let key = member_crypto::new_key();
     let code = member_crypto::generate_recovery_code();
-    let wraps = KeyWraps { by_password: member_crypto::wrap_with_password(&key, password)?, by_recovery: member_crypto::wrap_with_code(&key, &code)? };
+    let by_escrow = match (policy, escrow_pub) {
+        (RecoveryPolicy::Company, Some(public)) => Some(BASE64.encode(recovery::escrow_seal(&key, public)?)),
+        _ => None,
+    };
+    let wraps = KeyWraps {
+        by_password: member_crypto::wrap_with_password(&key, password)?,
+        by_recovery: recovery_wrap(&key, &code, policy, escrow_pub)?,
+        policy,
+        by_escrow,
+        escrow_id: escrow_pub.filter(|_| !policy.is_private()).map(recovery::escrow_id),
+    };
     Ok((key, wraps, code))
 }
 
@@ -351,12 +424,13 @@ fn new_key_wraps(password: &str) -> anyhow::Result<(MemberKey, KeyWraps, String)
 /// new key and recovery code. `None` when there's nothing to do (they have a key, or still have
 /// the owner's provisional password — `change_password` creates it then).
 pub fn enable_encryption(config: &mut FileConfig, id: &str, password: &str) -> anyhow::Result<Option<(MemberKey, String)>> {
+    let (policy, escrow_pub) = effective_policy(config);
     let user = find_mut(config, id)?;
     if user.key.is_some() || user.must_change_password {
         return Ok(None);
     }
     anyhow::ensure!(verify_password(&user.password_hash, password), "the current password is wrong");
-    let (key, wraps, code) = new_key_wraps(password)?;
+    let (key, wraps, code) = new_key_wraps(password, policy, escrow_pub.as_deref())?;
     user.key = Some(wraps);
     Ok(Some((key, code)))
 }
@@ -371,14 +445,128 @@ pub fn open_key(user: &UserConfig, password: &str) -> anyhow::Result<Option<Memb
 
 /// The member asks for a new recovery code (the old one stops working). Needs their password.
 pub fn regenerate_recovery_code(config: &mut FileConfig, id: &str, password: &str) -> anyhow::Result<String> {
+    let escrow_pub = config.recovery_public_key.clone();
     let user = find_mut(config, id)?;
     anyhow::ensure!(verify_password(&user.password_hash, password), "the current password is wrong");
     let wraps = user.key.as_ref().filter(|_| !user.key_needs_recovery).ok_or_else(|| anyhow::anyhow!("your data isn't encrypted with a key of yours yet"))?;
     let key = member_crypto::unwrap_with_password(&wraps.by_password, password)?;
     let code = member_crypto::generate_recovery_code();
-    let by_recovery = member_crypto::wrap_with_code(&key, &code)?;
-    user.key = Some(KeyWraps { by_password: wraps.by_password.clone(), by_recovery });
+    // Under `consent` the code wraps the key sealed to the owner's key as it is now.
+    let by_recovery = recovery_wrap(&key, &code, wraps.policy, escrow_pub.as_deref())?;
+    let escrow_id = if wraps.policy == RecoveryPolicy::Consent { escrow_pub.as_deref().map(recovery::escrow_id) } else { wraps.escrow_id.clone() };
+    user.key = Some(KeyWraps { by_recovery, escrow_id, ..wraps.clone() });
     Ok(code)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// What `sync_recovery_policy` did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PolicyOutcome {
+    /// The member's data now follows the workspace's policy (or already did).
+    pub in_step: bool,
+    /// It doesn't yet, and waits for the person: the change is to a weaker policy and they haven't said
+    /// yes, or the client can't show the recovery code that comes with it.
+    pub pending: bool,
+    /// A recovery code made now, to be shown once (entering or leaving `consent` needs one).
+    pub new_code: Option<String>,
+}
+
+/// Brings a member's data in step with the workspace's recovery policy, with their key open (at
+/// sign-in, or when they say yes). A change to a **weaker** policy waits for `may_weaken` — the
+/// person's yes — and one that needs a new recovery code waits for a client that can show it.
+/// Entering or leaving `consent` (or replacing the owner's key under it) makes a new code, since the
+/// old one can't be re-wrapped without being typed.
+pub fn sync_recovery_policy(config: &mut FileConfig, id: &str, key: &MemberKey, may_weaken: bool, can_show_code: bool) -> anyhow::Result<PolicyOutcome> {
+    let (target, escrow_pub) = effective_policy(config);
+    let user = find_mut(config, id)?;
+    let Some(current) = user.key.clone() else { return Ok(PolicyOutcome { in_step: true, pending: false, new_code: None }) };
+    let target_id = escrow_pub.as_deref().map(recovery::escrow_id);
+    let expected_id = if target.is_private() { None } else { target_id.clone() };
+    if current.policy == target && current.escrow_id == expected_id {
+        return Ok(PolicyOutcome { in_step: true, pending: false, new_code: None });
+    }
+    let weaker = target.strength() < current.policy.strength();
+    let needs_code = target == RecoveryPolicy::Consent || current.policy == RecoveryPolicy::Consent;
+    if (weaker && !may_weaken) || (needs_code && !can_show_code) {
+        return Ok(PolicyOutcome { in_step: false, pending: true, new_code: None });
+    }
+
+    let (by_recovery, new_code) = if needs_code {
+        let code = member_crypto::generate_recovery_code();
+        (recovery_wrap(key, &code, target, escrow_pub.as_deref())?, Some(code))
+    } else {
+        (current.by_recovery.clone(), None)
+    };
+    let by_escrow = match (target, escrow_pub.as_deref()) {
+        (RecoveryPolicy::Company, Some(public)) => Some(BASE64.encode(recovery::escrow_seal(key, public)?)),
+        _ => None,
+    };
+    user.key = Some(KeyWraps { by_password: current.by_password, by_recovery, policy: target, by_escrow, escrow_id: expected_id });
+    Ok(PolicyOutcome { in_step: true, pending: false, new_code })
+}
+
+/// The workspace's recovery policy is set by the owner. A policy that needs the owner's recovery key
+/// makes one if there is none (or if `new_key` asks for another): the private half comes back, to be
+/// shown once and never stored. Members' data follows at their next sign-in, so a change to a weaker
+/// policy is theirs to accept.
+pub fn set_recovery_policy(config: &mut FileConfig, policy: RecoveryPolicy, new_key: bool) -> Option<String> {
+    let mut secret = None;
+    if new_key || (!policy.is_private() && config.recovery_public_key.is_none()) {
+        let pair = recovery::generate_escrow_keypair();
+        config.recovery_public_key = Some(pair.public_hex);
+        secret = Some(pair.secret_text);
+    }
+    config.recovery_policy = policy;
+    secret
+}
+
+/// What `recover_member` gives the owner.
+pub struct Recovered {
+    /// The provisional password the person signs in with, shown once.
+    pub temp_password: String,
+    /// The policy it was done under.
+    pub kind: RecoveryPolicy,
+}
+
+/// The owner opens a member's data with the workspace's recovery key — `company`: the key alone;
+/// `consent`: the key and the person's recovery code together; `private`: refused, nobody can. Then a
+/// new provisional password is set (wrapping the key, which the owner has just opened anyway), the
+/// person signs in with it and picks their own, and the recovery is recorded for them to see.
+pub fn recover_member(config: &mut FileConfig, id: &str, recovery_key: &str, code: Option<&str>) -> anyhow::Result<Recovered> {
+    let user = find_mut(config, id)?;
+    let wraps = user.key.clone().ok_or_else(|| anyhow::anyhow!("'{id}' has no encrypted data to recover"))?;
+    let key = match wraps.policy {
+        RecoveryPolicy::Private => anyhow::bail!("'{id}' is under the private policy: only their password or their recovery code opens their data, not even you"),
+        RecoveryPolicy::Company => {
+            let blob = BASE64.decode(wraps.by_escrow.as_deref().ok_or_else(|| anyhow::anyhow!("'{id}' has no company recovery set up"))?.trim())?;
+            recovery::escrow_open(&blob, recovery_key)?
+        }
+        RecoveryPolicy::Consent => {
+            let code = code.filter(|c| !c.trim().is_empty()).ok_or_else(|| anyhow::anyhow!("'{id}' is under the consent policy: their recovery code is needed together with your key"))?;
+            let blob = member_crypto::unwrap_blob_with_code(&wraps.by_recovery, code)?;
+            recovery::escrow_open(&blob, recovery_key)?
+        }
+    };
+    let temp_password = generate_temp_password();
+    let hash = hash_password(&temp_password)?;
+    let by_password = member_crypto::wrap_with_password(&key, &temp_password)?;
+    user.password_hash = hash;
+    user.must_change_password = true;
+    user.key_needs_recovery = false;
+    user.key = Some(KeyWraps { by_password, ..wraps.clone() });
+    user.recoveries.push(RecoveryEvent { at_ms: now_ms(), kind: wraps.policy, seen: false });
+    Ok(Recovered { temp_password, kind: wraps.policy })
+}
+
+/// The member has seen the recoveries the owner made.
+pub fn ack_recovery_notices(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    for event in &mut find_mut(config, id)?.recoveries {
+        event.seen = true;
+    }
+    Ok(())
 }
 
 /// Takes the member out of the workspace, with their own agents and every share naming them. Their
@@ -630,6 +818,170 @@ mod tests {
         assert_eq!(*back.key.unwrap(), *key, "the very same key");
         assert!(!config.users[0].key_needs_recovery && !config.users[0].must_change_password);
         assert_eq!(*open_key(&config.users[0], "anas-third-pass").unwrap().unwrap(), *key);
+    }
+
+    /// Ana with her own password, under the workspace's `policy` (its key made after the policy was set).
+    fn ana_under(policy: RecoveryPolicy) -> (FileConfig, String, MemberKey, String) {
+        let mut config = FileConfig::default();
+        let secret = set_recovery_policy(&mut config, policy, false).unwrap_or_default();
+        add_user(&mut config, "ana", "Ana", "provisional-1").unwrap();
+        let change = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        (config, secret, change.key.unwrap(), change.new_recovery_code.unwrap())
+    }
+
+    #[test]
+    fn under_consent_the_code_alone_and_the_owner_alone_open_nothing_but_together_they_do() {
+        let (mut config, owner_key, key, code) = ana_under(RecoveryPolicy::Consent);
+        let wraps = config.users[0].key.clone().unwrap();
+        assert_eq!((wraps.policy, wraps.by_escrow.is_none()), (RecoveryPolicy::Consent, true));
+        assert!(member_crypto::unwrap_with_code(&wraps.by_recovery, &code).is_err(), "the code alone opens nothing");
+        assert_eq!(*open_key(&config.users[0], "anas-own-pass").unwrap().unwrap(), *key, "her password still opens it");
+
+        assert!(recover_member(&mut config, "ana", &owner_key, None).is_err(), "the key alone: no");
+        assert!(recover_member(&mut config, "ana", &owner_key, Some(&member_crypto::generate_recovery_code())).is_err(), "another code");
+        assert!(recover_member(&mut config, "ana", &recovery::generate_escrow_keypair().secret_text, Some(&code)).is_err(), "another key");
+        assert!(!config.users[0].must_change_password && config.users[0].recoveries.is_empty(), "the refusals changed nothing");
+
+        let recovered = recover_member(&mut config, "ana", &owner_key, Some(&code)).unwrap();
+        assert_eq!(recovered.kind, RecoveryPolicy::Consent);
+        assert!(config.users[0].must_change_password && authenticate_user(&config.users, "ana", &recovered.temp_password).is_some());
+        assert_eq!(*open_key(&config.users[0], &recovered.temp_password).unwrap().unwrap(), *key, "the very same data key");
+        assert!(authenticate_user(&config.users, "ana", "anas-own-pass").is_none(), "her old password is gone");
+        assert_eq!(config.users[0].recoveries.len(), 1);
+    }
+
+    #[test]
+    fn under_company_the_owners_key_alone_recovers_and_is_recorded_for_the_person() {
+        let (mut config, owner_key, key, code) = ana_under(RecoveryPolicy::Company);
+        let wraps = config.users[0].key.clone().unwrap();
+        assert!(wraps.by_escrow.is_some());
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &code).unwrap(), *key, "her code still opens it, as under private");
+
+        assert!(recover_member(&mut config, "ana", &recovery::generate_escrow_keypair().secret_text, None).is_err());
+        let recovered = recover_member(&mut config, "ana", &owner_key, None).unwrap();
+        assert_eq!(recovered.kind, RecoveryPolicy::Company);
+        assert_eq!(*open_key(&config.users[0], &recovered.temp_password).unwrap().unwrap(), *key);
+        let events = &config.users[0].recoveries;
+        assert_eq!((events.len(), events[0].kind, events[0].seen), (1, RecoveryPolicy::Company, false));
+
+        // She signs in with the provisional password and picks her own: same key again, and she's seen it.
+        let back = change_password(&mut config, "ana", &recovered.temp_password, "anas-third-pass", None).unwrap();
+        assert_eq!(*back.key.unwrap(), *key);
+        ack_recovery_notices(&mut config, "ana").unwrap();
+        assert!(config.users[0].recoveries[0].seen && config.users[0].recoveries.len() == 1, "kept as history");
+    }
+
+    #[test]
+    fn under_private_nobody_recovers_for_them() {
+        let (mut config, _, _, _) = ana_under(RecoveryPolicy::Private);
+        let owner = recovery::generate_escrow_keypair();
+        let err = recover_member(&mut config, "ana", &owner.secret_text, None).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("private"), "{err}");
+        assert!(recover_member(&mut config, "nobody", &owner.secret_text, None).is_err());
+    }
+
+    #[test]
+    fn a_policy_that_needs_the_owners_key_without_one_falls_back_to_private() {
+        let mut config = FileConfig { recovery_policy: RecoveryPolicy::Consent, ..FileConfig::default() };
+        add_user(&mut config, "ana", "Ana", "provisional-1").unwrap();
+        let change = change_password(&mut config, "ana", "provisional-1", "anas-own-pass", None).unwrap();
+        let wraps = config.users[0].key.clone().unwrap();
+        assert_eq!(wraps.policy, RecoveryPolicy::Private);
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &change.new_recovery_code.unwrap()).unwrap(), *change.key.unwrap());
+    }
+
+    #[test]
+    fn a_change_to_a_weaker_policy_waits_for_the_person_and_a_stronger_one_does_not() {
+        let (mut config, owner_key, key, code) = ana_under(RecoveryPolicy::Private);
+        // The owner moves the workspace to company: weaker, so it waits.
+        let secret = set_recovery_policy(&mut config, RecoveryPolicy::Company, false).expect("a key is made the first time");
+        let waiting = sync_recovery_policy(&mut config, "ana", &key, false, true).unwrap();
+        assert_eq!(waiting, PolicyOutcome { in_step: false, pending: true, new_code: None });
+        assert_eq!(config.users[0].key.as_ref().unwrap().policy, RecoveryPolicy::Private, "nothing changed without her yes");
+        assert!(recover_member(&mut config, "ana", &secret, None).is_err(), "so the owner can't recover yet");
+
+        let accepted = sync_recovery_policy(&mut config, "ana", &key, true, true).unwrap();
+        assert_eq!(accepted, PolicyOutcome { in_step: true, pending: false, new_code: None }, "private to company needs no new code");
+        assert!(recover_member(&mut config, "ana", &secret, None).is_ok());
+        assert_eq!(*member_crypto::unwrap_with_code(&config.users[0].key.as_ref().unwrap().by_recovery, &code).unwrap(), *key, "her code is the same one");
+        let _ = owner_key;
+
+        // Back to private: stronger, so it applies without asking, and the owner's way in is gone.
+        set_recovery_policy(&mut config, RecoveryPolicy::Private, false);
+        let stronger = sync_recovery_policy(&mut config, "ana", &key, false, false).unwrap();
+        assert_eq!(stronger, PolicyOutcome { in_step: true, pending: false, new_code: None });
+        let wraps = config.users[0].key.clone().unwrap();
+        assert!(wraps.by_escrow.is_none() && wraps.escrow_id.is_none() && wraps.policy == RecoveryPolicy::Private);
+        assert!(recover_member(&mut config, "ana", &secret, None).is_err());
+        assert!(sync_recovery_policy(&mut config, "ana", &key, false, false).unwrap().in_step, "already in step: nothing to do");
+    }
+
+    #[test]
+    fn entering_and_leaving_consent_makes_a_new_code_that_needs_a_client_that_shows_it() {
+        let (mut config, _, key, old_code) = ana_under(RecoveryPolicy::Private);
+        let secret = set_recovery_policy(&mut config, RecoveryPolicy::Consent, false).unwrap();
+        // Weaker than private, and a new code: both must be satisfied.
+        assert!(sync_recovery_policy(&mut config, "ana", &key, true, false).unwrap().pending, "a client that can't show the code waits");
+        let entered = sync_recovery_policy(&mut config, "ana", &key, true, true).unwrap();
+        let code = entered.new_code.expect("a new code");
+        assert_ne!(code, old_code);
+        let wraps = config.users[0].key.clone().unwrap();
+        assert!(member_crypto::unwrap_with_code(&wraps.by_recovery, &old_code).is_err(), "the old code stopped working");
+        assert!(recover_member(&mut config, "ana", &secret, Some(&code)).is_ok(), "and the new one, with the owner's key, recovers");
+
+        // Back to private: stronger, but leaving consent makes yet another code.
+        set_recovery_policy(&mut config, RecoveryPolicy::Private, false);
+        assert!(sync_recovery_policy(&mut config, "ana", &key, false, false).unwrap().pending, "leaving consent needs a client that shows the code");
+        let left = sync_recovery_policy(&mut config, "ana", &key, false, true).unwrap();
+        let back_code = left.new_code.expect("a new code");
+        let wraps = config.users[0].key.clone().unwrap();
+        assert_eq!(*member_crypto::unwrap_with_code(&wraps.by_recovery, &back_code).unwrap(), *key, "plain again: the code alone opens it");
+    }
+
+    #[test]
+    fn replacing_the_owners_key_moves_members_over_without_asking_again() {
+        let (mut config, old_secret, key, _) = ana_under(RecoveryPolicy::Company);
+        let new_secret = set_recovery_policy(&mut config, RecoveryPolicy::Company, true).expect("a new pair");
+        assert_ne!(old_secret, new_secret);
+        let outcome = sync_recovery_policy(&mut config, "ana", &key, false, false).unwrap();
+        assert_eq!(outcome, PolicyOutcome { in_step: true, pending: false, new_code: None }, "the same policy: not weaker, no code");
+        assert!(recover_member(&mut config, "ana", &old_secret, None).is_err(), "the old key no longer opens it");
+        assert!(recover_member(&mut config, "ana", &new_secret, None).is_ok());
+    }
+
+    #[test]
+    fn a_new_code_under_consent_still_needs_the_owners_key() {
+        let (mut config, owner_key, _key, _) = ana_under(RecoveryPolicy::Consent);
+        let code = regenerate_recovery_code(&mut config, "ana", "anas-own-pass").unwrap();
+        let wraps = config.users[0].key.clone().unwrap();
+        assert!(member_crypto::unwrap_with_code(&wraps.by_recovery, &code).is_err(), "the new code alone opens nothing either");
+        assert!(recover_member(&mut config, "ana", &owner_key, Some(&code)).is_ok());
+    }
+
+    #[test]
+    fn after_an_owner_reset_a_consent_member_is_sent_to_the_owners_recovery() {
+        let (mut config, owner_key, key, code) = ana_under(RecoveryPolicy::Consent);
+        reset_password(&mut config, "ana", "provisional-2").unwrap();
+        let err = change_password(&mut config, "ana", "provisional-2", "anas-third-pass", Some(&code)).map(|_| ()).unwrap_err();
+        assert!(err.to_string().contains("recovery key"), "{err}");
+        let recovered = recover_member(&mut config, "ana", &owner_key, Some(&code)).unwrap();
+        assert!(!config.users[0].key_needs_recovery);
+        let back = change_password(&mut config, "ana", &recovered.temp_password, "anas-third-pass", None).unwrap();
+        assert_eq!(*back.key.unwrap(), *key);
+    }
+
+    #[test]
+    fn the_policy_fields_round_trip_through_toml_and_add_nothing_under_private() {
+        let (config, _, _, _) = ana_under(RecoveryPolicy::Company);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("recovery_policy = \"company\"") && text.contains("recovery_public_key") && text.contains("by_escrow"));
+        let back: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!((back.recovery_policy, back.recovery_public_key.clone()), (config.recovery_policy, config.recovery_public_key.clone()));
+        assert_eq!(back.users, config.users);
+
+        let (private, _, _, _) = ana_under(RecoveryPolicy::Private);
+        let plain = toml::to_string(&private).unwrap();
+        assert!(!plain.contains("recovery_policy") && !plain.contains("by_escrow") && !plain.contains("recoveries") && !plain.contains("escrow_id"), "{plain}");
     }
 
     #[test]

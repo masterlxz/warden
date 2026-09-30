@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserError, type ServerConnection } from "../hub/connection";
 import type { UserInfo } from "../hub/messages";
+import RecoveryPolicySection from "./RecoveryPolicySection";
 import SharedSpacesSection from "./SharedSpacesSection";
 
 // People (P84): the members of this workspace besides the owner. Each signs in with a username and
@@ -43,6 +44,8 @@ function message(err: unknown): string {
 
 export default function PeopleView({ conn }: { conn: ServerConnection | null }) {
   const [users, setUsers] = useState<UserInfo[] | null>(null);
+  /** The workspace's recovery policy (P84 fatia 4 parte B). */
+  const [recoveryPolicy, setRecoveryPolicy] = useState("private");
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [pairingKey, setPairingKey] = useState("");
@@ -56,7 +59,9 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
   const load = useCallback(async () => {
     if (!conn) return;
     try {
-      setUsers((await conn.listUsers()).users);
+      const list = await conn.listUsers();
+      setUsers(list.users);
+      setRecoveryPolicy(list.recoveryPolicy ?? "private");
       setError(null);
     } catch (err) {
       setError(message(err));
@@ -273,6 +278,17 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
       )}
 
       <SharedSpacesSection conn={conn} users={users ?? []} />
+
+      <RecoveryPolicySection
+        conn={conn}
+        users={users ?? []}
+        policy={recoveryPolicy}
+        onChanged={(next, policy, temp) => {
+          if (next) setUsers(next);
+          setRecoveryPolicy(policy);
+          if (temp) setShown(temp);
+        }}
+      />
     </div>
   );
 }

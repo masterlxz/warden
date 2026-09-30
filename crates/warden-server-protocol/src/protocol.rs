@@ -369,6 +369,34 @@ pub struct UserInfoDto {
     /// with the password), so their data can't be opened until they do.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locked: bool,
+    /// P84 fatia 4 parte B: who besides them may open their data — `private`, `consent` or `company`;
+    /// empty while it isn't encrypted. What their data follows now, which is the workspace's policy
+    /// unless a change to a weaker one still waits for their yes (`policy_pending`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub member_policy: String,
+    /// The workspace's policy has changed to a weaker one and they haven't accepted it yet — or a
+    /// client that can show the new recovery code it comes with hasn't signed in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub policy_pending: bool,
+    /// The workspace's recovery policy — only in `HelloAck`, for the member to read.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recovery_policy: String,
+    /// Every time the owner recovered their data with the workspace's recovery key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recoveries: Vec<RecoveryEventDto>,
+}
+
+/// The owner recovered someone's data with the workspace's recovery key (P84 fatia 4, parte B).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEventDto {
+    /// Milliseconds since the epoch.
+    pub at_ms: i64,
+    /// The policy it was done under: `consent` or `company`.
+    pub kind: String,
+    /// The person has seen it.
+    #[serde(default)]
+    pub seen: bool,
 }
 
 /// A task and where it stands on this hub.
@@ -1029,6 +1057,38 @@ pub enum ClientMessage {
         request_id: u64,
         password: String,
     },
+    /// P84 fatia 4 parte B: the member says yes to the workspace's recovery policy when it changed to a
+    /// weaker one, with their password (which opens their key). Answered by `RecoveryPolicyAccepted`
+    /// or `UserError`.
+    AcceptRecoveryPolicy {
+        request_id: u64,
+        password: String,
+    },
+    /// The member has seen the recoveries the owner made. Answered by `RecoveryNoticesAcked`.
+    AckRecoveryNotices {
+        request_id: u64,
+    },
+    /// The owner sets the workspace's recovery policy (`private`, `consent` or `company`), repeating
+    /// the pairing key. `new_key` replaces the owner's recovery key. Answered by `RecoveryPolicy` or
+    /// `UserError`.
+    SetRecoveryPolicy {
+        request_id: u64,
+        pairing_key: String,
+        policy: String,
+        #[serde(default)]
+        new_key: bool,
+    },
+    /// The owner opens a member's data with the workspace's recovery key (`consent` also needs the
+    /// person's `code`) and gives them a new provisional password. Answered by `UserList` with the
+    /// password once, or `UserError`.
+    RecoverMember {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        recovery_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
     /// The workspace's members, answered by `UserList`. The root's only.
     ListUsers {
         request_id: u64,
@@ -1398,6 +1458,27 @@ pub enum ServerMessage {
         users: Vec<UserInfoDto>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         temp_password: Option<String>,
+        /// P84 fatia 4 parte B: the workspace's recovery policy (empty from a hub that predates it).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        recovery_policy: String,
+    },
+    /// The workspace's recovery policy after `SetRecoveryPolicy`. `secret` is the owner's recovery key,
+    /// present only when one was just made — shown once and never kept: it's typed in for each recovery.
+    RecoveryPolicy {
+        request_id: u64,
+        policy: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret: Option<String>,
+    },
+    /// The member accepted the policy: their data follows it now. `recovery_code`: entering or leaving
+    /// `consent` made a new one — shown once.
+    RecoveryPolicyAccepted {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_code: Option<String>,
+    },
+    RecoveryNoticesAcked {
+        request_id: u64,
     },
     PasswordChanged {
         request_id: u64,

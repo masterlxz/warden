@@ -35,6 +35,7 @@ mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;
 pub mod member_crypto;
+pub mod recovery;
 pub mod node_model;
 pub mod message_agent;
 pub mod settings;
@@ -445,6 +446,15 @@ pub struct FileConfig {
     /// by them (`users restore`) instead of being lost for good. `users purge` ends it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed_users: Vec<users::UserConfig>,
+    /// Who besides a person may open their encrypted data (P84 fatia 4 parte B, TOML
+    /// `recovery_policy`): `private` (nobody, the default), `consent` (the owner and the person's
+    /// recovery code together) or `company` (the owner alone, recorded). See `recovery`.
+    #[serde(default, skip_serializing_if = "recovery::RecoveryPolicy::is_private")]
+    pub recovery_policy: recovery::RecoveryPolicy,
+    /// The public half of the owner's recovery key, in hex — what members' data is prepared with.
+    /// The private half is shown once and never kept here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_public_key: Option<String>,
     /// Folders of the owner's vault shared with members (P84 fatia 3, TOML `[[spaces]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spaces: Vec<users::SpaceConfig>,
@@ -2093,6 +2103,8 @@ oauth = true
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
             removed_users: Vec::new(),
+            recovery_policy: recovery::RecoveryPolicy::Private,
+            recovery_public_key: None,
             spaces: Vec::new(),
         };
 

@@ -30,13 +30,15 @@ fn change(apply: impl FnOnce(&mut warden_bootstrap::FileConfig) -> anyhow::Resul
     let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
     let temp_password = apply(&mut config).map_err(|e| format!("{e:#}"))?;
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
-    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password })
+    let policy = warden_bootstrap::users::workspace_policy(&config);
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password })
 }
 
 #[tauri::command]
 pub fn list_people() -> Result<PeoplePayload, String> {
     let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
-    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password: None })
+    let policy = warden_bootstrap::users::workspace_policy(&config);
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password: None })
 }
 
 #[tauri::command]

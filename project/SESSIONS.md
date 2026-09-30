@@ -49,8 +49,29 @@
   carregada e passou 3 de 3 isolado, então é instável e não tem relação com esta fatia.
   Testes: o do documento sealed e na pasta do membro, o da migração de `generated/`, o do arquivamento e da
   restauração no `users.rs`, e o de integração da remoção (a chave continua abrindo os dados).
+- **Parte B da fatia 4**, na mesma sessão (plano aprovado em Plan mode): a recuperação "com consentimento" e "de
+  empresa". Decisões do usuário: **duas chaves em vez de Shamir literal**, a chave privada do root **só com o
+  root** (o hub guarda a pública), e a política **mutável, com aviso e aceite** para uma mais fraca.
+  1. `warden_bootstrap::recovery`: `RecoveryPolicy`, o par de chaves do root (ECIES do `warden-truthid`), `escrow_seal`
+     e `escrow_open`; `member_crypto` embrulha um blob de qualquer tamanho (o `consent` embrulha a chave já selada);
+  2. `users.rs`: `KeyWraps` com `policy`, `by_escrow` e `escrow_id`, os eventos `recoveries`, `sync_recovery_policy`
+     (alinha a política com a chave aberta; mais fraca espera o aceite; entrar ou sair de `consent` faz código novo),
+     `recover_member`, `set_recovery_policy` e `ack_recovery_notices`; `FileConfig` com `recovery_policy` e
+     `recovery_public_key`; o desktop preserva os campos ao salvar;
+  3. servidor e protocolo: o alinhamento no login, `AcceptRecoveryPolicy`, `AckRecoveryNotices`,
+     `SetRecoveryPolicy`, `RecoverMember`, e o `UserInfoDto` com o estado da política e o histórico;
+  4. `warden-server recovery policy|recover|log`;
+  5. web: `RecoveryPolicySection` (aba Pessoas) e `RecoveryNoticeView` (o membro);
+  6. docs: `ARCHITECTURE.md` ("Como ficou a fatia 4, parte B"), `PENDING.md`, `ROADMAP.md`, `README.md`.
+  Testes: 11 unitários (`recovery.rs` e `users.rs`: os três formatos, as transições, o consentimento com as duas
+  metades, o registro) e 3 de integração no hub real (empresa, consentimento com volta ao privado, e a política
+  mais fraca esperando o aceite).
+  Verificação: `cargo test --workspace --no-fail-fast` com 928 passando e 1 falha, que é o teste de nós instável de
+  antes (`a_node_that_drops_mid_command…`, `nodes.rs`): passa 4 de 4 em série (`--test-threads=1`) e falha às vezes em
+  paralelo, então é contenção de tempo (dorme 500 ms e aborta o nó). Não confirmei que ele já era instável antes da
+  sessão, porque isso pede reconstruir o commit antigo e o disco não comporta. Clippy e `tsc`/`vite build` limpos.
 - **Próximo passo**: a sessão dedicada de testes (P108 e os anteriores), com um backup antes de migrar dados
-  reais; depois a parte B da fatia 4 ou a fatia 5.
+  reais; depois a fatia 5 (convite pelo TruthID) ou o celular (P109).
 
 ---
 

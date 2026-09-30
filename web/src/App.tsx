@@ -10,6 +10,7 @@ import LoginView, { type LoginCredentials } from "./components/LoginView";
 import MyAgentsView from "./components/MyAgentsView";
 import PeopleView from "./components/PeopleView";
 import RecoveryCodeView from "./components/RecoveryCodeView";
+import RecoveryNoticeView from "./components/RecoveryNoticeView";
 import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
@@ -94,6 +95,8 @@ export default function App() {
   /** P84 fatia 4: a recovery code of the member's encrypted data, waiting to be shown once. `replacing`: it
    * takes the place of an earlier one. */
   const [recoveryCode, setRecoveryCode] = useState<{ code: string; replacing: boolean } | null>(null);
+  /** P84 fatia 4 parte B: the person put off the recovery notice (a policy change or a recovery by the owner) this session. */
+  const [noticeLater, setNoticeLater] = useState(false);
   /** Mirrors `conversations` for the connection's callbacks. */
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
@@ -307,6 +310,7 @@ export default function App() {
     setUser(undefined);
     setChangingPassword(false);
     setRecoveryCode(null);
+    setNoticeLater(false);
     setView("chat");
     setPhase({ kind: "login" });
   }
@@ -446,6 +450,24 @@ export default function App() {
         }}
         onCancel={() => setChangingPassword(false)}
         onLogout={handleLogout}
+      />
+    );
+  }
+
+  // P84 fatia 4 parte B: the workspace's recovery policy changed to a weaker one and needs their yes, or the
+  // owner recovered their data — told before anything else, once their own password is in.
+  const hasRecoveryNotice = user !== undefined && !user.mustChangePassword && ((user.policyPending ?? false) || (user.recoveries ?? []).some((r) => !r.seen));
+  if (conn && user && hasRecoveryNotice && !noticeLater) {
+    return (
+      <RecoveryNoticeView
+        conn={conn}
+        user={user}
+        onAccepted={(code) => {
+          setUser((current) => (current ? { ...current, policyPending: false, memberPolicy: current.recoveryPolicy ?? current.memberPolicy } : current));
+          if (code !== undefined) setRecoveryCode({ code, replacing: true });
+        }}
+        onAcked={() => setUser((current) => (current ? { ...current, recoveries: (current.recoveries ?? []).map((r) => ({ ...r, seen: true })) } : current))}
+        onLater={() => setNoticeLater(true)}
       />
     );
   }

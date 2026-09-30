@@ -228,6 +228,24 @@ export interface UserInfo {
   needsRecovery?: boolean;
   /** Only in `helloAck`: the hub doesn't hold their key (it restarted), so their data is shut until they sign in with the password. */
   locked?: boolean;
+  /** P84 fatia 4 parte B — who besides them may open their data right now: "private", "consent" or "company"; absent while it isn't encrypted. */
+  memberPolicy?: string;
+  /** The workspace's policy is a weaker one they haven't accepted yet (or needs a new recovery code this client couldn't show). */
+  policyPending?: boolean;
+  /** Only in `helloAck`: the workspace's recovery policy. */
+  recoveryPolicy?: string;
+  /** Every time the owner recovered their data with the workspace's recovery key. */
+  recoveries?: RecoveryEvent[];
+}
+
+/** Mirrors `RecoveryEventDto` (P84 fatia 4 parte B). */
+export interface RecoveryEvent {
+  /** Milliseconds since the epoch. */
+  atMs: number;
+  /** The policy it was done under: "consent" or "company". */
+  kind: string;
+  /** The person has seen it. */
+  seen: boolean;
 }
 
 /** P84 fatia 3 — a folder of the owner's vault shared with members, who see it at
@@ -425,6 +443,12 @@ export type ClientMessage =
   | { type: "changePassword"; requestId: number; oldPassword: string; newPassword: string; recoveryCode?: string }
   /** P84 fatia 4 — a new recovery code, with the password; the old one stops working. */
   | { type: "regenerateRecoveryCode"; requestId: number; password: string }
+  /** P84 fatia 4 parte B — a member says yes to a weaker recovery policy, with their password; the owner sets the
+   * policy and recovers a member with the workspace's recovery key (`consent` also needs the person's `code`). */
+  | { type: "acceptRecoveryPolicy"; requestId: number; password: string }
+  | { type: "ackRecoveryNotices"; requestId: number }
+  | { type: "setRecoveryPolicy"; requestId: number; pairingKey: string; policy: string; newKey: boolean }
+  | { type: "recoverMember"; requestId: number; pairingKey: string; id: string; recoveryKey: string; code?: string }
   | { type: "listUsers"; requestId: number }
   | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
   | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
@@ -496,7 +520,12 @@ export type ServerMessage =
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
-  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string }
+  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; recoveryPolicy?: string }
+  /** `secret`: the owner's recovery key, only when one was just made — shown once, never kept. */
+  | { type: "recoveryPolicy"; requestId: number; policy: string; secret?: string }
+  /** `recoveryCode`: entering or leaving "consent" made a new code — shown once. */
+  | { type: "recoveryPolicyAccepted"; requestId: number; recoveryCode?: string }
+  | { type: "recoveryNoticesAcked"; requestId: number }
   /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
   | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
   /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after
@@ -572,14 +601,18 @@ export function decode(text: string): ServerMessage {
     case "conversationsChanged":
     case "passwordChanged":
     case "recoveryCode":
+    case "recoveryPolicy":
+    case "recoveryPolicyAccepted":
+    case "recoveryNoticesAcked":
       return json as ServerMessage;
     case "userList": {
-      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string };
+      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; recoveryPolicy?: string };
       return {
         type: "userList",
         requestId: raw.requestId,
         users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false, agents: u.agents ?? [] })),
         ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
+        ...(raw.recoveryPolicy !== undefined && { recoveryPolicy: raw.recoveryPolicy }),
       };
     }
     case "spaceList": {

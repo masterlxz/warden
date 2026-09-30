@@ -483,7 +483,10 @@ compartilhados, tools e limite de gasto por pessoa, agentes próprios e chaves d
 pastas do vault do root que os membros veem em `compartilhado/`, lendo ou escrevendo, e que são também a audiência
 da memória do root. **A fatia 4, parte A, foi feita na Sessão 114**: o vault (conteúdo e nomes), as conversas e o
 índice de busca de cada membro ficam criptografados no disco do hub com uma chave que só a senha do membro ou o
-código de recuperação dele abrem, com `warden-server backup` e `restore`; faltam a parte B (Shamir e recuperação de
+código de recuperação dele abrem, com `warden-server backup` e `restore`. **A parte B, também na Sessão 114**: a
+política de recuperação do workspace (`private`, `consent` com a chave do root e o código da pessoa juntos, `company`
+com o root sozinho, registrado e avisado), com `warden-server recovery`; faltam a fatia 5 (convite pelo TruthID). Antes:
+faltavam a parte B (Shamir e recuperação de
 empresa) e a fatia 5. Registro original abaixo.
 
 Ideia do usuário (2026-09-26, Sessão 103), só registro: várias pessoas no mesmo Warden, dentro do mesmo

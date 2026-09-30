@@ -8,9 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use warden_bootstrap::member_crypto::{self, MemberKey};
+use warden_bootstrap::recovery::RecoveryPolicy;
 use warden_bootstrap::users::{
-    add_user, change_password_with, enable_encryption, generate_temp_password, open_key, regenerate_recovery_code, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools,
-    spaces_for, user_conversations_dir, PasswordChange, SpaceConfig,
+    ack_recovery_notices, add_user, change_password_with, enable_encryption, generate_temp_password, open_key, recover_member, regenerate_recovery_code, remove_space, remove_user, rename_user,
+    reset_password, save_space, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
 };
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server_protocol::protocol::SpaceDto;
@@ -29,7 +30,13 @@ const NO_SETTINGS: &str = "this hub has no settings file, so it has no people be
 
 fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<String>) -> anyhow::Result<ServerMessage> {
     let config = load_config_from_path(&settings.config_path(), false)?;
-    Ok(ServerMessage::UserList { request_id, users: config.users.iter().map(|u| user_info(u, &config.agents)).collect(), temp_password })
+    let policy = workspace_policy(&config);
+    Ok(ServerMessage::UserList {
+        request_id,
+        users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(),
+        temp_password,
+        recovery_policy: policy.as_str().to_string(),
+    })
 }
 
 /// Answers `ListUsers` (the root's connection only — `people::member_refusal` stops a member first).
@@ -48,6 +55,8 @@ pub enum UserChange {
     Remove { id: String },
     /// Fatia 2: the tools they may use; `None` is the safe default.
     SetTools { id: String, tools: Option<Vec<String>> },
+    /// Fatia 4 parte B: the owner opens a member's data with the workspace's recovery key.
+    Recover { id: String, recovery_key: String, code: Option<String> },
 }
 
 /// Answers a change with the updated `UserList` — carrying the provisional password after a create
@@ -93,6 +102,11 @@ pub async fn handle_user_change(
                 removed = Some(id);
             }
             UserChange::SetTools { id, tools } => set_user_tools(&mut config, &id, tools)?,
+            UserChange::Recover { id, recovery_key, code } => {
+                let recovered = recover_member(&mut config, &id, &recovery_key, code.as_deref())?;
+                eprintln!("warden-server: the owner recovered '{id}' under the {} policy", recovered.kind.as_str());
+                temp = Some(recovered.temp_password);
+            }
         }
         save_config(&config_path, &config)?;
         if let Some(id) = removed {
@@ -163,7 +177,16 @@ pub async fn open_member_data_at_sign_in(
         let mut config = load_config_from_path(&config_path, false)?;
         let user = config.users.iter().find(|u| u.id == id).ok_or_else(|| anyhow::anyhow!("no user named '{id}'"))?;
         match open_key(user, password)? {
-            Some(key) => (key, None),
+            Some(key) => {
+                // The workspace's recovery policy may have changed since their data last followed it: with
+                // the key open, bring it in step (a weaker policy waits for their yes, `AcceptRecoveryPolicy`).
+                let before = user.key.clone();
+                let outcome = sync_recovery_policy(&mut config, id, &key, false, can_show_code)?;
+                if config.users.iter().find(|u| u.id == id).map(|u| &u.key) != Some(&before) {
+                    save_config(&config_path, &config)?;
+                }
+                (key, outcome.new_code)
+            }
             // A client that can't show the code they'd have to keep leaves the data as it is.
             None if !can_show_code => return Ok(None),
             None => match enable_encryption(&mut config, id, password)? {
@@ -247,6 +270,84 @@ pub async fn handle_regenerate_recovery_code(settings: Option<&dyn SettingsHost>
             }
             user_error(request_id, message, wrong)
         }
+    }
+}
+
+/// Answers the member's yes to the workspace's recovery policy (`AcceptRecoveryPolicy`), after a change
+/// to a weaker one waited for it. Their password opens their key, so it's checked like any other: a
+/// wrong one waits. Entering or leaving `consent` makes a new recovery code, shown once — from a client
+/// that can show it (`can_show_code`).
+pub async fn handle_accept_recovery_policy(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64, password: &str, can_show_code: bool) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let _serialized = lock.lock().await;
+    let config_path = settings.config_path();
+    let result = (|| -> anyhow::Result<Option<String>> {
+        let mut config = load_config_from_path(&config_path, false)?;
+        let found = config.users.iter().find(|u| u.id == user).ok_or_else(|| anyhow::anyhow!("no user named '{user}'"))?;
+        let key = open_key(found, password)?.ok_or_else(|| anyhow::anyhow!("your data isn't encrypted with a key of yours that opens with your password right now"))?;
+        let outcome = sync_recovery_policy(&mut config, user, &key, true, can_show_code)?;
+        anyhow::ensure!(!outcome.pending, "this change makes a new recovery code, which this app can't show — sign in on the web to accept it");
+        save_config(&config_path, &config)?;
+        Ok(outcome.new_code)
+    })();
+    match result {
+        Ok(recovery_code) => ServerMessage::RecoveryPolicyAccepted { request_id, recovery_code },
+        Err(err) => {
+            let message = format!("{err:#}");
+            let wrong = message.contains("password doesn't open");
+            if wrong {
+                tokio::time::sleep(WRONG_KEY_DELAY).await;
+            }
+            user_error(request_id, message, wrong)
+        }
+    }
+}
+
+/// Answers `AckRecoveryNotices`: the member has seen the recoveries the owner made.
+pub async fn handle_ack_recovery_notices(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let _serialized = lock.lock().await;
+    let config_path = settings.config_path();
+    let result = (|| -> anyhow::Result<()> {
+        let mut config = load_config_from_path(&config_path, false)?;
+        ack_recovery_notices(&mut config, user)?;
+        save_config(&config_path, &config)
+    })();
+    match result {
+        Ok(()) => ServerMessage::RecoveryNoticesAcked { request_id },
+        Err(err) => user_error(request_id, format!("{err:#}"), false),
+    }
+}
+
+/// Answers `SetRecoveryPolicy` (the owner's): the pairing key is checked like every people change. A
+/// policy that needs the owner's recovery key makes one if there is none, and hands back its private
+/// half once. Members' data follows at their next sign-in.
+pub async fn handle_set_recovery_policy(
+    settings: Option<&dyn SettingsHost>,
+    lock: &tokio::sync::Mutex<()>,
+    auth_key: &str,
+    request_id: u64,
+    pairing_key: &str,
+    policy: &str,
+    new_key: bool,
+) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let _serialized = lock.lock().await;
+    if !keys_match(pairing_key, auth_key) {
+        tokio::time::sleep(WRONG_KEY_DELAY).await;
+        return user_error(request_id, "wrong pairing key".to_string(), true);
+    }
+    let config_path = settings.config_path();
+    let result = (|| -> anyhow::Result<(RecoveryPolicy, Option<String>)> {
+        let policy = RecoveryPolicy::parse(policy)?;
+        let mut config = load_config_from_path(&config_path, false)?;
+        let secret = set_recovery_policy(&mut config, policy, new_key);
+        save_config(&config_path, &config)?;
+        Ok((policy, secret))
+    })();
+    match result {
+        Ok((policy, secret)) => ServerMessage::RecoveryPolicy { request_id, policy: policy.as_str().to_string(), secret },
+        Err(err) => user_error(request_id, format!("{err:#}"), false),
     }
 }
 

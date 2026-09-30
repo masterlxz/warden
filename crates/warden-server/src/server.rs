@@ -28,8 +28,8 @@ use crate::conversations::{handle_conversation_request, handle_history_request, 
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
 use crate::user_admin::{
-    handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange,
-    UserChange,
+    handle_accept_recovery_policy, handle_ack_recovery_notices, handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_set_recovery_policy,
+    handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange, UserChange,
 };
 use crate::devices::{handle_list_devices, handle_set_device_status};
 use crate::skills::handle_skill_request;
@@ -787,6 +787,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             }
         }
     }
+    // The workspace's recovery policy (parte B), for the member to read as they sign in.
+    let workspace_recovery = settings
+        .as_deref()
+        .and_then(|host| load_config_from_path(&host.config_path(), false).ok())
+        .map(|config| warden_bootstrap::users::workspace_policy(&config))
+        .unwrap_or_default();
     // Who this connection speaks for. A member's device whose member is gone is turned away.
     let (person, mut must_change_password, user) = match (&owner, users_dir.as_deref()) {
         (None, _) => (Person::Root, false, None),
@@ -795,7 +801,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 let space = MemberSpace::new(member, users_dir, &conversations_dir);
                 // Encrypted, and the hub doesn't hold the key (it restarted): they have to sign in.
                 let locked = matches!(warden_bootstrap::member_crypto::dir_state(&users_dir.join(&member.id)), warden_bootstrap::member_crypto::DirState::Locked);
-                (Person::Member(space), member.must_change_password, Some(warden_server_protocol::protocol::UserInfoDto { locked, ..user_info(member, &[]) }))
+                (Person::Member(space), member.must_change_password, Some(warden_server_protocol::protocol::UserInfoDto { locked, recovery_policy: workspace_recovery.as_str().to_string(), ..user_info(member, &[], workspace_recovery) }))
             }
             None => return reject(&mut sink, "this person is no longer part of the workspace").await,
         },
@@ -975,6 +981,33 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = tx.send(handle_regenerate_recovery_code(settings.as_deref(), &settings_lock, &member.id, request_id, &password).await);
                     }
                 },
+                Ok(ClientMessage::AcceptRecoveryPolicy { request_id, password }) => match &member {
+                    None => {
+                        let _ = tx.send(ServerMessage::UserError { request_id, message: "the owner's data has no recovery policy to accept".into(), auth_rejected: false });
+                    }
+                    Some(current) => {
+                        let reply = handle_accept_recovery_policy(settings.as_deref(), &settings_lock, &current.id, request_id, &password, can_show_recovery_code).await;
+                        let _ = tx.send(reply);
+                    }
+                },
+                Ok(ClientMessage::AckRecoveryNotices { request_id }) => match &member {
+                    None => {
+                        let _ = tx.send(ServerMessage::RecoveryNoticesAcked { request_id });
+                    }
+                    Some(current) => {
+                        let _ = tx.send(handle_ack_recovery_notices(settings.as_deref(), &settings_lock, &current.id, request_id).await);
+                    }
+                },
+                Ok(ClientMessage::SetRecoveryPolicy { request_id, pairing_key, policy, new_key }) => {
+                    let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let reply = handle_set_recovery_policy(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, &policy, new_key).await;
+                        let _ = reply_tx.send(reply);
+                    });
+                }
+                Ok(ClientMessage::RecoverMember { request_id, pairing_key, id, recovery_key, code }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Recover { id, recovery_key, code });
+                }
                 Ok(ClientMessage::ListUsers { request_id }) => {
                     let _ = tx.send(handle_list_users(settings.as_deref(), request_id));
                 }

@@ -2258,7 +2258,8 @@ a esposa, "ensinando" o agente ou por uma interface.
 3. **Espaços compartilhados e audiência das notas**: o agente do root falando com outra pessoa só enxerga o que foi
    liberado para ela.
 4. **Criptografia, backup e recuperação**, com as três políticas acima. **Parte A feita na Sessão 114**
-   (criptografia, backup e "privado de verdade"); a parte B (Shamir e recuperação de empresa) falta.
+   (criptografia, backup e "privado de verdade"); **a parte B também na Sessão 114** (recuperação com
+   consentimento e de empresa, sem Shamir literal).
 5. **Convite pelo TruthID.**
 
 ### Como ficou a fatia 1 (Sessão 110)
@@ -2518,6 +2519,59 @@ consentimento") e recuperação de empresa com registro e aviso.
 - **Fora desta parte**: Shamir e recuperação de empresa (parte B); backup agendado; o extrato de gasto; o `shell`
   de um membro (se o root liberar) enxerga o disco cifrado; a chave sobreviver a um reinício do hub sem a senha; o
   nome do arquivo de conversa; o relatório de uso do root perde a linha de um membro trancado; e o celular (acima).
+
+### Como ficou a fatia 4, parte B (Sessão 114)
+
+As duas políticas que faltavam, para o root poder ajudar quem perdeu a senha e o código sem poder ler o que é dos
+outros. A parte A já era a política `private`.
+
+- **Decisões do usuário**: **duas chaves em vez de Shamir literal** (o "2 de 3" do desenho equivale a isto, porque a
+  senha já abre a chave direto; sem dependência nova e sem código de criptografia delicado); a chave privada do
+  root **só com o root**; a política **pode mudar depois**, cada membro é avisado, e uma mudança para uma mais fraca
+  precisa do aceite da pessoa.
+- **As três políticas**, uma por workspace (`recovery_policy` no `config.toml`, `private` por padrão):
+  - `private`: como na parte A;
+  - `consent`: o root **e** o código da pessoa, juntos;
+  - `company`: o root sozinho, com o registro e o aviso.
+  Força: `private` > `consent` > `company`.
+- **A chave do root** (`warden_bootstrap::recovery`): um par secp256k1 (o ECIES que o `warden-truthid` já tem).
+  O hub guarda só a **pública** (`recovery_public_key`), o que basta para preparar os dados de cada membro; a
+  **privada** aparece uma vez, em texto para anotar (base32 em grupos), e é digitada a cada recuperação. Quem só tem
+  o disco do hub não recupera nada. Uma política que precisa da chave, sem chave configurada, vale como `private`.
+- **O que cada política grava** (`KeyWraps`, com `policy`, `by_escrow` e `escrow_id` novos, tudo `serde(default)` e
+  sem rastro em quem está em `private`):
+  - `company`: como o `private`, mais `by_escrow` = a chave do membro selada para a pública do root;
+  - `consent`: o `by_recovery` passa a ser a chave já selada para o root, embrulhada pelo código. O código sozinho
+    deixa de abrir (dá um blob que só a privada decifra) e o root sozinho também.
+- **Aplicar a política a um membro** (`sync_recovery_policy`) só dá com a chave aberta, ou seja, **no login com a
+  senha** ou ao aceitar. Igual ou mais forte aplica sozinho; **mais fraca fica pendente** até a pessoa aceitar
+  (`AcceptRecoveryPolicy`, com a senha, que abre a chave). Entrar ou sair de `consent` (ou trocar a chave do root
+  dentro dele) gera um **código novo**, porque o embrulho do código muda de forma e o antigo não está à mão; ele vem
+  no `RecoveryCode` de sempre, e só para um cliente que mostra o código (`recoveryCodes`). Um membro novo já nasce
+  na política do workspace. `--new-key` troca o `escrow_id` e todos se refazem no próximo login.
+- **Recuperar** (`recover_member`): `company` só com a chave; `consent` com a chave e o código da pessoa (que ela
+  entrega ao root); `private` recusa, e diz que nem o root consegue. Abre a chave, põe uma **senha provisória nova**
+  (mostrada uma vez ao root) que a embrulha, e a pessoa entra com ela e escolhe a própria. Embrulhar pela provisória
+  não expõe nada a mais do que o root acabou de poder fazer. O código de recuperação não muda. Depois de um
+  `ResetPassword` de um membro em `consent`, o código sozinho não recupera: a troca de senha manda pedir ao root.
+- **Registro e aviso**: cada recuperação vira um `RecoveryEvent { at_ms, kind, seen }` em `UserConfig.recoveries`.
+  A pessoa vê no `HelloAck` (`recoveries`) e uma tela de aviso ao entrar, com "Entendi" (`AckRecoveryNotices`); o
+  histórico fica. O root vê a contagem e a data na aba Pessoas e em `warden-server recovery log`.
+- **Protocolo**: `UserInfoDto` ganhou `memberPolicy`, `policyPending`, `recoveryPolicy` (só no `HelloAck`) e
+  `recoveries`; `AcceptRecoveryPolicy` → `RecoveryPolicyAccepted` (com o código novo, se houver),
+  `AckRecoveryNotices` → `RecoveryNoticesAcked`, `SetRecoveryPolicy` → `RecoveryPolicy` (com a chave privada só
+  quando acabou de ser feita), `RecoverMember` (responde `UserList` com a senha provisória) e `recoveryPolicy` no
+  `UserList`.
+- **CLI**: `warden-server recovery policy [private|consent|company] [--new-key]`, `recovery recover <id> --key
+  <chave> [--code <código>]` e `recovery log`.
+- **Web**: na aba Pessoas, a seção "Recuperação dos dados" (`RecoveryPolicySection`: a política, a chave mostrada
+  uma vez, e "Recuperar" por pessoa com a chave e o código); para o membro, `RecoveryNoticeView` (a política que
+  mudou, com o aceite, e as recuperações que o root fez). O desktop só preserva os campos ao salvar.
+- **Honestidade** (está no texto das telas): o registro e o aviso protegem contra o uso descuidado e contra os
+  membros, não contra quem controla a máquina do hub e edita o `config.toml`. `company` entrega ao root o poder de
+  abrir os dados de todos, com registro, e a pessoa aceita isso ao confirmar.
+- **Fora desta parte**: Shamir literal; o celular (não mostra o código nem o aviso, P109); botão de restaurar
+  membro removido na web; aprovação de mais de uma pessoa; e um grupo de membros com chave própria.
 
 ## Tarefas agendadas (P92, desenho da Sessão 108)
 

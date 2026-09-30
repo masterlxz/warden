@@ -91,6 +91,16 @@ enum Command {
         #[arg(long, global = true)]
         config: Option<String>,
     },
+    /// Who besides a person may open their encrypted data (P84): the workspace's recovery policy, and
+    /// the owner's part in it. `private` (the default) means nobody; `consent` means you and the
+    /// person's recovery code together; `company` means you alone, recorded and told to the person.
+    Recovery {
+        #[command(subcommand)]
+        action: RecoveryAction,
+        /// Path to the config file (TOML), as in `serve`.
+        #[arg(long, global = true)]
+        config: Option<String>,
+    },
     /// Copies the members' data (P84) into a folder. It's encrypted with each member's own key, so
     /// you can keep the copy anywhere and still can't read it; with it, a member you removed by
     /// mistake, or a hub you lost, comes back and opens with their password or recovery code.
@@ -142,6 +152,35 @@ enum SpacesAction {
     },
     /// Stops sharing a folder. The folder and its notes stay in your vault.
     Remove { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum RecoveryAction {
+    /// Shows the workspace's recovery policy, or sets it (`private`, `consent` or `company`). A policy
+    /// that needs your recovery key makes one the first time and shows it **once**: write it down, it is
+    /// never kept on the hub. Each member's data follows at their next sign-in, and a change to a weaker
+    /// policy waits for their yes.
+    Policy {
+        /// `private`, `consent` or `company`. Left out, it only shows the current one.
+        policy: Option<String>,
+        /// Replaces your recovery key with a new one, shown once.
+        #[arg(long)]
+        new_key: bool,
+    },
+    /// Opens a member's data with your recovery key and gives them a new provisional password (shown
+    /// once). Under `consent` their recovery code is needed too; under `company` it isn't. It is recorded,
+    /// and they are told at their next sign-in.
+    Recover {
+        id: String,
+        /// Your recovery key, as it was shown when it was made.
+        #[arg(long)]
+        key: String,
+        /// The member's recovery code (`consent` only).
+        #[arg(long)]
+        code: Option<String>,
+    },
+    /// The recoveries made so far, per member.
+    Log,
 }
 
 #[derive(Subcommand, Debug)]
@@ -725,6 +764,56 @@ fn run_spaces_command(action: SpacesAction, config: Option<String>) -> anyhow::R
     Ok(())
 }
 
+fn run_recovery_command(action: RecoveryAction, config: Option<String>) -> anyhow::Result<()> {
+    use warden_bootstrap::recovery::RecoveryPolicy;
+    use warden_bootstrap::users::{recover_member, set_recovery_policy, workspace_policy};
+    let config_path = config.as_deref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let mut file = load_config_from_path(&config_path, config.is_some())?;
+    match action {
+        RecoveryAction::Policy { policy: None, new_key: false } => {
+            let now = workspace_policy(&file);
+            println!("recovery policy: {}{}", now.as_str(), if file.recovery_public_key.is_some() { " (a recovery key is set)" } else { "" });
+            println!("private: nobody recovers a member's data · consent: you and the member's recovery code together · company: you alone, recorded and told to them");
+        }
+        RecoveryAction::Policy { policy, new_key } => {
+            let policy = match policy {
+                Some(text) => RecoveryPolicy::parse(&text)?,
+                None => file.recovery_policy,
+            };
+            let secret = set_recovery_policy(&mut file, policy, new_key);
+            save_config(&config_path, &file)?;
+            println!("recovery policy: {}", policy.as_str());
+            if let Some(secret) = secret {
+                println!("Your recovery key (shown only now — it is never kept on the hub):");
+                println!("  {secret}");
+                println!("Write it down somewhere safe, apart from this machine. Without it, `recovery recover` can't open anyone's data.");
+            }
+            if !policy.is_private() {
+                println!("Each member's data follows at their next sign-in; a change to a weaker policy waits for their yes.");
+            }
+        }
+        RecoveryAction::Recover { id, key, code } => {
+            let recovered = recover_member(&mut file, &id, &key, code.as_deref())?;
+            save_config(&config_path, &file)?;
+            println!("'{id}' recovered under the {} policy. Provisional password (shown only now): {}", recovered.kind.as_str(), recovered.temp_password);
+            println!("They sign in with it and pick their own; their data is intact. It's recorded, and they're told at their next sign-in.");
+        }
+        RecoveryAction::Log => {
+            let mut any = false;
+            for user in &file.users {
+                for event in &user.recoveries {
+                    any = true;
+                    println!("{}\t{}\t{}\t{}", user.id, event.at_ms, event.kind.as_str(), if event.seen { "seen" } else { "not seen yet" });
+                }
+            }
+            if !any {
+                println!("no recoveries yet");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Where the hub keeps the members' data, from the OS config directory as `serve` does.
 fn member_data_dirs() -> anyhow::Result<(PathBuf, PathBuf)> {
     let users_dir = warden_bootstrap::users::default_users_dir().context("could not determine the OS config directory")?;
@@ -1024,6 +1113,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Nodes { action, config } => run_nodes_command(action, config),
         Command::Users { action, config } => run_users_command(action, config),
         Command::Spaces { action, config } => run_spaces_command(action, config),
+        Command::Recovery { action, config } => run_recovery_command(action, config),
         Command::Backup { out, user, config } => run_backup_command(&out, user.as_deref(), config),
         Command::Restore { from, user, force, config } => run_restore_command(&from, user.as_deref(), force, config),
         Command::GenKey => {

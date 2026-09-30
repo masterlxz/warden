@@ -654,6 +654,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         users: existing.users,
         // Removed members keep their wrapped key here (P84 fatia 4): dropping it would lose their data.
         removed_users: existing.removed_users,
+        // The workspace's recovery policy and the owner's public key (parte B) are set with `warden-server recovery`.
+        recovery_policy: existing.recovery_policy,
+        recovery_public_key: existing.recovery_public_key,
         spaces: existing.spaces,
     };
 

@@ -208,6 +208,17 @@ warden-server spaces remove casa   # the folder and its notes stay in your vault
   from sign-in until it restarts, and a member signs in with the password once after that. The web says so, and
   the honest limit stays: whoever controls the hub's machine can see what an agent sees while it works.
 
+- **who can help when they lose both**: you choose, for the whole workspace, `private` (nobody, the default),
+  `consent` (you and *their* recovery code together — neither opens it alone) or `company` (you alone, with your
+  recovery key; each use is recorded and they're told when they next sign in). The key is shown once and typed in
+  for each recovery: the hub only keeps its public half. A change to a weaker policy waits for each person's yes.
+
+```bash
+warden-server recovery policy consent                  # makes your recovery key the first time and shows it once
+warden-server recovery recover ana --key <key> --code <ana's code>   # consent needs both; company only --key
+warden-server recovery log
+```
+
 ```bash
 warden-server backup --out ~/warden-backup [--user ana]   # encrypted; unreadable without each member's password or code
 warden-server restore ~/warden-backup [--user ana]        # also brings back a member you removed by mistake

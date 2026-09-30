@@ -710,3 +710,124 @@ async fn a_member_asks_for_a_new_recovery_code_with_her_password() {
     owner.send(&ClientMessage::RegenerateRecoveryCode { request_id: 7, password: "x".into() }).await.unwrap();
     assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { .. }));
 }
+
+// ---- fatia 4, parte B: recovery policies -------------------------------------------------------
+
+/// The owner sets the workspace's recovery policy; the private half of their recovery key comes back
+/// only when one was made.
+async fn set_policy(owner: &mut ServerConnection, policy: &str) -> Option<String> {
+    owner.send(&ClientMessage::SetRecoveryPolicy { request_id: 50, pairing_key: KEY.into(), policy: policy.into(), new_key: false }).await.unwrap();
+    match reply(owner).await {
+        ServerMessage::RecoveryPolicy { policy: set, secret, .. } => {
+            assert_eq!(set, policy);
+            secret
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The owner tries to recover `id` with `key` (and the person's `code`).
+async fn recover(owner: &mut ServerConnection, id: &str, key: &str, code: Option<&str>) -> ServerMessage {
+    owner.send(&ClientMessage::RecoverMember { request_id: 60, pairing_key: KEY.into(), id: id.into(), recovery_key: key.into(), code: code.map(String::from) }).await.unwrap();
+    reply(owner).await
+}
+
+/// The provisional password a recovery handed the owner.
+fn recovered_password(reply: ServerMessage) -> String {
+    match reply {
+        ServerMessage::UserList { temp_password: Some(temp), users, .. } => {
+            assert_eq!(users[0].recoveries.len(), 1, "it's recorded");
+            temp
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn under_company_the_owner_recovers_alone_and_the_person_is_told() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let owner_key = set_policy(&mut owner, "company").await.expect("the first non-private policy makes the owner's key");
+    let (mut ana, token, _) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+
+    // A wrong key opens nothing, and nothing is recorded.
+    assert!(matches!(recover(&mut owner, "ana", &warden_bootstrap::recovery::generate_escrow_keypair().secret_text, None).await, ServerMessage::UserError { .. }));
+    let temp = recovered_password(recover(&mut owner, "ana", &owner_key, None).await);
+
+    // She signs in with the provisional password: told, and her data is intact once she picks her own.
+    let (mut ana, _, user) = member(&hub, &temp, Some(token.clone())).await.unwrap();
+    let user = user.unwrap();
+    assert!(user.must_change_password && user.recovery_policy == "company" && user.member_policy == "company", "{user:?}");
+    assert_eq!((user.recoveries.len(), user.recoveries[0].kind.as_str(), user.recoveries[0].seen), (1, "company", false));
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: temp.clone(), new_password: "anas-new-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { recovery_code: None, .. }));
+    let said = tool_said(chat(&mut ana, "READ notes/segredo.md", "conversa").await);
+    assert!(said.contains("written"), "{said}");
+    ana.send(&ClientMessage::AckRecoveryNotices { request_id: 2 }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::RecoveryNoticesAcked { request_id: 2 }));
+    let (_, _, user) = member(&hub, "anas-new-pass", Some(token)).await.unwrap();
+    assert!(user.unwrap().recoveries[0].seen, "once seen, it stays as history");
+}
+
+#[tokio::test]
+async fn under_consent_the_owner_needs_the_persons_code_as_well_as_the_key() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let owner_key = set_policy(&mut owner, "consent").await.unwrap();
+    let (mut ana, token, code) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+
+    for (key, given) in [(owner_key.as_str(), None), (owner_key.as_str(), Some(warden_bootstrap::member_crypto::generate_recovery_code())), (&*warden_bootstrap::recovery::generate_escrow_keypair().secret_text, Some(code.clone()))] {
+        assert!(matches!(recover(&mut owner, "ana", key, given.as_deref()).await, ServerMessage::UserError { .. }), "one half alone opens nothing");
+    }
+    let temp = recovered_password(recover(&mut owner, "ana", &owner_key, Some(&code)).await);
+
+    let (mut ana, _, user) = member(&hub, &temp, Some(token)).await.unwrap();
+    assert!(user.unwrap().must_change_password);
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: temp, new_password: "anas-new-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+    let said = tool_said(chat(&mut ana, "READ notes/segredo.md", "conversa").await);
+    assert!(said.contains("written"), "{said}");
+
+    // The owner moves the workspace back to private: stronger, so it applies at her next sign-in on its
+    // own — and leaving consent makes a new code, handed over right after the sign-in.
+    set_policy(&mut owner, "private").await;
+    let (mut again, _, user) = member(&hub, "anas-new-pass", None).await.unwrap();
+    assert_eq!(user.unwrap().member_policy, "private", "the HelloAck already describes her data as the sign-in left it");
+    match reply(&mut again).await {
+        ServerMessage::RecoveryCode { request_id: 0, code } => assert_eq!(code.len(), 39),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(recover(&mut owner, "ana", &owner_key, Some(&code)).await, ServerMessage::UserError { message, .. } if message.contains("private")), "and now nobody can");
+}
+
+#[tokio::test]
+async fn a_weaker_policy_waits_for_the_persons_yes_and_only_then_lets_the_owner_in() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, token, _) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+
+    // The workspace goes to company after her data was made private: she's told, and nothing changes yet.
+    let owner_key = set_policy(&mut owner, "company").await.unwrap();
+    let (mut ana, _, user) = member(&hub, "anas-own-pass", Some(token.clone())).await.unwrap();
+    let user = user.unwrap();
+    assert_eq!((user.recovery_policy.as_str(), user.member_policy.as_str(), user.policy_pending), ("company", "private", true), "{user:?}");
+    assert!(matches!(recover(&mut owner, "ana", &owner_key, None).await, ServerMessage::UserError { message, .. } if message.contains("private")), "her data is still private");
+
+    // A wrong password can't say yes for her; hers does.
+    ana.send(&ClientMessage::AcceptRecoveryPolicy { request_id: 1, password: "not-her-password".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    ana.send(&ClientMessage::AcceptRecoveryPolicy { request_id: 2, password: "anas-own-pass".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::RecoveryPolicyAccepted { request_id: 2, recovery_code: None }), "private to company needs no new code");
+    let temp = recovered_password(recover(&mut owner, "ana", &owner_key, None).await);
+    assert_ne!(temp, "anas-own-pass");
+    let _ = tool_said(chat(&mut ana, "READ notes/segredo.md", "conversa").await); // her open connection still works
+
+    // Company to consent is weaker still... no: consent is stronger than company, so it applies on its
+    // own at the next sign-in, with a new code.
+    set_policy(&mut owner, "consent").await;
+    let (mut again, _, _) = member(&hub, &temp, None).await.unwrap();
+    assert!(matches!(reply(&mut again).await, ServerMessage::RecoveryCode { request_id: 0, .. }), "entering consent hands out a new code");
+}

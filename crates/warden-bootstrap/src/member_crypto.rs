@@ -45,21 +45,30 @@ fn derive_kek(secret: &[u8], salt: &[u8]) -> anyhow::Result<MemberKey> {
     Ok(kek)
 }
 
-/// `key` sealed by a key derived from `secret`, as base64 text (`salt` then the sealed key).
-fn wrap(key: &MemberKey, secret: &[u8]) -> anyhow::Result<String> {
+/// `data` sealed by a key derived from `secret`, as base64 text (`salt` then the sealed bytes).
+fn wrap_bytes(data: &[u8], secret: &[u8]) -> anyhow::Result<String> {
     let mut salt = [0u8; SALT_LEN];
     rand::rngs::OsRng.fill_bytes(&mut salt);
     let kek = derive_kek(secret, &salt)?;
-    let sealed = VaultCipher::new(&kek).seal(&key[..]);
+    let sealed = VaultCipher::new(&kek).seal(data);
     Ok(BASE64.encode([&salt[..], &sealed].concat()))
 }
 
-fn unwrap(wrapped: &str, secret: &[u8]) -> anyhow::Result<MemberKey> {
+fn unwrap_bytes(wrapped: &str, secret: &[u8]) -> anyhow::Result<Zeroizing<Vec<u8>>> {
     let bytes = BASE64.decode(wrapped.trim()).context("the stored key is damaged")?;
     anyhow::ensure!(bytes.len() > SALT_LEN, "the stored key is damaged");
     let (salt, sealed) = bytes.split_at(SALT_LEN);
     let kek = derive_kek(secret, salt)?;
-    let opened = Zeroizing::new(VaultCipher::new(&kek).open(sealed)?);
+    Ok(Zeroizing::new(VaultCipher::new(&kek).open(sealed)?))
+}
+
+/// `key` sealed by a key derived from `secret`.
+fn wrap(key: &MemberKey, secret: &[u8]) -> anyhow::Result<String> {
+    wrap_bytes(&key[..], secret)
+}
+
+fn unwrap(wrapped: &str, secret: &[u8]) -> anyhow::Result<MemberKey> {
+    let opened = unwrap_bytes(wrapped, secret)?;
     let mut key = Zeroizing::new([0u8; 32]);
     anyhow::ensure!(opened.len() == key.len(), "the stored key is damaged");
     key.copy_from_slice(&opened);
@@ -99,6 +108,16 @@ pub fn wrap_with_code(key: &MemberKey, code: &str) -> anyhow::Result<String> {
 /// Fails for a wrong code.
 pub fn unwrap_with_code(wrapped: &str, code: &str) -> anyhow::Result<MemberKey> {
     unwrap(wrapped, &code_bytes(code)?).map_err(|_| anyhow::anyhow!("that recovery code doesn't open this member's data"))
+}
+
+/// Some bytes (in the "consent" policy, the key already sealed to the owner) sealed by the code.
+pub fn wrap_blob_with_code(blob: &[u8], code: &str) -> anyhow::Result<String> {
+    wrap_bytes(blob, &code_bytes(code)?)
+}
+
+/// Fails for a wrong code.
+pub fn unwrap_blob_with_code(wrapped: &str, code: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+    unwrap_bytes(wrapped, &code_bytes(code)?).map_err(|_| anyhow::anyhow!("that recovery code doesn't open this member's data"))
 }
 
 // ---- keys in use -------------------------------------------------------------------------------

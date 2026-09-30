@@ -17,7 +17,8 @@ use warden_bootstrap::{load_conversation, save_conversation, AgentConfig, Conver
 use warden_core::memory::{Mount, Vault};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
-use warden_server_protocol::protocol::{AgentSettingsDto, UserInfoDto};
+use warden_bootstrap::recovery::RecoveryPolicy;
+use warden_server_protocol::protocol::{AgentSettingsDto, RecoveryEventDto, UserInfoDto};
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
 use crate::conversations::is_valid_id;
@@ -36,7 +37,7 @@ impl MemberSpace {
     /// The same member with their vault opened again from the folder's current state — after their
     /// data key was created or opened (a connection's first vault was plain, or locked).
     pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
-        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false };
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new() };
         Self::new(&user, users_dir, conversations_root)
     }
 
@@ -88,8 +89,14 @@ pub enum Person {
 }
 
 /// `agents`: the config's, for the member's own agents' ids.
-pub fn user_info(user: &UserConfig, agents: &[AgentConfig]) -> UserInfoDto {
+pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: RecoveryPolicy) -> UserInfoDto {
+    let member_policy = user.key.as_ref().map(|wraps| wraps.policy);
     UserInfoDto {
+        member_policy: member_policy.map(|p| p.as_str().to_string()).unwrap_or_default(),
+        // Their data isn't following the workspace's policy yet (a weaker one waits for their yes).
+        policy_pending: member_policy.is_some_and(|p| p != workspace_policy),
+        recovery_policy: String::new(),
+        recoveries: user.recoveries.iter().map(|e| RecoveryEventDto { at_ms: e.at_ms, kind: e.kind.as_str().to_string(), seen: e.seen }).collect(),
         id: user.id.clone(),
         name: user.name.clone(),
         role: match user.role {
@@ -153,6 +160,8 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::ResetPassword { request_id, .. }
         | ClientMessage::RemoveUser { request_id, .. }
         | ClientMessage::SetUserTools { request_id, .. }
+        | ClientMessage::SetRecoveryPolicy { request_id, .. }
+        | ClientMessage::RecoverMember { request_id, .. }
         | ClientMessage::SaveSpace { request_id, .. }
         | ClientMessage::DeleteSpace { request_id, .. } => {
             ServerMessage::UserError { request_id: *request_id, message: message_text, auth_rejected: true }
@@ -190,7 +199,10 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
             ServerMessage::ApiKeyError { request_id: *request_id, message: text, auth_rejected: true }
         }
-        ClientMessage::ListSpaces { request_id } | ClientMessage::RegenerateRecoveryCode { request_id, .. } => {
+        ClientMessage::ListSpaces { request_id }
+        | ClientMessage::RegenerateRecoveryCode { request_id, .. }
+        | ClientMessage::AcceptRecoveryPolicy { request_id, .. }
+        | ClientMessage::AckRecoveryNotices { request_id } => {
             ServerMessage::UserError { request_id: *request_id, message: text, auth_rejected: true }
         }
         other => return member_refusal(other),
