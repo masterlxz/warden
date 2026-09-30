@@ -661,6 +661,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // Where a member's TruthID is looked up (fatia 5) is set in the config file.
         truthid_network: existing.truthid_network,
         truthid_rpc_url: existing.truthid_rpc_url,
+        truthid_public_url: existing.truthid_public_url,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

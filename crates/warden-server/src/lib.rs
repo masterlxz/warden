@@ -42,6 +42,7 @@ pub mod skills;
 pub mod sync;
 pub mod task_admin;
 pub mod tls;
+pub mod truthid_login;
 pub mod usage;
 pub mod user_admin;
 pub mod vault;

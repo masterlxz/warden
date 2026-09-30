@@ -976,3 +976,207 @@ async fn the_owner_brings_back_a_removed_member_whose_encrypted_data_was_kept() 
     again.send(&ClientMessage::RestoreUser { request_id: 4, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
     assert!(matches!(reply(&mut again).await, ServerMessage::UserError { auth_rejected: true, .. }));
 }
+
+// ---- P113: signing in with a TruthID ----
+
+/// A JSON-RPC endpoint that answers `getDevice(address)` from a table of `(address, identity, revoked)`;
+/// an address that isn't in it doesn't exist. Standing in for the `DeviceRegistry` on Base.
+async fn fake_device_registry(devices: Vec<(String, u64, bool)>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let devices = Arc::new(devices);
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let devices = devices.clone();
+            tokio::spawn(async move {
+                let mut request = vec![0u8; 8192];
+                let read = socket.read(&mut request).await.unwrap_or(0);
+                let text = String::from_utf8_lossy(&request[..read]).to_string();
+                let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_default();
+                let data = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v["params"][0]["data"].as_str().map(str::to_string)).unwrap_or_default();
+                let asked = format!("0x{}", &data[data.len().saturating_sub(40)..]).to_lowercase();
+                let (identity, revoked, exists) = devices.iter().find(|(a, _, _)| a.to_lowercase() == asked).map(|(_, id, revoked)| (*id, *revoked, true)).unwrap_or((0, false, false));
+                let mut out = word(32).to_vec();
+                out.extend_from_slice(&word(identity));
+                out.extend_from_slice(&[0u8; 32]);
+                out.extend_from_slice(&word(192));
+                out.extend_from_slice(&word(1));
+                out.extend_from_slice(&word(revoked as u64));
+                out.extend_from_slice(&word(exists as u64));
+                out.extend_from_slice(&word(0));
+                let result = format!("0x{}", out.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                let reply = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{result}"}}"#);
+                let response = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len());
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    url
+}
+
+fn device_key(seed: u8) -> k256::ecdsa::SigningKey {
+    k256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap()
+}
+
+fn device_address(key: &k256::ecdsa::SigningKey) -> String {
+    warden_truthid::login::address_of(key.verifying_key())
+}
+
+/// The hub knows its public https address and where the registry is, and Ana's TruthID is identity 42.
+fn set_up_truthid(hub: &Hub, rpc_url: &str, public_url: Option<&str>) {
+    let path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&path, false).unwrap();
+    config.truthid_rpc_url = Some(rpc_url.to_string());
+    config.truthid_public_url = public_url.map(String::from);
+    config.users[0].truthid = Some(warden_bootstrap::users::TruthIdLink { username: "ana.silva".into(), identity_id: 42, linked_at: 1 });
+    save_config(&path, &config).unwrap();
+}
+
+/// A browser asking to sign in with a TruthID: what it gets back, frame by frame.
+struct Browser {
+    ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+}
+
+impl Browser {
+    async fn open(hub: &Hub, device: &str) -> Self {
+        use futures_util::SinkExt;
+        let (mut ws, _) = tokio_tungstenite::connect_async(&hub.url).await.unwrap();
+        let hello = json!({ "type": "hello", "deviceId": device, "deviceName": "A browser", "authKey": "", "truthidLogin": true, "recoveryCodes": true });
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(hello.to_string().into())).await.unwrap();
+        Self { ws }
+    }
+
+    async fn next(&mut self) -> serde_json::Value {
+        use futures_util::StreamExt;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), self.ws.next()).await.expect("no frame").expect("closed").unwrap() {
+                tokio_tungstenite::tungstenite::Message::Text(text) => return serde_json::from_str(&text).unwrap(),
+                tokio_tungstenite::tungstenite::Message::Close(_) => return json!({ "type": "closed" }),
+                _ => continue,
+            }
+        }
+    }
+
+    /// The challenge the hub put in the QR, and the callback it named.
+    async fn challenge(&mut self) -> (warden_truthid::login::AuthChallenge, String) {
+        let frame = self.next().await;
+        assert_eq!(frame["type"], "truthIdChallenge", "{frame}");
+        let payload: serde_json::Value = serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["action"], "truthid-auth");
+        (serde_json::from_value(payload["challenge"].clone()).unwrap(), payload["callbackUrl"].as_str().unwrap().to_string())
+    }
+}
+
+async fn phone_posts(hub: &Hub, answer: &warden_truthid::login::AuthResponse) -> u16 {
+    http(&hub.url, "POST", "/auth/truthid", "", Some(&serde_json::to_string(answer).unwrap())).await.0
+}
+
+#[tokio::test]
+async fn a_member_signs_in_with_the_truthid_app_and_nobody_else_does() {
+    let hub = spin_up().await;
+    let phone = device_key(7);
+    let revoked = device_key(8);
+    let others = device_key(9);
+    let stranger = device_key(10);
+    let registry = fake_device_registry(vec![
+        (device_address(&phone), 42, false),
+        (device_address(&revoked), 42, true),
+        (device_address(&others), 99, false), // a real TruthID that nobody linked here
+    ])
+    .await;
+    set_up_truthid(&hub, &registry, Some("https://hub.test/"));
+
+    // The right phone: the browser gets the QR, then is let in as Ana, paired, with no password.
+    let mut browser = Browser::open(&hub, "browser-1").await;
+    let (challenge, callback) = browser.challenge().await;
+    assert_eq!((challenge.origin.as_str(), callback.as_str()), ("hub.test", "https://hub.test/auth/truthid"));
+    assert_eq!(challenge.kind, "challenge");
+
+    // Answers that aren't for a challenge nobody waits on, or are garbled, change nothing.
+    let mut wrong_nonce = warden_truthid::login::sign_challenge(&phone, &challenge);
+    wrong_nonce.nonce = "not-a-challenge".into();
+    assert_eq!(phone_posts(&hub, &wrong_nonce).await, 400);
+    assert_eq!(http(&hub.url, "POST", "/auth/truthid", "", Some("not json")).await.0, 400);
+    assert_eq!(http(&hub.url, "GET", "/auth/truthid", "", None).await.0, 405);
+
+    let answer = warden_truthid::login::sign_challenge(&phone, &challenge);
+    assert_eq!(phone_posts(&hub, &answer).await, 200);
+    let ack = browser.next().await;
+    assert_eq!(ack["type"], "helloAck", "{ack}");
+    assert_eq!((ack["user"]["id"].as_str(), ack["user"]["mustChangePassword"].as_bool().unwrap_or(false)), (Some("ana"), true), "she is still on her provisional password: {ack}");
+    assert!(ack["deviceToken"].as_str().is_some_and(|t| !t.is_empty()), "a token to come back with: {ack}");
+    // The same answer can't be used twice.
+    assert_eq!(phone_posts(&hub, &answer).await, 400);
+
+    // A device the registry revoked, one that isn't registered, one of an identity nobody linked, a
+    // signature by another device than the one named, and a phone that declined: each is turned away.
+    let mut cases: Vec<(&str, warden_truthid::login::AuthResponse)> = Vec::new();
+    for (name, key) in [("revoked", &revoked), ("unregistered", &stranger), ("unlinked identity", &others)] {
+        let mut b = Browser::open(&hub, &format!("browser-{name}")).await;
+        let (c, _) = b.challenge().await;
+        let answer = warden_truthid::login::sign_challenge(key, &c);
+        assert_eq!(phone_posts(&hub, &answer).await, 401, "{name}");
+        let frame = b.next().await;
+        assert_eq!(frame["type"], "authError", "{name}: {frame}");
+        cases.push((name, answer));
+    }
+    let mut b = Browser::open(&hub, "browser-impostor").await;
+    let (c, _) = b.challenge().await;
+    let mut impostor = warden_truthid::login::sign_challenge(&stranger, &c);
+    impostor.device_address = device_address(&phone); // claims to be the registered phone
+    assert_eq!(phone_posts(&hub, &impostor).await, 401);
+    assert_eq!(b.next().await["type"], "authError");
+    let mut b = Browser::open(&hub, "browser-declined").await;
+    let (c, _) = b.challenge().await;
+    let declined = warden_truthid::login::AuthResponse { approved: false, nonce: c.nonce.clone(), signature: String::new(), device_address: String::new() };
+    assert_eq!(phone_posts(&hub, &declined).await, 401);
+    assert_eq!(b.next().await["type"], "authError");
+    assert_eq!(cases.len(), 3);
+
+    // A browser that goes away leaves nothing waiting.
+    let mut gone = Browser::open(&hub, "browser-gone").await;
+    let (c, _) = gone.challenge().await;
+    drop(gone);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(phone_posts(&hub, &warden_truthid::login::sign_challenge(&phone, &c)).await, 400, "nobody is waiting for it any more");
+}
+
+#[tokio::test]
+async fn signing_in_with_a_truthid_needs_the_hub_to_know_its_https_address() {
+    let hub = spin_up().await;
+    let registry = fake_device_registry(Vec::new()).await;
+    for public in [None, Some("http://hub.test"), Some("hub.test")] {
+        set_up_truthid(&hub, &registry, public);
+        let mut browser = Browser::open(&hub, "browser-x").await;
+        let frame = browser.next().await;
+        assert_eq!(frame["type"], "authError", "{public:?}: {frame}");
+        assert!(frame["reason"].as_str().unwrap().contains("truthid_public_url"), "{frame}");
+    }
+}
+
+#[tokio::test]
+async fn a_truthid_session_opens_no_data_key_so_encrypted_data_waits_for_the_password() {
+    let hub = spin_up().await;
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "WRITE notes/segredo.md", "conversa").await);
+    // The hub "restarts": it holds nobody's key.
+    forget_anas_key(&hub);
+    let phone = device_key(7);
+    let registry = fake_device_registry(vec![(device_address(&phone), 42, false)]).await;
+    set_up_truthid(&hub, &registry, Some("https://hub.test"));
+
+    let mut browser = Browser::open(&hub, "browser-2").await;
+    let (challenge, _) = browser.challenge().await;
+    assert_eq!(phone_posts(&hub, &warden_truthid::login::sign_challenge(&phone, &challenge)).await, 200);
+    let ack = browser.next().await;
+    assert_eq!(ack["type"], "helloAck", "{ack}");
+    assert_eq!((ack["user"]["encrypted"].as_bool(), ack["user"]["locked"].as_bool()), (Some(true), Some(true)), "in, but her data is shut: {ack}");
+
+    // Her password opens it, as it does for anyone coming back after a restart.
+    let (mut again, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
+    assert!(!user.unwrap().locked);
+    let said = tool_said(chat(&mut again, "READ notes/segredo.md", "conversa3").await);
+    assert!(said.contains("written"), "{said}");
+}

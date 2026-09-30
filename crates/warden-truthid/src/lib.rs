@@ -11,6 +11,7 @@
 pub mod crypto;
 pub mod identity;
 pub mod lan;
+pub mod login;
 pub mod protocol;
 pub mod requester;
 

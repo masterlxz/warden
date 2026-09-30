@@ -25,6 +25,7 @@ use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, A
 use crate::approval::WsApprover;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
+use crate::truthid_login::{self, TruthIdLogins};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
 use crate::user_admin::{
@@ -290,6 +291,7 @@ impl Server {
             node_tools: None,
             users_dir: self.users_dir.map(Arc::new),
             space_vaults: SpaceVaults::default(),
+            truthid_logins: Arc::new(TruthIdLogins::default()),
         };
         // P84: conversations are a person's, not a device's — every device's move to the root's,
         // once, before any connection can read them.
@@ -378,6 +380,8 @@ struct ConnectionContext {
     users_dir: Option<Arc<PathBuf>>,
     /// The owner's shared folders' vaults (P84 fatia 3), shared by every connection and the API.
     space_vaults: SpaceVaults,
+    /// The TruthID logins waiting for a phone (P84 fatia 5, P113).
+    truthid_logins: Arc<TruthIdLogins>,
 }
 
 impl ConnectionContext {
@@ -621,6 +625,10 @@ async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, secure: 
         let ws = tokio_tungstenite::accept_async(Rewind::new(head.raw, stream)).await?;
         return handle_connection(ws, peer, secure, ctx).await;
     }
+    if head.path.split('?').next() == Some(truthid_login::CALLBACK_PATH) {
+        truthid_login::handle_callback(&mut stream, &head, &ctx.truthid_logins, ctx.settings.as_deref()).await?;
+        return Ok(());
+    }
     if head.path.starts_with(openai_api::API_PREFIX) {
         openai_api::serve(&mut stream, &head, &ctx.api()).await?;
         return Ok(());
@@ -685,6 +693,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         node_tools,
         users_dir,
         space_vaults,
+        truthid_logins,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -708,7 +717,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             username,
             password,
             recovery_codes,
-        }) => (device_id, device_name, provided, device_token, tools, node, username.zip(password), recovery_codes),
+            truthid_login,
+        }) => (device_id, device_name, provided, device_token, tools, node, username.zip(password), recovery_codes, truthid_login),
         // Fase 9.1 (redefined): an unauthenticated presence probe from a LAN-discovery sweep —
         // answered and closed right here, before any of the Hello/auth-key/device-registry
         // machinery below runs. Never becomes a "connected device".
@@ -726,7 +736,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             return Ok(());
         }
     };
-    let (device_id, device_name, provided_key, device_token, tools, node_offer, credentials, can_show_recovery_code) = hello;
+    let (device_id, device_name, provided_key, device_token, tools, node_offer, credentials, can_show_recovery_code, truthid_login) = hello;
 
     // P36: the shared key only pairs; a paired device authenticates with its own token. The
     // pairing status itself (Pending/Approved) stays silent here — a `Pending` device still gets a
@@ -737,7 +747,24 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         Some(host) => load_config_from_path(&host.config_path(), false).map(|c| c.users).unwrap_or_default(),
         None => Vec::new(),
     };
-    let proof = match &credentials {
+    // P113: a Hello that brings nothing but a TruthID to sign in with — no key, no password, no token to
+    // come back with — waits here for the member's phone to approve.
+    let truthid_member = if truthid_login && credentials.is_none() && !pairing_key_ok && device_token.is_none() {
+        if users_dir.is_none() {
+            return reject(&mut sink, "this hub doesn't host other people — sign in with the pairing key").await;
+        }
+        match wait_for_truthid(&mut sink, &mut stream, settings.as_deref(), &truthid_logins).await {
+            Ok(id) => Some(id),
+            Err(TruthIdWait::Refused(reason)) => return reject(&mut sink, &reason).await,
+            Err(TruthIdWait::Gone) => return Ok(()),
+        }
+    } else {
+        None
+    };
+    let proof = if let Some(id) = truthid_member {
+        PairingProof::Member(id)
+    } else {
+        match &credentials {
         Some((username, password)) => match warden_bootstrap::users::authenticate_user(&members, username, password) {
             Some(user) if users_dir.is_some() => PairingProof::Member(user.id.clone()),
             Some(_) => return reject(&mut sink, "this hub doesn't host other people — sign in with the pairing key").await,
@@ -751,6 +778,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         },
         None if pairing_key_ok => PairingProof::PairingKey,
         None => PairingProof::Nothing,
+        }
     };
     // Only a sign-in with the password (not a token that came with a stale one) can open a
     // member's data key below.
@@ -1520,6 +1548,64 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
 }
 
 /// Turns a `Hello` down: `AuthError` with `reason`, then a policy close.
+/// Why a TruthID sign-in didn't come through.
+enum TruthIdWait {
+    /// Say this to the client and close.
+    Refused(String),
+    /// The client hung up while waiting; nothing to say.
+    Gone,
+}
+
+/// Makes a challenge, hands the client its QR (`TruthIdChallenge`) and waits until the phone's answer is
+/// checked (`truthid_login::handle_callback`), for as long as the answer window lasts. Returns the username
+/// of the member it proved.
+async fn wait_for_truthid<S: Transport>(
+    sink: &mut WsSink<S>,
+    stream: &mut futures_util::stream::SplitStream<WebSocketStream<S>>,
+    settings: Option<&dyn SettingsHost>,
+    logins: &TruthIdLogins,
+) -> Result<String, TruthIdWait> {
+    let public_url = settings
+        .and_then(|host| load_config_from_path(&host.config_path(), false).ok())
+        .and_then(|config| config.truthid_public_url)
+        .map(|url| url.trim_end_matches('/').to_string());
+    let Some((public_url, origin)) = public_url.as_deref().and_then(|url| truthid_login::origin_of(url).map(|origin| (url.to_string(), origin.to_string()))) else {
+        return Err(TruthIdWait::Refused("signing in with a TruthID isn't set up on this hub: its owner has to set truthid_public_url to its https:// address".into()));
+    };
+    let now = truthid_login::now_ms();
+    let challenge = warden_truthid::login::AuthChallenge::new(&origin, now);
+    let nonce = challenge.nonce.clone();
+    let payload = challenge.qr_payload(&format!("{public_url}{}", truthid_login::CALLBACK_PATH));
+    let answer = logins.begin(challenge).map_err(|reason| TruthIdWait::Refused(reason.into()))?;
+    let sent = send(sink, &ServerMessage::TruthIdChallenge { payload, expires_at_ms: now + truthid_login::QR_VALID_MS }).await;
+    if sent.is_err() {
+        logins.forget(&nonce);
+        return Err(TruthIdWait::Gone);
+    }
+    let waited = tokio::time::timeout(Duration::from_millis(truthid_login::ANSWER_WINDOW_MS), async {
+        tokio::pin!(answer);
+        loop {
+            tokio::select! {
+                member = &mut answer => return Some(member),
+                frame = stream.next() => match frame {
+                    // The browser closed the page, or sent something that isn't for this stage.
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return None,
+                    Some(Ok(_)) => continue,
+                },
+            }
+        }
+    })
+    .await;
+    logins.forget(&nonce);
+    match waited {
+        Ok(Some(Ok(member))) => Ok(member),
+        // The answer came and was refused (the callback dropped its side): the log says why, the browser is told plainly.
+        Ok(Some(Err(_))) => Err(TruthIdWait::Refused("that TruthID wasn't accepted: it isn't linked to anyone here, or its device isn't active".into())),
+        Ok(None) => Err(TruthIdWait::Gone),
+        Err(_) => Err(TruthIdWait::Refused("the TruthID login timed out — start again".into())),
+    }
+}
+
 async fn reject<S: Transport>(sink: &mut WsSink<S>, reason: &str) -> anyhow::Result<()> {
     send(sink, &ServerMessage::AuthError { reason: reason.to_string() }).await?;
     sink.send(Message::Close(Some(CloseFrame { code: CloseCode::Policy, reason: reason.to_string().into() }))).await?;

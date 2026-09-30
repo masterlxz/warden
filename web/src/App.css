@@ -225,6 +225,21 @@ button:focus-visible {
   gap: 0.35rem;
 }
 
+/* P113: the QR for the TruthID app. Always dark on white, whatever the theme: a scanner needs the contrast. */
+.login-qr {
+  align-self: center;
+  width: min(16rem, 100%);
+  padding: 0.5rem;
+  background: #fff;
+  border-radius: 0.5rem;
+  line-height: 0;
+}
+
+.login-qr svg {
+  width: 100%;
+  height: auto;
+}
+
 /* Shell */
 
 .app {

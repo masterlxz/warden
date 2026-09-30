@@ -538,6 +538,9 @@ export type ServerMessage =
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
   | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string; removed?: RemovedUser[] }
+  /** P84 fatia 5 (P113) — the answer to a `hello` with `truthidLogin`: the QR's JSON for the TruthID app, good until
+   * `expiresAtMs`. The `helloAck` follows once the phone approves. */
+  | { type: "truthIdChallenge"; payload: string; expiresAtMs: number }
   /** P84 fatia 5 — the member's TruthID is linked. */
   | { type: "truthIdLinked"; requestId: number; username: string }
   /** `secret`: the owner's recovery key, only when one was just made — shown once, never kept. */
@@ -624,6 +627,7 @@ export function decode(text: string): ServerMessage {
     case "recoveryPolicyAccepted":
     case "recoveryNoticesAcked":
     case "truthIdLinked":
+    case "truthIdChallenge":
       return json as ServerMessage;
     case "userList": {
       const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string; removed?: RemovedUser[] };

@@ -2846,3 +2846,23 @@ aparelho `Approved` e hoje não tem cliente.
   público da rede por padrão) no `config.toml`.
 - **Protocolo**: `CreateInvite` e `UnlinkTruthId` (root, com a chave de pareamento), `RedeemInvite` (membro),
   `TruthIdLinked`, `invite_code` no `UserList`, e `truthid` e `invite_open` no `UserInfoDto`.
+
+### Login por TruthID (Sessão 115, P113)
+
+- **Fluxo**: o navegador abre o WebSocket e manda um `Hello` com `truthidLogin` (sem chave, senha nem token). O hub
+  cria um desafio `{type, nonce, issuedAt, origin}` (nonce UUID v4, `origin` é o host de `truthid_public_url`), responde
+  `TruthIdChallenge` com o JSON do QR e **espera**. O app TruthID assina o JSON do desafio (`personal_sign`), cria a
+  sessão on-chain e posta `{approved, nonce, signature, deviceAddress}` em `POST <truthid_public_url>/auth/truthid`
+  (rota do `serve_web_or_ws`, `truthid_login::handle_callback`). O hub entrega o resultado à conexão que espera, que
+  segue como um login por senha (`PairingProof::Member`): token de aparelho e `HelloAck`.
+- **Conferência** (`warden-truthid::login` e `identity`): aprovado, dentro de 2 minutos (o app só aceita escanear em
+  30 s, mas cria a sessão on-chain depois), o mesmo nonce, a assinatura recuperada (`k256`, keccak do prefixo
+  `\x19Ethereum Signed Message:\n`) igual ao `deviceAddress`, `DeviceRegistry.getDevice` com o aparelho existente e não
+  revogado, e um membro cujo `truthid.identity_id` é o `identityId` do aparelho. Uma resposta só tem uma chance: o
+  desafio sai da tabela antes de qualquer conferência. Toda recusa responde só "invalid" e o motivo vai para o log.
+- **Limites**: no máximo 32 desafios esperando; o QR vale 30 s (a página pede outro) e o hub espera a resposta por 2 min.
+- **Verificação contra o código real**: o vetor de assinatura dos testes veio do `signChallenge` do app (web3dart) e é
+  lido de volta pelo `recoverPersonalSignatureAddress` do SDK Dart; a assinatura é determinística e a nossa sai
+  idêntica byte a byte.
+- **O que não faz**: não abre a chave de dados (ver o P113); não há login do dono por TruthID; só a web tem a aba.
+

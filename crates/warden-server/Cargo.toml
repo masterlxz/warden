@@ -34,5 +34,6 @@ warden-core = { path = "../warden-core" }
 warden-server-protocol = { path = "../warden-server-protocol" }
 
 [dev-dependencies]
+k256 = { version = "0.13", features = ["ecdsa"] }
 # Throwaway CA + leaf certs for the TLS tests (tests/tls.rs) — `ring` backend, same as rustls here.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }

@@ -787,6 +787,10 @@ pub enum ClientMessage {
         /// nobody sees is a key nobody has.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         recovery_codes: bool,
+        /// P84 fatia 5: asks to sign in as a member with their TruthID instead of a password. The hub
+        /// answers `TruthIdChallenge` (a QR for the TruthID app) and, once the phone approves, `HelloAck`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truthid_login: bool,
     },
     Ping {
         nonce: u64,
@@ -1528,6 +1532,12 @@ pub enum ServerMessage {
     RecoveryNoticesAcked {
         request_id: u64,
     },
+    /// The answer to a `Hello` with `truthid_login`: what the TruthID app scans (`payload` is the QR's JSON),
+    /// good until `expires_at_ms` (the app refuses an older challenge). The `HelloAck` follows once it approves.
+    TruthIdChallenge {
+        payload: String,
+        expires_at_ms: u64,
+    },
     /// The member's TruthID is linked (`RedeemInvite`).
     TruthIdLinked {
         request_id: u64,
@@ -1633,6 +1643,7 @@ mod tests {
             username: None,
             password: None,
             recovery_codes: false,
+            truthid_login: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(
@@ -1685,6 +1696,7 @@ mod tests {
             username: None,
             password: None,
             recovery_codes: false,
+            truthid_login: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(

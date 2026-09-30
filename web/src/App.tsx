@@ -6,7 +6,7 @@ import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
 import ApiKeysSection from "./components/ApiKeysSection";
-import LoginView, { type LoginCredentials } from "./components/LoginView";
+import LoginView, { type LoginCredentials, type TruthIdQr } from "./components/LoginView";
 import MyAgentsView from "./components/MyAgentsView";
 import PeopleView from "./components/PeopleView";
 import RecoveryCodeView from "./components/RecoveryCodeView";
@@ -56,6 +56,9 @@ function titleSeed(message: string, attachments: Attachment[]): string {
 export default function App() {
   const identityRef = useRef<Identity>(loadIdentity());
   const connRef = useRef<ServerConnection | null>(null);
+  /** P113: the TruthID sign-in waiting for the phone (its QR), and how to give up on it. */
+  const [truthIdQr, setTruthIdQr] = useState<TruthIdQr | null>(null);
+  const truthIdAbort = useRef<AbortController | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempt = useRef(0);
 
@@ -164,8 +167,15 @@ export default function App() {
       const identity = identityRef.current;
       const usingToken = credentials === undefined;
       let connection: ServerConnection;
+      // A TruthID sign-in can be given up on (or asked again) while it waits for the phone.
+      const abort = new AbortController();
+      if (credentials?.kind === "truthid") {
+        truthIdAbort.current?.abort();
+        truthIdAbort.current = abort;
+      }
       try {
         connection = await ServerConnection.connect({
+          ...(credentials?.kind === "truthid" && { truthidLogin: true, signal: abort.signal, onTruthIdChallenge: (payload: string, expiresAtMs: number) => setTruthIdQr({ payload, expiresAtMs }) }),
           url: hubUrl(),
           deviceId: identity.deviceId,
           deviceName: identity.deviceName,
@@ -175,6 +185,9 @@ export default function App() {
         });
       } catch (err) {
         const message = errorText(err);
+        // Given up on, or replaced by a fresh QR: whoever did it already decided what shows next.
+        if (abort.signal.aborted) return;
+        setTruthIdQr(null);
         if (err instanceof HandshakeError && err.authRejected) {
           // The hub doesn't know this token (revoked, or its registry was reset) — pair again.
           if (usingToken) forgetToken();
@@ -187,6 +200,7 @@ export default function App() {
         return;
       }
 
+      setTruthIdQr(null);
       if (connection.issuedDeviceToken) {
         identityRef.current = { ...identityRef.current, deviceToken: connection.issuedDeviceToken };
         saveIdentity(identityRef.current);
@@ -274,6 +288,17 @@ export default function App() {
       connRef.current?.goodbye("page closed");
     };
   }, [connect, clearReconnect]);
+
+  function cancelTruthId() {
+    truthIdAbort.current?.abort();
+    setTruthIdQr(null);
+    setPhase({ kind: "login" });
+  }
+
+  function refreshTruthId() {
+    setTruthIdQr(null);
+    void connect({ kind: "truthid" });
+  }
 
   function handleLogin(credentials: LoginCredentials, deviceName: string) {
     identityRef.current = { ...identityRef.current, deviceName };
@@ -426,6 +451,9 @@ export default function App() {
         resuming={phase.kind === "connecting" && identityRef.current.deviceToken !== undefined}
         error={phase.kind === "login" ? phase.error : undefined}
         onSubmit={handleLogin}
+        truthIdQr={truthIdQr}
+        onTruthIdCancel={cancelTruthId}
+        onTruthIdRefresh={refreshTruthId}
       />
     );
   }

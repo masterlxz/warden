@@ -465,6 +465,11 @@ pub struct FileConfig {
     /// The JSON-RPC endpoint for that chain; the network's public one when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truthid_rpc_url: Option<String>,
+    /// The public `https://` address of this hub as the TruthID app reaches it (P113, TOML
+    /// `truthid_public_url`, e.g. `https://hub.tailnet.ts.net`): the app only posts a login to an `https://`
+    /// URL with a valid certificate. Without it, signing in with a TruthID is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truthid_public_url: Option<String>,
 }
 
 fn is_default_network(network: &warden_truthid::identity::Network) -> bool {
@@ -2119,6 +2124,7 @@ oauth = true
             spaces: Vec::new(),
             truthid_network: Default::default(),
             truthid_rpc_url: None,
+            truthid_public_url: None,
         };
 
         save_config(&path, &config).unwrap();

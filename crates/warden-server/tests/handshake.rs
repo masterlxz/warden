@@ -86,6 +86,7 @@ async fn a_second_hello_on_the_same_connection_is_ignored_not_fatal() {
         username: None,
         password: None,
         recovery_codes: false,
+        truthid_login: false,
     })
     .await
     .unwrap();

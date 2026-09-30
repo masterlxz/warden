@@ -24,6 +24,13 @@ impl Network {
         }
     }
 
+    pub fn device_registry(self) -> &'static str {
+        match self {
+            Network::BaseMainnet => "0x937702CBABDab0EEBD1A29f0a7A658FeF4582543",
+            Network::BaseSepolia => "0xe40e10627D307B0994f1856584bcc5DC323a4330",
+        }
+    }
+
     pub fn default_rpc_url(self) -> &'static str {
         match self {
             Network::BaseMainnet => "https://mainnet.base.org",
@@ -108,16 +115,14 @@ struct RpcError {
     message: String,
 }
 
-/// Asks the registry for `username`. `Ok(None)`: no such identity.
-pub async fn resolve_identity(rpc_url: &str, network: Network, username: &str) -> anyhow::Result<Option<Identity>> {
+/// One `eth_call` to `to` with `data`, at the latest block. `Ok(None)`: the call reverted. Anything else
+/// wrong (no network, a refusal that isn't a revert) is an error.
+async fn eth_call(rpc_url: &str, to: &str, data: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "eth_call",
-        "params": [
-            { "to": network.identity_registry(), "data": format!("0x{}", hex::encode(encode_get_identity(username))) },
-            "latest"
-        ],
+        "params": [{ "to": to, "data": format!("0x{}", hex::encode(data)) }, "latest"],
     });
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
     let answer: RpcAnswer = client
@@ -131,15 +136,54 @@ pub async fn resolve_identity(rpc_url: &str, network: Network, username: &str) -
         .await
         .context("the Base RPC didn't answer JSON-RPC")?;
     if let Some(error) = answer.error {
-        // The contract may revert for an unknown username instead of returning `exists: false`.
         if error.message.to_lowercase().contains("revert") {
             return Ok(None);
         }
         bail!("the Base RPC refused the call: {}", error.message);
     }
     let result = answer.result.ok_or_else(|| anyhow!("the Base RPC answered without a result"))?;
-    let data = hex::decode(result.trim_start_matches("0x")).context("the answer isn't hex")?;
-    decode_identity(&data)
+    Ok(Some(hex::decode(result.trim_start_matches("0x")).context("the answer isn't hex")?))
+}
+
+/// Asks the registry for `username`. `Ok(None)`: no such identity. (The contract may revert for an
+/// unknown username instead of returning `exists: false`; both mean none.)
+pub async fn resolve_identity(rpc_url: &str, network: Network, username: &str) -> anyhow::Result<Option<Identity>> {
+    match eth_call(rpc_url, network.identity_registry(), &encode_get_identity(username)).await? {
+        Some(data) => decode_identity(&data),
+        None => Ok(None),
+    }
+}
+
+/// `getDevice(address)` on the `DeviceRegistry`: the TruthID identity a device belongs to, `None` for a
+/// device that doesn't exist or was revoked. Takes the address as `0x` + 40 hex digits.
+pub async fn device_identity(rpc_url: &str, network: Network, address: &str) -> anyhow::Result<Option<u64>> {
+    let data = encode_device_call("getDevice(address)", address)?;
+    match eth_call(rpc_url, network.device_registry(), &data).await? {
+        Some(answer) => decode_device(&answer),
+        None => Ok(None),
+    }
+}
+
+/// `selector(signature)` followed by one `address` argument.
+fn encode_device_call(signature: &str, address: &str) -> anyhow::Result<Vec<u8>> {
+    let raw = hex::decode(address.trim_start_matches("0x")).context("the device address isn't hex")?;
+    anyhow::ensure!(raw.len() == 20, "a device address is 20 bytes");
+    let mut data = Keccak256::digest(signature.as_bytes())[..4].to_vec();
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(&raw);
+    Ok(data)
+}
+
+/// Decodes `(uint256 identityId, address pubKey, string label, uint256 addedAt, bool revoked, bool exists)`:
+/// the identity id of a device that exists and isn't revoked.
+pub fn decode_device(data: &[u8]) -> anyhow::Result<Option<u64>> {
+    let tuple = read_usize(data, 0)?;
+    let revoked = read_usize(data, tuple + 128)? != 0;
+    let exists = read_usize(data, tuple + 160)? != 0;
+    if !exists || revoked {
+        return Ok(None);
+    }
+    Ok(Some(read_usize(data, tuple)? as u64))
 }
 
 #[cfg(test)]
@@ -222,5 +266,37 @@ mod tests {
         let network = Network::BaseMainnet;
         let answer = resolve_identity(network.default_rpc_url(), network, "warden-no-such-user-9f3a1c").await.unwrap();
         assert!(answer.is_none(), "{answer:?}");
+    }
+
+    fn device_answer(identity: u64, revoked: bool, exists: bool) -> Vec<u8> {
+        let mut out = word(32).to_vec();
+        out.extend_from_slice(&word(identity as usize));
+        out.extend_from_slice(&[0u8; 32]);
+        out.extend_from_slice(&word(192));
+        out.extend_from_slice(&word(1));
+        out.extend_from_slice(&word(revoked as usize));
+        out.extend_from_slice(&word(exists as usize));
+        let label = b"phone";
+        out.extend_from_slice(&word(label.len()));
+        out.extend_from_slice(label);
+        out.resize(out.len() + 27, 0);
+        out
+    }
+
+    #[test]
+    fn a_device_is_its_identity_only_while_it_exists_and_is_not_revoked() {
+        assert_eq!(decode_device(&device_answer(9, false, true)).unwrap(), Some(9));
+        assert_eq!(decode_device(&device_answer(9, true, true)).unwrap(), None, "revoked");
+        assert_eq!(decode_device(&device_answer(0, false, false)).unwrap(), None, "unknown");
+        assert!(decode_device(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn the_device_call_is_the_selector_and_one_padded_address() {
+        let data = encode_device_call("getDevice(address)", "0x00000000000000000000000000000000000000Ab").unwrap();
+        assert_eq!(&data[..4], &Keccak256::digest(b"getDevice(address)")[..4]);
+        assert_eq!(data.len(), 4 + 32);
+        assert_eq!(data[35], 0xab);
+        assert!(encode_device_call("getDevice(address)", "0x1234").is_err());
     }
 }

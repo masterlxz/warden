@@ -208,8 +208,17 @@ export interface ConnectOptions {
   /** P84: pairs as this member instead of with the pairing key — also only until there's a token. */
   username?: string;
   password?: string;
+  /** P113: signs in as a member with their TruthID — the hub answers with a QR (`onTruthIdChallenge`) and lets
+   * this connection in once the TruthID app approves. */
+  truthidLogin?: boolean;
+  onTruthIdChallenge?: (payload: string, expiresAtMs: number) => void;
+  /** Gives up: closes the socket and rejects the handshake. */
+  signal?: AbortSignal;
   handshakeTimeoutMs?: number;
 }
+
+/** How long a TruthID sign-in may take: the hub waits two minutes for the phone, which has to create a session on-chain. */
+const TRUTHID_HANDSHAKE_TIMEOUT_MS = 130_000;
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -349,15 +358,22 @@ export class ServerConnection {
         settled = true;
         clearTimeout(timeoutId);
         socket.removeEventListener("message", onFirstMessage);
+        options.signal?.removeEventListener("abort", abort);
         fn();
       };
 
-      const timeoutId = setTimeout(() => {
+      let timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
         finish(() => {
           socket.close();
           reject(new HandshakeError(`o hub não respondeu em ${timeoutMs / 1000}s`));
         });
       }, timeoutMs);
+      const abort = () => finish(() => {
+        socket.close();
+        reject(new HandshakeError("cancelado"));
+      });
+      if (options.signal?.aborted) abort();
+      else options.signal?.addEventListener("abort", abort, { once: true });
 
       const onFirstMessage = (event: MessageEvent) => {
         let reply: ServerMessage;
@@ -365,6 +381,18 @@ export class ServerConnection {
           reply = decode(event.data as string);
         } catch (err) {
           finish(() => reject(new HandshakeError(err instanceof Error ? err.message : String(err))));
+          return;
+        }
+        // A TruthID sign-in first gets the QR to show, and then waits — much longer than a password would.
+        if (reply.type === "truthIdChallenge") {
+          options.onTruthIdChallenge?.(reply.payload, reply.expiresAtMs);
+          clearTimeout(timeoutId);
+          timeoutId = setTimeout(() => {
+            finish(() => {
+              socket.close();
+              reject(new HandshakeError("o login com TruthID demorou demais — tente de novo"));
+            });
+          }, TRUTHID_HANDSHAKE_TIMEOUT_MS);
           return;
         }
         finish(() => {
@@ -392,6 +420,7 @@ export class ServerConnection {
             authKey: options.authKey,
             ...(options.deviceToken !== undefined && { deviceToken: options.deviceToken }),
             ...(options.username !== undefined && { username: options.username, password: options.password ?? "" }),
+            ...(options.truthidLogin && { truthidLogin: true }),
             // This UI shows a member's recovery code (RecoveryCodeView), so the hub may encrypt their data.
             recoveryCodes: true,
             tools: [],

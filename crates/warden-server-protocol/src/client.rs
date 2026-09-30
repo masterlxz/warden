@@ -110,6 +110,7 @@ impl ServerConnection {
             username: None,
             password: None,
             recovery_codes: false,
+            truthid_login: false,
         };
         let (conn, token, _) = Self::hello(url, hello, tls).await?;
         Ok((conn, token))
@@ -137,6 +138,7 @@ impl ServerConnection {
             password: Some(password.to_string()),
             // This client hands the recovery code back to its caller, who has to show it.
             recovery_codes: true,
+            truthid_login: false,
         };
         Self::hello(url, hello, tls).await
     }
