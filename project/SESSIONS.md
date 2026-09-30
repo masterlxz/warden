@@ -2,7 +2,33 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-29 (Sessão 114)
+> Última atualização: 2026-09-30 (Sessão 115)
+
+---
+
+### 2026-09-30 — Sessão 115
+
+- **Objetivo**: a fatia 5 do P84 (convite pelo TruthID). Plano aprovado em Plan mode.
+- **Decisões do usuário**: (a) o app TruthID só entrega o login num `https://` com certificado válido, e o hub não
+  tem essa URL, então **esta fatia faz só o convite e o vínculo, e o login por TruthID fica para depois**;
+  (b) quando o login vier, o TruthID **abre a chave de dados sozinho** (terceiro embrulho da chave).
+- **Feito** (detalhes em `ARCHITECTURE.md`, "Como ficou a fatia 5"):
+  1. `warden-truthid::identity`: lê `getIdentity(username)` no `IdentityRegistry` da Base por `eth_call`, ABI à mão,
+     com testes (seletor keccak, decodificação, RPC falso) e um teste `--ignored` contra a Base de verdade;
+  2. `warden-bootstrap::users`: `Invite` e `TruthIdLink` no `[[users]]`, `create_invite`, `check_invite`,
+     `redeem_invite` e `unlink_truthid`; o código é `<usuário>:<segredo>`, só o hash Argon2 do segredo é guardado,
+     vale 7 dias e serve uma vez; uma identidade não liga a dois membros; `truthid_network` e `truthid_rpc_url` no
+     `config.toml`;
+  3. `warden-server`: `CreateInvite` e `UnlinkTruthId` (root, com a chave de pareamento), `RedeemInvite` (o membro já
+     logado, só com o próprio convite), `TruthIdLinked`, `invite_code` no `UserList`, e `warden-server users invite`
+     e `unlink-truthid`;
+  4. web (aba Pessoas e "Ligar meu TruthID" na tela de trocar senha) e desktop (seção People).
+- **Verificado**: testes de `warden-bootstrap`, `warden-truthid`, `warden-server` (inclusive 2 novos com o hub real e
+  um RPC falso), clippy limpo, `build` da web, `tsc` e `cargo check` do desktop, e a consulta real à Base (um
+  usuário inexistente volta como "não existe").
+- **Achado**: vincular não prova que a pessoa controla aquele TruthID (só digita o username). Não há risco agora, porque
+  nada usa o vínculo; o login futuro exigirá a assinatura de um aparelho daquela identidade.
+- **Próximo passo**: a rodada de testes (P112 e anteriores) ou o login por TruthID (P113).
 
 ---
 

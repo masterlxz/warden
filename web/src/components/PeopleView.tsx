@@ -13,6 +13,8 @@ type Asking =
   | { kind: "rename"; user: UserInfo; name: string }
   | { kind: "reset"; user: UserInfo }
   | { kind: "remove"; user: UserInfo }
+  | { kind: "invite"; user: UserInfo }
+  | { kind: "unlink"; user: UserInfo }
   /** `null`: back to the safe default. */
   | { kind: "tools"; user: UserInfo; tools: string[] | null };
 
@@ -53,6 +55,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
   const [busy, setBusy] = useState(false);
   /** The provisional password to hand over, and to whom — shown once. */
   const [shown, setShown] = useState<{ id: string; password: string } | null>(null);
+  /** An invite to link a TruthID, and for whom — shown once. */
+  const [invite, setInvite] = useState<{ id: string; code: string } | null>(null);
   /** The hub's tools, for choosing each person's. */
   const [toolNames, setToolNames] = useState<string[]>([]);
 
@@ -96,8 +100,13 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
               ? await conn.resetPassword(pairingKey, asking.user.id)
               : asking.kind === "tools"
                 ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
-                : await conn.removeUser(pairingKey, asking.user.id);
+                : asking.kind === "invite"
+                  ? await conn.createInvite(pairingKey, asking.user.id)
+                  : asking.kind === "unlink"
+                    ? await conn.unlinkTruthId(pairingKey, asking.user.id)
+                    : await conn.removeUser(pairingKey, asking.user.id);
       setUsers(reply.users);
+      if (reply.inviteCode && asking.kind === "invite") setInvite({ id: asking.user.id, code: reply.inviteCode });
       if (reply.tempPassword) {
         setShown({ id: asking.kind === "create" ? asking.id.trim().toLowerCase() : asking.kind === "reset" ? asking.user.id : "", password: reply.tempPassword });
       }
@@ -166,6 +175,18 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
         </div>
       )}
 
+      {invite && (
+        <div className="settings-confirm">
+          <p>
+            Convite de TruthID para <strong>{invite.id}</strong> (só aparece agora, vale 7 dias e serve uma vez): <code>{invite.code}</code>
+          </p>
+          <p className="skills-hint">A pessoa entra, abre "Trocar senha" no cabeçalho e, em "Ligar meu TruthID", informa este código e o usuário dela no TruthID.</p>
+          <button type="button" className="link-button" onClick={() => setInvite(null)}>
+            Já anotei
+          </button>
+        </div>
+      )}
+
       {asking?.kind === "create" &&
         keyForm(
           "Criar",
@@ -209,6 +230,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   <code>{user.id}</code> · {toolsLabel(user)}
                   {user.agents.length > 0 && ` · agentes próprios: ${user.agents.join(", ")}`}
                   {` · ${dataLabel(user)}`}
+                  {user.truthid ? ` · TruthID: @${user.truthid}` : user.inviteOpen ? " · convite de TruthID aberto" : ""}
                 </p>
                 {mine?.kind === "rename" &&
                   keyForm(
@@ -220,6 +242,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     </label>,
                   )}
                 {mine?.kind === "reset" && keyForm("Gerar senha provisória")}
+                {mine?.kind === "invite" && keyForm("Gerar convite")}
+                {mine?.kind === "unlink" && keyForm("Desligar TruthID", true)}
                 {mine?.kind === "tools" &&
                   keyForm(
                     "Salvar ferramentas",
@@ -266,6 +290,20 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "reset", user })}>
                       Nova senha provisória
                     </button>
+                    {user.truthid ? (
+                      <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "unlink", user })}>
+                        Desligar TruthID
+                      </button>
+                    ) : (
+                      <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "invite", user })}>
+                        Convidar para o TruthID
+                      </button>
+                    )}
+                    {!user.truthid && user.inviteOpen && (
+                      <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "unlink", user })}>
+                        Cancelar convite
+                      </button>
+                    )}
                     <button type="button" className="link-button skills-danger" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "remove", user })}>
                       Remover
                     </button>

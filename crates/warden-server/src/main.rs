@@ -197,6 +197,11 @@ enum UsersAction {
     },
     /// Gives a member a new provisional password (printed once), for a forgotten one.
     ResetPassword { id: String },
+    /// Makes an invite (printed once) for a member to link their TruthID: they sign in on the web, open
+    /// "Link TruthID" and give the code and their TruthID username. Good for 7 days, single use.
+    Invite { id: String },
+    /// Unties a member's TruthID and cancels an open invite.
+    UnlinkTruthid { id: String },
     /// Removes a member and revokes their devices. Their vault and conversations stay on disk. If
     /// their data is encrypted, the member is kept under `users removed` — with the key that opens
     /// it — so `users restore` can bring them back.
@@ -675,7 +680,12 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
                     (Some(_), true) => "encrypted, needs the recovery code",
                     (Some(_), false) => "encrypted",
                 };
-                println!("{}\t{}\t{password}\t{data}", user.id, user.name);
+                let truthid = match (&user.truthid, &user.invite) {
+                    (Some(link), _) => format!("TruthID @{}", link.username),
+                    (None, Some(_)) => "invite open".to_string(),
+                    (None, None) => "no TruthID".to_string(),
+                };
+                println!("{}\t{}\t{password}\t{data}\t{truthid}", user.id, user.name);
             }
         }
         UsersAction::Add { id, name } => {
@@ -685,6 +695,17 @@ fn run_users_command(action: UsersAction, config: Option<String>) -> anyhow::Res
             let id = &file.users.last().expect("just added").id;
             println!("'{id}' added. Provisional password (shown only now): {password}");
             println!("They sign in on the web or the phone with the username '{id}' and this password, then pick their own.");
+        }
+        UsersAction::Invite { id } => {
+            let code = warden_bootstrap::users::create_invite(&mut file, &id, warden_server::people::unix_now())?;
+            save_config(&config_path, &file)?;
+            println!("Invite for '{id}' (shown only now, good for 7 days, single use): {code}");
+            println!("They sign in, open \"Link TruthID\" and give this code and their TruthID username.");
+        }
+        UsersAction::UnlinkTruthid { id } => {
+            warden_bootstrap::users::unlink_truthid(&mut file, &id)?;
+            save_config(&config_path, &file)?;
+            println!("'{id}' has no TruthID linked now, and no open invite");
         }
         UsersAction::ResetPassword { id } => {
             let password = generate_temp_password();

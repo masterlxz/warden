@@ -13,6 +13,8 @@ interface Props {
   needsRecovery?: boolean;
   /** Their data is encrypted, so they can ask for a new recovery code. */
   encrypted?: boolean;
+  /** The TruthID they already linked (P84 fatia 5), if any. */
+  truthid?: string;
   /** `recoveryCode`: this change turned encryption on — it has to be shown to them. */
   onDone: (recoveryCode?: string) => void;
   /** A new code they asked for. */
@@ -23,7 +25,7 @@ interface Props {
 
 /** P84: a member swaps the provisional password the owner gave them for their own — required on the
  * first sign-in, and available later from the header. */
-export default function ChangePasswordView({ conn, name, required, needsRecovery = false, encrypted = false, onDone, onNewCode, onCancel, onLogout }: Props) {
+export default function ChangePasswordView({ conn, name, required, needsRecovery = false, encrypted = false, truthid, onDone, onNewCode, onCancel, onLogout }: Props) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [again, setAgain] = useState("");
@@ -117,6 +119,58 @@ export default function ChangePasswordView({ conn, name, required, needsRecovery
           </button>
         )}
       </form>
+      {!required && <LinkTruthId conn={conn} linked={truthid} />}
     </div>
+  );
+}
+
+/** P84 fatia 5: the member links their TruthID with the invite the owner gave them. Linking says who they
+ * are on TruthID; signing in with it comes later. */
+function LinkTruthId({ conn, linked }: { conn: ServerConnection; linked?: string }) {
+  const [code, setCode] = useState("");
+  const [username, setUsername] = useState("");
+  const [done, setDone] = useState<string | null>(linked ?? null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleLink(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy || !code.trim() || !username.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setDone(await conn.redeemInvite(code.trim(), username.trim()));
+      setCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="login-card" onSubmit={(e) => void handleLink(e)}>
+      <p className="login-hint">Ligar meu TruthID</p>
+      {done ? (
+        <p className="field-hint">
+          Ligado a <strong>@{done}</strong>. Para trocar, peça um convite novo a quem administra o hub.
+        </p>
+      ) : (
+        <>
+          <label>
+            Código do convite
+            <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} value={code} onChange={(e) => setCode(e.target.value)} />
+          </label>
+          <label>
+            Meu usuário no TruthID
+            <input type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="ana.silva" />
+          </label>
+          {error && <p className="error-banner">{error}</p>}
+          <button type="submit" className="primary-button" disabled={busy || !code.trim() || !username.trim()}>
+            {busy ? "Aguarde…" : "Ligar"}
+          </button>
+        </>
+      )}
+    </form>
   );
 }

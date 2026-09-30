@@ -434,6 +434,9 @@ interface Person {
   tools?: string[] | null;
   /** Their own agents' names. */
   agents?: string[];
+  /** Fatia 5 — the TruthID username they linked, and whether an invite is still open. */
+  truthid?: string;
+  inviteOpen?: boolean;
 }
 
 /** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
@@ -447,6 +450,7 @@ const NEVER_FOR_MEMBERS = ["delegate_to_agent", "message_agent", "manage_agents"
 interface PeoplePayload {
   users: Person[];
   tempPassword: string | null;
+  inviteCode: string | null;
 }
 
 type PeopleDraft =
@@ -465,6 +469,7 @@ function PeopleSection() {
   const [people, setPeople] = useState<Person[] | null>(null);
   const [draft, setDraft] = useState<PeopleDraft | null>(null);
   const [shown, setShown] = useState<{ id: string; password: string } | null>(null);
+  const [invite, setInvite] = useState<{ id: string; code: string } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toolNames, setToolNames] = useState<string[]>([]);
@@ -484,6 +489,7 @@ function PeopleSection() {
       const payload = await invoke<PeoplePayload>(command, args);
       setPeople(payload.users);
       if (payload.tempPassword && shownFor) setShown({ id: shownFor, password: payload.tempPassword });
+      if (payload.inviteCode && shownFor) setInvite({ id: shownFor, code: payload.inviteCode });
       setDraft(null);
       setConfirmRemove(null);
     } catch (err) {
@@ -524,6 +530,18 @@ function PeopleSection() {
           </p>
           <p className="settings-hint">Give it to them with the username. They choose their own the first time they sign in.</p>
           <button type="button" className="settings-browse-btn" onClick={() => setShown(null)}>
+            Done
+          </button>
+        </div>
+      )}
+
+      {invite && (
+        <div className="provider-card">
+          <p className="settings-hint">
+            TruthID invite for <strong>{invite.id}</strong> (shown only now, good for 7 days, single use): <code>{invite.code}</code>
+          </p>
+          <p className="settings-hint">They sign in on the web, open &quot;Trocar senha&quot; and, under &quot;Ligar meu TruthID&quot;, give this code and their TruthID username.</p>
+          <button type="button" className="settings-browse-btn" onClick={() => setInvite(null)}>
             Done
           </button>
         </div>
@@ -610,6 +628,7 @@ function PeopleSection() {
                 <span className="workspace-device-meta">
                   {person.id} · {person.tools == null ? "default tools" : person.tools.length === 0 ? "no tools" : `tools: ${person.tools.join(", ")}`}
                   {person.agents && person.agents.length > 0 ? ` · own agents: ${person.agents.join(", ")}` : ""}
+                  {person.truthid ? ` · TruthID: @${person.truthid}` : person.inviteOpen ? " · TruthID invite open" : ""}
                 </span>
                 {confirmRemove === person.id && (
                   <span className="settings-hint">
@@ -635,6 +654,15 @@ function PeopleSection() {
                     <button type="button" className="settings-browse-btn" disabled={draft !== null} onClick={() => setDraft({ kind: "tools", id: person.id, tools: person.tools ?? null })}>
                       Tools
                     </button>
+                    {person.truthid || person.inviteOpen ? (
+                      <button type="button" className="settings-browse-btn" onClick={() => void run("unlink_person_truthid", { id: person.id })}>
+                        {person.truthid ? "Unlink TruthID" : "Cancel invite"}
+                      </button>
+                    ) : (
+                      <button type="button" className="settings-browse-btn" onClick={() => void run("invite_person", { id: person.id }, person.id)}>
+                        TruthID invite
+                      </button>
+                    )}
                     <button type="button" className="settings-browse-btn" onClick={() => void run("reset_person_password", { id: person.id }, person.id)}>
                       New password
                     </button>

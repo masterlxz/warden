@@ -2260,7 +2260,7 @@ a esposa, "ensinando" o agente ou por uma interface.
 4. **Criptografia, backup e recuperação**, com as três políticas acima. **Parte A feita na Sessão 114**
    (criptografia, backup e "privado de verdade"); **a parte B também na Sessão 114** (recuperação com
    consentimento e de empresa, sem Shamir literal).
-5. **Convite pelo TruthID.**
+5. **Convite pelo TruthID.** **Feita em parte na Sessão 115**: o convite e o vínculo; o login ficou no P113.
 
 ### Como ficou a fatia 1 (Sessão 110)
 
@@ -2827,3 +2827,22 @@ aparelho `Approved` e hoje não tem cliente.
 - **Limite conhecido**: o `warden-server node` e o desktop na mesma máquina dividem o `node.json`, então são o
   mesmo nó para o hub. Os dois ligados ao mesmo tempo disputariam a conexão.
 
+### Como ficou a fatia 5, convite e vínculo do TruthID (Sessão 115)
+
+- **Escopo**: o root gera um convite e a pessoa liga o TruthID dela ao usuário. **Não há login por TruthID ainda**
+  (P113): o app TruthID só entrega a resposta num `https://` com certificado válido, e o hub não tem essa URL.
+- **Convite**: `Invite { secret_hash, expires_at }` no `[[users]]`. O código é `<usuário>:<segredo>` (20 caracteres
+  sem letras parecidas), mostrado uma vez; só o hash Argon2 do segredo fica no disco. Vale 7 dias, serve uma vez, e
+  um novo substitui o aberto. Todo erro (usuário inexistente, segredo errado, usado, expirado) dá a mesma resposta,
+  e o caminho do usuário inexistente também gasta um hash.
+- **Vínculo**: `TruthIdLink { username, identity_id, linked_at }`. Quem resgata é um membro **já logado**, só com o
+  próprio convite, e informa o username do TruthID; o hub consulta `getIdentity(username)` no `IdentityRegistry` da
+  Base (`warden-truthid::identity`, `eth_call` com a ABI codificada à mão, sem dependência de Ethereum) **sem segurar
+  o lock** das configurações, e só depois usa o convite. Uma identidade não liga a dois membros.
+- **O que o vínculo não prova**: que a pessoa controla aquele TruthID. Digitar um username alheio não dá nada,
+  porque o login futuro vai exigir a assinatura de um aparelho daquela identidade (`DeviceRegistry.getDevice` →
+  `identityId`, que é o `identity_id` guardado aqui).
+- **Configuração**: `truthid_network` (`base-mainnet` por padrão, ou `base-sepolia`) e `truthid_rpc_url` (o RPC
+  público da rede por padrão) no `config.toml`.
+- **Protocolo**: `CreateInvite` e `UnlinkTruthId` (root, com a chave de pareamento), `RedeemInvite` (membro),
+  `TruthIdLinked`, `invite_code` no `UserList`, e `truthid` e `invite_open` no `UserInfoDto`.

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use warden_bootstrap::member_crypto::{self, MemberKey};
 use warden_bootstrap::recovery::RecoveryPolicy;
 use warden_bootstrap::users::{
-    ack_recovery_notices, add_user, change_password_with, enable_encryption, generate_temp_password, open_key, recover_member, regenerate_recovery_code, remove_space, remove_user, rename_user,
+    ack_recovery_notices, add_user, create_invite, redeem_invite, unlink_truthid, TruthIdLink, change_password_with, enable_encryption, generate_temp_password, open_key, recover_member, regenerate_recovery_code, remove_space, remove_user, rename_user,
     reset_password, save_space, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
 };
 use warden_bootstrap::{load_config_from_path, save_config};
@@ -19,7 +19,7 @@ use warden_server_protocol::ServerMessage;
 
 use crate::api_keys::ApiKeyStore;
 use crate::device_registry::PairingStore;
-use crate::people::user_info;
+use crate::people::{unix_now, user_info};
 use crate::settings::{keys_match, SettingsHost, WRONG_KEY_DELAY};
 
 fn user_error(request_id: u64, message: String, auth_rejected: bool) -> ServerMessage {
@@ -28,13 +28,14 @@ fn user_error(request_id: u64, message: String, auth_rejected: bool) -> ServerMe
 
 const NO_SETTINGS: &str = "this hub has no settings file, so it has no people besides its owner";
 
-fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<String>) -> anyhow::Result<ServerMessage> {
+fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<String>, invite_code: Option<String>) -> anyhow::Result<ServerMessage> {
     let config = load_config_from_path(&settings.config_path(), false)?;
     let policy = workspace_policy(&config);
     Ok(ServerMessage::UserList {
         request_id,
         users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(),
         temp_password,
+        invite_code,
         recovery_policy: policy.as_str().to_string(),
     })
 }
@@ -42,7 +43,7 @@ fn list(settings: &dyn SettingsHost, request_id: u64, temp_password: Option<Stri
 /// Answers `ListUsers` (the root's connection only — `people::member_refusal` stops a member first).
 pub fn handle_list_users(settings: Option<&dyn SettingsHost>, request_id: u64) -> ServerMessage {
     match settings {
-        Some(settings) => list(settings, request_id, None).unwrap_or_else(|err| user_error(request_id, format!("{err:#}"), false)),
+        Some(settings) => list(settings, request_id, None, None).unwrap_or_else(|err| user_error(request_id, format!("{err:#}"), false)),
         None => user_error(request_id, NO_SETTINGS.to_string(), false),
     }
 }
@@ -55,6 +56,10 @@ pub enum UserChange {
     Remove { id: String },
     /// Fatia 2: the tools they may use; `None` is the safe default.
     SetTools { id: String, tools: Option<Vec<String>> },
+    /// Fatia 5: an invite to link a TruthID, shown once.
+    Invite { id: String },
+    /// Fatia 5: unties a member's TruthID and cancels an open invite.
+    UnlinkTruthId { id: String },
     /// Fatia 4 parte B: the owner opens a member's data with the workspace's recovery key.
     Recover { id: String, recovery_key: String, code: Option<String> },
 }
@@ -81,9 +86,10 @@ pub async fn handle_user_change(
         return user_error(request_id, "wrong pairing key".to_string(), true);
     }
     let config_path = settings.config_path();
-    let result = (|| -> anyhow::Result<Option<String>> {
+    let result = (|| -> anyhow::Result<(Option<String>, Option<String>)> {
         let mut config = load_config_from_path(&config_path, false)?;
         let mut temp = None;
+        let mut invite = None;
         let mut removed = None;
         match change {
             UserChange::Create { id, name } => {
@@ -102,6 +108,8 @@ pub async fn handle_user_change(
                 removed = Some(id);
             }
             UserChange::SetTools { id, tools } => set_user_tools(&mut config, &id, tools)?,
+            UserChange::Invite { id } => invite = Some(create_invite(&mut config, &id, unix_now())?),
+            UserChange::UnlinkTruthId { id } => unlink_truthid(&mut config, &id)?,
             UserChange::Recover { id, recovery_key, code } => {
                 let recovered = recover_member(&mut config, &id, &recovery_key, code.as_deref())?;
                 eprintln!("warden-server: the owner recovered '{id}' under the {} policy", recovered.kind.as_str());
@@ -118,9 +126,9 @@ pub async fn handle_user_change(
                 keys.revoke_user_keys(&id)?;
             }
         }
-        Ok(temp)
+        Ok((temp, invite))
     })();
-    match result.and_then(|temp| list(settings, request_id, temp)) {
+    match result.and_then(|(temp, invite)| list(settings, request_id, temp, invite)) {
         Ok(reply) => reply,
         Err(err) => user_error(request_id, format!("{err:#}"), false),
     }
@@ -270,6 +278,38 @@ pub async fn handle_regenerate_recovery_code(settings: Option<&dyn SettingsHost>
             }
             user_error(request_id, message, wrong)
         }
+    }
+}
+
+/// Answers `RedeemInvite` (P84 fatia 5): the member, already signed in, links the TruthID `username`
+/// with the owner's invite `code`, which has to be theirs. The registry on Base is asked first, with
+/// no lock held, since that's a network call; then the invite is checked and used under the lock.
+/// Linking proves nothing about who controls that TruthID — signing in with it will (a later slice).
+pub async fn handle_redeem_invite(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64, code: &str, username: &str) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let config_path = settings.config_path();
+    let result = async {
+        let username = username.trim().trim_start_matches('@').to_string();
+        anyhow::ensure!(!username.is_empty(), "say your TruthID username");
+        let config = load_config_from_path(&config_path, false)?;
+        // Checked before the network call, so a stranger's guess costs the owner nothing.
+        let invited = warden_bootstrap::users::check_invite(&config.users, code, unix_now())?;
+        anyhow::ensure!(invited.id == user, "that invite is for someone else");
+        let rpc_url = config.truthid_rpc_url.clone().unwrap_or_else(|| config.truthid_network.default_rpc_url().to_string());
+        let identity = warden_truthid::identity::resolve_identity(&rpc_url, config.truthid_network, &username)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("there's no TruthID named '{username}'"))?;
+        let _serialized = lock.lock().await;
+        let mut config = load_config_from_path(&config_path, false)?;
+        let link = TruthIdLink { username: identity.username.clone(), identity_id: identity.id, linked_at: unix_now() };
+        redeem_invite(&mut config, code, link, unix_now())?;
+        save_config(&config_path, &config)?;
+        Ok(identity.username)
+    }
+    .await;
+    match result {
+        Ok(username) => ServerMessage::TruthIdLinked { request_id, username },
+        Err(err) => user_error(request_id, format!("{err:#}"), false),
     }
 }
 

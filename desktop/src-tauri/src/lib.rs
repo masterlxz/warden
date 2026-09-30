@@ -658,6 +658,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         recovery_policy: existing.recovery_policy,
         recovery_public_key: existing.recovery_public_key,
         spaces: existing.spaces,
+        // Where a member's TruthID is looked up (fatia 5) is set in the config file.
+        truthid_network: existing.truthid_network,
+        truthid_rpc_url: existing.truthid_rpc_url,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
@@ -881,6 +884,8 @@ pub fn run() {
             people_cmds::add_person,
             people_cmds::rename_person,
             people_cmds::reset_person_password,
+            people_cmds::invite_person,
+            people_cmds::unlink_person_truthid,
             people_cmds::set_person_tools,
             people_cmds::remove_person,
             people_cmds::list_shared_spaces,

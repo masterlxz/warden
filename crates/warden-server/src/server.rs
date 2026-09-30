@@ -28,7 +28,7 @@ use crate::conversations::{handle_conversation_request, handle_history_request, 
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
 use crate::user_admin::{
-    handle_accept_recovery_policy, handle_ack_recovery_notices, handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_set_recovery_policy,
+    handle_redeem_invite, handle_accept_recovery_policy, handle_ack_recovery_notices, handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_set_recovery_policy,
     handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange, UserChange,
 };
 use crate::devices::{handle_list_devices, handle_set_device_status};
@@ -1008,6 +1008,23 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::RecoverMember { request_id, pairing_key, id, recovery_key, code }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Recover { id, recovery_key, code });
                 }
+                Ok(ClientMessage::CreateInvite { request_id, pairing_key, id }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Invite { id });
+                }
+                Ok(ClientMessage::UnlinkTruthId { request_id, pairing_key, id }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::UnlinkTruthId { id });
+                }
+                Ok(ClientMessage::RedeemInvite { request_id, code, username }) => match &member {
+                    None => {
+                        let _ = tx.send(ServerMessage::UserError { request_id, message: "the owner has no invite to use".into(), auth_rejected: false });
+                    }
+                    Some(current) => {
+                        let (settings, lock, reply_tx, id) = (settings.clone(), settings_lock.clone(), tx.clone(), current.id.clone());
+                        tokio::spawn(async move {
+                            let _ = reply_tx.send(handle_redeem_invite(settings.as_deref(), &lock, &id, request_id, &code, &username).await);
+                        });
+                    }
+                },
                 Ok(ClientMessage::ListUsers { request_id }) => {
                     let _ = tx.send(handle_list_users(settings.as_deref(), request_id));
                 }

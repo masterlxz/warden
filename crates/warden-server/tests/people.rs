@@ -831,3 +831,106 @@ async fn a_weaker_policy_waits_for_the_persons_yes_and_only_then_lets_the_owner_
     let (mut again, _, _) = member(&hub, &temp, None).await.unwrap();
     assert!(matches!(reply(&mut again).await, ServerMessage::RecoveryCode { request_id: 0, .. }), "entering consent hands out a new code");
 }
+
+// ---- Fatia 5: the invite to link a TruthID ----
+
+fn word(value: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..].copy_from_slice(&value.to_be_bytes());
+    out
+}
+
+/// What the registry answers for `getIdentity`: `(id, username, controller, exists)`.
+fn registry_answer(id: u64, username: &str, exists: bool) -> String {
+    let mut out = word(32).to_vec();
+    out.extend_from_slice(&word(id));
+    out.extend_from_slice(&word(128));
+    out.extend_from_slice(&[0u8; 32]);
+    out.extend_from_slice(&word(exists as u64));
+    out.extend_from_slice(&word(username.len() as u64));
+    out.extend_from_slice(username.as_bytes());
+    out.resize(out.len() + (32 - username.len() % 32) % 32, 0);
+    format!("0x{}", out.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// A JSON-RPC endpoint that answers every call with the same identity, standing in for Base.
+async fn fake_registry(id: u64, username: &'static str, exists: bool) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut request = vec![0u8; 8192];
+                let _ = socket.read(&mut request).await;
+                let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{}"}}"#, registry_answer(id, username, exists));
+                let response = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    url
+}
+
+fn point_truthid_at(hub: &Hub, rpc_url: &str) {
+    let path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&path, false).unwrap();
+    config.truthid_rpc_url = Some(rpc_url.to_string());
+    save_config(&path, &config).unwrap();
+}
+
+#[tokio::test]
+async fn an_invite_links_a_members_truthid_once_and_only_to_them() {
+    let hub = spin_up().await;
+    point_truthid_at(&hub, &fake_registry(42, "ana.silva", true).await);
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+
+    owner.send(&ClientMessage::CreateInvite { request_id: 1, pairing_key: "wrong".into(), id: "ana".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::CreateInvite { request_id: 2, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    let code = match reply(&mut owner).await {
+        ServerMessage::UserList { invite_code: Some(code), users, .. } => {
+            assert!(users[0].invite_open && users[0].truthid.is_empty());
+            code
+        }
+        other => panic!("{other:?}"),
+    };
+    let on_disk = std::fs::read_to_string(hub.dir.join("config.toml")).unwrap();
+    assert!(!on_disk.contains(code.split_once(':').unwrap().1), "only a hash of the secret is kept");
+
+    // Ana signs in, picks her own password, and links.
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+    ana.send(&ClientMessage::RedeemInvite { request_id: 3, code: "ana:not-the-secret".into(), username: "@ana.silva".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { .. }), "a wrong code links nothing");
+    ana.send(&ClientMessage::RedeemInvite { request_id: 4, code: code.clone(), username: "@ana.silva".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::TruthIdLinked { username, .. } if username == "ana.silva"));
+    ana.send(&ClientMessage::RedeemInvite { request_id: 5, code, username: "ana.silva".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { .. }), "single use");
+
+    // A member can't make invites or untie anyone, and the owner sees the link and can undo it.
+    ana.send(&ClientMessage::CreateInvite { request_id: 6, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::ListUsers { request_id: 7 }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users[0].truthid == "ana.silva" && !users[0].invite_open));
+    owner.send(&ClientMessage::UnlinkTruthId { request_id: 8, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users[0].truthid.is_empty()));
+}
+
+#[tokio::test]
+async fn an_invite_for_a_truthid_that_does_not_exist_is_kept_for_another_try() {
+    let hub = spin_up().await;
+    point_truthid_at(&hub, &fake_registry(0, "", false).await);
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    owner.send(&ClientMessage::CreateInvite { request_id: 1, pairing_key: KEY.into(), id: "ana".into() }).await.unwrap();
+    let ServerMessage::UserList { invite_code: Some(code), .. } = reply(&mut owner).await else { panic!("no invite") };
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+    ana.send(&ClientMessage::RedeemInvite { request_id: 2, code, username: "nobody".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { message, .. } if message.contains("no TruthID named")));
+    owner.send(&ClientMessage::ListUsers { request_id: 3 }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserList { users, .. } if users[0].invite_open && users[0].truthid.is_empty()));
+}

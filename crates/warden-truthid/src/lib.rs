@@ -9,6 +9,7 @@
 //! what's deliberately deferred.
 
 pub mod crypto;
+pub mod identity;
 pub mod lan;
 pub mod protocol;
 pub mod requester;

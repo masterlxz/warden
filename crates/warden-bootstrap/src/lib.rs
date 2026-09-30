@@ -458,6 +458,17 @@ pub struct FileConfig {
     /// Folders of the owner's vault shared with members (P84 fatia 3, TOML `[[spaces]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spaces: Vec<users::SpaceConfig>,
+    /// Which chain the TruthID registry is read from, when a member links a TruthID (P84 fatia 5,
+    /// TOML `truthid_network`: `base-mainnet` or `base-sepolia`).
+    #[serde(default, skip_serializing_if = "is_default_network")]
+    pub truthid_network: warden_truthid::identity::Network,
+    /// The JSON-RPC endpoint for that chain; the network's public one when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truthid_rpc_url: Option<String>,
+}
+
+fn is_default_network(network: &warden_truthid::identity::Network) -> bool {
+    *network == warden_truthid::identity::Network::default()
 }
 
 /// One external MCP server to connect to (TOML: `[[mcp_servers]]`), over either transport `rmcp`
@@ -2106,6 +2117,8 @@ oauth = true
             recovery_policy: recovery::RecoveryPolicy::Private,
             recovery_public_key: None,
             spaces: Vec::new(),
+            truthid_network: Default::default(),
+            truthid_rpc_url: None,
         };
 
         save_config(&path, &config).unwrap();

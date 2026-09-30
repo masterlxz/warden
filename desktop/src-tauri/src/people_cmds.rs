@@ -6,7 +6,7 @@
 //! No pairing key is asked: this is the owner's own machine, like the rest of its settings.
 
 use serde::Serialize;
-use warden_bootstrap::users::{add_user, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, SpaceConfig};
+use warden_bootstrap::users::{add_user, create_invite, unlink_truthid, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, SpaceConfig};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server::people::user_info;
 use warden_server::PairingStore;
@@ -18,6 +18,8 @@ pub struct PeoplePayload {
     users: Vec<UserInfoDto>,
     /// The provisional password of the member just created or reset — shown once.
     temp_password: Option<String>,
+    /// P84 fatia 5: the invite to link a TruthID just made — shown once.
+    invite_code: Option<String>,
 }
 
 fn config_path() -> Result<std::path::PathBuf, String> {
@@ -31,14 +33,14 @@ fn change(apply: impl FnOnce(&mut warden_bootstrap::FileConfig) -> anyhow::Resul
     let temp_password = apply(&mut config).map_err(|e| format!("{e:#}"))?;
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
     let policy = warden_bootstrap::users::workspace_policy(&config);
-    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password })
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password, invite_code: None })
 }
 
 #[tauri::command]
 pub fn list_people() -> Result<PeoplePayload, String> {
     let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
     let policy = warden_bootstrap::users::workspace_policy(&config);
-    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password: None })
+    Ok(PeoplePayload { users: config.users.iter().map(|u| user_info(u, &config.agents, policy)).collect(), temp_password: None, invite_code: None })
 }
 
 #[tauri::command]
@@ -59,6 +61,24 @@ pub fn rename_person(id: String, name: String) -> Result<PeoplePayload, String> 
 #[tauri::command]
 pub fn set_person_tools(id: String, tools: Option<Vec<String>>) -> Result<PeoplePayload, String> {
     change(|config| set_user_tools(config, &id, tools).map(|()| None))
+}
+
+/// P84 fatia 5: an invite for a member to link their TruthID, handed back once (7 days, single use).
+#[tauri::command]
+pub fn invite_person(id: String) -> Result<PeoplePayload, String> {
+    let mut code = None;
+    let mut payload = change(|config| {
+        code = Some(create_invite(config, &id, warden_server::people::unix_now())?);
+        Ok(None)
+    })?;
+    payload.invite_code = code;
+    Ok(payload)
+}
+
+/// Unties a member's TruthID and cancels an open invite.
+#[tauri::command]
+pub fn unlink_person_truthid(id: String) -> Result<PeoplePayload, String> {
+    change(|config| unlink_truthid(config, &id).map(|()| None))
 }
 
 #[tauri::command]

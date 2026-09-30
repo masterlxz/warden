@@ -443,6 +443,7 @@ export default function App() {
         required={user.mustChangePassword}
         needsRecovery={user.needsRecovery}
         encrypted={user.encrypted}
+        truthid={user.truthid}
         onDone={handlePasswordChanged}
         onNewCode={(code) => {
           setRecoveryCode({ code, replacing: true });

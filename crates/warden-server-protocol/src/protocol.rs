@@ -384,6 +384,12 @@ pub struct UserInfoDto {
     /// Every time the owner recovered their data with the workspace's recovery key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recoveries: Vec<RecoveryEventDto>,
+    /// P84 fatia 5: the TruthID username they linked, empty if none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub truthid: String,
+    /// An invite to link a TruthID is open (made by the owner, not used or expired yet).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invite_open: bool,
 }
 
 /// The owner recovered someone's data with the workspace's recovery key (P84 fatia 4, parte B).
@@ -1109,6 +1115,26 @@ pub enum ClientMessage {
         pairing_key: String,
         id: String,
     },
+    /// P84 fatia 5: the owner makes an invite for a member to link their TruthID, shown once in
+    /// `UserList` (`invite_code`). A new one replaces an open one.
+    CreateInvite {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// The owner unties a member's TruthID, or cancels an open invite. Answered by `UserList`.
+    UnlinkTruthId {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// A member links their TruthID with the owner's invite `code`, naming their TruthID
+    /// `username`. Answered by `TruthIdLinked` or `UserError`.
+    RedeemInvite {
+        request_id: u64,
+        code: String,
+        username: String,
+    },
     /// Removes a member and revokes their devices. Their vault and conversations stay on the hub's disk.
     RemoveUser {
         request_id: u64,
@@ -1458,6 +1484,9 @@ pub enum ServerMessage {
         users: Vec<UserInfoDto>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         temp_password: Option<String>,
+        /// P84 fatia 5: the invite just made, shown once.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite_code: Option<String>,
         /// P84 fatia 4 parte B: the workspace's recovery policy (empty from a hub that predates it).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         recovery_policy: String,
@@ -1479,6 +1508,11 @@ pub enum ServerMessage {
     },
     RecoveryNoticesAcked {
         request_id: u64,
+    },
+    /// The member's TruthID is linked (`RedeemInvite`).
+    TruthIdLinked {
+        request_id: u64,
+        username: String,
     },
     PasswordChanged {
         request_id: u64,

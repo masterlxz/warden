@@ -38,6 +38,8 @@ import {
 export interface UserList {
   users: UserInfo[];
   tempPassword?: string;
+  /** The invite just made for a TruthID link (P84 fatia 5), shown once. */
+  inviteCode?: string;
   /** The workspace's recovery policy (P84 fatia 4 parte B): "private", "consent" or "company". */
   recoveryPolicy?: string;
 }
@@ -467,6 +469,7 @@ export class ServerConnection {
       case "recoveryPolicy":
       case "recoveryPolicyAccepted":
       case "recoveryNoticesAcked":
+      case "truthIdLinked":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
       case "recoveryCode":
@@ -750,6 +753,23 @@ export class ServerConnection {
     return this.userRequest((requestId) => ({ type: "resetPassword", requestId, pairingKey, id }));
   }
 
+  /** P84 fatia 5: an invite for a member to link their TruthID, in the reply once. */
+  async createInvite(pairingKey: string, id: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "createInvite", requestId, pairingKey, id }));
+  }
+
+  /** Unties a member's TruthID and cancels an open invite. */
+  async unlinkTruthId(pairingKey: string, id: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "unlinkTruthId", requestId, pairingKey, id }));
+  }
+
+  /** A member links their TruthID with the owner's invite. Answers with the username the registry has. */
+  async redeemInvite(code: string, username: string): Promise<string> {
+    const reply = await this.request((requestId) => ({ type: "redeemInvite", requestId, code, username }));
+    if (reply.type !== "truthIdLinked") throw new Error("resposta inesperada do hub");
+    return reply.username;
+  }
+
   /** Removes a member and revokes their devices; their vault and conversations stay on the hub. */
   async removeUser(pairingKey: string, id: string): Promise<UserList> {
     return this.userRequest((requestId) => ({ type: "removeUser", requestId, pairingKey, id }));
@@ -801,6 +821,7 @@ export class ServerConnection {
     return {
       users: reply.users,
       ...(reply.tempPassword !== undefined && { tempPassword: reply.tempPassword }),
+      ...(reply.inviteCode !== undefined && { inviteCode: reply.inviteCode }),
       ...(reply.recoveryPolicy !== undefined && { recoveryPolicy: reply.recoveryPolicy }),
     };
   }

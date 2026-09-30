@@ -65,6 +65,34 @@ pub struct UserConfig {
     /// Every time the owner recovered their data with the workspace's recovery key (parte B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recoveries: Vec<RecoveryEvent>,
+    /// The TruthID identity this member linked with an invite (P84 fatia 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truthid: Option<TruthIdLink>,
+    /// An invite the owner made and nobody has used yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<Invite>,
+}
+
+/// A TruthID identity tied to a member. Saying who it is proves nothing by itself: signing in with
+/// it will need a signature from one of that identity's devices.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TruthIdLink {
+    /// The TruthID username, as the registry has it.
+    pub username: String,
+    /// The registry's id for that identity; what a device is later checked against.
+    pub identity_id: u64,
+    /// When it was linked, in seconds since the epoch.
+    pub linked_at: u64,
+}
+
+/// An unused, single-use invitation to link a TruthID. Only a hash of the secret is kept.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Invite {
+    pub secret_hash: String,
+    /// Seconds since the epoch.
+    pub expires_at: u64,
 }
 
 /// One key, wrapped twice (`member_crypto`): whoever knows the password, or the recovery code,
@@ -287,6 +315,8 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         key: None,
         key_needs_recovery: false,
         recoveries: Vec::new(),
+        truthid: None,
+        invite: None,
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -307,6 +337,64 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
 pub fn rename_user(config: &mut FileConfig, id: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!name.trim().is_empty(), "a user needs a name");
     find_mut(config, id)?.name = name.trim().to_string();
+    Ok(())
+}
+
+/// How long an invite works.
+pub const INVITE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+const INVITE_SECRET_LEN: usize = 20;
+
+/// The owner invites `id` to link a TruthID. Returns the code to hand over — `<username>:<secret>`,
+/// shown once, since only a hash of the secret is kept. A new invite replaces an older unused one.
+pub fn create_invite(config: &mut FileConfig, id: &str, now: u64) -> anyhow::Result<String> {
+    const CHARS: &[u8] = b"abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut rng = rand::rngs::OsRng;
+    let secret: String = (0..INVITE_SECRET_LEN).map(|_| CHARS[rng.gen_range(0..CHARS.len())] as char).collect();
+    let secret_hash = hash_password(&secret)?;
+    let user = find_mut(config, id)?;
+    user.invite = Some(Invite { secret_hash, expires_at: now + INVITE_TTL_SECS });
+    Ok(format!("{id}:{secret}"))
+}
+
+/// Splits an invite code into the username and the secret.
+pub fn split_invite(code: &str) -> Option<(&str, &str)> {
+    code.trim().split_once(':').filter(|(id, secret)| is_valid_user_id(id) && !secret.is_empty())
+}
+
+/// Whether `code` is a live invite. One answer for every way it can be wrong, so a stranger can't
+/// tell a real username from an invalid one.
+pub fn check_invite<'a>(users: &'a [UserConfig], code: &str, now: u64) -> anyhow::Result<&'a UserConfig> {
+    let invalid = || anyhow::anyhow!("that invite isn't valid (wrong, used or expired)");
+    let (id, secret) = split_invite(code).ok_or_else(invalid)?;
+    let Some(user) = users.iter().find(|u| u.id == id) else {
+        let _ = verify_password("$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$wJ6yOkq2dh6lV9Z6Hn6oS5o8f3sYkQ3sVJ0b1k2Wm0Y", secret);
+        return Err(invalid());
+    };
+    match &user.invite {
+        Some(invite) if invite.expires_at > now && verify_password(&invite.secret_hash, secret) => Ok(user),
+        _ => Err(invalid()),
+    }
+}
+
+/// Uses the invite: the member is now tied to `link`'s identity, and the invite is gone. Returns
+/// the member's username. Another member can't hold the same identity.
+pub fn redeem_invite(config: &mut FileConfig, code: &str, link: TruthIdLink, now: u64) -> anyhow::Result<String> {
+    let id = check_invite(&config.users, code, now)?.id.clone();
+    anyhow::ensure!(
+        !config.users.iter().any(|u| u.id != id && u.truthid.as_ref().is_some_and(|t| t.identity_id == link.identity_id)),
+        "that TruthID is already linked to another member"
+    );
+    let user = find_mut(config, &id)?;
+    user.truthid = Some(link);
+    user.invite = None;
+    Ok(id)
+}
+
+/// The owner unties a member's TruthID and cancels an invite that's still open.
+pub fn unlink_truthid(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let user = find_mut(config, id)?;
+    user.truthid = None;
+    user.invite = None;
     Ok(())
 }
 
@@ -727,6 +815,41 @@ mod tests {
         assert!(!verify_password("not a hash", "correct horse"));
         assert!(hash_password("short").is_err());
         assert_ne!(hash_password("correct horse").unwrap(), hash, "a fresh salt each time");
+    }
+
+    #[test]
+    fn an_invite_links_a_truthid_once() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temp-password").unwrap();
+        add_user(&mut config, "bruno", "Bruno", "temp-password").unwrap();
+        let link = |id: u64| TruthIdLink { username: format!("u{id}"), identity_id: id, linked_at: 100 };
+
+        let code = create_invite(&mut config, "ana", 100).unwrap();
+        assert!(code.starts_with("ana:") && !config.users[0].invite.as_ref().unwrap().secret_hash.contains(&code[4..]));
+        assert!(check_invite(&config.users, &code, 100).is_ok());
+        // Wrong secret, unknown person, garbage and another member's invite all fail the same way.
+        let wrong = check_invite(&config.users, "ana:nope", 100).unwrap_err().to_string();
+        assert_eq!(check_invite(&config.users, "zed:nope", 100).unwrap_err().to_string(), wrong);
+        assert_eq!(check_invite(&config.users, "garbage", 100).unwrap_err().to_string(), wrong);
+        assert_eq!(check_invite(&config.users, &code.replace("ana:", "bruno:"), 100).unwrap_err().to_string(), wrong);
+        assert!(check_invite(&config.users, &code, 100 + INVITE_TTL_SECS).is_err(), "expired");
+
+        assert_eq!(redeem_invite(&mut config, &code, link(7), 101).unwrap(), "ana");
+        assert_eq!(config.users[0].truthid, Some(link(7)));
+        assert!(config.users[0].invite.is_none());
+        assert!(redeem_invite(&mut config, &code, link(7), 102).is_err(), "single use");
+
+        // The same identity can't be Bruno's too.
+        let code = create_invite(&mut config, "bruno", 100).unwrap();
+        assert!(redeem_invite(&mut config, &code, link(7), 101).is_err());
+        assert!(redeem_invite(&mut config, &code, link(8), 101).is_ok());
+
+        unlink_truthid(&mut config, "ana").unwrap();
+        assert!(config.users[0].truthid.is_none());
+        assert!(create_invite(&mut config, "nobody", 100).is_err());
+        // What's saved reads back.
+        let text = toml::to_string(&config).unwrap();
+        assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users[1].truthid, Some(link(8)));
     }
 
     #[test]

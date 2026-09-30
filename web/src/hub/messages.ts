@@ -236,6 +236,10 @@ export interface UserInfo {
   recoveryPolicy?: string;
   /** Every time the owner recovered their data with the workspace's recovery key. */
   recoveries?: RecoveryEvent[];
+  /** P84 fatia 5 — the TruthID username they linked; absent if none. */
+  truthid?: string;
+  /** An invite to link a TruthID is open (not used or expired yet). */
+  inviteOpen?: boolean;
 }
 
 /** Mirrors `RecoveryEventDto` (P84 fatia 4 parte B). */
@@ -453,6 +457,11 @@ export type ClientMessage =
   | { type: "saveUser"; requestId: number; pairingKey: string; id: string; name: string; isNew: boolean }
   | { type: "resetPassword"; requestId: number; pairingKey: string; id: string }
   | { type: "removeUser"; requestId: number; pairingKey: string; id: string }
+  /** P84 fatia 5 — the owner makes an invite to link a TruthID (shown once, in `userList`) or unties one; a member
+   * links theirs with the invite `code` and their TruthID `username`. */
+  | { type: "createInvite"; requestId: number; pairingKey: string; id: string }
+  | { type: "unlinkTruthId"; requestId: number; pairingKey: string; id: string }
+  | { type: "redeemInvite"; requestId: number; code: string; username: string }
   /** P84 fatia 2 — the owner sets a member's tools (`null`: the safe default). */
   | { type: "setUserTools"; requestId: number; pairingKey: string; id: string; tools: string[] | null }
   /** A member's own agents, answered by `settings` (their view) or `settingsError`. */
@@ -520,7 +529,9 @@ export type ServerMessage =
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
-  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; recoveryPolicy?: string }
+  | { type: "userList"; requestId: number; users: UserInfo[]; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string }
+  /** P84 fatia 5 — the member's TruthID is linked. */
+  | { type: "truthIdLinked"; requestId: number; username: string }
   /** `secret`: the owner's recovery key, only when one was just made — shown once, never kept. */
   | { type: "recoveryPolicy"; requestId: number; policy: string; secret?: string }
   /** `recoveryCode`: entering or leaving "consent" made a new code — shown once. */
@@ -604,14 +615,16 @@ export function decode(text: string): ServerMessage {
     case "recoveryPolicy":
     case "recoveryPolicyAccepted":
     case "recoveryNoticesAcked":
+    case "truthIdLinked":
       return json as ServerMessage;
     case "userList": {
-      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; recoveryPolicy?: string };
+      const raw = json as { requestId: number; users: Array<Omit<UserInfo, "mustChangePassword" | "agents"> & { mustChangePassword?: boolean; agents?: string[] }>; tempPassword?: string; inviteCode?: string; recoveryPolicy?: string };
       return {
         type: "userList",
         requestId: raw.requestId,
         users: raw.users.map((u) => ({ ...u, mustChangePassword: u.mustChangePassword ?? false, agents: u.agents ?? [] })),
         ...(raw.tempPassword !== undefined && { tempPassword: raw.tempPassword }),
+        ...(raw.inviteCode !== undefined && { inviteCode: raw.inviteCode }),
         ...(raw.recoveryPolicy !== undefined && { recoveryPolicy: raw.recoveryPolicy }),
       };
     }

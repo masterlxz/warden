@@ -37,7 +37,7 @@ impl MemberSpace {
     /// The same member with their vault opened again from the folder's current state — after their
     /// data key was created or opened (a connection's first vault was plain, or locked).
     pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
-        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new() };
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None };
         Self::new(&user, users_dir, conversations_root)
     }
 
@@ -108,7 +108,14 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: Re
         encrypted: user.key.is_some(),
         needs_recovery: user.key_needs_recovery,
         locked: false,
+        truthid: user.truthid.as_ref().map(|link| link.username.clone()).unwrap_or_default(),
+        invite_open: user.invite.as_ref().is_some_and(|invite| invite.expires_at > unix_now()),
     }
+}
+
+/// Seconds since the epoch.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// The tools member `id` may use on this hub right now (`warden_bootstrap::users::member_tools`
@@ -162,6 +169,8 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SetUserTools { request_id, .. }
         | ClientMessage::SetRecoveryPolicy { request_id, .. }
         | ClientMessage::RecoverMember { request_id, .. }
+        | ClientMessage::CreateInvite { request_id, .. }
+        | ClientMessage::UnlinkTruthId { request_id, .. }
         | ClientMessage::SaveSpace { request_id, .. }
         | ClientMessage::DeleteSpace { request_id, .. } => {
             ServerMessage::UserError { request_id: *request_id, message: message_text, auth_rejected: true }

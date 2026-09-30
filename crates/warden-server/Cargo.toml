@@ -29,6 +29,7 @@ tokio-tungstenite = "0.30"
 # P84 fatia 4: the members' file in a backup (`member_backup.rs`).
 toml.workspace = true
 warden-bootstrap = { path = "../warden-bootstrap" }
+warden-truthid = { path = "../warden-truthid" }
 warden-core = { path = "../warden-core" }
 warden-server-protocol = { path = "../warden-server-protocol" }
 
