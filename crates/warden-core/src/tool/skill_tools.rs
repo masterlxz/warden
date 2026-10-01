@@ -148,12 +148,13 @@ impl Tool for ManageSkillTool {
             name: "manage_skill".to_string(),
             description: "Create or update a reusable skill (a saved set of instructions the assistant can \
                           load later with use_skill). Only use this when the user asks to create, save or \
-                          change a skill. 'update' replaces the whole skill."
+                          change a skill. 'update' replaces the whole skill; 'patch' swaps one passage of its \
+                          instructions (old_string -> new_string) and is the better choice for a small change."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["create", "update"] },
+                    "action": { "type": "string", "enum": ["create", "update", "patch"] },
                     "name": {
                         "type": "string",
                         "description": "Short slug: lowercase letters, digits and hyphens only, e.g. 'review-pr'"
@@ -186,9 +187,22 @@ impl Tool for ManageSkillTool {
                         "description": "Optional: text files to attach to the skill (scripts, templates), added \
                                         or replaced by name. Omit to leave the current attachments untouched; \
                                         attachments are never removed through this tool."
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "patch only: the exact passage of the instructions to replace; it must appear \
+                                        exactly once (unless replace_all is true)"
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "patch only: what to put in its place (may be empty to delete the passage)"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "patch only: replace every occurrence of old_string"
                     }
                 },
-                "required": ["action", "name", "description", "body"]
+                "required": ["action", "name"]
             }),
         }
     }
@@ -196,6 +210,16 @@ impl Tool for ManageSkillTool {
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let action = required_str(&args, "action")?;
         let name = required_str(&args, "name")?.to_string();
+        let existing = self.store.get(&name).ok();
+        // A suggestion (P104) waits for the person: the model editing it would accept it behind their back.
+        if existing.as_ref().is_some_and(|s| s.proposed) {
+            anyhow::bail!("'{name}' is a suggestion waiting for the person to accept it; it can't be changed until they do");
+        }
+        match action {
+            "patch" => return self.patch(&args, name, existing),
+            "create" | "update" => {}
+            other => anyhow::bail!("unknown action '{other}', expected 'create', 'update' or 'patch'"),
+        }
         let agents = match args.get("agents") {
             None | Some(Value::Null) => None,
             Some(Value::Array(items)) => Some(
@@ -207,12 +231,12 @@ impl Tool for ManageSkillTool {
             Some(_) => anyhow::bail!("'agents' must be an array of strings"),
         };
         let files = parse_files(&args)?;
-        let exists = self.store.exists(&name);
+        let exists = existing.is_some();
         // Editing a skill without mentioning `agents` must not silently drop its restriction.
-        let agents = match (agents, exists) {
+        let agents = match (agents, &existing) {
             (Some(agents), _) => agents,
-            (None, true) => self.store.get(&name).map(|s| s.agents).unwrap_or_default(),
-            (None, false) => Vec::new(),
+            (None, Some(current)) => current.agents.clone(),
+            (None, None) => Vec::new(),
         };
         let skill = Skill {
             name,
@@ -222,14 +246,14 @@ impl Tool for ManageSkillTool {
             proposed: false,
             source: None,
             proposed_at: None,
+            revises: None,
         };
         skill.validate()?;
 
         match action {
             "create" if exists => anyhow::bail!("a skill named '{}' already exists; use action 'update'", skill.name),
             "update" if !exists => anyhow::bail!("no skill named '{}' to update; use action 'create'", skill.name),
-            "create" | "update" => {}
-            other => anyhow::bail!("unknown action '{other}', expected 'create' or 'update'"),
+            _ => {}
         }
         if !files.is_empty() {
             // Checked before anything is written, so a bad attachment doesn't leave a half-saved skill.
@@ -248,6 +272,25 @@ impl Tool for ManageSkillTool {
             self.store.save_file(&skill.name, file, content)?;
         }
         Ok(json!({ "status": "ok", "name": skill.name }))
+    }
+}
+
+impl ManageSkillTool {
+    /// `patch`: swaps one passage of the instructions, keeping the description, the agent restriction and the
+    /// attachments. The passage has to be there exactly once unless `replace_all` says otherwise, so a vague
+    /// `old_string` can't change the wrong place.
+    fn patch(&self, args: &Value, name: String, existing: Option<Skill>) -> anyhow::Result<Value> {
+        let mut skill = existing.ok_or_else(|| anyhow::anyhow!("no skill named '{name}' to patch; use action 'create'"))?;
+        let old = required_str(args, "old_string")?;
+        let new = args.get("new_string").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required argument 'new_string'"))?;
+        let replace_all = args.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
+        anyhow::ensure!(!old.is_empty(), "'old_string' must not be empty");
+        let found = skill.body.matches(old).count();
+        anyhow::ensure!(found > 0, "'old_string' isn't in the instructions of '{name}'; use_skill shows them as they are");
+        anyhow::ensure!(found == 1 || replace_all, "'old_string' appears {found} times in '{name}'; add more around it to make it unique, or set replace_all");
+        skill.body = skill.body.replace(old, new);
+        self.store.save(&skill)?;
+        Ok(json!({ "status": "ok", "name": skill.name, "replaced": found }))
     }
 }
 
@@ -443,5 +486,62 @@ mod tests {
         assert!(tool.call(json!({ "skill": "x", "file": "../x.md" })).await.is_err());
         assert!(tool.call(json!({ "skill": "x", "file": "missing.txt" })).await.unwrap_err().to_string().contains("no attachment"));
         assert!(tool.call(json!({ "skill": "x" })).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn patch_swaps_one_passage_and_keeps_everything_else() {
+        let store = temp_store();
+        let manage = ManageSkillTool::new(store.clone());
+        manage
+            .call(json!({ "action": "create", "name": "x", "description": "d", "body": "Use tabs. Be brief.", "agents": ["writer"], "files": [{ "name": "run.sh", "content": "echo" }] }))
+            .await
+            .unwrap();
+
+        let out = manage.call(json!({ "action": "patch", "name": "x", "old_string": "Use tabs.", "new_string": "Use spaces." })).await.unwrap();
+        assert_eq!(out["replaced"], 1);
+        let after = store.get("x").unwrap();
+        assert_eq!((after.body.as_str(), after.description.as_str(), after.agents.clone()), ("Use spaces. Be brief.", "d", vec!["writer".to_string()]));
+        assert_eq!(store.list_files("x").unwrap(), vec!["run.sh"]);
+    }
+
+    #[tokio::test]
+    async fn patch_needs_a_unique_passage_unless_replace_all() {
+        let store = temp_store();
+        let manage = ManageSkillTool::new(store.clone());
+        manage.call(json!({ "action": "create", "name": "x", "description": "d", "body": "a b a" })).await.unwrap();
+
+        let patch = |extra: Value| {
+            let mut args = json!({ "action": "patch", "name": "x", "old_string": "a", "new_string": "z" });
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            args
+        };
+        assert!(manage.call(patch(json!({}))).await.unwrap_err().to_string().contains("2 times"));
+        assert!(manage.call(patch(json!({ "old_string": "nope" }))).await.unwrap_err().to_string().contains("isn't in"));
+        assert!(manage.call(patch(json!({ "old_string": "" }))).await.is_err());
+        assert!(manage.call(json!({ "action": "patch", "name": "x", "old_string": "a" })).await.is_err(), "new_string is required");
+        assert_eq!(store.get("x").unwrap().body, "a b a", "nothing changed so far");
+
+        manage.call(patch(json!({ "replace_all": true }))).await.unwrap();
+        assert_eq!(store.get("x").unwrap().body, "z b z");
+        assert!(manage.call(json!({ "action": "patch", "name": "missing", "old_string": "a", "new_string": "b" })).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_pending_suggestion_cant_be_changed_by_the_model() {
+        let store = temp_store();
+        store
+            .save(&Skill { name: "tip".into(), description: "d".into(), body: "Do it.".into(), agents: Vec::new(), proposed: true, source: Some("c1".into()), proposed_at: Some(1), revises: None })
+            .unwrap();
+        let manage = ManageSkillTool::new(store.clone());
+
+        for args in [
+            json!({ "action": "update", "name": "tip", "description": "d", "body": "Other." }),
+            json!({ "action": "patch", "name": "tip", "old_string": "Do", "new_string": "Don't" }),
+            json!({ "action": "create", "name": "tip", "description": "d", "body": "Other." }),
+        ] {
+            assert!(manage.call(args).await.unwrap_err().to_string().contains("waiting for the person"));
+        }
+        let still = store.get("tip").unwrap();
+        assert!(still.proposed && still.body == "Do it.");
     }
 }

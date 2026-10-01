@@ -26,17 +26,20 @@ pub struct SkillPayload {
     agents: Vec<String>,
     /// P104: a suggestion the assistant made (not yet accepted). Saving the form sends none of these back,
     /// which is what accepts it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     proposed: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     proposed_at: Option<i64>,
+    /// P115: the suggestion is a change to this existing skill (display only; the store keeps what is on disk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revises: Option<String>,
 }
 
 impl From<Skill> for SkillPayload {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at, revises: skill.revises }
     }
 }
 
@@ -51,6 +54,7 @@ impl From<SkillPayload> for Skill {
             proposed,
             source: payload.source.filter(|_| proposed),
             proposed_at: payload.proposed_at.filter(|_| proposed),
+            revises: None,
         }
     }
 }
@@ -148,7 +152,7 @@ mod tests {
     }
 
     fn skill(name: &str) -> Skill {
-        Skill { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
+        Skill { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None, revises: None }
     }
 
     #[test]

@@ -37,6 +37,8 @@ export interface SkillDto {
   proposed?: boolean;
   source?: string;
   proposedAt?: number;
+  /** P115: the suggestion is a change to this existing skill; accepting applies it there. */
+  revises?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::ConversationSummary` (P78). */

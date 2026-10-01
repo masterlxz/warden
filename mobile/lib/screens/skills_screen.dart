@@ -95,7 +95,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
             Row(
               children: [
                 Expanded(child: Text(skill.name, style: Theme.of(context).textTheme.titleMedium)),
-                const Chip(label: Text('Suggested'), visualDensity: VisualDensity.compact),
+                Chip(label: Text(skill.revises == null ? 'Suggested' : 'Change to ${skill.revises}'), visualDensity: VisualDensity.compact),
               ],
             ),
             if (skill.description.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(skill.description)),

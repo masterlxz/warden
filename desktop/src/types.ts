@@ -342,6 +342,8 @@ export interface SkillEntry {
   /** The conversation that suggested it, and when (ms since epoch). Only set while `proposed`. */
   source?: string;
   proposedAt?: number;
+  /** P115: the suggestion is a change to this existing skill; accepting applies it there. */
+  revises?: string;
 }
 
 /** P84 — `person` is one member of the workspace, on every channel. */

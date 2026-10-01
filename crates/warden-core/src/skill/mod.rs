@@ -54,6 +54,9 @@ pub struct Skill {
     pub source: Option<String>,
     /// When it was suggested, in milliseconds since the epoch.
     pub proposed_at: Option<i64>,
+    /// A suggestion that is a change to this existing skill rather than a skill of its own: accepting it
+    /// (`SkillStore::save` without `proposed`) applies its text to that skill and removes the suggestion.
+    pub revises: Option<String>,
 }
 
 /// A skill name doubles as its filename, so it must be a plain slug — `Vault::write` does no
@@ -128,6 +131,9 @@ impl Skill {
             if let Some(at) = self.proposed_at {
                 proposal.push_str(&format!("proposed_at: {at}\n"));
             }
+            if let Some(target) = &self.revises {
+                proposal.push_str(&format!("revises: {target}\n"));
+            }
         }
         format!("---\nname: {}\ndescription: {}\n{}{}---\n{}\n", self.name, description, agents, proposal, self.body.trim())
     }
@@ -139,7 +145,7 @@ impl Skill {
         let raw = raw.replace("\r\n", "\n");
         let mut description = String::new();
         let mut agents: Vec<String> = Vec::new();
-        let (mut proposed, mut source, mut proposed_at) = (false, None, None);
+        let (mut proposed, mut source, mut proposed_at, mut revises) = (false, None, None, None);
         let mut body = raw.as_str();
 
         if let Some(rest) = raw.strip_prefix("---\n") {
@@ -159,6 +165,7 @@ impl Skill {
                             "proposed" => proposed = value.trim().eq_ignore_ascii_case("true"),
                             "source" if !value.trim().is_empty() => source = Some(value.trim().to_string()),
                             "proposed_at" => proposed_at = value.trim().parse().ok(),
+                            "revises" if validate_name(value.trim()).is_ok() => revises = Some(value.trim().to_string()),
                             _ => {}
                         }
                     }
@@ -167,7 +174,7 @@ impl Skill {
             }
         }
 
-        Skill { name: name.to_string(), description, body: body.trim().to_string(), agents, proposed, source, proposed_at }
+        Skill { name: name.to_string(), description, body: body.trim().to_string(), agents, proposed, source, proposed_at, revises }
     }
 }
 
@@ -233,8 +240,26 @@ impl SkillStore {
         Self::relative_path(name).is_ok_and(|p| self.vault.is_file(&p))
     }
 
+    /// Saves `skill`. A suggested revision of another skill (`revises`) is special: saving it again
+    /// as a suggestion keeps what it revises whatever the caller sent, and saving it as accepted applies
+    /// its description and body to that skill and removes the suggestion — so no client needs to know
+    /// about revisions to accept one.
     pub fn save(&self, skill: &Skill) -> anyhow::Result<()> {
         skill.validate()?;
+        let on_disk = self.get(&skill.name).ok().filter(|s| s.proposed);
+        if let Some(target) = on_disk.and_then(|s| s.revises) {
+            if skill.proposed {
+                return self.write(&Skill { revises: Some(target), ..skill.clone() });
+            }
+            let accepted = Skill { name: target, source: None, proposed_at: None, revises: None, ..skill.clone() };
+            self.write(&accepted)?;
+            return self.delete(&skill.name);
+        }
+        // Only a suggestion can say what it revises (the learning step makes those); an accepted skill is itself.
+        self.write(&Skill { revises: skill.revises.clone().filter(|_| skill.proposed), ..skill.clone() })
+    }
+
+    fn write(&self, skill: &Skill) -> anyhow::Result<()> {
         let path = Self::relative_path(&skill.name)?;
         self.vault.write(&path, &skill.render()).with_context(|| format!("failed to write skill '{}'", skill.name))
     }
@@ -346,7 +371,7 @@ mod tests {
     }
 
     fn sample(name: &str) -> Skill {
-        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
+        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None, revises: None }
     }
 
     #[test]
@@ -667,5 +692,46 @@ mod tests {
         let store = temp_store();
         store.save(&suggestion("only-a-draft")).unwrap();
         assert!(store.catalog(None).is_none());
+    }
+
+    fn revision_of(target: &str) -> Skill {
+        Skill { name: format!("{target}-revision"), body: "Better steps.".into(), proposed: true, source: Some("c9".into()), proposed_at: Some(7), revises: Some(target.into()), ..sample(target) }
+    }
+
+    #[test]
+    fn a_revision_round_trips_and_stays_a_suggestion_even_when_the_client_forgets_what_it_revises() {
+        let store = temp_store();
+        store.save(&sample("x")).unwrap();
+        store.save(&revision_of("x")).unwrap();
+        assert_eq!(store.get("x-revision").unwrap().revises.as_deref(), Some("x"));
+
+        // A client that edits the text and sends it back as still proposed (without `revises`).
+        store.save(&Skill { body: "Edited.".into(), revises: None, ..store.get("x-revision").unwrap() }).unwrap();
+        let kept = store.get("x-revision").unwrap();
+        assert!(kept.proposed && kept.revises.as_deref() == Some("x") && kept.body == "Edited.");
+        assert_eq!(store.get("x").unwrap().body, sample("x").body, "the skill itself is untouched until accepted");
+    }
+
+    #[test]
+    fn accepting_a_revision_applies_it_to_the_skill_and_removes_the_suggestion() {
+        let store = temp_store();
+        store.save(&Skill { agents: vec!["writer".into()], ..sample("x") }).unwrap();
+        store.save_file("x", "run.sh", "echo").unwrap();
+        store.save(&Skill { agents: vec!["writer".into()], ..revision_of("x") }).unwrap();
+
+        // Accepting is saving the suggestion without `proposed`, like every client does.
+        store.save(&Skill { proposed: false, source: None, proposed_at: None, revises: None, ..store.get("x-revision").unwrap() }).unwrap();
+
+        let x = store.get("x").unwrap();
+        assert_eq!((x.body.as_str(), x.proposed, x.revises, x.agents), ("Better steps.", false, None, vec!["writer".to_string()]));
+        assert!(!store.exists("x-revision"));
+        assert_eq!(store.list_files("x").unwrap(), vec!["run.sh"], "attachments stay");
+    }
+
+    #[test]
+    fn a_plain_save_never_invents_a_revision() {
+        let store = temp_store();
+        store.save(&Skill { revises: Some("other".into()), ..sample("x") }).unwrap();
+        assert_eq!(store.get("x").unwrap().revises, None);
     }
 }

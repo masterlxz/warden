@@ -45,6 +45,9 @@ class SkillDto {
   final String? source;
   final PlatformInt64? proposedAt;
 
+  /// The suggestion is a change to this existing skill; accepting it applies it there (`SkillStore::save`).
+  final String? revises;
+
   const SkillDto({
     required this.name,
     required this.description,
@@ -52,6 +55,7 @@ class SkillDto {
     required this.proposed,
     this.source,
     this.proposedAt,
+    this.revises,
   });
 
   @override
@@ -61,7 +65,8 @@ class SkillDto {
       body.hashCode ^
       proposed.hashCode ^
       source.hashCode ^
-      proposedAt.hashCode;
+      proposedAt.hashCode ^
+      revises.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -73,5 +78,6 @@ class SkillDto {
           body == other.body &&
           proposed == other.proposed &&
           source == other.source &&
-          proposedAt == other.proposedAt;
+          proposedAt == other.proposedAt &&
+          revises == other.revises;
 }

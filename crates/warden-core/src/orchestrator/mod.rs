@@ -1075,6 +1075,7 @@ mod tests {
                 proposed: false,
                 source: None,
                 proposed_at: None,
+                revises: None,
             })
             .unwrap();
         vault
@@ -1125,6 +1126,7 @@ mod tests {
                 proposed: false,
                 source: None,
                 proposed_at: None,
+                revises: None,
             })
             .unwrap();
         let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
@@ -1620,6 +1622,7 @@ mod tests {
                 proposed: false,
                 source: None,
                 proposed_at: None,
+                revises: None,
             })
             .unwrap();
         store.save_file("only-writer", "a.txt", "secret").unwrap();

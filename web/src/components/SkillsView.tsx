@@ -222,7 +222,7 @@ export default function SkillsView({
               <li key={skill.name} className="skills-item skills-item--suggested">
                 <div className="skills-item-header">
                   <span className="skills-item-name">{skill.name}</span>
-                  <span className="devices-status devices-status--pending">Sugerida</span>
+                  <span className="devices-status devices-status--pending">{skill.revises ? `Alteração de ${skill.revises}` : "Sugerida"}</span>
                 </div>
                 <p className="skills-item-description">{skill.description || "(sem descrição)"}</p>
                 <p className="skills-hint">

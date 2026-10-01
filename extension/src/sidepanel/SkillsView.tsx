@@ -174,7 +174,7 @@ export default function SkillsView() {
             <li key={skill.name} className="skills-item">
               <div className="skills-item-header">
                 <span className="skills-item-name">{skill.name}</span>
-                {skill.proposed && <span className="skills-hint">sugerida pela IA — não vale até aceitar</span>}
+                {skill.proposed && <span className="skills-hint">{skill.revises ? `alteração sugerida para ${skill.revises} — não vale até aceitar` : "sugerida pela IA — não vale até aceitar"}</span>}
                 {confirmDelete === skill.name ? (
                   <span className="skills-actions">
                     <button type="button" className="link-button skills-danger" onClick={() => handleDelete(skill.name)}>

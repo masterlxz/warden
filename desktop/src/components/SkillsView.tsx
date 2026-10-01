@@ -453,7 +453,7 @@ function SkillsView({
               <div className="provider-card skill-card" key={skill.name}>
                 <div className="skill-card-header">
                   <span className="skill-card-name">{skill.name}</span>
-                  <span className="settings-hint">suggested — not active</span>
+                  <span className="settings-hint">{skill.revises ? `suggested change to ${skill.revises} — not applied` : "suggested — not active"}</span>
                   <div className="skill-card-actions">
                     {confirmDelete === skill.name ? (
                       <>

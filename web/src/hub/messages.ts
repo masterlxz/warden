@@ -40,6 +40,8 @@ export interface SkillDto {
   source?: string;
   /** When it was suggested, in milliseconds since the epoch. */
   proposedAt?: number;
+  /** P115: the suggestion is a change to this existing skill; accepting applies it there. */
+  revises?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::ConversationSummary` (P78). */

@@ -26,11 +26,15 @@ pub struct SkillDto {
     /// When a suggestion was made, in milliseconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_at: Option<i64>,
+    /// P115: the suggestion is a change to this existing skill; accepting it applies it there. Only read by
+    /// clients to say so — a save never sets it, the hub keeps what is on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revises: Option<String>,
 }
 
 impl From<Skill> for SkillDto {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at, revises: skill.revises }
     }
 }
 
@@ -1825,7 +1829,7 @@ mod tests {
 
         let save = ClientMessage::SaveSkill {
             request_id: 2,
-            skill: SkillDto { name: "review-pr".into(), description: "d".into(), body: "b".into(), agents: vec!["writer".into()], proposed: false, source: None, proposed_at: None },
+            skill: SkillDto { name: "review-pr".into(), description: "d".into(), body: "b".into(), agents: vec!["writer".into()], proposed: false, source: None, proposed_at: None, revises: None },
             overwrite: true,
         };
         let json = serde_json::to_string(&save).unwrap();
@@ -1852,7 +1856,7 @@ mod tests {
     fn server_skill_messages_round_trip_through_json() {
         let list = ServerMessage::SkillList {
             request_id: 1,
-            skills: vec![SkillDto { name: "x".into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }],
+            skills: vec![SkillDto { name: "x".into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None, revises: None }],
         };
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(

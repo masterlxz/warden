@@ -31,6 +31,7 @@ class _FakeRepository implements SkillsRepository {
 
 const _review = SkillDto(name: 'review-pr', description: 'Reviews a PR', body: 'Read the diff.', proposed: false);
 const _tip = SkillDto(name: 'tip', description: 'A tip', body: 'Do it.', proposed: true, source: 'a conversa');
+const _change = SkillDto(name: 'review-pr-revision', description: 'Reviews a PR', body: 'Check tests first.', proposed: true, revises: 'review-pr');
 
 Future<void> _pump(WidgetTester tester, _FakeRepository repo) async {
   await tester.pumpWidget(MaterialApp(home: SkillsScreen(repository: repo)));
@@ -147,5 +148,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(repo.skills, isEmpty);
+  });
+
+  testWidgets('a suggested change to a skill says which skill it changes', (tester) async {
+    await _pump(tester, _FakeRepository([_review, _change]));
+    expect(find.text('Change to review-pr'), findsOneWidget);
+    expect(find.text('Suggested'), findsNothing);
   });
 }

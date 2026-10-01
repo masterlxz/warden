@@ -42,6 +42,11 @@ impl ModelProvider for Scripted {
             return Ok(response_stream(Response { content: format!(r#"{{"signal":"{signal}"}}"#), tool_calls: Vec::new(), usage: None }));
         }
         if messages.first().is_some_and(|m| m.content.contains("reusable skill for an AI assistant")) {
+            // The skill already exists (its text is in the request): the lesson belongs in it.
+            if last.content.contains("<skill name=\"release-notes-style\">") {
+                let revise = r#"{"revise":{"name":"release-notes-style","description":"How to lay out release notes.","body":"Group them under Added, Fixed and Removed, with no emoji.","rationale":"The person corrected the layout."}}"#;
+                return Ok(response_stream(Response { content: revise.to_string(), tool_calls: Vec::new(), usage: None }));
+            }
             let skill = r#"{"skill":{"name":"release-notes-style","description":"How to lay out release notes.","body":"Group them under Added, Fixed and Removed, with no emoji.","rationale":"The person corrected the layout."}}"#;
             return Ok(response_stream(Response { content: skill.to_string(), tool_calls: Vec::new(), usage: None }));
         }
@@ -1334,4 +1339,53 @@ async fn a_member_can_opt_out_of_learning_and_back_in() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(learned.len(), 1, "back in: {learned:?}");
+}
+
+/// P115: a lesson that belongs in a skill the person already has becomes a pending change to it, which
+/// applies when they accept it through the ordinary save every client makes.
+#[tokio::test]
+async fn a_correction_for_an_existing_skill_becomes_a_pending_change_that_applies_when_accepted() {
+    let hub = spin_up().await;
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+    turn_learning_on(&hub);
+    let mine = warden_server_protocol::protocol::SkillDto {
+        name: "release-notes-style".into(),
+        description: "How to lay out release notes.".into(),
+        body: "Group them under Added and Fixed.".into(),
+        agents: Vec::new(),
+        proposed: false,
+        source: None,
+        proposed_at: None,
+        revises: None,
+    };
+    ana.send(&ClientMessage::SaveSkill { request_id: 1, skill: mine, overwrite: false }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SkillOk { .. }));
+
+    tool_said(chat(&mut ana, "Escreva as notas da versao 2", "r1").await);
+    tool_said(chat(&mut ana, "Nao, sempre separe em Adicionado, Corrigido e Removido", "r1").await);
+    let mut change = None;
+    for round in 0..40 {
+        change = skills_of(&mut ana, 10 + round).await.into_iter().find(|s| s.proposed);
+        if change.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let change = change.expect("a change was suggested");
+    assert_eq!((change.name.as_str(), change.revises.as_deref()), ("release-notes-style-revision", Some("release-notes-style")));
+    let original = skills_of(&mut ana, 60).await.into_iter().find(|s| s.name == "release-notes-style").unwrap();
+    assert_eq!(original.body, "Group them under Added and Fixed.", "nothing changes before she accepts");
+
+    // A client that edits and saves it as still pending keeps it a change; one that accepts applies it.
+    let still = warden_server_protocol::protocol::SkillDto { revises: None, ..change.clone() };
+    ana.send(&ClientMessage::SaveSkill { request_id: 61, skill: still, overwrite: true }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SkillOk { .. }));
+    assert_eq!(skills_of(&mut ana, 62).await.into_iter().find(|s| s.proposed).unwrap().revises.as_deref(), Some("release-notes-style"));
+
+    let accepted = warden_server_protocol::protocol::SkillDto { proposed: false, source: None, proposed_at: None, revises: None, ..change };
+    ana.send(&ClientMessage::SaveSkill { request_id: 63, skill: accepted, overwrite: true }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SkillOk { .. }));
+    let after = skills_of(&mut ana, 64).await;
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(!after[0].proposed && after[0].body.contains("Added, Fixed and Removed"), "{after:?}");
 }

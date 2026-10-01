@@ -21,11 +21,13 @@ pub struct SkillDto {
     pub proposed: bool,
     pub source: Option<String>,
     pub proposed_at: Option<i64>,
+    /// The suggestion is a change to this existing skill; accepting it applies it there (`SkillStore::save`).
+    pub revises: Option<String>,
 }
 
 impl From<Skill> for SkillDto {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
+        Self { name: skill.name, description: skill.description, body: skill.body, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at, revises: skill.revises }
     }
 }
 
@@ -48,7 +50,7 @@ pub fn bridge_save_skill(vault_root: String, skill: SkillDto, overwrite: bool) -
     let name = skill.name.trim().to_string();
     // A suggestion that's edited but not accepted keeps when it was made (same rule as the hub's save).
     let proposed_at = if skill.proposed { skill.proposed_at.or_else(|| store.get(&name).ok().and_then(|s| s.proposed_at)) } else { None };
-    let skill = Skill { name, description: skill.description, body: skill.body, agents, proposed: skill.proposed, source: if skill.proposed { skill.source } else { None }, proposed_at };
+    let skill = Skill { name, description: skill.description, body: skill.body, agents, proposed: skill.proposed, source: if skill.proposed { skill.source } else { None }, proposed_at, revises: None };
     skill.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&skill.name) {
         return Err(format!("a skill named '{}' already exists", skill.name));
@@ -73,7 +75,7 @@ mod tests {
     }
 
     fn dto(name: &str) -> SkillDto {
-        SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), proposed: false, source: None, proposed_at: None }
+        SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), proposed: false, source: None, proposed_at: None, revises: None }
     }
 
     #[test]
