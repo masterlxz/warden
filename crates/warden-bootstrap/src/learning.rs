@@ -55,6 +55,9 @@ impl LearningSettings {
     }
 }
 
+/// The spending channel the assistant's learning calls are booked on (P115).
+pub const LEARNING_CHANNEL: &str = "learning";
+
 /// How many existing skills' text the second stage is shown, and how much of each, so it can revise one.
 const MAX_SKILLS_SHOWN: usize = 10;
 const MAX_SKILL_CHARS: usize = 1500;
@@ -252,7 +255,7 @@ pub async fn learn_with_config(
     if conversation_id.starts_with(crate::tasks::CONVERSATION_PREFIX) || !crate::users::learning_allowed(config, member_id) {
         return;
     }
-    let orchestrator = match config.learning.provider.as_deref() {
+    let orchestrator = match crate::users::learning_provider_for(config, member_id) {
         Some(id) => match crate::build_model_for(config, id, None) {
             Ok(model) => orchestrator.with_model(model),
             Err(err) => {
@@ -262,6 +265,8 @@ pub async fn learn_with_config(
         },
         None => orchestrator.clone(),
     };
+    // Its own channel in the usage numbers and limits; the person's, the agent's and the global limits still apply.
+    let orchestrator = orchestrator.with_spend_channel(LEARNING_CHANNEL);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
     match learn_from_conversation(&orchestrator, &config.learning, conversations_dir, conversation_id, agent_id, now).await {
         Ok(Outcome::Revised(name)) => eprintln!("{who}: suggested a change to a skill, as '{name}', from conversation '{conversation_id}'"),
@@ -695,6 +700,48 @@ mod tests {
             store.save(&waiting(&format!("idea-{i}"), 1)).unwrap();
         }
         assert_eq!(learn_from_conversation(&s.orchestrator, &on(), &s.conversations, "c1", None, day * 10).await.unwrap(), Outcome::Skipped("too many suggestions are waiting for an answer"));
+    }
+
+    #[test]
+    fn the_members_own_learning_model_beats_the_workspaces() {
+        let mut config = crate::FileConfig::default();
+        crate::users::add_user(&mut config, "ana", "Ana", "temp-pass-1").unwrap();
+        crate::users::add_user(&mut config, "bia", "Bia", "temp-pass-2").unwrap();
+        assert_eq!(crate::users::learning_provider_for(&config, Some("ana")), None);
+
+        config.learning.provider = Some("workspace-model".into());
+        config.users[0].learning_provider = Some("cheap".into());
+        assert_eq!(crate::users::learning_provider_for(&config, Some("ana")), Some("cheap"), "hers wins");
+        assert_eq!(crate::users::learning_provider_for(&config, Some("bia")), Some("workspace-model"), "no pick of her own: the workspace's");
+        assert_eq!(crate::users::learning_provider_for(&config, None), Some("workspace-model"), "the owner follows the workspace");
+        assert_eq!(crate::users::learning_provider_for(&config, Some("nobody")), Some("workspace-model"));
+    }
+
+    #[tokio::test]
+    async fn learning_is_booked_on_its_own_channel_to_the_same_person_and_a_wrong_provider_falls_back() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted { script: Mutex::new(vec![r#"{"signal":"none"}"#.to_string()]), asked: asked.clone() };
+        let limits = vec![
+            Limit::new("ana-day", Scope::Person("ana".into()), 24).with_max_tokens(1_000),
+            Limit::new("server-day", Scope::Channel("server".into()), 24).with_max_tokens(1_000),
+            Limit::new("learning-day", Scope::Channel(LEARNING_CHANNEL.into()), 24).with_max_tokens(1_000),
+        ];
+        let guard = Arc::new(SpendGuard::new(Arc::new(MemoryStore::default()), limits, PriceTable::new(Vec::new())));
+        let orchestrator = Orchestrator::new(Arc::new(model), Arc::new(Vault::new(temp_dir("channel-vault")))).with_spend_guard(guard.clone()).with_spend_context(SpendContext::new("server").with_person("ana"));
+        let conversations = setup("channel", &[]).conversations;
+
+        let mut config = crate::FileConfig::default();
+        crate::users::add_user(&mut config, "ana", "Ana", "temp-pass-1").unwrap();
+        config.learning.enabled = true;
+        // A provider the hub doesn't have: logged, and the conversation's own model answers.
+        config.users[0].learning_provider = Some("ghost".into());
+
+        learn_with_config("test", &orchestrator, &config, &conversations, "c1", None, Some("ana")).await;
+
+        assert_eq!(asked.lock().unwrap().len(), 1, "the conversation's own model answered");
+        let used = |channel: &str| guard.status(Some(&SpendContext::new(channel).with_person("ana"))).into_iter().map(|s| (s.id, s.used_tokens)).collect::<Vec<_>>();
+        assert_eq!(used(LEARNING_CHANNEL), vec![("ana-day".to_string(), 50), ("learning-day".to_string(), 50)], "booked to Ana and to the learning channel");
+        assert_eq!(used("server"), vec![("ana-day".to_string(), 50), ("server-day".to_string(), 0)], "the server channel's limit didn't count it");
     }
 
     #[tokio::test]

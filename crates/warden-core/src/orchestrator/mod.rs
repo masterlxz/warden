@@ -310,6 +310,13 @@ impl Orchestrator {
         Self { spend_ctx: ctx, ..self.clone() }
     }
 
+    /// Returns a copy that books its spending on another channel (P115: `learning`), whoever it is for staying the
+    /// same — so the person's, the agent's and the global limits still cover it, while the limits of the channel it
+    /// came from no longer count it.
+    pub fn with_spend_channel(&self, channel: &str) -> Self {
+        Self { spend_ctx: SpendContext { channel: channel.to_string(), ..self.spend_ctx.clone() }, ..self.clone() }
+    }
+
     /// One plain model call outside a turn (P104: what the assistant does to learn from a conversation) — no
     /// tools, no vault search, no history. It still spends as whoever this orchestrator is for: a limit with no
     /// room left makes it `Ok(None)` without calling the model, and the tokens it uses are booked like a turn's.

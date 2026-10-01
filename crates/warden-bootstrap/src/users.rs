@@ -75,6 +75,11 @@ pub struct UserConfig {
     /// ever narrows `[learning] enabled`: a member can't switch on what the workspace left off.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub learning_opt_out: bool,
+    /// A provider or combo id the owner picked for the assistant's learning from *this* member's conversations
+    /// (P115), in place of `[learning] provider`. Set in the config file; an id the hub doesn't have falls back
+    /// to the conversation's own model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_provider: Option<String>,
 }
 
 /// A TruthID identity tied to a member. Saying who it is proves nothing by itself: signing in with
@@ -321,6 +326,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         truthid: None,
         invite: None,
         learning_opt_out: false,
+        learning_provider: None,
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -673,6 +679,12 @@ pub fn learning_allowed(config: &FileConfig, id: Option<&str>) -> bool {
     config.learning.enabled && !id.and_then(|id| config.users.iter().find(|u| u.id == id)).is_some_and(|u| u.learning_opt_out)
 }
 
+/// The provider the assistant's learning uses for member `id` (`None`: the owner): the one the owner set for that
+/// member, else the workspace's `[learning] provider`, else none (the conversation's own model).
+pub fn learning_provider_for<'a>(config: &'a FileConfig, id: Option<&str>) -> Option<&'a str> {
+    id.and_then(|id| config.users.iter().find(|u| u.id == id)).and_then(|u| u.learning_provider.as_deref()).or(config.learning.provider.as_deref())
+}
+
 /// Takes the member out of the workspace, with their own agents and every share naming them. Their
 /// vault and conversations stay on disk; if those are encrypted, the entry — the wrapped key — goes
 /// to `removed_users` so they aren't lost for good (`restore_user`, `purge_removed_user`).
@@ -866,6 +878,20 @@ mod tests {
         // What's saved reads back.
         let text = toml::to_string(&config).unwrap();
         assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users[1].truthid, Some(link(8)));
+    }
+
+    #[test]
+    fn a_members_learning_provider_round_trips_through_toml_and_stays_out_of_the_file_when_unset() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temp-pass-1").unwrap();
+        let plain = toml::to_string(&config).unwrap();
+        assert!(!plain.contains("learning_provider") && !plain.contains("learning_opt_out"), "{plain}");
+
+        config.users[0].learning_provider = Some("cheap".into());
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("learning_provider = \"cheap\""), "{text}");
+        assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users[0].learning_provider.as_deref(), Some("cheap"));
+        assert_eq!(toml::from_str::<FileConfig>(&plain).unwrap().users[0].learning_provider, None, "a config from before loads");
     }
 
     #[test]
