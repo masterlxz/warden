@@ -11,7 +11,7 @@ use warden_bootstrap::member_crypto::{self, MemberKey};
 use warden_bootstrap::recovery::RecoveryPolicy;
 use warden_bootstrap::users::{
     ack_recovery_notices, add_user, create_invite, redeem_invite, unlink_truthid, TruthIdLink, change_password_with, enable_encryption, generate_temp_password, open_key, recover_member, regenerate_recovery_code, remove_space, remove_user, rename_user,
-    reset_password, restore_user, save_space, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
+    reset_password, restore_user, save_space, set_learning_opt_out, set_recovery_policy, set_user_tools, spaces_for, sync_recovery_policy, user_conversations_dir, workspace_policy, PasswordChange, SpaceConfig,
 };
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server_protocol::protocol::{RemovedUserDto, SpaceDto};
@@ -359,6 +359,22 @@ pub async fn handle_ack_recovery_notices(settings: Option<&dyn SettingsHost>, lo
     })();
     match result {
         Ok(()) => ServerMessage::RecoveryNoticesAcked { request_id },
+        Err(err) => user_error(request_id, format!("{err:#}"), false),
+    }
+}
+
+/// Answers `SetLearning`: a member's own choice about the assistant learning from their conversations.
+pub async fn handle_set_learning(settings: Option<&dyn SettingsHost>, lock: &tokio::sync::Mutex<()>, user: &str, request_id: u64, enabled: bool) -> ServerMessage {
+    let Some(settings) = settings else { return user_error(request_id, NO_SETTINGS.to_string(), false) };
+    let _serialized = lock.lock().await;
+    let config_path = settings.config_path();
+    let result = (|| -> anyhow::Result<()> {
+        let mut config = load_config_from_path(&config_path, false)?;
+        set_learning_opt_out(&mut config, user, !enabled)?;
+        save_config(&config_path, &config)
+    })();
+    match result {
+        Ok(()) => ServerMessage::LearningSet { request_id },
         Err(err) => user_error(request_id, format!("{err:#}"), false),
     }
 }

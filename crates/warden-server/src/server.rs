@@ -29,7 +29,7 @@ use crate::truthid_login::{self, TruthIdLogins};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
 use crate::people::{member_orchestrator, member_refusal, member_settings_view, migrate_device_conversations, mount_member_spaces, password_gate, tools_for, user_info, MemberSpace, Person, SpaceVaults};
 use crate::user_admin::{
-    handle_redeem_invite, handle_accept_recovery_policy, handle_ack_recovery_notices, handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_set_recovery_policy,
+    handle_redeem_invite, handle_accept_recovery_policy, handle_ack_recovery_notices, handle_set_learning, handle_change_password, handle_list_spaces, handle_list_users, handle_regenerate_recovery_code, handle_set_recovery_policy,
     handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange, UserChange,
 };
 use crate::devices::{handle_list_devices, handle_set_device_status};
@@ -815,6 +815,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
             }
         }
     }
+    // Whether the workspace has the assistant learning from conversations (P104), for the member's own switch.
+    let workspace_learning = settings
+        .as_deref()
+        .and_then(|host| load_config_from_path(&host.config_path(), false).ok())
+        .is_some_and(|config| config.learning.enabled);
     // The workspace's recovery policy (parte B), for the member to read as they sign in.
     let workspace_recovery = settings
         .as_deref()
@@ -829,7 +834,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 let space = MemberSpace::new(member, users_dir, &conversations_dir);
                 // Encrypted, and the hub doesn't hold the key (it restarted): they have to sign in.
                 let locked = matches!(warden_bootstrap::member_crypto::dir_state(&users_dir.join(&member.id)), warden_bootstrap::member_crypto::DirState::Locked);
-                (Person::Member(space), member.must_change_password, Some(warden_server_protocol::protocol::UserInfoDto { locked, recovery_policy: workspace_recovery.as_str().to_string(), ..user_info(member, &[], workspace_recovery) }))
+                (Person::Member(space), member.must_change_password, Some(warden_server_protocol::protocol::UserInfoDto { locked, recovery_policy: workspace_recovery.as_str().to_string(), learning_enabled: workspace_learning, ..user_info(member, &[], workspace_recovery) }))
             }
             None => return reject(&mut sink, "this person is no longer part of the workspace").await,
         },
@@ -1026,6 +1031,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = tx.send(handle_ack_recovery_notices(settings.as_deref(), &settings_lock, &current.id, request_id).await);
                     }
                 },
+                Ok(ClientMessage::SetLearning { request_id, enabled }) => match &member {
+                    None => {
+                        let _ = tx.send(ServerMessage::UserError { request_id, message: "the owner turns learning on or off in the workspace's [learning] settings".to_string(), auth_rejected: false });
+                    }
+                    Some(current) => {
+                        let _ = tx.send(handle_set_learning(settings.as_deref(), &settings_lock, &current.id, request_id, enabled).await);
+                    }
+                },
                 Ok(ClientMessage::SetRecoveryPolicy { request_id, pairing_key, policy, new_key }) => {
                     let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
                     tokio::spawn(async move {
@@ -1140,6 +1153,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let reply_tx = tx.clone();
                     let is_member = member.is_some();
                     let learning_settings = settings.clone();
+                    let learn_member = member.as_ref().map(|m| m.id.clone());
                     tokio::spawn(async move {
                         let learn_id = conversation_id.clone();
                         let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
@@ -1171,7 +1185,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = reply_tx.send(reply);
                         // P104: once the person has their answer, the assistant may look for something to learn from it.
                         if answered {
-                            learn_after_turn(&orchestrator, learning_settings.as_deref(), &conversations_dir, &learn_id, agent_id.as_deref()).await;
+                            learn_after_turn(&orchestrator, learning_settings.as_deref(), &conversations_dir, &learn_id, agent_id.as_deref(), learn_member.as_deref()).await;
                         }
                     });
                 }
@@ -1559,7 +1573,7 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
 /// P104: after a turn was answered, asks the assistant whether it learned something worth suggesting as a skill
 /// (`warden_bootstrap::learning`). Off unless `[learning] enabled`; the person's own orchestrator makes the calls,
 /// so their spending limit counts. Never fails the turn: what goes wrong is only logged.
-async fn learn_after_turn(orchestrator: &Orchestrator, settings: Option<&dyn SettingsHost>, conversations_dir: &Path, conversation_id: &str, agent_id: Option<&str>) {
+async fn learn_after_turn(orchestrator: &Orchestrator, settings: Option<&dyn SettingsHost>, conversations_dir: &Path, conversation_id: &str, agent_id: Option<&str>, member_id: Option<&str>) {
     use warden_bootstrap::learning::{learn_from_conversation, Outcome};
     // A scheduled task's conversation is the owner's automation, not a lesson from a person.
     if conversation_id.starts_with(warden_bootstrap::tasks::CONVERSATION_PREFIX) {
@@ -1568,7 +1582,8 @@ async fn learn_after_turn(orchestrator: &Orchestrator, settings: Option<&dyn Set
     let Some(config) = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()) else {
         return;
     };
-    if !config.learning.enabled {
+    // The workspace has it on and this member hasn't opted out (read fresh, so a toggle counts at their next turn).
+    if !warden_bootstrap::users::learning_allowed(&config, member_id) {
         return;
     }
     let orchestrator = match config.learning.provider.as_deref() {

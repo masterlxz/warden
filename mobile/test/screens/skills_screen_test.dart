@@ -29,7 +29,8 @@ class _FakeRepository implements SkillsRepository {
   Future<void> delete(String name) async => skills.removeWhere((s) => s.name == name);
 }
 
-const _review = SkillDto(name: 'review-pr', description: 'Reviews a PR', body: 'Read the diff.');
+const _review = SkillDto(name: 'review-pr', description: 'Reviews a PR', body: 'Read the diff.', proposed: false);
+const _tip = SkillDto(name: 'tip', description: 'A tip', body: 'Do it.', proposed: true, source: 'a conversa');
 
 Future<void> _pump(WidgetTester tester, _FakeRepository repo) async {
   await tester.pumpWidget(MaterialApp(home: SkillsScreen(repository: repo)));
@@ -109,5 +110,42 @@ void main() {
     await tester.pumpAndSettle();
     expect(repo.skills, isEmpty);
     expect(find.textContaining('No skills yet'), findsOneWidget);
+  });
+
+  testWidgets('a suggestion gets its own section and stays pending when edited and saved', (tester) async {
+    final repo = _FakeRepository([_review, _tip]);
+    await _pump(tester, repo);
+    expect(find.text('Suggested by the AI'), findsOneWidget);
+    expect(find.text('Suggested'), findsOneWidget);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(repo.skills.firstWhere((s) => s.name == 'tip').proposed, isTrue);
+  });
+
+  testWidgets('accepting a suggestion saves it as active', (tester) async {
+    final repo = _FakeRepository([_tip]);
+    await _pump(tester, repo);
+
+    await tester.tap(find.text('Accept'));
+    await tester.pumpAndSettle();
+
+    expect(repo.skills.single.proposed, isFalse);
+    expect(find.text('Suggested by the AI'), findsNothing);
+  });
+
+  testWidgets('rejecting a suggestion deletes it after confirming', (tester) async {
+    final repo = _FakeRepository([_tip]);
+    await _pump(tester, repo);
+
+    await tester.tap(find.text('Reject'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Reject')));
+    await tester.pumpAndSettle();
+
+    expect(repo.skills, isEmpty);
   });
 }

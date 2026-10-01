@@ -391,6 +391,12 @@ pub struct UserInfoDto {
     /// The workspace's recovery policy — only in `HelloAck`, for the member to read.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub recovery_policy: String,
+    /// P115: the member turned off the assistant learning from their conversations.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learning_opt_out: bool,
+    /// The workspace has learning on at all — only in `HelloAck`, so the member's switch means something.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learning_enabled: bool,
     /// Every time the owner recovered their data with the workspace's recovery key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recoveries: Vec<RecoveryEventDto>,
@@ -1096,6 +1102,13 @@ pub enum ClientMessage {
     AckRecoveryNotices {
         request_id: u64,
     },
+    /// A member chooses whether the assistant may learn from their conversations (P115): `enabled:
+    /// false` is the opt-out. The workspace's `[learning]` still has to be on. Answered by
+    /// `LearningSet` or `UserError`.
+    SetLearning {
+        request_id: u64,
+        enabled: bool,
+    },
     /// The owner sets the workspace's recovery policy (`private`, `consent` or `company`), repeating
     /// the pairing key. `new_key` replaces the owner's recovery key. Answered by `RecoveryPolicy` or
     /// `UserError`.
@@ -1540,6 +1553,9 @@ pub enum ServerMessage {
         recovery_code: Option<String>,
     },
     RecoveryNoticesAcked {
+        request_id: u64,
+    },
+    LearningSet {
         request_id: u64,
     },
     /// The answer to a `Hello` with `truthid_login`: what the TruthID app scans (`payload` is the QR's JSON),

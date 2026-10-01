@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServerConnection } from "../hub/connection";
-import type { SkillDto } from "../hub/messages";
+import type { SkillDto, UserInfo } from "../hub/messages";
 
 // Adapted from the extension's `sidepanel/SkillsView.tsx` (P78), talking to the hub directly
 // instead of through a background service worker.
@@ -20,7 +20,16 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export default function SkillsView({ conn }: { conn: ServerConnection | null }) {
+export default function SkillsView({
+  conn,
+  user,
+  onLearningChange,
+}: {
+  conn: ServerConnection | null;
+  /** Set for a member: their own learning switch shows when the workspace has learning on. */
+  user?: UserInfo;
+  onLearningChange?: (optOut: boolean) => void;
+}) {
   const [skills, setSkills] = useState<SkillDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -183,6 +192,24 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
         </button>
       </div>
       {error && <p className="error-banner">{error}</p>}
+      {user && user.learningEnabled && (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={!user.learningOptOut}
+            disabled={!conn}
+            onChange={(e) => {
+              const optOut = !e.target.checked;
+              setError(null);
+              conn?.setLearning(!optOut).then(
+                () => onLearningChange?.(optOut),
+                (err) => setError(`falha ao mudar o aprendizado: ${message(err)}`),
+              );
+            }}
+          />
+          A IA pode aprender com minhas conversas e sugerir skills (nada vale até eu aceitar)
+        </label>
+      )}
       {suggested.length > 0 && (
         <section>
           <h3>Sugeridas pela IA</h3>

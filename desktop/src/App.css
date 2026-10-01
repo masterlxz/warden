@@ -1803,6 +1803,12 @@ body {
   gap: 0.75rem;
 }
 
+.skill-suggestion-body {
+  white-space: pre-wrap;
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
 .skill-card-header {
   display: flex;
   align-items: center;

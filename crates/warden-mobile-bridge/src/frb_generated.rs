@@ -741,10 +741,16 @@ impl SseDecode for crate::api::skills::SkillDto {
         let mut var_name = <String>::sse_decode(deserializer);
         let mut var_description = <String>::sse_decode(deserializer);
         let mut var_body = <String>::sse_decode(deserializer);
+        let mut var_proposed = <bool>::sse_decode(deserializer);
+        let mut var_source = <Option<String>>::sse_decode(deserializer);
+        let mut var_proposedAt = <Option<i64>>::sse_decode(deserializer);
         return crate::api::skills::SkillDto {
             name: var_name,
             description: var_description,
             body: var_body,
+            proposed: var_proposed,
+            source: var_source,
+            proposed_at: var_proposedAt,
         };
     }
 }
@@ -955,6 +961,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::skills::SkillDto {
             self.name.into_into_dart().into_dart(),
             self.description.into_into_dart().into_dart(),
             self.body.into_into_dart().into_dart(),
+            self.proposed.into_into_dart().into_dart(),
+            self.source.into_into_dart().into_dart(),
+            self.proposed_at.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1130,6 +1139,9 @@ impl SseEncode for crate::api::skills::SkillDto {
         <String>::sse_encode(self.name, serializer);
         <String>::sse_encode(self.description, serializer);
         <String>::sse_encode(self.body, serializer);
+        <bool>::sse_encode(self.proposed, serializer);
+        <Option<String>>::sse_encode(self.source, serializer);
+        <Option<i64>>::sse_encode(self.proposed_at, serializer);
     }
 }
 

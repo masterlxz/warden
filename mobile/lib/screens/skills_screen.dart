@@ -47,15 +47,17 @@ class _SkillsScreenState extends State<SkillsScreen> {
     if (saved == true) await _load();
   }
 
-  Future<void> _confirmDelete(SkillDto skill) async {
+  Future<void> _confirmReject(SkillDto skill) => _confirmDelete(skill, verb: 'Reject');
+
+  Future<void> _confirmDelete(SkillDto skill, {String verb = 'Delete'}) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text("Delete '${skill.name}'?"),
+        title: Text("$verb '${skill.name}'?"),
         content: const Text('This removes the skill file and can\'t be undone.'),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: Text(verb)),
         ],
       ),
     );
@@ -68,9 +70,58 @@ class _SkillsScreenState extends State<SkillsScreen> {
     }
   }
 
+  /// Accepting is an explicit save with `proposed: false` — the bridge keeps a suggestion pending on
+  /// any other save, so editing never activates it by accident.
+  Future<void> _accept(SkillDto skill) async {
+    try {
+      await widget.repository.save(
+        SkillDto(name: skill.name, description: skill.description, body: skill.body, proposed: false),
+        overwrite: true,
+      );
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  Widget _suggestedCard(SkillDto skill) {
+    final origin = skill.source;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text(skill.name, style: Theme.of(context).textTheme.titleMedium)),
+                const Chip(label: Text('Suggested'), visualDensity: VisualDensity.compact),
+              ],
+            ),
+            if (skill.description.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(skill.description)),
+            if (origin != null && origin.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text('From: $origin', style: Theme.of(context).textTheme.bodySmall)),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  FilledButton(onPressed: () => _accept(skill), child: const Text('Accept')),
+                  OutlinedButton(onPressed: () => _openForm(existing: skill), child: const Text('Edit')),
+                  TextButton(onPressed: () => _confirmReject(skill), child: const Text('Reject')),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final skills = _skills;
+    final suggested = (skills ?? const <SkillDto>[]).where((s) => s.proposed).toList();
+    final active = (skills ?? const <SkillDto>[]).where((s) => !s.proposed).toList();
     return Scaffold(
       appBar: AppBar(title: const Text('Skills')),
       floatingActionButton: FloatingActionButton.extended(
@@ -100,7 +151,20 @@ class _SkillsScreenState extends State<SkillsScreen> {
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                           ),
-                        for (final skill in skills)
+                        if (suggested.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4, bottom: 4),
+                            child: Text('Suggested by the AI', style: Theme.of(context).textTheme.titleSmall),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Text('Not active yet — the AI only uses a suggestion after you accept it.'),
+                          ),
+                          for (final skill in suggested) _suggestedCard(skill),
+                          const SizedBox(height: 16),
+                          if (active.isNotEmpty) Text('Your skills', style: Theme.of(context).textTheme.titleSmall),
+                        ],
+                        for (final skill in active)
                           Card(
                             child: ListTile(
                               title: Text(skill.name),
@@ -137,8 +201,11 @@ class _SkillFormScreenState extends State<SkillFormScreen> {
   late final _body = TextEditingController(text: widget.existing?.body ?? '');
   bool _saving = false;
   String? _error;
+  // Editing a suggestion keeps it pending unless this is switched on.
+  bool _accept = false;
 
   bool get _isEdit => widget.existing != null;
+  bool get _isSuggestion => widget.existing?.proposed ?? false;
 
   @override
   void dispose() {
@@ -155,7 +222,14 @@ class _SkillFormScreenState extends State<SkillFormScreen> {
     });
     try {
       await widget.repository.save(
-        SkillDto(name: _name.text.trim(), description: _description.text, body: _body.text),
+        SkillDto(
+          name: _name.text.trim(),
+          description: _description.text,
+          body: _body.text,
+          proposed: _isSuggestion && !_accept,
+          source: widget.existing?.source,
+          proposedAt: widget.existing?.proposedAt,
+        ),
         overwrite: _isEdit,
       );
       if (mounted) Navigator.of(context).pop(true);
@@ -205,6 +279,14 @@ class _SkillFormScreenState extends State<SkillFormScreen> {
               border: OutlineInputBorder(),
             ),
           ),
+          if (_isSuggestion)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Accept this skill'),
+              subtitle: const Text('Off: it stays a suggestion and the AI still ignores it.'),
+              value: _accept,
+              onChanged: (v) => setState(() => _accept = v),
+            ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 12),

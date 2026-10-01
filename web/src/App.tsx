@@ -646,7 +646,11 @@ export default function App() {
         ) : view === "settings" ? (
           <SettingsView conn={conn} />
         ) : (
-          <SkillsView conn={conn} />
+          <SkillsView
+            conn={conn}
+            user={user}
+            onLearningChange={(optOut) => setUser((current) => (current ? { ...current, learningOptOut: optOut } : current))}
+          />
         )}
       </main>
       <ApprovalModal queue={approvals} onAnswer={handleApproval} />

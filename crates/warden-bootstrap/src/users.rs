@@ -71,6 +71,10 @@ pub struct UserConfig {
     /// An invite the owner made and nobody has used yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<Invite>,
+    /// The member turned off the assistant learning from their conversations (P104/P115). It only
+    /// ever narrows `[learning] enabled`: a member can't switch on what the workspace left off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub learning_opt_out: bool,
 }
 
 /// A TruthID identity tied to a member. Saying who it is proves nothing by itself: signing in with
@@ -316,6 +320,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         recoveries: Vec::new(),
         truthid: None,
         invite: None,
+        learning_opt_out: false,
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -654,6 +659,18 @@ pub fn ack_recovery_notices(config: &mut FileConfig, id: &str) -> anyhow::Result
         event.seen = true;
     }
     Ok(())
+}
+
+/// The member chooses whether the assistant may learn from their conversations (`enabled`).
+pub fn set_learning_opt_out(config: &mut FileConfig, id: &str, opt_out: bool) -> anyhow::Result<()> {
+    find_mut(config, id)?.learning_opt_out = opt_out;
+    Ok(())
+}
+
+/// Whether a turn of member `id` (`None`: the owner) may be learned from: the workspace has learning
+/// on and the member hasn't opted out.
+pub fn learning_allowed(config: &FileConfig, id: Option<&str>) -> bool {
+    config.learning.enabled && !id.and_then(|id| config.users.iter().find(|u| u.id == id)).is_some_and(|u| u.learning_opt_out)
 }
 
 /// Takes the member out of the workspace, with their own agents and every share naming them. Their
@@ -1290,5 +1307,23 @@ mod tests {
         assert!(text.contains("[[users]]") && !text.contains("temporary-1"), "{text}");
         assert_eq!(crate::load_config_from_path(&path, true).unwrap().users, config.users);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_member_can_opt_out_of_learning_but_not_opt_in_past_the_workspace() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temp-pass-1").unwrap();
+        assert!(!learning_allowed(&config, Some("ana")), "off in the workspace: off for everyone");
+
+        config.learning.enabled = true;
+        assert!(learning_allowed(&config, Some("ana")) && learning_allowed(&config, None));
+
+        set_learning_opt_out(&mut config, "ana", true).unwrap();
+        assert!(!learning_allowed(&config, Some("ana")), "she opted out");
+        assert!(learning_allowed(&config, None), "the owner follows the workspace");
+        assert!(set_learning_opt_out(&mut config, "nobody", true).is_err());
+
+        set_learning_opt_out(&mut config, "ana", false).unwrap();
+        assert!(learning_allowed(&config, Some("ana")));
     }
 }

@@ -39,14 +39,29 @@ class SkillDto {
   final String description;
   final String body;
 
+  /// An AI suggestion (P104) still waiting for the person to accept it. Saving a DTO with this
+  /// `true` keeps it a suggestion; accepting is an explicit save with `false`.
+  final bool proposed;
+  final String? source;
+  final PlatformInt64? proposedAt;
+
   const SkillDto({
     required this.name,
     required this.description,
     required this.body,
+    required this.proposed,
+    this.source,
+    this.proposedAt,
   });
 
   @override
-  int get hashCode => name.hashCode ^ description.hashCode ^ body.hashCode;
+  int get hashCode =>
+      name.hashCode ^
+      description.hashCode ^
+      body.hashCode ^
+      proposed.hashCode ^
+      source.hashCode ^
+      proposedAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -55,5 +70,8 @@ class SkillDto {
           runtimeType == other.runtimeType &&
           name == other.name &&
           description == other.description &&
-          body == other.body;
+          body == other.body &&
+          proposed == other.proposed &&
+          source == other.source &&
+          proposedAt == other.proposedAt;
 }

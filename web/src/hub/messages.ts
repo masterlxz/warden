@@ -240,6 +240,10 @@ export interface UserInfo {
   policyPending?: boolean;
   /** Only in `helloAck`: the workspace's recovery policy. */
   recoveryPolicy?: string;
+  /** P115 — the member turned off the assistant learning from their conversations. */
+  learningOptOut?: boolean;
+  /** Only in `helloAck`: the workspace has learning on at all, so the member's switch means something. */
+  learningEnabled?: boolean;
   /** Every time the owner recovered their data with the workspace's recovery key. */
   recoveries?: RecoveryEvent[];
   /** P84 fatia 5 — the TruthID username they linked; absent if none. */
@@ -463,6 +467,7 @@ export type ClientMessage =
    * policy and recovers a member with the workspace's recovery key (`consent` also needs the person's `code`). */
   | { type: "acceptRecoveryPolicy"; requestId: number; password: string }
   | { type: "ackRecoveryNotices"; requestId: number }
+  | { type: "setLearning"; requestId: number; enabled: boolean }
   | { type: "setRecoveryPolicy"; requestId: number; pairingKey: string; policy: string; newKey: boolean }
   | { type: "recoverMember"; requestId: number; pairingKey: string; id: string; recoveryKey: string; code?: string }
   | { type: "listUsers"; requestId: number }
@@ -554,6 +559,7 @@ export type ServerMessage =
   /** `recoveryCode`: entering or leaving "consent" made a new code — shown once. */
   | { type: "recoveryPolicyAccepted"; requestId: number; recoveryCode?: string }
   | { type: "recoveryNoticesAcked"; requestId: number }
+  | { type: "learningSet"; requestId: number }
   /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
   | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
   /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after
@@ -632,6 +638,7 @@ export function decode(text: string): ServerMessage {
     case "recoveryPolicy":
     case "recoveryPolicyAccepted":
     case "recoveryNoticesAcked":
+    case "learningSet":
     case "truthIdLinked":
     case "truthIdChallenge":
       return json as ServerMessage;

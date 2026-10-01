@@ -8,6 +8,8 @@ interface EditorState {
   mode: "new" | "edit";
   skill: SkillEntry;
   fromAi: boolean;
+  /** Editing a suggestion: saving accepts it only when this is on (P104). */
+  accept?: boolean;
 }
 
 const emptySkill: SkillEntry = { name: "", description: "", body: "", agents: [] };
@@ -204,7 +206,21 @@ function SkillsView({
 
   function openEdit(skill: SkillEntry) {
     setError(null);
-    setEditor({ mode: "edit", skill, fromAi: false });
+    setEditor({ mode: "edit", skill, fromAi: false, accept: skill.proposed ? true : undefined });
+  }
+
+  /** Accepts a suggestion as it is: a save without the `proposed` mark. */
+  async function handleAccept(skill: SkillEntry) {
+    setError(null);
+    try {
+      await invoke("save_skill", {
+        skill: { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents },
+        overwrite: true,
+      });
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
   }
 
   async function handleGenerate() {
@@ -226,8 +242,10 @@ function SkillsView({
     setError(null);
     setSaving(true);
     try {
-      // Saving from this form accepts a suggestion (P104): the marks that made it one don't go back.
-      const { proposed: _proposed, ...skill } = editor.skill;
+      // A suggestion (P104) stays one unless "Accept" is ticked; accepted, the marks that made it one go.
+      const accepting = editor.skill.proposed && editor.accept;
+      const { proposed, source, proposedAt, ...rest } = editor.skill;
+      const skill = proposed && !accepting ? editor.skill : rest;
       await invoke("save_skill", { skill, overwrite: editor.mode === "edit" });
       setEditor(null);
       setPrompt("");
@@ -261,6 +279,9 @@ function SkillsView({
   function updateEditor(patch: Partial<SkillEntry>) {
     setEditor((current) => (current ? { ...current, skill: { ...current.skill, ...patch } } : current));
   }
+
+  const suggested = (skills ?? []).filter((s) => s.proposed);
+  const active = (skills ?? []).filter((s) => !s.proposed);
 
   return (
     <div className="settings-view">
@@ -390,6 +411,17 @@ function SkillsView({
             </span>
           </div>
 
+          {editor.skill.proposed && (
+            <label className="skill-agent-option">
+              <input
+                type="checkbox"
+                checked={editor.accept ?? false}
+                onChange={(e) => setEditor({ ...editor, accept: e.currentTarget.checked })}
+              />
+              Accept this skill — it starts applying in conversations
+            </label>
+          )}
+
           {editor.mode === "edit" ? (
             <SkillFiles skillName={editor.skill.name} />
           ) : (
@@ -407,6 +439,63 @@ function SkillsView({
         </div>
       )}
 
+      {suggested.length > 0 && (
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Suggested by the AI</h3>
+          </div>
+          <p className="settings-hint">
+            After some conversations the assistant suggested these. <strong>None of them applies until you accept it</strong>:
+            read it, edit it if needed, then accept or reject.
+          </p>
+          <div className="provider-list">
+            {suggested.map((skill) => (
+              <div className="provider-card skill-card" key={skill.name}>
+                <div className="skill-card-header">
+                  <span className="skill-card-name">{skill.name}</span>
+                  <span className="settings-hint">suggested — not active</span>
+                  <div className="skill-card-actions">
+                    {confirmDelete === skill.name ? (
+                      <>
+                        <span className="settings-hint">Reject this suggestion?</span>
+                        <button type="button" className="provider-delete-btn" onClick={() => handleDelete(skill.name)}>
+                          Reject
+                        </button>
+                        <button type="button" className="settings-browse-btn" onClick={() => setConfirmDelete(null)}>
+                          Keep
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" className="settings-save-btn" onClick={() => handleAccept(skill)}>
+                          Accept
+                        </button>
+                        <button type="button" className="settings-browse-btn" onClick={() => openEdit(skill)}>
+                          Edit
+                        </button>
+                        <button type="button" className="provider-delete-btn" onClick={() => setConfirmDelete(skill.name)}>
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <p className="skill-card-description">{skill.description || "(no description)"}</p>
+                <p className="settings-hint">
+                  {skill.source ? `From conversation ${skill.source}` : "From a conversation"}
+                  {skill.proposedAt ? ` · ${new Date(skill.proposedAt).toLocaleString()}` : ""}
+                  {skill.agents.length > 0 ? ` · only for: ${skill.agents.join(", ")}` : ""}
+                </p>
+                <details>
+                  <summary className="settings-hint">View the instructions</summary>
+                  <pre className="skill-suggestion-body">{skill.body}</pre>
+                </details>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="settings-section">
         <div className="settings-section-header">
           <h3 className="settings-section-title">Your skills</h3>
@@ -417,19 +506,14 @@ function SkillsView({
 
         {skills === null ? (
           <p className="settings-hint">Loading skills…</p>
-        ) : skills.length === 0 ? (
-          <p className="settings-hint">No skills yet.</p>
+        ) : active.length === 0 ? (
+          <p className="settings-hint">{suggested.length > 0 ? "No active skills yet." : "No skills yet."}</p>
         ) : (
           <div className="provider-list">
-            {skills.map((skill) => (
+            {active.map((skill) => (
               <div className="provider-card skill-card" key={skill.name}>
                 <div className="skill-card-header">
                   <span className="skill-card-name">{skill.name}</span>
-                  {skill.proposed && (
-                    <span className="settings-hint" title="The assistant suggested this after a conversation. It isn't used until you save it (Edit, then Save).">
-                      suggested — not active
-                    </span>
-                  )}
                   <div className="skill-card-actions">
                     {confirmDelete === skill.name ? (
                       <>

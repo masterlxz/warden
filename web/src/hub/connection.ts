@@ -501,6 +501,7 @@ export class ServerConnection {
       case "recoveryPolicy":
       case "recoveryPolicyAccepted":
       case "recoveryNoticesAcked":
+      case "learningSet":
       case "truthIdLinked":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
@@ -886,6 +887,13 @@ export class ServerConnection {
   }
 
   /** A member has seen the recoveries the owner made. */
+  /** P115: a member's own choice — `enabled: false` stops the assistant learning from their conversations.
+   * Rejects with `UserError` (the owner has no such switch over the wire). */
+  async setLearning(enabled: boolean): Promise<void> {
+    const reply = await this.request((requestId) => ({ type: "setLearning", requestId, enabled }));
+    if (reply.type !== "learningSet") throw new Error("resposta inesperada do hub");
+  }
+
   async ackRecoveryNotices(): Promise<void> {
     const reply = await this.request((requestId) => ({ type: "ackRecoveryNotices", requestId }));
     if (reply.type !== "recoveryNoticesAcked") throw new Error("resposta inesperada do hub");

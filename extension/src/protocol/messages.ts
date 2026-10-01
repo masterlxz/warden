@@ -33,6 +33,10 @@ export interface SkillDto {
   description: string;
   body: string;
   agents: string[];
+  /** P104 — a suggestion the assistant made, still pending. Sending a save without it accepts the skill. */
+  proposed?: boolean;
+  source?: string;
+  proposedAt?: number;
 }
 
 /** Mirrors `warden_server_protocol::protocol::ConversationSummary` (P78). */

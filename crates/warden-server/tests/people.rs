@@ -1293,3 +1293,45 @@ async fn a_correction_becomes_a_pending_skill_in_the_persons_own_vault() {
     assert!(skills_of(&mut ana, 203).await.is_empty());
 }
 
+
+/// P115: a member can opt out of the assistant learning from their conversations, which only narrows
+/// what the owner turned on; the owner has no such switch over the wire.
+#[tokio::test]
+async fn a_member_can_opt_out_of_learning_and_back_in() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+    turn_learning_on(&hub);
+
+    owner.send(&ClientMessage::SetLearning { request_id: 1, enabled: false }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { .. }), "the owner uses the config file");
+
+    ana.send(&ClientMessage::SetLearning { request_id: 2, enabled: false }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::LearningSet { request_id: 2 }));
+    let path = hub.dir.join("config.toml");
+    let config = warden_bootstrap::load_config_from_path(&path, false).unwrap();
+    assert!(config.users.iter().find(|u| u.id == "ana").unwrap().learning_opt_out);
+
+    tool_said(chat(&mut ana, "Escreva as notas da versao 2", "o1").await);
+    tool_said(chat(&mut ana, "Nao, sempre separe em Adicionado, Corrigido e Removido", "o1").await);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(skills_of(&mut ana, 3).await.is_empty(), "she opted out");
+
+    // Signing in again tells her where the switch stands, and that the workspace has learning on.
+    let (_, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
+    let user = user.unwrap();
+    assert!(user.learning_opt_out && user.learning_enabled, "{user:?}");
+
+    ana.send(&ClientMessage::SetLearning { request_id: 4, enabled: true }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::LearningSet { request_id: 4 }));
+    tool_said(chat(&mut ana, "Nao, sempre separe em Adicionado, Corrigido e Removido", "o1").await);
+    let mut learned = Vec::new();
+    for round in 0..40 {
+        learned = skills_of(&mut ana, 10 + round).await;
+        if !learned.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(learned.len(), 1, "back in: {learned:?}");
+}

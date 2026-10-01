@@ -37,7 +37,7 @@ impl MemberSpace {
     /// The same member with their vault opened again from the folder's current state — after their
     /// data key was created or opened (a connection's first vault was plain, or locked).
     pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
-        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None };
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None, learning_opt_out: false };
         Self::new(&user, users_dir, conversations_root)
     }
 
@@ -96,6 +96,8 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: Re
         // Their data isn't following the workspace's policy yet (a weaker one waits for their yes).
         policy_pending: member_policy.is_some_and(|p| p != workspace_policy),
         recovery_policy: String::new(),
+        learning_opt_out: user.learning_opt_out,
+        learning_enabled: false,
         recoveries: user.recoveries.iter().map(|e| RecoveryEventDto { at_ms: e.at_ms, kind: e.kind.as_str().to_string(), seen: e.seen }).collect(),
         id: user.id.clone(),
         name: user.name.clone(),
@@ -214,7 +216,8 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListSpaces { request_id }
         | ClientMessage::RegenerateRecoveryCode { request_id, .. }
         | ClientMessage::AcceptRecoveryPolicy { request_id, .. }
-        | ClientMessage::AckRecoveryNotices { request_id } => {
+        | ClientMessage::AckRecoveryNotices { request_id }
+        | ClientMessage::SetLearning { request_id, .. } => {
             ServerMessage::UserError { request_id: *request_id, message: text, auth_rejected: true }
         }
         other => return member_refusal(other),

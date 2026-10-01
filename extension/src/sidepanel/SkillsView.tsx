@@ -7,6 +7,8 @@ import type { ListSkillsResponse, OkResponse } from "../background/popup_protoco
 interface EditorState {
   mode: "new" | "edit";
   skill: SkillDto;
+  /** Editing a suggestion: saving accepts it only when this is on. */
+  accept?: boolean;
 }
 
 const emptySkill: SkillDto = { name: "", description: "", body: "", agents: [] };
@@ -36,8 +38,13 @@ export default function SkillsView() {
     if (!editor) return;
     setSaving(true);
     setError(null);
+    // Editing a suggestion without accepting keeps it pending; the hub reads a missing `proposed` as accepted.
+    const { proposed, source, proposedAt, ...accepted } = editor.skill;
+    const skill = proposed && !editor.accept ? editor.skill : accepted;
+    void source;
+    void proposedAt;
     chrome.runtime
-      .sendMessage({ type: "saveSkill", skill: editor.skill, overwrite: editor.mode === "edit" })
+      .sendMessage({ type: "saveSkill", skill, overwrite: editor.mode === "edit" })
       .then((res: OkResponse) => {
         setSaving(false);
         if (res.ok) {
@@ -47,6 +54,16 @@ export default function SkillsView() {
           setError(res.error ?? "falha ao salvar a skill");
         }
       });
+  }
+
+  /** Accepts a suggestion as it is: a save without the `proposed` mark. */
+  function handleAccept(skill: SkillDto) {
+    setError(null);
+    const accepted: SkillDto = { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents };
+    chrome.runtime.sendMessage({ type: "saveSkill", skill: accepted, overwrite: true }).then((res: OkResponse) => {
+      if (res.ok) refresh();
+      else setError(res.error ?? "falha ao aceitar a skill");
+    });
   }
 
   function handleDelete(name: string) {
@@ -105,6 +122,12 @@ export default function SkillsView() {
         {editor.skill.agents.length > 0 && (
           <span className="skills-hint">Restrita aos agentes: {editor.skill.agents.join(", ")} (edite no desktop).</span>
         )}
+        {editor.skill.proposed && (
+          <label>
+            <input type="checkbox" checked={editor.accept ?? false} onChange={(e) => setEditor({ ...editor, accept: e.target.checked })} />
+            Aceitar esta skill: passa a valer nas conversas
+          </label>
+        )}
         {error && <p className="error-banner">{error}</p>}
         <div className="skills-actions">
           <button type="submit" disabled={saving}>
@@ -151,6 +174,7 @@ export default function SkillsView() {
             <li key={skill.name} className="skills-item">
               <div className="skills-item-header">
                 <span className="skills-item-name">{skill.name}</span>
+                {skill.proposed && <span className="skills-hint">sugerida pela IA — não vale até aceitar</span>}
                 {confirmDelete === skill.name ? (
                   <span className="skills-actions">
                     <button type="button" className="link-button skills-danger" onClick={() => handleDelete(skill.name)}>
@@ -162,18 +186,23 @@ export default function SkillsView() {
                   </span>
                 ) : (
                   <span className="skills-actions">
+                    {skill.proposed && (
+                      <button type="button" className="link-button" onClick={() => handleAccept(skill)}>
+                        Aceitar
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="link-button"
                       onClick={() => {
                         setError(null);
-                        setEditor({ mode: "edit", skill });
+                        setEditor({ mode: "edit", skill, accept: skill.proposed ? true : undefined });
                       }}
                     >
                       Editar
                     </button>
                     <button type="button" className="link-button" onClick={() => setConfirmDelete(skill.name)}>
-                      Apagar
+                      {skill.proposed ? "Rejeitar" : "Apagar"}
                     </button>
                   </span>
                 )}

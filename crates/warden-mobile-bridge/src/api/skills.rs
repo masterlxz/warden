@@ -16,11 +16,16 @@ pub struct SkillDto {
     pub name: String,
     pub description: String,
     pub body: String,
+    /// An AI suggestion (P104) still waiting for the person to accept it. Saving a DTO with this
+    /// `true` keeps it a suggestion; accepting is an explicit save with `false`.
+    pub proposed: bool,
+    pub source: Option<String>,
+    pub proposed_at: Option<i64>,
 }
 
 impl From<Skill> for SkillDto {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body }
+        Self { name: skill.name, description: skill.description, body: skill.body, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
     }
 }
 
@@ -40,7 +45,10 @@ pub fn bridge_save_skill(vault_root: String, skill: SkillDto, overwrite: bool) -
     // The mobile UI doesn't edit the agent restriction (P72 c), so an edit keeps whatever the
     // desktop/CLI set — otherwise saving here would silently make the skill global again.
     let agents = if overwrite { store.get(skill.name.trim()).map(|s| s.agents).unwrap_or_default() } else { Vec::new() };
-    let skill = Skill { name: skill.name.trim().to_string(), description: skill.description, body: skill.body, agents, proposed: false, source: None, proposed_at: None };
+    let name = skill.name.trim().to_string();
+    // A suggestion that's edited but not accepted keeps when it was made (same rule as the hub's save).
+    let proposed_at = if skill.proposed { skill.proposed_at.or_else(|| store.get(&name).ok().and_then(|s| s.proposed_at)) } else { None };
+    let skill = Skill { name, description: skill.description, body: skill.body, agents, proposed: skill.proposed, source: if skill.proposed { skill.source } else { None }, proposed_at };
     skill.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&skill.name) {
         return Err(format!("a skill named '{}' already exists", skill.name));
@@ -65,7 +73,27 @@ mod tests {
     }
 
     fn dto(name: &str) -> SkillDto {
-        SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into() }
+        SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), proposed: false, source: None, proposed_at: None }
+    }
+
+    #[test]
+    fn a_suggestion_stays_pending_until_saved_as_accepted() {
+        let vault = temp_vault();
+        let suggested = SkillDto { proposed: true, source: Some("conversa".into()), proposed_at: Some(42), ..dto("tip") };
+        bridge_save_skill(vault.clone(), suggested.clone(), false).unwrap();
+        assert!(bridge_list_skills(vault.clone())[0].proposed);
+
+        // Editing without accepting keeps it a suggestion and keeps when it was made.
+        let edited = SkillDto { body: "Changed.".into(), proposed_at: None, ..suggested.clone() };
+        bridge_save_skill(vault.clone(), edited, true).unwrap();
+        let after = bridge_list_skills(vault.clone()).remove(0);
+        assert!(after.proposed);
+        assert_eq!(after.proposed_at, Some(42));
+
+        // Accepting is an explicit save with `proposed: false`.
+        bridge_save_skill(vault.clone(), SkillDto { proposed: false, ..suggested }, true).unwrap();
+        let accepted = bridge_list_skills(vault).remove(0);
+        assert!(!accepted.proposed && accepted.source.is_none() && accepted.proposed_at.is_none());
     }
 
     #[test]

@@ -333,6 +333,7 @@ model = "gemini-3.5-pro"
             recoveries: Vec::new(),
             truthid: None,
             invite: invite.then(|| crate::users::Invite { secret_hash: "secret".to_string(), expires_at: 9 }),
+            learning_opt_out: false,
         }
     }
 
