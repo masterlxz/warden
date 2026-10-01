@@ -171,7 +171,7 @@ mod tests {
             created_at,
             usage: None,
             attachments: Vec::new(),
-            generated_files: Vec::new(),
+            generated_files: Vec::new(), tools_used: Vec::new(),
         }
     }
 

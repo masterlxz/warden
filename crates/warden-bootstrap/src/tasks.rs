@@ -589,7 +589,7 @@ fn plain_message(role: ChatRole, content: String) -> ConversationMessage {
         created_at: now_millis(),
         usage: None,
         attachments: Vec::new(),
-        generated_files: Vec::new(),
+        generated_files: Vec::new(), tools_used: Vec::new(),
     }
 }
 

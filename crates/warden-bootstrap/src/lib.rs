@@ -775,6 +775,10 @@ pub struct ConversationMessage {
     /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub generated_files: Vec<String>,
+    /// Names of the tools the assistant's turn ran (P115), so the learning step can tell work from a claim.
+    /// Absent on older conversations and on turns without tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_used: Vec<String>,
 }
 
 /// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
@@ -1067,6 +1071,7 @@ pub async fn handle_agent_turn(
         usage: None,
         attachments,
         generated_files: Vec::new(),
+        tools_used: Vec::new(),
     };
     append_to_conversation(
         conversations_dir,
@@ -1088,6 +1093,7 @@ fn assistant_message(outcome: &MessageOutcome) -> ConversationMessage {
         usage: outcome.usage,
         attachments: outcome.attachments.clone(),
         generated_files: outcome.generated_files.clone(),
+        tools_used: outcome.tools_used.clone(),
     }
 }
 
@@ -2174,6 +2180,7 @@ oauth = true
                 usage: None,
                 attachments: Vec::new(),
                 generated_files: Vec::new(),
+                tools_used: Vec::new(),
             }],
             created_at: updated_at,
             updated_at,
@@ -2276,6 +2283,7 @@ oauth = true
             usage: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
+            tools_used: Vec::new(),
         };
         let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), create: true };
         let created = append_messages(&dir, "c1", options, vec![note("hi", ChatRole::User)]).unwrap().unwrap();
@@ -2329,6 +2337,51 @@ oauth = true
         assert!(started.elapsed() >= std::time::Duration::from_millis(300), "{:?}", started.elapsed());
         assert!(child.wait().unwrap().success());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Calls the `ping` tool on the first request and answers once it has the result.
+    struct PingsThenAnswers;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for PingsThenAnswers {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            let called = messages.iter().any(|m| m.role == warden_core::model::Role::Tool);
+            let tool_calls = if called {
+                Vec::new()
+            } else {
+                vec![warden_core::model::ToolCall { id: "c1".into(), name: "ping".into(), arguments: serde_json::json!({}), thought_signature: None }]
+            };
+            Ok(warden_core::model::response_stream(warden_core::model::Response { content: if called { "pong".into() } else { String::new() }, tool_calls, usage: None }))
+        }
+    }
+
+    struct PingTool;
+
+    #[async_trait::async_trait]
+    impl warden_core::tool::Tool for PingTool {
+        fn spec(&self) -> warden_core::tool::ToolSpec {
+            warden_core::tool::ToolSpec { name: "ping".into(), description: "pings".into(), parameters: serde_json::json!({}) }
+        }
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!("pong"))
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_turn_saves_which_tools_the_turn_ran_on_the_assistants_message() {
+        let root = temp_dir("turn-tools");
+        let dir = root.join("conversations");
+        let mut orchestrator = Orchestrator::new(Arc::new(PingsThenAnswers), Arc::new(Vault::new(root.join("vault"))));
+        orchestrator.register_tool(Arc::new(PingTool));
+
+        handle_turn(&orchestrator, &dir, "c1", "hi", "ping it", Vec::new()).await.unwrap();
+
+        let saved = load_conversation(&dir, "c1").unwrap().unwrap();
+        assert!(saved.messages[0].tools_used.is_empty(), "the person's message has none");
+        assert_eq!(saved.messages[1].tools_used, vec!["ping".to_string()]);
+        let raw = std::fs::read_to_string(dir.join("c1.json")).unwrap();
+        assert!(raw.contains("\"toolsUsed\":[\"ping\"]") || raw.contains("\"toolsUsed\": [\n"), "{raw}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// A model that, while "thinking", runs `during` against the conversations directory — the

@@ -45,6 +45,9 @@ pub struct MessageOutcome {
     /// stopped there, for the caller to run them and continue with `resume_turn_streaming`. Empty
     /// for every turn without client tools, and when the model answered in text.
     pub client_tool_calls: Vec<ToolCall>,
+    /// Names of the tools this turn actually ran (P115), each once, in the order first called. Only names — never
+    /// arguments or results. Lets the learning step tell work that used tools from a claim that it did.
+    pub tools_used: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -544,6 +547,7 @@ impl Orchestrator {
         let mut attachments: Vec<Attachment> = Vec::new();
         let mut generated_files: Vec<String> = Vec::new();
         let mut fallbacks: Vec<ProviderFallback> = Vec::new();
+        let mut tools_used: Vec<String> = Vec::new();
 
         // Only sub-agents spend from the turn's budget (see `TurnBudget`).
         let sub_agent_budget = self.budget.as_ref().filter(|_| self.charged);
@@ -628,6 +632,7 @@ impl Orchestrator {
                     generated_files,
                     fallbacks,
                     client_tool_calls,
+                    tools_used,
                 });
             }
 
@@ -636,6 +641,10 @@ impl Orchestrator {
             for tool_call in &response.tool_calls {
                 let content = match self.run_tool(tool_call).await {
                     Ok(value) => {
+                        // Only a call that worked counts: a tool that doesn't exist or failed taught nothing.
+                        if !tools_used.contains(&tool_call.name) {
+                            tools_used.push(tool_call.name.clone());
+                        }
                         let (content, extracted, files) = extract_media_from_tool_result(&value, self.media_root.as_deref(), self.vault.cipher().as_deref());
                         attachments.extend(extracted);
                         generated_files.extend(files);
@@ -903,6 +912,13 @@ mod tests {
 
         let result = orchestrator.handle_message(&[], "say hi").await.unwrap();
         assert_eq!(result.content, "done");
+        assert_eq!(result.tools_used, vec!["echo".to_string()], "the names of the tools that ran (P115)");
+    }
+
+    #[tokio::test]
+    async fn a_turn_without_tool_calls_has_no_tools_used() {
+        let plain = Orchestrator::new(Arc::new(WritesWhereAsked), temp_vault()).handle_message(&[], "just talk").await.unwrap();
+        assert!(plain.tools_used.is_empty());
     }
 
     /// "WRITE <path>" asks for `write_file` there; "DELEGATE <path>" hands "WRITE <path>" to a

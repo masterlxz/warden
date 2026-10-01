@@ -368,7 +368,7 @@ mod tests {
                 created_at: 1,
                 usage: None,
                 attachments: Vec::new(),
-                generated_files: Vec::new(),
+                generated_files: Vec::new(), tools_used: Vec::new(),
             }],
             agent_id: None,
             provider_id: None,

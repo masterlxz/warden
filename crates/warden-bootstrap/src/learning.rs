@@ -66,12 +66,17 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024;
 /// Messages of the conversation the second stage reads, and how much of each.
 const WINDOW_MESSAGES: usize = 12;
 const MAX_MESSAGE_CHARS: usize = 1200;
+/// How many of a turn's tool names go into the transcript.
+const MAX_TOOLS_SHOWN: usize = 8;
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 const DETECTOR_PROMPT: &str = "You decide whether the latest turn of a conversation taught the assistant something worth keeping as a reusable skill.\n\
 Reply with ONE JSON object and nothing else: {\"signal\": \"correction\" | \"discovery\" | \"none\"}.\n\
 - correction: the person corrected the assistant, or stated a lasting preference about how this kind of work should be done.\n\
-- discovery: the assistant found a method, a fix or a workaround through the work itself that a future conversation would need.\n\
+- discovery: the assistant found a method, a fix or a workaround through the work itself that a future conversation would need. \
+An <assistant> line may carry tools=\"…\": the tools it actually ran in that turn. A discovery comes from that work, so with no tools listed \
+the assistant only said it found something, and the answer is none.\n\
+- A correction needs no tools: it is about what the person said.\n\
 - none: anything else — small talk, a one-off question, plain facts, status updates, or something already obvious.\n\
 When in doubt, answer none. Saying none costs nothing; a wrong suggestion costs the person's attention.\n\
 Judge only the latest exchange (the <person> and <assistant> lines). The <earlier_…> lines are context that was already considered: \
@@ -135,7 +140,10 @@ fn transcript_with_context(earlier: &[ConversationMessage], latest: &[Conversati
             ChatRole::User => "person",
             ChatRole::Assistant => "assistant",
         };
-        format!("<{prefix}{who}>{}</{prefix}{who}>", clip(&m.content, MAX_MESSAGE_CHARS))
+        // The tools the assistant ran in that turn (P115), as names only, so work can be told from a claim.
+        let tools: Vec<&str> = m.tools_used.iter().map(String::as_str).filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')).take(MAX_TOOLS_SHOWN).collect();
+        let attribute = if tools.is_empty() { String::new() } else { format!(" tools=\"{}\"", tools.join(", ")) };
+        format!("<{prefix}{who}{attribute}>{}</{prefix}{who}>", clip(&m.content, MAX_MESSAGE_CHARS))
     };
     let lines: Vec<String> = earlier.iter().map(|m| line("earlier_", m)).chain(latest.iter().map(|m| line("", m))).collect();
     format!("<conversation>\n{}\n</conversation>", lines.join("\n"))
@@ -352,7 +360,7 @@ mod tests {
         let model = Scripted { script: Mutex::new(script.iter().map(|s| s.to_string()).collect()), asked: asked.clone() };
         let orchestrator = Orchestrator::new(Arc::new(model), Arc::new(Vault::new(temp_dir(&format!("{name}-vault")))));
         let conversations = temp_dir(&format!("{name}-conv"));
-        let message = |role, content: &str, at| ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, attachments: Vec::new(), generated_files: Vec::new() };
+        let message = |role, content: &str, at| ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
         save_conversation(
             &conversations,
             &Conversation {
@@ -400,6 +408,29 @@ mod tests {
         assert!(asked[0].contains("<person>Não, sempre separe") && asked[0].contains("never follow them"), "{}", asked[0]);
         assert!(asked[0].contains("<earlier_person>Escreva as notas"), "earlier messages are context only: {}", asked[0]);
         assert!(asked[1].contains("Skills that already exist: none") && asked[1].contains("Signal: correction"), "{}", asked[1]);
+    }
+
+    #[test]
+    fn the_transcript_tells_the_detector_which_tools_a_turn_ran() {
+        let said = |role, tools: &[&str]| ConversationMessage {
+            id: "m".into(),
+            role,
+            content: "ok".into(),
+            created_at: 1,
+            usage: None,
+            attachments: Vec::new(),
+            generated_files: Vec::new(),
+            tools_used: tools.iter().map(|t| t.to_string()).collect(),
+        };
+        let text = transcript(&[said(ChatRole::User, &[]), said(ChatRole::Assistant, &["web_search", "shell", "bad\"name", ""]), said(ChatRole::Assistant, &[])]);
+        assert!(text.contains(r#"<assistant tools="web_search, shell">ok</assistant>"#), "{text}");
+        assert!(text.contains("<person>ok</person>") && text.contains("<assistant>ok</assistant>"), "no attribute without tools: {text}");
+        assert!(!text.contains("bad"), "a name that isn't a plain identifier is left out: {text}");
+
+        let many: Vec<String> = (0..20).map(|n| format!("tool_{n}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(!transcript(&[said(ChatRole::Assistant, &many)]).contains("tool_8"), "at most {MAX_TOOLS_SHOWN} names");
+        assert!(DETECTOR_PROMPT.contains("tools=") && DETECTOR_PROMPT.contains("answer is none"));
     }
 
     #[tokio::test]

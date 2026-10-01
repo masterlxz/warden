@@ -190,7 +190,7 @@ mod tests {
                 created_at,
                 usage: Some(Usage { prompt_tokens: t, completion_tokens: 0, total_tokens: t }),
                 attachments: Vec::new(),
-                generated_files: Vec::new(),
+                generated_files: Vec::new(), tools_used: Vec::new(),
             })
             .collect();
         Conversation { id: id.into(), title: id.into(), messages, created_at, updated_at: created_at, agent_id: None, provider_id: None }

@@ -182,7 +182,7 @@ impl MessageAgentTool {
             created_at: now_millis(),
             usage: None,
             attachments: Vec::new(),
-            generated_files: Vec::new(),
+            generated_files: Vec::new(), tools_used: Vec::new(),
         };
         // Saved before B starts, so the person sees the message while B works on it.
         append_to_conversation(&dir, &conversation_id, &thread_title(&self.caller, to), Some(to), true, vec![user])?;
@@ -212,7 +212,7 @@ impl MessageAgentTool {
                         created_at: now_millis(),
                         usage: None,
                         attachments: Vec::new(),
-                        generated_files: Vec::new(),
+                        generated_files: Vec::new(), tools_used: Vec::new(),
                     };
                     let _ = append_to_conversation(&dir, &thread, "", Some(&to_owned), false, vec![note]);
                     Err(format!("{err:#}"))
