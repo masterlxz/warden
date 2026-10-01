@@ -135,6 +135,40 @@ fn transcript(messages: &[ConversationMessage]) -> String {
     transcript_with_context(&[], messages)
 }
 
+/// What every channel does after a turn was answered: learn from the conversation if `config` allows it
+/// (`[learning]` on, and `member_id` — `None` for the owner — hasn't opted out), using the learning provider
+/// when one is set. Never fails the turn: what goes wrong is only logged, prefixed with `who`.
+pub async fn learn_with_config(
+    who: &str,
+    orchestrator: &Orchestrator,
+    config: &crate::FileConfig,
+    conversations_dir: &Path,
+    conversation_id: &str,
+    agent_id: Option<&str>,
+    member_id: Option<&str>,
+) {
+    // A scheduled task's conversation is the owner's automation, not a lesson from a person.
+    if conversation_id.starts_with(crate::tasks::CONVERSATION_PREFIX) || !crate::users::learning_allowed(config, member_id) {
+        return;
+    }
+    let orchestrator = match config.learning.provider.as_deref() {
+        Some(id) => match crate::build_model_for(config, id, None) {
+            Ok(model) => orchestrator.with_model(model),
+            Err(err) => {
+                eprintln!("{who}: learning can't use '{id}', so it uses the conversation's own model: {err:#}");
+                orchestrator.clone()
+            }
+        },
+        None => orchestrator.clone(),
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    match learn_from_conversation(&orchestrator, &config.learning, conversations_dir, conversation_id, agent_id, now).await {
+        Ok(Outcome::Proposed(name)) => eprintln!("{who}: suggested the skill '{name}' from conversation '{conversation_id}'"),
+        Ok(_) => {}
+        Err(err) => eprintln!("{who}: learning from '{conversation_id}' failed: {err:#}"),
+    }
+}
+
 /// Looks at how `conversation_id` (saved in `conversations_dir`) just went and, when it taught something, saves a
 /// suggested skill in the vault of whoever `orchestrator` is for. Never writes anything but a suggestion.
 pub async fn learn_from_conversation(

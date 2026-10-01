@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::Deserialize;
+use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
@@ -209,11 +210,11 @@ fn split_into_chunks(text: &str) -> Vec<&str> {
 /// Runs forever: long-polls for updates and handles each one. A polling error (network blip,
 /// Telegram briefly unreachable) is logged and retried after `RETRY_DELAY` rather than crashing
 /// the process — same graceful-degradation spirit as the rest of the project.
-pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path) -> anyhow::Result<()> {
+pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>) -> anyhow::Result<()> {
     let mut offset: Option<i64> = None;
     loop {
         match api.get_updates(offset, POLL_TIMEOUT_SECS).await {
-            Ok(updates) => process_updates(api, orchestrator, conversations_dir, updates, &mut offset).await,
+            Ok(updates) => process_updates(api, orchestrator, conversations_dir, learning, updates, &mut offset).await,
             Err(err) => {
                 eprintln!("error polling Telegram, retrying in {}s: {err:#}", RETRY_DELAY.as_secs());
                 tokio::time::sleep(RETRY_DELAY).await;
@@ -229,6 +230,7 @@ async fn process_updates(
     api: &impl TelegramApi,
     orchestrator: &Orchestrator,
     conversations_dir: &Path,
+    learning: Option<&FileConfig>,
     updates: Vec<Update>,
     offset: &mut Option<i64>,
 ) {
@@ -237,7 +239,7 @@ async fn process_updates(
 
         let Some(message) = update.message else { continue };
         let Some(text) = message.text.clone() else { continue };
-        handle_update(api, orchestrator, conversations_dir, &message, &text).await;
+        handle_update(api, orchestrator, conversations_dir, learning, &message, &text).await;
     }
 }
 
@@ -245,6 +247,7 @@ async fn handle_update(
     api: &impl TelegramApi,
     orchestrator: &Orchestrator,
     conversations_dir: &Path,
+    learning: Option<&FileConfig>,
     message: &IncomingMessage,
     text: &str,
 ) {
@@ -264,12 +267,12 @@ async fn handle_update(
 
     // Spending limits (P4) are counted per chat: a private chat's id is the person's own.
     let orchestrator = orchestrator.with_spend_context(SpendContext::new("telegram").with_user(conversation_id.clone()));
-    let (reply, attachments) = match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &conversation_id, &title_seed, text, Vec::new()).await
+    let (reply, attachments, answered) = match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &conversation_id, &title_seed, text, Vec::new()).await
     {
-        Ok(outcome) => (outcome.content, outcome.attachments),
+        Ok(outcome) => (outcome.content, outcome.attachments, true),
         Err(err) => {
             eprintln!("error handling message from chat {}: {err:#}", message.chat.id);
-            (warden_bootstrap::spend::chat_error_reply(&err), Vec::new())
+            (warden_bootstrap::spend::chat_error_reply(&err), Vec::new(), false)
         }
     };
 
@@ -285,6 +288,11 @@ async fn handle_update(
         if let Err(err) = api.send_attachment(message.chat.id, attachment).await {
             eprintln!("failed to send attachment to chat {}: {err:#}", message.chat.id);
         }
+    }
+
+    // P104: once the person has their answer, the assistant may look for something to learn from it.
+    if let (true, Some(config)) = (answered, learning) {
+        warden_bootstrap::learning::learn_with_config("warden-telegram", &orchestrator, config, conversations_dir, &conversation_id, None, None).await;
     }
 }
 
@@ -380,7 +388,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
 
         assert_eq!(offset, Some(2));
         let sent = api.sent.lock().unwrap();
@@ -402,7 +410,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
 
         let sent = api.sent.lock().unwrap();
         assert_eq!(sent[0], (42, HELP_TEXT.to_string()));
@@ -418,7 +426,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
 
         assert_eq!(offset, Some(6));
         assert!(api.sent.lock().unwrap().is_empty());
@@ -504,7 +512,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
 
         let sent = api.sent.lock().unwrap();
         assert_eq!(sent[0], (42, "here you go".to_string()));

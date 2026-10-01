@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::spend::SpendContext;
@@ -127,16 +128,16 @@ impl WhatsAppSidecar for ChildSidecar {
 /// from this loop (reconnecting to WhatsApp after a *dropped connection* is the sidecar's own
 /// job, handled entirely inside `index.mjs`; a `disconnected` event for that case still comes
 /// through as a normal event here, not a stream end).
-pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path) -> anyhow::Result<()> {
+pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>) -> anyhow::Result<()> {
     loop {
         match sidecar.recv_event().await? {
             None => anyhow::bail!("WhatsApp sidecar process exited unexpectedly"),
-            Some(event) => handle_event(sidecar, orchestrator, conversations_dir, event).await,
+            Some(event) => handle_event(sidecar, orchestrator, conversations_dir, learning, event).await,
         }
     }
 }
 
-async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, event: SidecarEvent) {
+async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, event: SidecarEvent) {
     match event {
         SidecarEvent::Connected => println!("WhatsApp connected."),
         SidecarEvent::Disconnected { logged_out } => {
@@ -147,6 +148,7 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
             }
         }
         SidecarEvent::Message { chat_id, sender_name, text } => {
+            let mut learn_from = None;
             let (reply, attachments) = match text {
                 None => (MEDIA_REPLY.to_string(), Vec::new()),
                 Some(text) => {
@@ -154,7 +156,10 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
                     // Spending limits (P4) are counted per chat.
                     let orchestrator = orchestrator.with_spend_context(SpendContext::new("whatsapp").with_user(chat_id.clone()));
                     match warden_bootstrap::handle_turn(&orchestrator, conversations_dir, &chat_id, &title_seed, &text, Vec::new()).await {
-                        Ok(outcome) => (outcome.content, outcome.attachments),
+                        Ok(outcome) => {
+                            learn_from = Some(orchestrator);
+                            (outcome.content, outcome.attachments)
+                        }
                         Err(err) => {
                             eprintln!("error handling message from {chat_id}: {err:#}");
                             (warden_bootstrap::spend::chat_error_reply(&err), Vec::new())
@@ -175,6 +180,11 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
                 if let Err(err) = sidecar.send_attachment(&chat_id, attachment).await {
                     eprintln!("failed to send attachment to {chat_id}: {err:#}");
                 }
+            }
+
+            // P104: once the person has their answer, the assistant may look for something to learn from it.
+            if let (Some(orchestrator), Some(config)) = (learn_from, learning) {
+                warden_bootstrap::learning::learn_with_config("warden-whatsapp", &orchestrator, config, conversations_dir, &chat_id, None, None).await;
             }
         }
     }
@@ -258,7 +268,7 @@ mod tests {
         let conversations_dir = temp_conversations_dir();
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
 
         let sent = sidecar.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
@@ -301,7 +311,7 @@ mod tests {
         }]);
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
 
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let sent = sidecar.sent.lock().unwrap();
@@ -315,9 +325,9 @@ mod tests {
         let conversations_dir = temp_conversations_dir();
         let mut sidecar = ScriptedSidecar::new(Vec::new());
 
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, SidecarEvent::Connected).await;
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, SidecarEvent::Disconnected { logged_out: false }).await;
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, SidecarEvent::Disconnected { logged_out: true }).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Connected).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Disconnected { logged_out: false }).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Disconnected { logged_out: true }).await;
 
         assert!(sidecar.sent.lock().unwrap().is_empty());
     }
@@ -374,7 +384,7 @@ mod tests {
         }]);
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
 
         let sent = sidecar.sent.lock().unwrap();
         assert_eq!(sent[0], ("5511999999999@s.whatsapp.net".to_string(), "here you go".to_string()));

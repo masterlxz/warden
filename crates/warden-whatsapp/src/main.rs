@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
-use warden_bootstrap::{bootstrap, Overrides};
+use warden_bootstrap::{bootstrap, load_config, Overrides};
 
 use crate::sidecar::{run_bot, ChildSidecar};
 
@@ -73,6 +73,10 @@ fn default_sidecar_script_path() -> PathBuf {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Kept for the assistant learning from conversations (P104), only when the config turns it on.
+    let learning = load_config(cli.config.as_deref())?;
+    let learning = learning.learning.enabled.then_some(learning);
+
     let orchestrator = bootstrap(
         cli.config.as_deref(),
         Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path, ..Default::default() },
@@ -87,5 +91,5 @@ async fn main() -> anyhow::Result<()> {
 
     let mut sidecar = ChildSidecar::spawn(&script_path, &auth_dir).await?;
     println!("Warden WhatsApp bot is starting — scan the QR code below with your phone if this is the first run.");
-    run_bot(&mut sidecar, &orchestrator, &conversations_dir).await
+    run_bot(&mut sidecar, &orchestrator, &conversations_dir, learning.as_ref()).await
 }

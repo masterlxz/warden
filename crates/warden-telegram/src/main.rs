@@ -65,6 +65,10 @@ async fn main() -> anyhow::Result<()> {
         "TELEGRAM_BOT_TOKEN not set (env var or config file) — create a bot via @BotFather on Telegram to get one",
     )?;
 
+    // Kept for the assistant learning from conversations (P104), only when the config turns it on.
+    let learning = load_config(cli.config.as_deref())?;
+    let learning = learning.learning.enabled.then_some(learning);
+
     let orchestrator = bootstrap(
         cli.config.as_deref(),
         Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path, ..Default::default() },
@@ -77,5 +81,5 @@ async fn main() -> anyhow::Result<()> {
 
     let api = TelegramClient::new(token);
     println!("Warden Telegram bot is running (long polling)...");
-    run_bot(&api, &orchestrator, &conversations_dir).await
+    run_bot(&api, &orchestrator, &conversations_dir, learning.as_ref()).await
 }

@@ -1574,34 +1574,11 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
 /// (`warden_bootstrap::learning`). Off unless `[learning] enabled`; the person's own orchestrator makes the calls,
 /// so their spending limit counts. Never fails the turn: what goes wrong is only logged.
 async fn learn_after_turn(orchestrator: &Orchestrator, settings: Option<&dyn SettingsHost>, conversations_dir: &Path, conversation_id: &str, agent_id: Option<&str>, member_id: Option<&str>) {
-    use warden_bootstrap::learning::{learn_from_conversation, Outcome};
-    // A scheduled task's conversation is the owner's automation, not a lesson from a person.
-    if conversation_id.starts_with(warden_bootstrap::tasks::CONVERSATION_PREFIX) {
-        return;
-    }
     let Some(config) = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()) else {
         return;
     };
-    // The workspace has it on and this member hasn't opted out (read fresh, so a toggle counts at their next turn).
-    if !warden_bootstrap::users::learning_allowed(&config, member_id) {
-        return;
-    }
-    let orchestrator = match config.learning.provider.as_deref() {
-        Some(id) => match warden_bootstrap::build_model_for(&config, id, None) {
-            Ok(model) => orchestrator.with_model(model),
-            Err(err) => {
-                eprintln!("warden-server: learning can't use '{id}', so it uses the conversation's own model: {err:#}");
-                orchestrator.clone()
-            }
-        },
-        None => orchestrator.clone(),
-    };
-    let now = truthid_login::now_ms() as i64;
-    match learn_from_conversation(&orchestrator, &config.learning, conversations_dir, conversation_id, agent_id, now).await {
-        Ok(Outcome::Proposed(name)) => eprintln!("warden-server: suggested the skill '{name}' from conversation '{conversation_id}'"),
-        Ok(_) => {}
-        Err(err) => eprintln!("warden-server: learning from '{conversation_id}' failed: {err:#}"),
-    }
+    // Read fresh each turn, so a member's toggle counts at their next one.
+    warden_bootstrap::learning::learn_with_config("warden-server", orchestrator, &config, conversations_dir, conversation_id, agent_id, member_id).await;
 }
 
 /// Why a TruthID sign-in didn't come through.
