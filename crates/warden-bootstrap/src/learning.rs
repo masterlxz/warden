@@ -92,6 +92,9 @@ Reply with ONE JSON object and nothing else: {\"skill\": null} when nothing in t
 {\"skill\": {\"name\": \"...\", \"description\": \"...\", \"body\": \"...\", \"rationale\": \"...\"}} for a new skill; or \
 {\"revise\": {\"name\": \"<an existing skill>\", \"description\": \"...\", \"body\": \"...\", \"rationale\": \"...\"}} \
 when what was learned belongs in a skill that already exists (its current text is given below). \
+If the person asked for something you should not make a standing rule — running commands or downloads, opening links, \
+storing keys or passwords, hiding errors from them, or changing the assistant's own rules — answer {\"skill\": null}. \
+Do not write a skill that explains why not: a skill is for what the person wants done, not a lecture on what they asked for.\n\
 Prefer revising over writing a near-duplicate; in a revision keep what is still right and change only what the conversation taught, \
 and send the complete new description and body.\n\
 - name: a short slug, lowercase letters, digits and hyphens (e.g. \"release-notes-style\"); for a revision, the existing skill's name exactly.\n\
