@@ -43,6 +43,15 @@
 - **P94 (arquivos fixos do vault)**: a memória fixa acabou (`standing_memory`, o seeding, a exclusão da busca e da
   árvore e o painel das telas), sem nada no lugar e com os arquivos existentes como notas comuns (escolha do usuário);
   o que for permanente vai na persona do agente.
+- **P104 (estudo do Hermes)**: estudei a documentação, issues e dois artigos e comparei com o Warden; o estudo está em
+  `STUDIES.md` (nova). Conclusão: trazer `search_history`, um detector pós-turno, propostas de skill pendentes de aceite e
+  `patch` no `manage_skill`, com foco em skills e não em memória (20 de 22 escritas de memória do Hermes eram lixo) e com a
+  regra de que o que uma pessoa ensina não vaza. O plano da primeira fatia foi aprovado e feito (parágrafo abaixo).
+- **P104, fatia 1 (o assistente aprende)**: `search_history` (`Tool::with_conversations_dir`), o campo `proposed` na skill (o
+  catálogo e o `use_skill` a ignoram), `Orchestrator::one_shot` (uma chamada que respeita o limite da pessoa), o módulo
+  `learning` (detector e proposta, com freios), `[learning]` no config, o gancho no chat do hub e a seção "Sugeridas pela IA"
+  na web. Testes: 4 da busca, 7 do aprendizado, 2 do hub real (isolamento por pessoa e o vault cifrado), e um modelo real
+  barato (US$ 0,005): uma correção virou uma skill boa e a conversa banal não gerou nada.
 - **Pequenas pendências**: a mensagem do limite por pessoa para o membro (sem o "allow more" que ele não tem) e o botão
   de restaurar um membro removido na web (`RestoreUser`, `removed` no `UserList`, seção "Pessoas removidas"), com um teste
   do hub real e a tela testada no Chrome headless.

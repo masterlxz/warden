@@ -16,11 +16,21 @@ pub struct SkillDto {
     pub body: String,
     #[serde(default)]
     pub agents: Vec<String>,
+    /// P104: a suggestion the assistant made after a conversation, not yet accepted — invisible to the
+    /// model until it's saved without this flag. Sent back as it came, so editing a suggestion doesn't accept it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub proposed: bool,
+    /// The conversation a suggestion came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When a suggestion was made, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_at: Option<i64>,
 }
 
 impl From<Skill> for SkillDto {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents }
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
     }
 }
 
@@ -1799,7 +1809,7 @@ mod tests {
 
         let save = ClientMessage::SaveSkill {
             request_id: 2,
-            skill: SkillDto { name: "review-pr".into(), description: "d".into(), body: "b".into(), agents: vec!["writer".into()] },
+            skill: SkillDto { name: "review-pr".into(), description: "d".into(), body: "b".into(), agents: vec!["writer".into()], proposed: false, source: None, proposed_at: None },
             overwrite: true,
         };
         let json = serde_json::to_string(&save).unwrap();
@@ -1826,7 +1836,7 @@ mod tests {
     fn server_skill_messages_round_trip_through_json() {
         let list = ServerMessage::SkillList {
             request_id: 1,
-            skills: vec![SkillDto { name: "x".into(), description: "d".into(), body: "b".into(), agents: Vec::new() }],
+            skills: vec![SkillDto { name: "x".into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }],
         };
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(

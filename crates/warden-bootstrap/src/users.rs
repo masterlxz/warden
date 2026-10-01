@@ -223,7 +223,7 @@ pub const NEVER_FOR_MEMBERS: &[&str] = &["delegate_to_agent", "message_agent", "
 /// search. Everything else reaches what's the owner's (the hub's shell, SSH hosts, nodes, the MCP
 /// servers set up with the owner's accounts) and waits for the owner to grant it.
 pub fn default_member_tool(name: &str) -> bool {
-    matches!(name, "read_file" | "write_file" | "use_skill" | "read_skill_file" | "manage_skill" | "delegate_task" | "jobs" | "budget" | "generate_document")
+    matches!(name, "read_file" | "write_file" | "use_skill" | "read_skill_file" | "manage_skill" | "delegate_task" | "jobs" | "budget" | "generate_document" | "search_history")
         || name.starts_with("tavily")
 }
 

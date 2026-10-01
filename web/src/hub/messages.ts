@@ -34,6 +34,12 @@ export interface SkillDto {
   description: string;
   body: string;
   agents: string[];
+  /** P104 — a suggestion the assistant made after a conversation: nothing in it applies until it's accepted (saved without this). */
+  proposed?: boolean;
+  /** The conversation a suggestion came from. */
+  source?: string;
+  /** When it was suggested, in milliseconds since the epoch. */
+  proposedAt?: number;
 }
 
 /** Mirrors `warden_server_protocol::protocol::ConversationSummary` (P78). */

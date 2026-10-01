@@ -226,7 +226,9 @@ function SkillsView({
     setError(null);
     setSaving(true);
     try {
-      await invoke("save_skill", { skill: editor.skill, overwrite: editor.mode === "edit" });
+      // Saving from this form accepts a suggestion (P104): the marks that made it one don't go back.
+      const { proposed: _proposed, ...skill } = editor.skill;
+      await invoke("save_skill", { skill, overwrite: editor.mode === "edit" });
       setEditor(null);
       setPrompt("");
       refresh();
@@ -423,6 +425,11 @@ function SkillsView({
               <div className="provider-card skill-card" key={skill.name}>
                 <div className="skill-card-header">
                   <span className="skill-card-name">{skill.name}</span>
+                  {skill.proposed && (
+                    <span className="settings-hint" title="The assistant suggested this after a conversation. It isn't used until you save it (Edit, then Save).">
+                      suggested — not active
+                    </span>
+                  )}
                   <div className="skill-card-actions">
                     {confirmDelete === skill.name ? (
                       <>

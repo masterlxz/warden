@@ -68,6 +68,13 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool that reads the conversations saved in `dir` instead of the folder it was built
+    /// with, or `None` when it reads none. Called by `Orchestrator::with_conversations_dir` (P104: the hub
+    /// points it at the folder of whoever is speaking, so `search_history` can never reach someone else's).
+    fn with_conversations_dir(&self, _dir: &std::path::Path) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// A copy of this tool whose nested orchestrators (sub-agents) are charged to `budget`, or
     /// `None` when it runs none. Called by `Orchestrator::with_turn_budget`/`charged_to` at the start
     /// of a turn so the whole tree of sub-agents spends from one `TurnBudget`. A tool that only needs

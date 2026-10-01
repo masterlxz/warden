@@ -40,7 +40,7 @@ pub fn bridge_save_skill(vault_root: String, skill: SkillDto, overwrite: bool) -
     // The mobile UI doesn't edit the agent restriction (P72 c), so an edit keeps whatever the
     // desktop/CLI set — otherwise saving here would silently make the skill global again.
     let agents = if overwrite { store.get(skill.name.trim()).map(|s| s.agents).unwrap_or_default() } else { Vec::new() };
-    let skill = Skill { name: skill.name.trim().to_string(), description: skill.description, body: skill.body, agents };
+    let skill = Skill { name: skill.name.trim().to_string(), description: skill.description, body: skill.body, agents, proposed: false, source: None, proposed_at: None };
     skill.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&skill.name) {
         return Err(format!("a skill named '{}' already exists", skill.name));

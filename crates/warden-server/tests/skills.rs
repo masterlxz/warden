@@ -5,7 +5,7 @@ use warden_server::{ClientMessage, ServerConnection, ServerMessage};
 use warden_server_protocol::protocol::SkillDto;
 
 fn dto(name: &str) -> SkillDto {
-    SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.".into(), agents: Vec::new() }
+    SkillDto { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
 }
 
 #[tokio::test]

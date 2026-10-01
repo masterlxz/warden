@@ -132,6 +132,8 @@ pub fn member_orchestrator(base: &Orchestrator, member: &MemberSpace, tools: &[S
     base.with_allowed_tools(Some(tools))
         .with_vault(member.vault.clone())
         .with_media_root(member.generated.clone())
+        // P104: `search_history` reads their conversations, never someone else's.
+        .with_conversations_dir(&member.conversations)
         .with_spend_context(SpendContext::new(channel).with_user(user).with_person(member.id.clone()))
 }
 

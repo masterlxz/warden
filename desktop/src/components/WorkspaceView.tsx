@@ -441,7 +441,7 @@ interface Person {
 
 /** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
 function safeByDefault(tool: string): boolean {
-  return ["read_file", "write_file", "use_skill", "read_skill_file", "manage_skill", "delegate_task", "jobs", "budget", "generate_document"].includes(tool) || tool.startsWith("tavily");
+  return ["read_file", "write_file", "use_skill", "read_skill_file", "manage_skill", "delegate_task", "jobs", "budget", "generate_document", "search_history"].includes(tool) || tool.startsWith("tavily");
 }
 
 /** Mirrors `NEVER_FOR_MEMBERS`: never theirs, so never offered. */

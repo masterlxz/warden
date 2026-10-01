@@ -10,6 +10,8 @@ import type { SkillDto } from "../hub/messages";
 interface EditorState {
   mode: "new" | "edit";
   skill: SkillDto;
+  /** A suggestion being edited: whether saving accepts it (P104). */
+  accept?: boolean;
 }
 
 const emptySkill: SkillDto = { name: "", description: "", body: "", agents: [] };
@@ -46,7 +48,13 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
     if (!editor || !conn) return;
     setSaving(true);
     setError(null);
-    conn.saveSkill(editor.skill, editor.mode === "edit").then(
+    // Accepting a suggestion is saving it without the mark; editing it without accepting keeps it a suggestion.
+    const skill: SkillDto = editor.skill.proposed && editor.accept ? { ...editor.skill, proposed: false } : editor.skill;
+    if (!skill.proposed) {
+      delete skill.source;
+      delete skill.proposedAt;
+    }
+    conn.saveSkill(skill, editor.mode === "edit").then(
       () => {
         setSaving(false);
         setEditor(null);
@@ -57,6 +65,14 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
         setError(`falha ao salvar a skill: ${message(err)}`);
       },
     );
+  }
+
+  /** Accepts a suggestion as it is. */
+  function handleAccept(skill: SkillDto) {
+    if (!conn) return;
+    setError(null);
+    const accepted: SkillDto = { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents };
+    conn.saveSkill(accepted, true).then(refresh, (err) => setError(`falha ao aceitar a skill: ${message(err)}`));
   }
 
   function handleDelete(name: string) {
@@ -77,6 +93,9 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
   function updateEditor(patch: Partial<SkillDto>) {
     setEditor((current) => (current ? { ...current, skill: { ...current.skill, ...patch } } : current));
   }
+
+  const suggested = (skills ?? []).filter((s) => s.proposed);
+  const active = (skills ?? []).filter((s) => !s.proposed);
 
   if (editor) {
     return (
@@ -121,6 +140,12 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
         {editor.skill.agents.length > 0 && (
           <span className="skills-hint">Restrita aos agentes: {editor.skill.agents.join(", ")} (edite no desktop).</span>
         )}
+        {editor.skill.proposed && (
+          <label className="checkbox-row">
+            <input type="checkbox" checked={editor.accept ?? false} onChange={(e) => setEditor({ ...editor, accept: e.target.checked })} />
+            Aceitar esta skill: passa a valer nas conversas
+          </label>
+        )}
         {error && <p className="error-banner">{error}</p>}
         <div className="skills-actions">
           <button type="submit" className="primary-button" disabled={saving || !conn}>
@@ -158,13 +183,71 @@ export default function SkillsView({ conn }: { conn: ServerConnection | null }) 
         </button>
       </div>
       {error && <p className="error-banner">{error}</p>}
+      {suggested.length > 0 && (
+        <section>
+          <h3>Sugeridas pela IA</h3>
+          <p className="skills-hint">
+            Depois de algumas conversas a IA sugeriu estas skills. <strong>Nada nelas vale até você aceitar</strong>: leia o texto, edite se precisar, e
+            aceite ou rejeite.
+          </p>
+          <ul className="skills-list">
+            {suggested.map((skill) => (
+              <li key={skill.name} className="skills-item skills-item--suggested">
+                <div className="skills-item-header">
+                  <span className="skills-item-name">{skill.name}</span>
+                  <span className="devices-status devices-status--pending">Sugerida</span>
+                </div>
+                <p className="skills-item-description">{skill.description || "(sem descrição)"}</p>
+                <p className="skills-hint">
+                  {skill.source ? <>Da conversa <code>{skill.source}</code></> : "De uma conversa"}
+                  {skill.proposedAt ? ` · ${new Date(skill.proposedAt).toLocaleString()}` : ""}
+                  {skill.agents.length > 0 ? ` · só para: ${skill.agents.join(", ")}` : ""}
+                </p>
+                <details>
+                  <summary>Ver as instruções</summary>
+                  <pre className="skills-body">{skill.body}</pre>
+                </details>
+                {confirmDelete === skill.name ? (
+                  <span className="skills-actions">
+                    <button type="button" className="link-button skills-danger" onClick={() => handleDelete(skill.name)}>
+                      Rejeitar mesmo
+                    </button>
+                    <button type="button" className="link-button" onClick={() => setConfirmDelete(null)}>
+                      Manter
+                    </button>
+                  </span>
+                ) : (
+                  <span className="skills-actions">
+                    <button type="button" className="primary-button" disabled={!conn} onClick={() => handleAccept(skill)}>
+                      Aceitar
+                    </button>
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => {
+                        setError(null);
+                        setEditor({ mode: "edit", skill, accept: true });
+                      }}
+                    >
+                      Editar
+                    </button>
+                    <button type="button" className="link-button" onClick={() => setConfirmDelete(skill.name)}>
+                      Rejeitar
+                    </button>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {skills === null ? (
         <p className="skills-hint">Carregando…</p>
-      ) : skills.length === 0 ? (
+      ) : active.length === 0 ? (
         <p className="skills-hint">Nenhuma skill ainda.</p>
       ) : (
         <ul className="skills-list">
-          {skills.map((skill) => (
+          {active.map((skill) => (
             <li key={skill.name} className="skills-item">
               <div className="skills-item-header">
                 <span className="skills-item-name">{skill.name}</span>

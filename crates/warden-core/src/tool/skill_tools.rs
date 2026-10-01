@@ -219,6 +219,9 @@ impl Tool for ManageSkillTool {
             description: required_str(&args, "description")?.to_string(),
             body: required_str(&args, "body")?.to_string(),
             agents,
+            proposed: false,
+            source: None,
+            proposed_at: None,
         };
         skill.validate()?;
 

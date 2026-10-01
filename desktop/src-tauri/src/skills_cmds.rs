@@ -24,17 +24,34 @@ pub struct SkillPayload {
     /// that predates the field (or the mobile-style payload without it) still deserializes.
     #[serde(default)]
     agents: Vec<String>,
+    /// P104: a suggestion the assistant made (not yet accepted). Saving the form sends none of these back,
+    /// which is what accepts it.
+    #[serde(default)]
+    proposed: bool,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    proposed_at: Option<i64>,
 }
 
 impl From<Skill> for SkillPayload {
     fn from(skill: Skill) -> Self {
-        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents }
+        Self { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents, proposed: skill.proposed, source: skill.source, proposed_at: skill.proposed_at }
     }
 }
 
 impl From<SkillPayload> for Skill {
     fn from(payload: SkillPayload) -> Self {
-        Self { name: payload.name.trim().to_string(), description: payload.description, body: payload.body, agents: payload.agents }
+        let proposed = payload.proposed;
+        Self {
+            name: payload.name.trim().to_string(),
+            description: payload.description,
+            body: payload.body,
+            agents: payload.agents,
+            proposed,
+            source: payload.source.filter(|_| proposed),
+            proposed_at: payload.proposed_at.filter(|_| proposed),
+        }
     }
 }
 
@@ -131,7 +148,7 @@ mod tests {
     }
 
     fn skill(name: &str) -> Skill {
-        Skill { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new() }
+        Skill { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
     }
 
     #[test]

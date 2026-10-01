@@ -11,6 +11,10 @@
 //! <the instructions, free-form markdown>
 //! ```
 //!
+//! `proposed: true` (P104) marks a skill the assistant suggested after a conversation, with `source` (the
+//! conversation it came from) and `proposed_at` (milliseconds since the epoch): it's only a draft until the
+//! person accepts it — the catalog, `use_skill` and `read_skill_file` don't know it exists.
+//!
 //! `agents` is optional (P72 c): a comma-separated list of agent ids the skill is restricted to.
 //! Absent/empty means global — every agent sees it. With no active agent (Telegram, WhatsApp, the
 //! server, mobile) only the global skills are visible.
@@ -44,6 +48,12 @@ pub struct Skill {
     pub body: String,
     /// Agent ids this skill is restricted to; empty = available to everyone.
     pub agents: Vec<String>,
+    /// A suggestion the assistant made (P104), not yet accepted: invisible to the model until it is.
+    pub proposed: bool,
+    /// Where a suggestion came from — the id of the conversation.
+    pub source: Option<String>,
+    /// When it was suggested, in milliseconds since the epoch.
+    pub proposed_at: Option<i64>,
 }
 
 /// A skill name doubles as its filename, so it must be a plain slug — `Vault::write` does no
@@ -109,7 +119,17 @@ impl Skill {
     pub fn render(&self) -> String {
         let description = self.description.split_whitespace().collect::<Vec<_>>().join(" ");
         let agents = if self.agents.is_empty() { String::new() } else { format!("agents: {}\n", self.agents.join(", ")) };
-        format!("---\nname: {}\ndescription: {}\n{}---\n{}\n", self.name, description, agents, self.body.trim())
+        let mut proposal = String::new();
+        if self.proposed {
+            proposal.push_str("proposed: true\n");
+            if let Some(source) = &self.source {
+                proposal.push_str(&format!("source: {}\n", source.split_whitespace().collect::<Vec<_>>().join(" ")));
+            }
+            if let Some(at) = self.proposed_at {
+                proposal.push_str(&format!("proposed_at: {at}\n"));
+            }
+        }
+        format!("---\nname: {}\ndescription: {}\n{}{}---\n{}\n", self.name, description, agents, proposal, self.body.trim())
     }
 
     /// Parses a skill file. `name` comes from the filename (the source of truth — a file renamed in
@@ -119,6 +139,7 @@ impl Skill {
         let raw = raw.replace("\r\n", "\n");
         let mut description = String::new();
         let mut agents: Vec<String> = Vec::new();
+        let (mut proposed, mut source, mut proposed_at) = (false, None, None);
         let mut body = raw.as_str();
 
         if let Some(rest) = raw.strip_prefix("---\n") {
@@ -135,6 +156,9 @@ impl Skill {
                                     }
                                 }
                             }
+                            "proposed" => proposed = value.trim().eq_ignore_ascii_case("true"),
+                            "source" if !value.trim().is_empty() => source = Some(value.trim().to_string()),
+                            "proposed_at" => proposed_at = value.trim().parse().ok(),
                             _ => {}
                         }
                     }
@@ -143,7 +167,7 @@ impl Skill {
             }
         }
 
-        Skill { name: name.to_string(), description, body: body.trim().to_string(), agents }
+        Skill { name: name.to_string(), description, body: body.trim().to_string(), agents, proposed, source, proposed_at }
     }
 }
 
@@ -191,7 +215,8 @@ impl SkillStore {
     /// model can't tell "exists but not yours" from "no such skill".
     pub fn get_for(&self, name: &str, agent: Option<&str>) -> anyhow::Result<Skill> {
         let skill = self.get(name)?;
-        if skill.is_available_to(agent) {
+        // A suggestion (P104) isn't a skill until it's accepted.
+        if !skill.proposed && skill.is_available_to(agent) {
             Ok(skill)
         } else {
             Err(anyhow!("no skill named '{name}'"))
@@ -280,7 +305,7 @@ impl SkillStore {
     /// The per-turn catalog injected as a system message, or `None` when there are no skills
     /// visible to `agent` (the turn's active agent, `None` for turns without one).
     pub fn catalog(&self, agent: Option<&str>) -> Option<String> {
-        let skills: Vec<Skill> = self.list().into_iter().filter(|s| s.is_available_to(agent)).collect();
+        let skills: Vec<Skill> = self.list().into_iter().filter(|s| !s.proposed && s.is_available_to(agent)).collect();
         if skills.is_empty() {
             return None;
         }
@@ -321,7 +346,7 @@ mod tests {
     }
 
     fn sample(name: &str) -> Skill {
-        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), agents: Vec::new() }
+        Skill { name: name.into(), description: "Reviews a PR".into(), body: "Step 1.\nStep 2.".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
     }
 
     #[test]
@@ -606,5 +631,41 @@ mod tests {
         store.save_file("review-pr", "again.md", "x").unwrap();
         store.delete("review-pr").unwrap();
         assert!(!store.exists("review-pr") && store.list().is_empty() && store.list_files("review-pr").unwrap().is_empty());
+    }
+
+    fn suggestion(name: &str) -> Skill {
+        Skill { proposed: true, source: Some("conv-7".into()), proposed_at: Some(1_790_000_000_000), ..sample(name) }
+    }
+
+    /// P104: a suggestion the assistant made after a conversation is a skill file with `proposed: true`, and the
+    /// model can't see or load it until the person saves it without the flag.
+    #[test]
+    fn a_suggested_skill_round_trips_but_is_invisible_to_the_model_until_accepted() {
+        let store = temp_store();
+        store.save(&sample("review-pr")).unwrap();
+        store.save(&suggestion("deploy-checklist")).unwrap();
+
+        let back = store.get("deploy-checklist").unwrap();
+        assert_eq!((back.proposed, back.source.as_deref(), back.proposed_at), (true, Some("conv-7"), Some(1_790_000_000_000)));
+        assert!(store.list().iter().any(|s| s.name == "deploy-checklist" && s.proposed), "the person sees it in the list");
+
+        let catalog = store.catalog(None).unwrap();
+        assert!(catalog.contains("review-pr") && !catalog.contains("deploy-checklist"), "{catalog}");
+        assert!(store.get_for("deploy-checklist", None).is_err(), "use_skill treats it as unknown");
+        assert!(store.get_for("review-pr", None).is_ok());
+
+        // Accepting is saving it again without the flag.
+        store.save(&Skill { proposed: false, source: None, proposed_at: None, ..back }).unwrap();
+        assert!(store.catalog(None).unwrap().contains("deploy-checklist"));
+        assert!(store.get_for("deploy-checklist", None).is_ok());
+        let raw = std::fs::read_to_string(store.path_of("deploy-checklist").unwrap()).unwrap();
+        assert!(!raw.contains("proposed") && !raw.contains("source"), "{raw}");
+    }
+
+    #[test]
+    fn only_suggestions_means_no_catalog() {
+        let store = temp_store();
+        store.save(&suggestion("only-a-draft")).unwrap();
+        assert!(store.catalog(None).is_none());
     }
 }

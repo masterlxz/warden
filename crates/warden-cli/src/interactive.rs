@@ -2579,7 +2579,7 @@ async fn prompt_skill_text(
         };
         agents = new_agents.trim().to_string();
         let agent_ids: Vec<String> = agents.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect();
-        let skill = Skill { name: name.to_string(), description: description.clone(), body: body.clone(), agents: agent_ids };
+        let skill = Skill { name: name.to_string(), description: description.clone(), body: body.clone(), agents: agent_ids, proposed: false, source: None, proposed_at: None };
         match skill.validate() {
             Ok(()) => return Ok(Some(skill)),
             Err(e) => skill_error_card(terminal, e.to_string())?,

@@ -36,6 +36,15 @@ impl ModelProvider for Scripted {
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         self.offered.lock().unwrap().push(tools.iter().map(|t| t.name.clone()).collect());
         let last = messages.last().unwrap();
+        // P104: what the hub asks after a turn, to see whether the assistant learned something.
+        if messages.first().is_some_and(|m| m.content.contains("whether the latest turn")) {
+            let signal = if last.content.contains("<person>Nao, sempre separe") { "correction" } else { "none" };
+            return Ok(response_stream(Response { content: format!(r#"{{"signal":"{signal}"}}"#), tool_calls: Vec::new(), usage: None }));
+        }
+        if messages.first().is_some_and(|m| m.content.contains("reusable skill for an AI assistant")) {
+            let skill = r#"{"skill":{"name":"release-notes-style","description":"How to lay out release notes.","body":"Group them under Added, Fixed and Removed, with no emoji.","rationale":"The person corrected the layout."}}"#;
+            return Ok(response_stream(Response { content: skill.to_string(), tool_calls: Vec::new(), usage: None }));
+        }
         if last.role == Role::Tool {
             return Ok(response_stream(Response { content: format!("tool said: {}", last.content), tool_calls: Vec::new(), usage: None }));
         }
@@ -43,6 +52,13 @@ impl ModelProvider for Scripted {
             return Ok(response_stream(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCall { id: "c1".into(), name: "write_file".into(), arguments: json!({ "path": path, "content": "written" }), thought_signature: None }],
+                usage: None,
+            }));
+        }
+        if let Some(words) = last.content.strip_prefix("SEARCH ") {
+            return Ok(response_stream(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCall { id: "c1".into(), name: "search_history".into(), arguments: json!({ "query": words }), thought_signature: None }],
                 usage: None,
             }));
         }
@@ -118,6 +134,8 @@ async fn spin_up() -> Hub {
     orchestrator.register_tool(Arc::new(WriteFileTool::new(vault.clone())));
     orchestrator.register_tool(Arc::new(ReadFileTool::new(vault.clone())));
     orchestrator.register_tool(Arc::new(ShellTool::new(vault)));
+    // P104: built without a folder, like the hub's own orchestrator; the hub points it at whoever is speaking.
+    orchestrator.register_tool(Arc::new(warden_bootstrap::history::SearchHistoryTool::new(None)));
     // Fatia 2: Ana may spend 150 tokens a day, on every channel; the owner has no limit.
     let limits = vec![Limit::new("ana-day", Scope::Person("ana".into()), 24).with_max_tokens(150)];
     let orchestrator = orchestrator.with_spend_guard(Arc::new(SpendGuard::new(Arc::new(MemoryStore::default()), limits, PriceTable::new(Vec::new()))));
@@ -220,7 +238,7 @@ async fn the_owner_and_a_member_share_a_hub_without_sharing_anything_else() {
         ServerMessage::Settings { settings, .. } => {
             // The agents shared with her (not the owner's private one), and her own tools.
             assert_eq!(settings.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["helper", "family"]);
-            assert_eq!(settings.tool_names, ["write_file", "read_file"]);
+            assert_eq!(settings.tool_names, ["write_file", "read_file", "search_history"]);
             assert!(settings.providers.is_empty());
         }
         other => panic!("{other:?}"),
@@ -1180,3 +1198,98 @@ async fn a_truthid_session_opens_no_data_key_so_encrypted_data_waits_for_the_pas
     let said = tool_said(chat(&mut again, "READ notes/segredo.md", "conversa3").await);
     assert!(said.contains("written"), "{said}");
 }
+
+/// P104: `search_history` finds what the person said before, and only theirs.
+#[tokio::test]
+async fn search_history_reads_the_speakers_conversations_and_nobody_elses() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+    tool_said(chat(&mut ana, "minha senha do cofre e tulipa", "a1").await);
+    tool_said(chat(&mut owner, "falei de futebol ontem", "o1").await);
+
+    let hers = tool_said(chat(&mut ana, "SEARCH tulipa", "a2").await);
+    assert!(hers.contains("a1") && hers.contains("tulipa"), "{hers}");
+    let not_the_owners = tool_said(chat(&mut ana, "SEARCH futebol", "a2").await);
+    assert!(!not_the_owners.contains("o1") && !not_the_owners.contains("futebol\""), "{not_the_owners}");
+    assert!(not_the_owners.contains("\"results\":[]"), "{not_the_owners}");
+
+    let his = tool_said(chat(&mut owner, "SEARCH futebol", "o2").await);
+    assert!(his.contains("o1"), "{his}");
+    let not_anas = tool_said(chat(&mut owner, "SEARCH tulipa", "o2").await);
+    assert!(!not_anas.contains("a1") && not_anas.contains("\"results\":[]"), "{not_anas}");
+
+    // Her data is shut when the hub no longer holds her key: the search says so instead of reading nothing.
+    forget_anas_key(&hub);
+    let (mut back, _, _) = member(&hub, "anas-own-pass", None).await.unwrap();
+    let again = tool_said(chat(&mut back, "SEARCH tulipa", "a3").await);
+    assert!(again.contains("a1"), "unlocked again by her password: {again}");
+}
+
+fn turn_learning_on(hub: &Hub) {
+    let path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&path, false).unwrap();
+    config.learning = warden_bootstrap::learning::LearningSettings { enabled: true, ..Default::default() };
+    save_config(&path, &config).unwrap();
+}
+
+async fn skills_of(conn: &mut ServerConnection, request_id: u64) -> Vec<warden_server_protocol::protocol::SkillDto> {
+    conn.send(&ClientMessage::ListSkills { request_id }).await.unwrap();
+    match reply(conn).await {
+        ServerMessage::SkillList { skills, .. } => skills,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// P104: after a correction the assistant suggests a skill — in the vault of the person who taught it, pending
+/// until they accept it — and only when the owner turned learning on.
+#[tokio::test]
+async fn a_correction_becomes_a_pending_skill_in_the_persons_own_vault() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = ana_with_a_code(&hub).await;
+
+    // Off by default: a correction teaches nothing.
+    tool_said(chat(&mut ana, "Nao, sempre separe em Adicionado e Corrigido", "c0").await);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(skills_of(&mut ana, 1).await.is_empty(), "learning is off");
+
+    turn_learning_on(&hub);
+    tool_said(chat(&mut ana, "Escreva as notas da versao 2", "c1").await);
+    tool_said(chat(&mut ana, "Nao, sempre separe em Adicionado, Corrigido e Removido", "c1").await);
+    // The suggestion is written after the answer went out: give it a moment.
+    let mut suggested = Vec::new();
+    for round in 0..40 {
+        suggested = skills_of(&mut ana, 10 + round).await;
+        if !suggested.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(suggested.len(), 1, "{suggested:?}");
+    let skill = &suggested[0];
+    assert_eq!((skill.name.as_str(), skill.proposed, skill.source.as_deref()), ("release-notes-style", true, Some("c1")));
+    assert!(skill.proposed_at.is_some() && skill.body.contains("Added, Fixed and Removed"));
+
+    // It's in her encrypted vault, and on nobody else's side.
+    let raw = ana_vault(&hub, "anas-own-pass").read("skills/release-notes-style.md").unwrap();
+    assert!(raw.contains("proposed: true"), "{raw}");
+    assert!(!hub.dir.join("users/ana/vault/skills").exists() || std::fs::read_dir(hub.dir.join("users/ana/vault/skills")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains("release")), "not legible on disk");
+    assert!(skills_of(&mut owner, 99).await.is_empty(), "the owner's vault has nothing");
+
+    // A turn with nothing to learn adds nothing.
+    tool_said(chat(&mut ana, "obrigada", "c1").await);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(skills_of(&mut ana, 98).await.len(), 1);
+
+    // Accepting is saving it without the flag; rejecting is deleting it.
+    let accepted = warden_server_protocol::protocol::SkillDto { proposed: false, source: None, proposed_at: None, ..skill.clone() };
+    ana.send(&ClientMessage::SaveSkill { request_id: 200, skill: accepted, overwrite: true }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SkillOk { .. }));
+    let after = skills_of(&mut ana, 201).await;
+    assert!(!after[0].proposed && after[0].source.is_none(), "{after:?}");
+    ana.send(&ClientMessage::DeleteSkill { request_id: 202, name: "release-notes-style".into() }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::SkillOk { .. }));
+    assert!(skills_of(&mut ana, 203).await.is_empty());
+}
+

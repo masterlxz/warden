@@ -367,7 +367,7 @@ fn effective_model(key: &ApiKey, requested: Option<&str>) -> Result<String, ApiE
 fn scope_model(api: &ApiContext, key: &ApiKey, model: &str) -> Result<(Orchestrator, Option<String>), ApiError> {
     let (orchestrator, persona) = scope_agent(api, key, model)?;
     let Some(user) = &key.user else {
-        return Ok((orchestrator, persona));
+        return Ok((orchestrator.with_conversations_dir(&warden_bootstrap::users::root_conversations_dir(&api.conversations_root)), persona));
     };
     let gone = || {
         let mut err = ApiError::new("403 Forbidden", "permission_error", "the person this key belongs to is no longer part of the workspace");

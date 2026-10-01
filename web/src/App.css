@@ -240,6 +240,21 @@ button:focus-visible {
   height: auto;
 }
 
+/* P104: a skill the assistant suggested — set apart until it's accepted. */
+.skills-item--suggested {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 0.6rem;
+}
+
+.skills-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  background: var(--color-surface-alt);
+  padding: 0.6rem;
+  border-radius: 0.4rem;
+}
+
 /* Shell */
 
 .app {

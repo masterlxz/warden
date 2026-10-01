@@ -2880,3 +2880,29 @@ aparelho `Approved` e hoje não tem cliente.
 - **Vaults que já tinham os arquivos**: nada é movido nem apagado; eles viram notas como as outras. Por isso o conteúdo
   deles **deixa de entrar automaticamente** em toda conversa, e vale copiar o que importa para a persona.
 
+### O assistente aprendendo com as conversas, fatia 1 (Sessão 115, P104)
+
+- **Base**: o estudo do Hermes (`STUDIES.md`). Os dados dele mostram que a revisão por relógio gera lixo (sobretudo de
+  memória), que as skills são o que rende, e que skills escritas pelo próprio agente precisam de governança. Daí: sem
+  memória automática (o P94 acabou com os arquivos fixos), e o aprendizado vira **skill sugerida**.
+- **`search_history`** (`warden-bootstrap/src/history.rs`): o agente busca no histórico da própria pessoa por palavras
+  (3 letras ou mais), ordenado por quantas casam e depois pela recência, no máximo 20 trechos. A pasta de conversas vem
+  de um gancho novo `Tool::with_conversations_dir` / `Orchestrator::with_conversations_dir` (irmão do `with_media_root`):
+  o `bootstrap()` registra a tool, e o hub a aponta para a pasta de quem fala (`member_orchestrator`, o caminho do root e a
+  Warden API). Um membro tem a tool por padrão (`default_member_tool`) e nunca alcança a pasta de outro.
+- **Skill sugerida**: um arquivo `skills/<nome>.md` com `proposed: true`, `source` (a conversa) e `proposed_at` no
+  frontmatter. O catálogo, o `use_skill` e o `read_skill_file` a tratam como inexistente; ela vive no vault de quem aprendeu
+  (cifrado para um membro, só dele). **Aceitar** é salvar sem a marca (o `SaveSkill` que existia); **rejeitar** é apagar.
+- **O ciclo** (`warden-bootstrap/src/learning.rs`): depois de o hub entregar a resposta de um turno, e só com `[learning]
+  enabled = true` (padrão desligado), (1) um **detector** de uma chamada curta olha o último trecho da conversa (com mais 4
+  mensagens só de contexto) e responde `correction`, `discovery` ou `none`; (2) com sinal, uma segunda chamada lê as últimas 12
+  mensagens e as skills que já existem e devolve uma skill ou `null`. O texto da conversa vai nos prompts como dado, marcado
+  como não confiável. A proposta é validada (nome slug, descrição de até 300 caracteres, corpo de até 4 KB, sem arquivos),
+  nunca sobrescreve um nome existente (ganha `-2`, `-3`) e nasce restrita ao agente que falava.
+- **Freios**: `max_per_day` (padrão 3) sugestões por pessoa em 24 h, no máximo 10 esperando resposta, e `[learning]
+  provider` para usar um modelo barato.
+- **Gasto**: as chamadas passam por `Orchestrator::one_shot`, que respeita e registra o limite da pessoa (uma pausa por limite
+  só pula o aprendizado, sem chamar o modelo) e nunca falha o turno: o que dá errado vai para o log.
+- **Telas**: a web ganhou "Sugeridas pela IA" na aba Skills (texto inteiro, origem, Aceitar, Editar com a opção de aceitar,
+  Rejeitar); o desktop mostra uma etiqueta e salvar lá aceita.
+

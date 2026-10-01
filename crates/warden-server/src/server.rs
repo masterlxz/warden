@@ -1132,13 +1132,16 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             member_orchestrator(&orchestrator, member, &tools, "server", &format!("user-{}", member.id))
                         }
                         // `manage_agents`, SSH hosts and spending limits that need a yes ask this device.
-                        None => orchestrator.with_approver(Arc::new(approver.clone())),
+                        // P104: `search_history` reads the owner's conversations, the ones this hub keeps for them.
+                        None => orchestrator.with_conversations_dir(&conversation_dirs.device).with_approver(Arc::new(approver.clone())),
                     };
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
                     let reply_tx = tx.clone();
                     let is_member = member.is_some();
+                    let learning_settings = settings.clone();
                     tokio::spawn(async move {
+                        let learn_id = conversation_id.clone();
                         let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
                         let reply = match warden_bootstrap::handle_agent_turn(
                             &orchestrator,
@@ -1164,7 +1167,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                                 None => ServerMessage::ChatError { message: format!("{err:#}"), conversation_id: Some(conversation_id), spend_limit_id: spend_limit_id(&err) },
                             },
                         };
+                        let answered = matches!(reply, ServerMessage::ChatResponse { .. });
                         let _ = reply_tx.send(reply);
+                        // P104: once the person has their answer, the assistant may look for something to learn from it.
+                        if answered {
+                            learn_after_turn(&orchestrator, learning_settings.as_deref(), &conversations_dir, &learn_id, agent_id.as_deref()).await;
+                        }
                     });
                 }
                 Ok(ClientMessage::ResolveApproval { approval_id, approved }) => {
@@ -1548,6 +1556,39 @@ fn check_target_approved(store: &PairingStore, target_id: &str) -> Result<(), St
 }
 
 /// Turns a `Hello` down: `AuthError` with `reason`, then a policy close.
+/// P104: after a turn was answered, asks the assistant whether it learned something worth suggesting as a skill
+/// (`warden_bootstrap::learning`). Off unless `[learning] enabled`; the person's own orchestrator makes the calls,
+/// so their spending limit counts. Never fails the turn: what goes wrong is only logged.
+async fn learn_after_turn(orchestrator: &Orchestrator, settings: Option<&dyn SettingsHost>, conversations_dir: &Path, conversation_id: &str, agent_id: Option<&str>) {
+    use warden_bootstrap::learning::{learn_from_conversation, Outcome};
+    // A scheduled task's conversation is the owner's automation, not a lesson from a person.
+    if conversation_id.starts_with(warden_bootstrap::tasks::CONVERSATION_PREFIX) {
+        return;
+    }
+    let Some(config) = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()) else {
+        return;
+    };
+    if !config.learning.enabled {
+        return;
+    }
+    let orchestrator = match config.learning.provider.as_deref() {
+        Some(id) => match warden_bootstrap::build_model_for(&config, id, None) {
+            Ok(model) => orchestrator.with_model(model),
+            Err(err) => {
+                eprintln!("warden-server: learning can't use '{id}', so it uses the conversation's own model: {err:#}");
+                orchestrator.clone()
+            }
+        },
+        None => orchestrator.clone(),
+    };
+    let now = truthid_login::now_ms() as i64;
+    match learn_from_conversation(&orchestrator, &config.learning, conversations_dir, conversation_id, agent_id, now).await {
+        Ok(Outcome::Proposed(name)) => eprintln!("warden-server: suggested the skill '{name}' from conversation '{conversation_id}'"),
+        Ok(_) => {}
+        Err(err) => eprintln!("warden-server: learning from '{conversation_id}' failed: {err:#}"),
+    }
+}
+
 /// Why a TruthID sign-in didn't come through.
 enum TruthIdWait {
     /// Say this to the client and close.

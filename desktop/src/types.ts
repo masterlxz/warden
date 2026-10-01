@@ -336,6 +336,8 @@ export interface SkillEntry {
   body: string;
   /** Agent ids the skill is restricted to (P72 c); empty = every agent sees it. */
   agents: string[];
+  /** P104 — a suggestion the assistant made after a conversation, not yet accepted; saving the form accepts it. */
+  proposed?: boolean;
 }
 
 /** P84 — `person` is one member of the workspace, on every channel. */

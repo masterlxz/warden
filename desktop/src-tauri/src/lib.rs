@@ -662,6 +662,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         truthid_network: existing.truthid_network,
         truthid_rpc_url: existing.truthid_rpc_url,
         truthid_public_url: existing.truthid_public_url,
+        // `[learning]` is set in the config file (P104).
+        learning: existing.learning,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

@@ -307,6 +307,36 @@ impl Orchestrator {
         Self { spend_ctx: ctx, ..self.clone() }
     }
 
+    /// One plain model call outside a turn (P104: what the assistant does to learn from a conversation) — no
+    /// tools, no vault search, no history. It still spends as whoever this orchestrator is for: a limit with no
+    /// room left makes it `Ok(None)` without calling the model, and the tokens it uses are booked like a turn's.
+    pub async fn one_shot(&self, messages: Vec<Message>) -> anyhow::Result<Option<String>> {
+        let ctx = self.spend_ctx.clone().with_agent(self.agent_id.clone());
+        if let Some(guard) = &self.spend {
+            if guard.check(&ctx).exceeded.is_some() {
+                return Ok(None);
+            }
+        }
+        let response = self.model.chat(messages, Vec::new()).await?;
+        if let (Some(guard), Some(usage)) = (&self.spend, &response.usage) {
+            guard.record(&ctx, self.model.model_id(), usage);
+        }
+        Ok(Some(response.content))
+    }
+
+    /// Returns a copy whose conversation-reading tools (`search_history`, P104) read `dir`, the saved
+    /// conversations of whoever this turn is for. A tool built without a folder of its own keeps refusing
+    /// until this gives it one.
+    pub fn with_conversations_dir(&self, dir: &std::path::Path) -> Self {
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if let Some(rebound) = tool.with_conversations_dir(dir) {
+                *tool = rebound;
+            }
+        }
+        clone
+    }
+
     /// Returns a copy of this orchestrator that writes oversized MCP media (P64/P66) to `root`
     /// instead of dropping it — same cheap-clone reasoning as `with_model`/`with_tool`. Called
     /// once by `warden-bootstrap::bootstrap()` with the same "generated" directory
@@ -1042,6 +1072,9 @@ mod tests {
                 description: "Reviews a PR".into(),
                 body: "Step 1.".into(),
                 agents: Vec::new(),
+                proposed: false,
+                source: None,
+                proposed_at: None,
             })
             .unwrap();
         vault
@@ -1089,6 +1122,9 @@ mod tests {
                 description: "Writer only".into(),
                 body: "Write.".into(),
                 agents: vec!["writer".into()],
+                proposed: false,
+                source: None,
+                proposed_at: None,
             })
             .unwrap();
         let mut orchestrator = Orchestrator::new(Arc::new(EchoesAllMessagesModel), vault.clone());
@@ -1581,6 +1617,9 @@ mod tests {
                 description: "Writer only".into(),
                 body: "Write.".into(),
                 agents: vec!["writer".into()],
+                proposed: false,
+                source: None,
+                proposed_at: None,
             })
             .unwrap();
         store.save_file("only-writer", "a.txt", "secret").unwrap();

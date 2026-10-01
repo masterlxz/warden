@@ -31,6 +31,8 @@ use warden_core::tool::{Tool, ToolProvider};
 
 pub mod agent_scope;
 pub mod auto_sync;
+pub mod history;
+pub mod learning;
 mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;
@@ -470,6 +472,9 @@ pub struct FileConfig {
     /// URL with a valid certificate. Without it, signing in with a TruthID is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truthid_public_url: Option<String>,
+    /// The assistant learning from conversations (P104, TOML `[learning]`): off unless turned on. See `learning`.
+    #[serde(default, skip_serializing_if = "learning::LearningSettings::is_default")]
+    pub learning: learning::LearningSettings,
 }
 
 fn is_default_network(network: &warden_truthid::identity::Network) -> bool {
@@ -1618,6 +1623,7 @@ pub async fn bootstrap(
         Arc::new(WriteFileTool::new(vault.clone())),
         Arc::new(GenerateDocumentTool::new(generated_path.clone())),
         Arc::new(UsageStatsTool::new(default_conversations_dir())),
+        Arc::new(history::SearchHistoryTool::new(default_conversations_dir())),
         Arc::new(UseSkillTool::new(SkillStore::new(vault.clone()))),
         Arc::new(ReadSkillFileTool::new(SkillStore::new(vault.clone()))),
         Arc::new(ManageSkillTool::new(SkillStore::new(vault.clone()))),
@@ -2105,6 +2111,7 @@ oauth = true
             truthid_network: Default::default(),
             truthid_rpc_url: None,
             truthid_public_url: None,
+            learning: Default::default(),
         };
 
         save_config(&path, &config).unwrap();

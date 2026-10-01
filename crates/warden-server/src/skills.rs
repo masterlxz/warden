@@ -31,7 +31,9 @@ fn save(store: &SkillStore, dto: SkillDto, overwrite: bool) -> Result<(), String
     // An edit that sends no agents keeps the restriction already on disk (see `SaveSkill`'s docs) —
     // the extension has no UI to change it, and must not make a restricted skill global by saving.
     let agents = if overwrite && dto.agents.is_empty() { store.get(&name).map(|s| s.agents).unwrap_or_default() } else { dto.agents };
-    let skill = Skill { name, description: dto.description, body: dto.body, agents };
+    // A suggestion that's edited but not accepted keeps when it was made.
+    let proposed_at = if dto.proposed { dto.proposed_at.or_else(|| store.get(&name).ok().and_then(|s| s.proposed_at)) } else { None };
+    let skill = Skill { name, description: dto.description, body: dto.body, agents, proposed: dto.proposed, source: if dto.proposed { dto.source } else { None }, proposed_at };
     skill.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&skill.name) {
         return Err(format!("a skill named '{}' already exists", skill.name));
@@ -53,7 +55,7 @@ mod tests {
     }
 
     fn dto(name: &str) -> SkillDto {
-        SkillDto { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new() }
+        SkillDto { name: name.into(), description: "d".into(), body: "b".into(), agents: Vec::new(), proposed: false, source: None, proposed_at: None }
     }
 
     fn save_req(skill: SkillDto, overwrite: bool) -> ClientMessage {
