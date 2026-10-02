@@ -472,3 +472,28 @@ button:hover:not(:disabled) {
   align-items: center;
   margin-top: 0.4rem;
 }
+
+/* P115: diff between a skill and the revision the assistant suggested. */
+.skills-diff {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+  margin: 0.4rem 0 0;
+}
+
+.skills-diff-line {
+  display: block;
+}
+
+.skills-diff-line--add {
+  background: rgba(22, 163, 74, 0.16);
+}
+
+.skills-diff-line--del {
+  background: rgba(220, 38, 38, 0.14);
+}
+
+.skills-diff-line--same,
+.skills-diff-line--gap {
+  color: var(--color-text-muted);
+}

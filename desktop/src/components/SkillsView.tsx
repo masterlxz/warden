@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentEntry, ProviderEntry, SkillEntry } from "../types";
+import { diffLines, hasChanges, withContext } from "./skillDiff";
 
 /** What the editor form is doing: `new` (name editable, refuses a taken name) or `edit` (name
  * locked, overwrites). `fromAi` only drives the "review before saving" hint. */
@@ -486,10 +487,36 @@ function SkillsView({
                   {skill.proposedAt ? ` · ${new Date(skill.proposedAt).toLocaleString()}` : ""}
                   {skill.agents.length > 0 ? ` · only for: ${skill.agents.join(", ")}` : ""}
                 </p>
-                <details>
-                  <summary className="settings-hint">View the instructions</summary>
-                  <pre className="skill-suggestion-body">{skill.body}</pre>
-                </details>
+                {(() => {
+                  const target = skill.revises ? active.find((s) => s.name === skill.revises) : undefined;
+                  if (!target) {
+                    return (
+                      <details>
+                        <summary className="settings-hint">View the instructions</summary>
+                        <pre className="skill-suggestion-body">{skill.body}</pre>
+                      </details>
+                    );
+                  }
+                  const diff = diffLines(target.body, skill.body);
+                  return (
+                    <details>
+                      <summary className="settings-hint">View what changes in {target.name}</summary>
+                      {hasChanges(diff) ? (
+                        <pre className="skill-suggestion-body skill-diff">
+                          {withContext(diff).map((line, i) => (
+                            <span key={i} className={`skill-diff-line skill-diff-line--${line.op}`}>
+                              {line.op === "add" ? "+ " : line.op === "del" ? "- " : "  "}
+                              {line.text}
+                              {"\n"}
+                            </span>
+                          ))}
+                        </pre>
+                      ) : (
+                        <p className="settings-hint">No change in the instruction text.</p>
+                      )}
+                    </details>
+                  );
+                })()}
               </div>
             ))}
           </div>

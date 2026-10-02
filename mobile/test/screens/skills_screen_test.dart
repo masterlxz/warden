@@ -153,6 +153,11 @@ void main() {
   testWidgets('a suggested change to a skill says which skill it changes', (tester) async {
     await _pump(tester, _FakeRepository([_review, _change]));
     expect(find.text('Change to review-pr'), findsOneWidget);
+    expect(find.text('See what changes in review-pr'), findsOneWidget);
+    await tester.tap(find.text('See what changes in review-pr'));
+    await tester.pumpAndSettle();
+    expect(find.text('- Read the diff.'), findsOneWidget);
+    expect(find.text('+ Check tests first.'), findsOneWidget);
     expect(find.text('Suggested'), findsNothing);
   });
 }

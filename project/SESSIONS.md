@@ -2,7 +2,25 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-01 (Sessão 116)
+> Última atualização: 2026-10-02 (Sessão 117)
+
+---
+
+### 2026-10-02 — Sessão 117
+
+- **Objetivo**: o diff das revisões de skill (P115 b), plano aprovado em Plan mode.
+- **Feito**: as quatro telas passam a mostrar, no card de uma revisão pendente, o que muda em relação à skill ativa
+  (`revises`): diff por linha (LCS, sem dependência nova), com 2 linhas de contexto e as demais dobradas em "… N linhas
+  iguais". Web, desktop e extensão: `skillDiff.ts` (um por pacote, mesmo código; textos no idioma de cada tela) + CSS;
+  celular: `lib/screens/skill_diff.dart` e um `ExpansionTile` "See what changes in x". Se o alvo não existe mais, cai no texto
+  novo como antes; se só a descrição mudou, diz "sem mudança no texto". Nenhuma mudança de backend nem de protocolo (a lista
+  já traz o `body` das ativas e das pendentes).
+- **Verificado**: `tsc --noEmit` em web, desktop e extensão; helper conferido num script solto (iguais, troca no meio, vazio,
+  só adição); Flutter: `skill_diff_test.dart` (4) e `skills_screen_test.dart` (inclui o diff aberto), `analyze` limpo. Os
+  clientes web não têm runner de testes, então o helper TS não tem teste no repo.
+- **Não verificado**: nenhuma tela aberta (cores do diff, claro e escuro): entra na rodada de testes em tela do P115.
+- **Próximo passo**: tela para o dono escolher o modelo de aprendizado por membro; lista de chats permitidos nos bots; a
+  rodada de testes em tela.
 
 ---
 

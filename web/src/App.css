@@ -255,6 +255,24 @@ button:focus-visible {
   border-radius: 0.4rem;
 }
 
+/* P115: diff between a skill and the revision the assistant suggested. */
+.skills-diff-line {
+  display: block;
+}
+
+.skills-diff-line--add {
+  background: var(--color-ok-soft, rgba(22, 163, 74, 0.14));
+}
+
+.skills-diff-line--del {
+  background: var(--color-danger-soft);
+}
+
+.skills-diff-line--same,
+.skills-diff-line--gap {
+  color: var(--color-text-muted);
+}
+
 /* Shell */
 
 .app {

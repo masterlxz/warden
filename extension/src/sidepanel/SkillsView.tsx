@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SkillDto } from "../protocol/messages";
 import type { ListSkillsResponse, OkResponse } from "../background/popup_protocol";
+import { diffLines, hasChanges, withContext } from "./skillDiff";
 
 /** What the editor form is doing: `new` (name editable, refuses a taken name) or `edit` (name
  * locked, overwrites) — same split as the desktop's SkillsView. */
@@ -209,6 +210,29 @@ export default function SkillsView() {
               </div>
               <p className="skills-item-description">{skill.description || "(sem descrição)"}</p>
               {skill.agents.length > 0 && <p className="skills-hint">Só para: {skill.agents.join(", ")}</p>}
+              {skill.proposed && skill.revises && (() => {
+                const target = skills.find((s) => !s.proposed && s.name === skill.revises);
+                if (!target) return null;
+                const diff = diffLines(target.body, skill.body);
+                return (
+                  <details>
+                    <summary className="skills-hint">Ver o que muda em {target.name}</summary>
+                    {hasChanges(diff) ? (
+                      <pre className="skills-diff">
+                        {withContext(diff).map((line, i) => (
+                          <span key={i} className={`skills-diff-line skills-diff-line--${line.op}`}>
+                            {line.op === "add" ? "+ " : line.op === "del" ? "- " : "  "}
+                            {line.text}
+                            {"\n"}
+                          </span>
+                        ))}
+                      </pre>
+                    ) : (
+                      <p className="skills-hint">Sem mudança no texto das instruções.</p>
+                    )}
+                  </details>
+                );
+              })()}
             </li>
           ))}
         </ul>

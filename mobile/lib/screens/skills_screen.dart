@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/skills_repository.dart';
+import 'skill_diff.dart';
 
 /// P72 (b) — lists, creates, edits and deletes the skills stored in this device's local vault
 /// (`skills/<name>.md`, see `SkillsRepository`). Mirrors the desktop `SkillsView.tsx` minus the
@@ -84,8 +85,40 @@ class _SkillsScreenState extends State<SkillsScreen> {
     }
   }
 
-  Widget _suggestedCard(SkillDto skill) {
+  /// "See what changes" for a suggested revision: the target's current text against the new one.
+  Widget _diffView(SkillDto target, SkillDto revision) {
+    final diff = diffLines(target.body, revision.body);
+    final scheme = Theme.of(context).colorScheme;
+    final mono = Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'monospace');
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      title: Text('See what changes in ${target.name}', style: Theme.of(context).textTheme.bodyMedium),
+      childrenPadding: const EdgeInsets.only(bottom: 4),
+      children: [
+        if (!hasChanges(diff))
+          const Align(alignment: Alignment.centerLeft, child: Text('No change in the instruction text.'))
+        else
+          for (final line in withContext(diff))
+            Container(
+              width: double.infinity,
+              color: switch (line.op) {
+                DiffOp.add => Colors.green.withValues(alpha: 0.18),
+                DiffOp.del => scheme.error.withValues(alpha: 0.15),
+                _ => null,
+              },
+              child: Text(
+                '${switch (line.op) { DiffOp.add => '+ ', DiffOp.del => '- ', _ => '  ' }}${line.text}',
+                style: line.op == DiffOp.same || line.op == DiffOp.gap ? mono?.copyWith(color: scheme.onSurfaceVariant) : mono,
+              ),
+            ),
+      ],
+    );
+  }
+
+  Widget _suggestedCard(SkillDto skill, List<SkillDto> active) {
     final origin = skill.source;
+    final revises = skill.revises;
+    final target = revises == null ? null : active.where((s) => s.name == revises).firstOrNull;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -100,6 +133,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
             ),
             if (skill.description.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(skill.description)),
             if (origin != null && origin.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text('From: $origin', style: Theme.of(context).textTheme.bodySmall)),
+            if (target != null) _diffView(target, skill),
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Wrap(
@@ -160,7 +194,7 @@ class _SkillsScreenState extends State<SkillsScreen> {
                             padding: EdgeInsets.only(bottom: 8),
                             child: Text('Not active yet — the AI only uses a suggestion after you accept it.'),
                           ),
-                          for (final skill in suggested) _suggestedCard(skill),
+                          for (final skill in suggested) _suggestedCard(skill, active),
                           const SizedBox(height: 16),
                           if (active.isNotEmpty) Text('Your skills', style: Theme.of(context).textTheme.titleSmall),
                         ],

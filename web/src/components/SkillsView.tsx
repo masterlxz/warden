@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServerConnection } from "../hub/connection";
 import type { SkillDto, UserInfo } from "../hub/messages";
+import { diffLines, hasChanges, withContext } from "./skillDiff";
 
 // Adapted from the extension's `sidepanel/SkillsView.tsx` (P78), talking to the hub directly
 // instead of through a background service worker.
@@ -230,10 +231,36 @@ export default function SkillsView({
                   {skill.proposedAt ? ` · ${new Date(skill.proposedAt).toLocaleString()}` : ""}
                   {skill.agents.length > 0 ? ` · só para: ${skill.agents.join(", ")}` : ""}
                 </p>
-                <details>
-                  <summary>Ver as instruções</summary>
-                  <pre className="skills-body">{skill.body}</pre>
-                </details>
+                {(() => {
+                  const target = skill.revises ? active.find((s) => s.name === skill.revises) : undefined;
+                  if (!target) {
+                    return (
+                      <details>
+                        <summary>Ver as instruções</summary>
+                        <pre className="skills-body">{skill.body}</pre>
+                      </details>
+                    );
+                  }
+                  const diff = diffLines(target.body, skill.body);
+                  return (
+                    <details>
+                      <summary>Ver o que muda em {target.name}</summary>
+                      {hasChanges(diff) ? (
+                        <pre className="skills-body skills-diff">
+                          {withContext(diff).map((line, i) => (
+                            <span key={i} className={`skills-diff-line skills-diff-line--${line.op}`}>
+                              {line.op === "add" ? "+ " : line.op === "del" ? "- " : "  "}
+                              {line.text}
+                              {"\n"}
+                            </span>
+                          ))}
+                        </pre>
+                      ) : (
+                        <p className="skills-hint">Sem mudança no texto das instruções.</p>
+                      )}
+                    </details>
+                  );
+                })()}
                 {confirmDelete === skill.name ? (
                   <span className="skills-actions">
                     <button type="button" className="link-button skills-danger" onClick={() => handleDelete(skill.name)}>

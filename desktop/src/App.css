@@ -1809,6 +1809,24 @@ body {
   margin: 6px 0 0;
 }
 
+/* P115: diff between a skill and the revision the assistant suggested. */
+.skill-diff-line {
+  display: block;
+}
+
+.skill-diff-line--add {
+  background-color: color-mix(in srgb, var(--color-ok, #16a34a) 16%, transparent);
+}
+
+.skill-diff-line--del {
+  background-color: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+
+.skill-diff-line--same,
+.skill-diff-line--gap {
+  opacity: 0.6;
+}
+
 .skill-card-header {
   display: flex;
   align-items: center;
