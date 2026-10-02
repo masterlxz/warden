@@ -2906,3 +2906,39 @@ aparelho `Approved` e hoje não tem cliente.
 - **Telas**: a web ganhou "Sugeridas pela IA" na aba Skills (texto inteiro, origem, Aceitar, Editar com a opção de aceitar,
   Rejeitar); o desktop mostra uma etiqueta e salvar lá aceita.
 
+### O assistente aprendendo, o resto do P115 (Sessão 116)
+
+- **Sugestões em todas as telas**: o `SkillDto` do celular (bridge, frb regenerado), o desktop e a extensão passaram a
+  carregar `proposed`/`source`/`proposed_at`/`revises`; cada um tem a seção de sugeridas com Aceitar, Editar e Rejeitar, e
+  **editar e salvar mantém a sugestão pendente** (aceitar é um salvar explícito sem a marca). Antes, salvar no celular
+  aceitava sem a pessoa saber.
+- **Opt-out por membro**: `UserConfig.learning_opt_out` e `SetLearning` (o membro, sobre si; o dono recebe `UserError` e usa o
+  `[learning]` do arquivo). Regra única em `users::learning_allowed`: workspace ligado **e** membro não optou por sair, relido a
+  cada turno. `helloAck` leva `learningEnabled`/`learningOptOut`; a web tem o checkbox na tela de Skills.
+- **Onde roda o aprendizado**: `learning::learn_with_config` é o ponto único (regra do `[learning]`, opt-out, modelo,
+  canal de gasto, scanner, log) e é chamada pelo hub, pelo Telegram, pelo WhatsApp e pelo desktop (`append_conversation_messages`
+  dispara `learn_in_background` quando a troca termina na resposta da IA). **Fora, por decisão**: o CLI (não guarda
+  conversa) e a Warden API (sem estado).
+- **`manage_skill patch`**: troca um trecho único das instruções (`old_string`/`new_string`/`replace_all`), mantendo descrição,
+  agentes e anexos. Nenhuma ação do `manage_skill` mexe numa skill **sugerida** pendente (um `update` a aceitaria).
+- **Revisões**: quando a lição cabe numa skill ativa, o estágio 2 devolve `{"revise": ...}` (recebe o texto das ativas, até 10
+  de 1500 caracteres) e grava `<skill>-revision` com `revises:` no frontmatter. **Aceitar aplica no alvo dentro de
+  `SkillStore::save`**, então nenhum cliente muda o fluxo; salvar ainda pendente preserva o `revises` do disco; uma revisão
+  pendente por skill.
+- **O detector vê as tools**: `MessageOutcome.tools_used` (só nomes, só tools que rodaram sem erro) é salvo em
+  `ConversationMessage.tools_used` e o transcript marca `<assistant tools="...">`; `discovery` sem tool é alegação.
+- **Scanner de conteúdo** (`learning::scan_proposal`, sem chamada de modelo): recusa link, comando, chave/token, frase contra as
+  regras do assistente e caractere invisível, na skill nova e no texto novo de uma revisão (`Outcome::Blocked`). Erra para o
+  lado seguro. O `PROPOSER_PROMPT` também manda `{"skill": null}` para pedido inseguro, em vez de uma skill "de sermão".
+- **Modelo e gasto**: `[[users]] learning_provider` (o do membro, senão o `[learning] provider`, senão o da conversa) e o canal
+  de gasto `learning` (`Orchestrator::with_spend_channel`): os limites por pessoa, agente e globais continuam valendo, os por
+  canal de origem deixam de contar o aprendizado.
+- **Busca semântica no histórico** (`search_history`): palavras + significado por *reciprocal rank fusion*. Modelo:
+  `paraphrase-multilingual-MiniLM-L12-v2` quantizado (`warden_core::memory::embed`, ~120 MB, uma vez); o `multilingual-e5-small`
+  foi **testado e descartado** (cossenos de 0,75 a 0,9 para qualquer par, sem como separar acerto de ruído). Piso 0,30
+  (relacionado 0,34–0,77, não relacionado ≤ 0,25). Índice `.history-index` ao lado das conversas, sem texto, cifrado como elas
+  na pasta de um membro, feito até 300 mensagens por busca; sem o modelo cai nas palavras (`WARDEN_NO_SEMANTIC` desliga).
+- **Medição** (`warden-bootstrap/tests/learning_eval.rs`, `--ignored`): 25 conversas sintéticas rotuladas com o
+  `deepseek/deepseek-v4.1-flash` pelo OpenRouter: 10/10 aprendidas, 9/9 banais deixadas em paz, 6/6 armadilhas fora, ~26 mil
+  tokens. Limite: o conjunto é pequeno e o prompt foi ajustado vendo as armadilhas dele.
+

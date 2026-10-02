@@ -2,7 +2,36 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-09-30 (Sessão 115)
+> Última atualização: 2026-10-01 (Sessão 116)
+
+---
+
+### 2026-10-01 — Sessão 116
+
+- **Objetivo**: terminar o que sobrou do P115 (a fatia 1 do aprendizado, P104). Cada item com plano aprovado em Plan mode.
+- **Feito** (detalhes em `ARCHITECTURE.md`, "O assistente aprendendo, o resto do P115"), 10 commits:
+  1. **(d) e (e)**: sugestões no celular, desktop e extensão (e o bug de o celular aceitar ao salvar); opt-out por membro
+     (`SetLearning`, `learning_opt_out`, checkbox na web);
+  2. **(g)**: o aprendizado também no Telegram, WhatsApp e desktop, pela `learn_with_config` compartilhada (CLI e Warden API
+     ficam de fora: não guardam a conversa);
+  3. **(a) e (b)**: `manage_skill patch`, a brecha de a IA mexer numa sugestão pendente fechada, e revisões sugeridas de skills
+     existentes (`revises`; aceitar aplica no alvo dentro do `SkillStore::save`);
+  4. **(f)**: o detector vê quais tools o turno usou (`tools_used`);
+  5. **(i)**: scanner de conteúdo nas sugestões; **(h)**: modelo do aprendizado por membro e canal de gasto `learning`;
+  6. **(j)**: medidor com modelo real (`learning_eval.rs`, 25 conversas rotuladas) e o ajuste do prompt (pedido inseguro vira
+     `null`, sem skill de sermão): 10/10, 9/9 e 6/6 com o `deepseek/deepseek-v4.1-flash` pelo OpenRouter;
+  7. **(c)**: busca semântica no histórico (palavras + significado), com modelo multilíngue medido.
+- **Achados**: (1) o `multilingual-e5-small` comprime os cossenos (0,75–0,9 para qualquer par) e foi trocado pelo
+  `paraphrase-multilingual-MiniLM-L12-v2` quantizado; (2) o primeiro medidor tinha dois defeitos próprios (descoberta
+  terminada com um "obrigado" e critério de armadilha rígido demais); (3) um teste do `warden-sync`
+  (`lock::tests::dropping_releases_it`) falhou uma vez e passou ao repetir, e o linker/`rustc` caiu algumas vezes ao compilar o
+  workspace inteiro, também sem repetir.
+- **Verificado**: `cargo test --workspace` (993 testes, 0 falhas), Flutter (10 testes da tela de skills, `analyze` limpo), `tsc` na
+  web, no desktop e na extensão, a medição com modelo real e a busca semântica com o modelo real (4/4 paráfrases).
+- **Não verificado**: nenhuma tela foi aberta (celular, desktop, extensão, web, nem o aprendizado no desktop com o app
+  rodando). Fica para a rodada de testes em tela, registrada no P115.
+- **Próximo passo**: a rodada de testes em tela do P115 (e dos P95–P114 que seguem pendentes); depois o diff das revisões e
+  uma tela para o dono escolher o modelo de aprendizado por membro.
 
 ---
 
