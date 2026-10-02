@@ -1,4 +1,5 @@
 mod cipher;
+pub mod embed;
 mod notes;
 #[cfg(feature = "semantic-search")]
 mod semantic;

@@ -101,6 +101,8 @@ struct Hub {
 }
 
 async fn spin_up() -> Hub {
+    // These tests don't download or run the embedding model: `search_history` falls back to words.
+    std::env::set_var(warden_core::memory::embed::OFF_SWITCH, "1");
     // A counter too: two tests starting in the same nanosecond must not share a hub's files.
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
