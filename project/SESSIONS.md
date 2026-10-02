@@ -15,12 +15,16 @@
   celular: `lib/screens/skill_diff.dart` e um `ExpansionTile` "See what changes in x". Se o alvo não existe mais, cai no texto
   novo como antes; se só a descrição mudou, diz "sem mudança no texto". Nenhuma mudança de backend nem de protocolo (a lista
   já traz o `body` das ativas e das pendentes).
+- **Feito também** (P115 h): o dono escolhe o modelo do aprendizado de cada membro na web (tela de Pessoas, "Modelo do
+  aprendizado"): `SetUserLearningProvider` → `UserChange::SetLearningProvider` → `users::set_user_learning_provider`
+  (recusa id que não é provider nem combo do hub; vazio volta ao do workspace), `UserInfoDto.learning_provider`. Testes: um
+  unitário em `users.rs` e um de integração no hub real (`tests/people.rs`: chave errada, id fantasma, definir, limpar, e o
+  `config.toml`); clippy sem aviso novo; `tsc` da web limpo.
 - **Verificado**: `tsc --noEmit` em web, desktop e extensão; helper conferido num script solto (iguais, troca no meio, vazio,
   só adição); Flutter: `skill_diff_test.dart` (4) e `skills_screen_test.dart` (inclui o diff aberto), `analyze` limpo. Os
   clientes web não têm runner de testes, então o helper TS não tem teste no repo.
 - **Não verificado**: nenhuma tela aberta (cores do diff, claro e escuro): entra na rodada de testes em tela do P115.
-- **Próximo passo**: tela para o dono escolher o modelo de aprendizado por membro; lista de chats permitidos nos bots; a
-  rodada de testes em tela.
+- **Próximo passo**: lista de chats permitidos nos bots (aprendizado); a rodada de testes em tela.
 
 ---
 

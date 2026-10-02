@@ -818,6 +818,11 @@ export class ServerConnection {
     return this.userRequest((requestId) => ({ type: "setUserTools", requestId, pairingKey, id, tools }));
   }
 
+  /** P115: the model the assistant's learning uses for a member (`null`: the workspace's). */
+  async setUserLearningProvider(pairingKey: string, id: string, provider: string | null): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "setUserLearningProvider", requestId, pairingKey, id, provider }));
+  }
+
   /** A member creates (`originalId` absent) or edits one of their own agents; answers with their
    * settings view. Rejects with `SettingsError`. */
   async saveOwnAgent(agent: AgentSettings, originalId?: string): Promise<LoadedSettings> {

@@ -2942,3 +2942,13 @@ aparelho `Approved` e hoje não tem cliente.
   `deepseek/deepseek-v4.1-flash` pelo OpenRouter: 10/10 aprendidas, 9/9 banais deixadas em paz, 6/6 armadilhas fora, ~26 mil
   tokens. Limite: o conjunto é pequeno e o prompt foi ajustado vendo as armadilhas dele.
 
+### O assistente aprendendo, diff e modelo por membro (Sessão 117)
+
+- **Diff da revisão** (P115 b): as quatro telas comparam, linha a linha (LCS, sem dependência), o `body` da revisão pendente
+  com o da skill ativa que ela `revises`, achada na mesma lista; contexto de 2 linhas, o resto dobrado. Nada mudou no
+  protocolo. Um helper por cliente (`skillDiff.ts` na web, no desktop e na extensão; `skill_diff.dart` no celular).
+- **Modelo do aprendizado por membro na web** (P115 h): `SetUserLearningProvider` (chave de pareamento, como `SetUserTools`;
+  resposta `UserList`) → `UserChange::SetLearningProvider` → `users::set_user_learning_provider`, que só aceita id de provider
+  ou combo que o hub tem (vazio volta ao do workspace). `UserInfoDto.learning_provider` mostra a escolha; a tela de Pessoas
+  ganhou "Modelo do aprendizado". Só a web tem tela de Pessoas; nos outros o `config.toml` segue valendo.
+

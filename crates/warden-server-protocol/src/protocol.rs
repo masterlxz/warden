@@ -398,6 +398,9 @@ pub struct UserInfoDto {
     /// P115: the member turned off the assistant learning from their conversations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub learning_opt_out: bool,
+    /// P115: the model the owner chose for learning from their conversations (`None`: the workspace's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_provider: Option<String>,
     /// The workspace has learning on at all — only in `HelloAck`, so the member's switch means something.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub learning_enabled: bool,
@@ -1195,6 +1198,15 @@ pub enum ClientMessage {
         id: String,
         #[serde(default)]
         tools: Option<Vec<String>>,
+    },
+    /// P115: the model the assistant's learning uses for a member, a provider or combo id (`None`: the
+    /// workspace's `[learning] provider`). Answered by `UserList`.
+    SetUserLearningProvider {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        #[serde(default)]
+        provider: Option<String>,
     },
     /// A member creates (`original_id` absent) or edits one of their own agents. Answered by
     /// `Settings` (the member's view) or `SettingsError`. Whatever it asks, the agent stays theirs,

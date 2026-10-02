@@ -97,6 +97,7 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: Re
         policy_pending: member_policy.is_some_and(|p| p != workspace_policy),
         recovery_policy: String::new(),
         learning_opt_out: user.learning_opt_out,
+        learning_provider: user.learning_provider.clone(),
         learning_enabled: false,
         recoveries: user.recoveries.iter().map(|e| RecoveryEventDto { at_ms: e.at_ms, kind: e.kind.as_str().to_string(), seen: e.seen }).collect(),
         id: user.id.clone(),
@@ -171,6 +172,7 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::ResetPassword { request_id, .. }
         | ClientMessage::RemoveUser { request_id, .. }
         | ClientMessage::SetUserTools { request_id, .. }
+        | ClientMessage::SetUserLearningProvider { request_id, .. }
         | ClientMessage::SetRecoveryPolicy { request_id, .. }
         | ClientMessage::RecoverMember { request_id, .. }
         | ClientMessage::RestoreUser { request_id, .. }

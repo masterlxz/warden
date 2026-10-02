@@ -1100,6 +1100,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::SetUserTools { request_id, pairing_key, id, tools }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
                 }
+                Ok(ClientMessage::SetUserLearningProvider { request_id, pairing_key, id, provider }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetLearningProvider { id, provider });
+                }
                 Ok(message @ (ClientMessage::SaveOwnAgent { .. } | ClientMessage::DeleteOwnAgent { .. })) => {
                     let (settings, shared, lock, auth_key, reply_tx, member) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone(), member.clone());
                     tokio::spawn(async move {

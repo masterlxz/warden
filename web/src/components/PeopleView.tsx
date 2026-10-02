@@ -17,7 +17,9 @@ type Asking =
   | { kind: "invite"; user: UserInfo }
   | { kind: "unlink"; user: UserInfo }
   /** `null`: back to the safe default. */
-  | { kind: "tools"; user: UserInfo; tools: string[] | null };
+  | { kind: "tools"; user: UserInfo; tools: string[] | null }
+  /** P115: `""` is the workspace's own model. */
+  | { kind: "learning"; user: UserInfo; provider: string };
 
 /** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
 function safeByDefault(tool: string): boolean {
@@ -62,6 +64,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
   const [invite, setInvite] = useState<{ id: string; code: string } | null>(null);
   /** The hub's tools, for choosing each person's. */
   const [toolNames, setToolNames] = useState<string[]>([]);
+  /** The hub's models and combos, for choosing the one each person's learning uses. */
+  const [modelIds, setModelIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     if (!conn) return;
@@ -80,8 +84,14 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
     void load();
     conn
       ?.requestSettings()
-      .then(({ settings }) => setToolNames(settings.toolNames.filter((t) => !NEVER_FOR_MEMBERS.includes(t))))
-      .catch(() => setToolNames([]));
+      .then(({ settings }) => {
+        setToolNames(settings.toolNames.filter((t) => !NEVER_FOR_MEMBERS.includes(t)));
+        setModelIds([...settings.providers.map((p) => p.id), ...settings.combos.map((c) => c.id)]);
+      })
+      .catch(() => {
+        setToolNames([]);
+        setModelIds([]);
+      });
   }, [conn, load]);
 
   function cancel() {
@@ -104,6 +114,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
               ? await conn.resetPassword(pairingKey, asking.user.id)
               : asking.kind === "tools"
                 ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
+                : asking.kind === "learning"
+                  ? await conn.setUserLearningProvider(pairingKey, asking.user.id, asking.provider || null)
                 : asking.kind === "restore"
                   ? await conn.restoreUser(pairingKey, asking.user.id)
                   : asking.kind === "invite"
@@ -237,6 +249,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   <code>{user.id}</code> · {toolsLabel(user)}
                   {user.agents.length > 0 && ` · agentes próprios: ${user.agents.join(", ")}`}
                   {` · ${dataLabel(user)}`}
+                  {user.learningProvider ? ` · aprendizado com: ${user.learningProvider}` : ""}
                   {user.truthid ? ` · TruthID: @${user.truthid}` : user.inviteOpen ? " · convite de TruthID aberto" : ""}
                 </p>
                 {mine?.kind === "rename" &&
@@ -275,6 +288,25 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                       <span className="field-hint">Um agente nunca passa disso, nem do que o próprio agente pode.</span>
                     </fieldset>,
                   )}
+                {mine?.kind === "learning" &&
+                  keyForm(
+                    "Salvar modelo",
+                    false,
+                    <label className="settings-field">
+                      Modelo com que a IA aprende das conversas de {user.name}
+                      <select value={mine.provider} onChange={(e) => setAsking({ ...mine, provider: e.target.value })}>
+                        <option value="">Padrão do workspace</option>
+                        {/* A model the hub no longer has stays listed, so saving doesn't silently swap it. */}
+                        {mine.provider && !modelIds.includes(mine.provider) && <option value={mine.provider}>{mine.provider} (não existe mais)</option>}
+                        {modelIds.map((id) => (
+                          <option key={id} value={id}>
+                            {id}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="field-hint">O gasto conta no canal “learning”. Vale só se o aprendizado estiver ligado e a pessoa não tiver optado por sair.</span>
+                    </label>,
+                  )}
                 {mine?.kind === "remove" &&
                   keyForm(
                     "Remover",
@@ -293,6 +325,9 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "tools", user, tools: user.tools ?? null })}>
                       Ferramentas
+                    </button>
+                    <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "learning", user, provider: user.learningProvider ?? "" })}>
+                      Modelo do aprendizado
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "reset", user })}>
                       Nova senha provisória

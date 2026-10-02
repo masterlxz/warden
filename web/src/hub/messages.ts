@@ -244,6 +244,8 @@ export interface UserInfo {
   recoveryPolicy?: string;
   /** P115 — the member turned off the assistant learning from their conversations. */
   learningOptOut?: boolean;
+  /** P115 — the provider or combo the owner chose for learning from their conversations; absent: the workspace's. */
+  learningProvider?: string;
   /** Only in `helloAck`: the workspace has learning on at all, so the member's switch means something. */
   learningEnabled?: boolean;
   /** Every time the owner recovered their data with the workspace's recovery key. */
@@ -485,6 +487,7 @@ export type ClientMessage =
   | { type: "redeemInvite"; requestId: number; code: string; username: string }
   /** P84 fatia 2 — the owner sets a member's tools (`null`: the safe default). */
   | { type: "setUserTools"; requestId: number; pairingKey: string; id: string; tools: string[] | null }
+  | { type: "setUserLearningProvider"; requestId: number; pairingKey: string; id: string; provider: string | null }
   /** A member's own agents, answered by `settings` (their view) or `settingsError`. */
   | { type: "saveOwnAgent"; requestId: number; originalId?: string; agent: AgentSettings }
   | { type: "deleteOwnAgent"; requestId: number; id: string }

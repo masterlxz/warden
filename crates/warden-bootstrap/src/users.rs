@@ -738,6 +738,19 @@ pub fn set_user_tools(config: &mut FileConfig, id: &str, tools: Option<Vec<Strin
     Ok(())
 }
 
+/// The owner picks the model the assistant's learning uses for a member (`None`, or blank: back to the
+/// workspace's `[learning] provider`). It has to be a provider or a combo the hub has.
+pub fn set_user_learning_provider(config: &mut FileConfig, id: &str, provider: Option<String>) -> anyhow::Result<()> {
+    let provider = provider.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    if let Some(provider) = &provider {
+        if !config.providers.iter().any(|p| &p.id == provider) && !config.combos.iter().any(|c| &c.id == provider) {
+            anyhow::bail!("no model or combo named '{provider}'");
+        }
+    }
+    find_mut(config, id)?.learning_provider = provider;
+    Ok(())
+}
+
 /// A member creates (`original_id` = `None`) or edits one of their own agents. Whatever it says, it
 /// stays theirs, unshared and without any `can_*` power; its tools are cut to what the member has
 /// (`available`: the hub's tools), and its model is the hub's default unless it names a model the
@@ -1254,6 +1267,28 @@ mod tests {
         assert_eq!(member_tools(&config.users[0], &hub), ["shell", "github__issue"], "a name the hub lacks is ignored");
         set_user_tools(&mut config, "ana", None).unwrap();
         assert_eq!(member_tools(&config.users[0], &hub), ["read_file", "write_file", "tavily-search"]);
+    }
+
+    #[test]
+    fn the_owner_picks_a_members_learning_model_among_the_hubs_providers_and_combos() {
+        let provider = |id: &str| crate::ProviderConfig { id: id.to_string(), kind: crate::Provider::Gemini, api_key: None, base_url: None, model: None, node: None };
+        let mut config = FileConfig { providers: vec![provider("cheap")], combos: vec![crate::ComboConfig { id: "any".into(), providers: vec!["cheap".into()] }], ..FileConfig::default() };
+        add_user(&mut config, "ana", "Ana", "temporary-1").unwrap();
+
+        set_user_learning_provider(&mut config, "ana", Some(" cheap ".into())).unwrap();
+        assert_eq!(config.users[0].learning_provider.as_deref(), Some("cheap"));
+        set_user_learning_provider(&mut config, "ana", Some("any".into())).unwrap();
+        assert_eq!(config.users[0].learning_provider.as_deref(), Some("any"), "a combo counts");
+
+        assert!(set_user_learning_provider(&mut config, "ana", Some("ghost".into())).is_err());
+        assert!(set_user_learning_provider(&mut config, "nobody", Some("cheap".into())).is_err());
+        assert_eq!(config.users[0].learning_provider.as_deref(), Some("any"), "a refusal changes nothing");
+
+        set_user_learning_provider(&mut config, "ana", Some("  ".into())).unwrap();
+        assert_eq!(config.users[0].learning_provider, None, "blank goes back to the workspace's");
+        set_user_learning_provider(&mut config, "ana", Some("cheap".into())).unwrap();
+        set_user_learning_provider(&mut config, "ana", None).unwrap();
+        assert_eq!(config.users[0].learning_provider, None);
     }
 
     #[test]

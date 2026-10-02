@@ -1391,3 +1391,35 @@ async fn a_correction_for_an_existing_skill_becomes_a_pending_change_that_applie
     assert_eq!(after.len(), 1, "{after:?}");
     assert!(!after[0].proposed && after[0].body.contains("Added, Fixed and Removed"), "{after:?}");
 }
+
+/// P115: the owner picks the model the assistant learns with for a member — a model the hub has, with
+/// the pairing key — and the pick lands in `config.toml` and in what the owner sees.
+#[tokio::test]
+async fn the_owner_picks_the_learning_model_of_a_member() {
+    let hub = spin_up().await;
+    let config_path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+    config.providers.push(warden_bootstrap::ProviderConfig { id: "cheap".into(), kind: warden_bootstrap::Provider::Gemini, api_key: None, base_url: None, model: None, node: None });
+    save_config(&config_path, &config).unwrap();
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let pick = |request_id, key: &str, provider: Option<&str>| ClientMessage::SetUserLearningProvider { request_id, pairing_key: key.into(), id: "ana".into(), provider: provider.map(String::from) };
+
+    owner.send(&pick(2, "wrong", Some("cheap"))).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&pick(3, KEY, Some("ghost"))).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: false, .. }), "a model the hub lacks is refused");
+    assert_eq!(warden_bootstrap::load_config_from_path(&config_path, false).unwrap().users[0].learning_provider, None);
+
+    owner.send(&pick(4, KEY, Some("cheap"))).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::UserList { users, .. } => assert_eq!(users[0].learning_provider.as_deref(), Some("cheap")),
+        other => panic!("{other:?}"),
+    }
+    assert!(std::fs::read_to_string(&config_path).unwrap().contains("learning_provider = \"cheap\""));
+
+    owner.send(&pick(5, KEY, None)).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::UserList { users, .. } => assert_eq!(users[0].learning_provider, None, "back to the workspace's"),
+        other => panic!("{other:?}"),
+    }
+}
