@@ -37,6 +37,12 @@ pub struct LearningSettings {
     /// How many suggestions one person can get in 24 hours.
     #[serde(default = "default_max_per_day")]
     pub max_per_day: u32,
+    /// The Telegram and WhatsApp chats the assistant may learn from, as `telegram:<chat id>` and
+    /// `whatsapp:<chat id>` (the id the bot logs and names the conversation after). Empty: the bots
+    /// don't learn at all, since anyone who writes to a bot would otherwise be able to leave
+    /// suggestions in the owner's vault.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bot_chats: Vec<String>,
 }
 
 fn default_max_per_day() -> u32 {
@@ -45,13 +51,19 @@ fn default_max_per_day() -> u32 {
 
 impl Default for LearningSettings {
     fn default() -> Self {
-        Self { enabled: false, provider: None, max_per_day: default_max_per_day() }
+        Self { enabled: false, provider: None, max_per_day: default_max_per_day(), bot_chats: Vec::new() }
     }
 }
 
 impl LearningSettings {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Whether the assistant may learn from chat `chat_id` of a bot (`channel`: `telegram` or `whatsapp`):
+    /// only the ones the owner listed in `bot_chats`, matched exactly.
+    pub fn bot_chat_allowed(&self, channel: &str, chat_id: &str) -> bool {
+        self.bot_chats.iter().any(|entry| entry.split_once(':').is_some_and(|(c, id)| c == channel && id == chat_id))
     }
 }
 
@@ -480,6 +492,24 @@ mod tests {
 
     fn on() -> LearningSettings {
         LearningSettings { enabled: true, ..LearningSettings::default() }
+    }
+
+    #[test]
+    fn a_bot_chat_is_learned_from_only_when_listed_exactly_and_the_list_stays_out_of_the_file_when_empty() {
+        let mut settings = on();
+        assert!(!settings.bot_chat_allowed("telegram", "42"), "no list, no learning");
+        settings.bot_chats = vec!["telegram:42".into(), "whatsapp:5511@s.whatsapp.net".into(), "whatsapp:123:4@s.whatsapp.net".into(), "broken".into()];
+        assert!(settings.bot_chat_allowed("telegram", "42"));
+        assert!(settings.bot_chat_allowed("whatsapp", "5511@s.whatsapp.net"));
+        assert!(settings.bot_chat_allowed("whatsapp", "123:4@s.whatsapp.net"), "only the first colon splits");
+        assert!(!settings.bot_chat_allowed("whatsapp", "42"), "another channel's number doesn't count");
+        assert!(!settings.bot_chat_allowed("telegram", "4"), "no prefix matching");
+        assert!(!settings.bot_chat_allowed("broken", ""), "an entry without a channel never matches");
+
+        let text = toml::to_string(&LearningSettings { enabled: true, ..LearningSettings::default() }).unwrap();
+        assert!(!text.contains("bot_chats"), "{text}");
+        let text = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<LearningSettings>(&text).unwrap(), settings);
     }
 
     const PROPOSAL: &str = r#"Here you go: {"skill": {"name": "Release Notes Style", "description": "How to lay out release notes.", "body": "Group the notes under Added, Fixed and Removed, and use no emoji: the team reads them in plain text.", "rationale": "The person corrected the layout."}}"#;

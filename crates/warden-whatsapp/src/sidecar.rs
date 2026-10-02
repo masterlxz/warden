@@ -183,7 +183,8 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
             }
 
             // P104: once the person has their answer, the assistant may look for something to learn from it.
-            if let (Some(orchestrator), Some(config)) = (learn_from, learning) {
+            // Only from the chats the owner listed in `[learning] bot_chats`.
+            if let (Some(orchestrator), Some(config)) = (learn_from, learning.filter(|c| c.learning.bot_chat_allowed("whatsapp", &chat_id))) {
                 warden_bootstrap::learning::learn_with_config("warden-whatsapp", &orchestrator, config, conversations_dir, &chat_id, None, None).await;
             }
         }
@@ -281,6 +282,36 @@ mod tests {
         assert_eq!(conversation.messages[0].content, "hello");
         assert_eq!(conversation.messages[1].content, "echo: hello");
         assert_eq!(conversation.title, "Fabio");
+    }
+
+    /// P115: the assistant learns from a bot chat only when the owner listed it in `[learning] bot_chats`.
+    #[tokio::test]
+    async fn learning_runs_only_in_the_chats_the_owner_listed() {
+        struct VerdictModel(std::sync::Arc<AtomicUsize>);
+        #[async_trait]
+        impl ModelProvider for VerdictModel {
+            async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(response_stream(Response { content: r#"{"signal":"none"}"#.to_string(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+        const CHAT: &str = "5511999999999@s.whatsapp.net";
+        let calls_for = |bot_chats: Vec<String>| async move {
+            let mut config = FileConfig::default();
+            config.learning.enabled = true;
+            config.learning.bot_chats = bot_chats;
+            let calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-whatsapp-learn-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+            let orchestrator = Orchestrator::new(std::sync::Arc::new(VerdictModel(calls.clone())), vault);
+            let mut sidecar = ScriptedSidecar::new(vec![SidecarEvent::Message { chat_id: CHAT.to_string(), sender_name: None, text: Some("no, use tabs, not spaces".to_string()) }]);
+            let event = sidecar.recv_event().await.unwrap().unwrap();
+            handle_event(&mut sidecar, &orchestrator, &temp_conversations_dir(), Some(&config), event).await;
+            calls.load(Ordering::SeqCst)
+        };
+
+        assert_eq!(calls_for(Vec::new()).await, 1, "just the turn itself: no list, no learning");
+        assert_eq!(calls_for(vec![format!("telegram:{CHAT}"), "whatsapp:other@s.whatsapp.net".into()]).await, 1, "another chat, and another channel's entry, don't count");
+        assert!(calls_for(vec![format!("whatsapp:{CHAT}")]).await > 1, "the listed chat gets the detector's call");
     }
 
     #[tokio::test]

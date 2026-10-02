@@ -20,11 +20,15 @@
   (recusa id que não é provider nem combo do hub; vazio volta ao do workspace), `UserInfoDto.learning_provider`. Testes: um
   unitário em `users.rs` e um de integração no hub real (`tests/people.rs`: chave errada, id fantasma, definir, limpar, e o
   `config.toml`); clippy sem aviso novo; `tsc` da web limpo.
+- **Feito também** (P115 g): `[learning] bot_chats` (`telegram:<chat_id>`, `whatsapp:<jid>`): o aprendizado nos bots só roda
+  nos chats listados, e a lista vazia (padrão) desliga. `LearningSettings::bot_chat_allowed` (comparação exata, divide no
+  primeiro `:`), checada nos dois pontos de chamada dos bots; um teste unitário e um teste hermético em cada bot (chat não
+  listado: só a chamada do turno; listado: mais a do detector). Muda o comportamento de quem já tinha ligado o `[learning]`.
 - **Verificado**: `tsc --noEmit` em web, desktop e extensão; helper conferido num script solto (iguais, troca no meio, vazio,
   só adição); Flutter: `skill_diff_test.dart` (4) e `skills_screen_test.dart` (inclui o diff aberto), `analyze` limpo. Os
   clientes web não têm runner de testes, então o helper TS não tem teste no repo.
 - **Não verificado**: nenhuma tela aberta (cores do diff, claro e escuro): entra na rodada de testes em tela do P115.
-- **Próximo passo**: lista de chats permitidos nos bots (aprendizado); a rodada de testes em tela.
+- **Próximo passo**: a rodada de testes em tela (P115 e os P95–P114 pendentes); medir o aprendizado com conversas reais.
 
 ---
 

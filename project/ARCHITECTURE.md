@@ -2951,4 +2951,8 @@ aparelho `Approved` e hoje não tem cliente.
   resposta `UserList`) → `UserChange::SetLearningProvider` → `users::set_user_learning_provider`, que só aceita id de provider
   ou combo que o hub tem (vazio volta ao do workspace). `UserInfoDto.learning_provider` mostra a escolha; a tela de Pessoas
   ganhou "Modelo do aprendizado". Só a web tem tela de Pessoas; nos outros o `config.toml` segue valendo.
+- **Chats dos bots** (P115 g): `[learning] bot_chats` lista os chats (`telegram:<chat_id>`, `whatsapp:<jid>`, o id da
+  conversa do bot) dos quais o assistente pode aprender; vazia, os bots não aprendem, porque quem escrevesse ao bot deixaria
+  sugestões no vault do dono. A checagem (`LearningSettings::bot_chat_allowed`) fica nos dois bots, não em
+  `learn_with_config`, que o hub e o desktop também usam e que não têm essa lista.
 

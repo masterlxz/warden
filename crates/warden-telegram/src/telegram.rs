@@ -291,7 +291,8 @@ async fn handle_update(
     }
 
     // P104: once the person has their answer, the assistant may look for something to learn from it.
-    if let (true, Some(config)) = (answered, learning) {
+    // Only from the chats the owner listed in `[learning] bot_chats`.
+    if let (true, Some(config)) = (answered, learning.filter(|c| c.learning.bot_chat_allowed("telegram", &conversation_id))) {
         warden_bootstrap::learning::learn_with_config("warden-telegram", &orchestrator, config, conversations_dir, &conversation_id, None, None).await;
     }
 }
@@ -400,6 +401,40 @@ mod tests {
         assert_eq!(conversation.messages[0].content, "hello");
         assert_eq!(conversation.messages[1].content, "echo: hello");
         assert_eq!(conversation.title, "fabio");
+    }
+
+    /// Answers everything with a "nothing to learn" verdict and counts the calls, so a turn that was
+    /// learned from shows as more than one.
+    struct CountingModel(std::sync::Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl ModelProvider for CountingModel {
+        async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(response_stream(Response { content: r#"{"signal":"none"}"#.to_string(), tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    /// P115: the assistant learns from a bot chat only when the owner listed it in `[learning] bot_chats`.
+    #[tokio::test]
+    async fn learning_runs_only_in_the_chats_the_owner_listed() {
+        let calls_for = |bot_chats: Vec<String>| async move {
+            let mut config = FileConfig::default();
+            config.learning.enabled = true;
+            config.learning.bot_chats = bot_chats;
+            let calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-telegram-learn-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+            let orchestrator = Orchestrator::new(std::sync::Arc::new(CountingModel(calls.clone())), vault);
+            let api = ScriptedTelegramApi::new(vec![vec![text_update(1, 42, "no, use tabs, not spaces")]]);
+            let mut offset = None;
+            let updates = api.get_updates(offset, 30).await.unwrap();
+            process_updates(&api, &orchestrator, &temp_conversations_dir(), Some(&config), updates, &mut offset).await;
+            calls.load(Ordering::SeqCst)
+        };
+
+        assert_eq!(calls_for(Vec::new()).await, 1, "just the turn itself: no list, no learning");
+        assert_eq!(calls_for(vec!["telegram:7".into(), "whatsapp:42".into()]).await, 1, "other chats, and another channel's 42, don't count");
+        assert!(calls_for(vec!["telegram:42".into()]).await > 1, "the listed chat gets the detector's call");
     }
 
     #[tokio::test]
