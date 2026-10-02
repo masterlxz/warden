@@ -100,3 +100,60 @@ conversa banal não gerou nada. Falta o que está no P115 do `PENDING.md`.
 - Issue 128884 (revisão por sinal de aprendizado): https://github.com/NousResearch/hermes-agent/issues/128884
 - Artigo crítico da memória: https://vectorize.io/articles/hermes-agent-memory-explained
 - Practice Makes Unsafe: Skill Misevolution in Self-Improving LLM Agents: https://arxiv.org/abs/2608.12851
+
+---
+
+## OpenClaw: o que tem e o Warden não tem (P105, Sessão 117, 2026-10-02)
+
+**O que foi lido**: o README do repositório (`openclaw/openclaw`), a página de features da documentação e um resumo de
+terceiros das tools nativas. **Não foi lido o código** nem instalado o produto: a lista do OpenClaw é o que a documentação
+afirma, não o que foi medido. O lado do Warden foi conferido no `README.md` e no código (buscas por palavras-chave).
+
+### O que o OpenClaw é
+
+Um assistente pessoal em TypeScript (MIT, antes chamado Clawdbot), com um **Gateway** local que liga modelos, tools,
+canais e apps de companhia; configurado por um `openclaw.json`, skills em `SKILL.md` e uma fundação sem fins lucrativos por
+trás. É parecido com o Warden no desenho (hub próprio, vault em arquivos, skills, multiagente), então a comparação é útil.
+
+### Comparação
+
+Prioridade: **Alta** (risco ou uso diário), **Média**, **Baixa** (ou **Não**, com o motivo).
+
+| Área | OpenClaw | Warden hoje | Lacuna | Prioridade |
+|---|---|---|---|---|
+| Quem pode falar com o bot | Lista de DMs permitidos e **pareamento com código de aprovação para remetente desconhecido, por padrão**; em grupo só responde se mencionado | Telegram e WhatsApp **respondem a qualquer pessoa que escreva** (nenhum controle de acesso nos bots; só há a lista nova do aprendizado) | **Segurança**: quem achar o bot usa o agente do dono, o vault, as tools liberadas e o limite de gasto | **Alta** (registrado como P117) |
+| Canais de mensagem | Mais de 20: Discord, Slack, Signal, iMessage, Matrix, Teams, Google Chat, IRC, LINE, SMS, Voice Call e outros, quase todos como plugins | Telegram, WhatsApp, desktop, celular, extensão, web, CLI e a Warden API (n8n e apps de chat podem fazer ponte) | Discord (já no P27), Slack, Signal, iMessage | **Média** só o Discord; o resto **Baixa** |
+| Skills e marketplace | `SKILL.md`, quatro origens (embutidas, gerenciadas, do workspace, ClawHub) e mais de 13 mil skills publicadas | Skills em markdown no vault, criadas à mão, descritas ou sugeridas pela IA; sem marketplace | Registro público, instalação com um comando, scanner de skills de terceiros (o scanner de propostas do P115 já cobre o pior caso de conteúdo) | **Baixa**, e é o P85 |
+| Automação | Cron (uma vez, intervalo, expressão), **webhooks** com token (inclui Gmail Pub/Sub), **hooks** por evento, *heartbeat* | Tarefas agendadas no hub (P92); sem webhooks de entrada nem hooks por evento | Webhook de entrada para disparar um agente (e-mail novo, push do git) | **Média** |
+| Nós e dispositivos | Apps de companhia iOS, Android e macOS: câmera, gravação de tela, localização, comandos do aparelho | Nós (P93): shell, arquivos e modelos de outra máquina; o celular é cliente, não nó | Celular como nó (câmera, localização, notificação), sem ser só tela | **Baixa** |
+| Voz | Voice Wake (macOS/iOS), modo contínuo (Android), TTS pelo ElevenLabs, canal de chamada de voz | STT e TTS pela OpenAI, conversa por voz; sem palavra de ativação nem provedor de voz plugável (P28/ROADMAP) | Palavra de ativação; provedor de voz plugável e local | **Baixa** |
+| Canvas | Espaço visual dirigido pelo agente (A2UI) para saída estruturada | Respostas em markdown e documentos gerados (PDF, CSV, XLSX) | Painel visual interativo | **Baixa** (sem demanda registrada) |
+| Isolamento | Sandbox em Docker por padrão, com backends SSH e OpenShell, por sessão | `shell` **opt-in, sem sandbox nem lista de comandos**, por decisão explícita; aprovação por tool no desktop | Rodar o `shell` num contêiner | **Média**: vale para quem liga o shell num hub com membros |
+| Sessões | Ferramentas para listar, ler e enviar entre sessões; isolamento por remetente | Conversas por canal e por pessoa (multiusuário), `message_agent`, `delegate_task` | Equivalente já existe em outro formato | **Não** |
+| Memória | Três camadas em arquivos (`MEMORY.md`, notas do dia, `DREAMS.md`) | Vault em markdown, busca por palavras e por significado, `search_history`, skills sugeridas | O Warden tirou de propósito os arquivos fixos (P94) | **Não** |
+| Modelos | Anthropic, OpenAI, Google, locais (vLLM, SGLang, Ollama, llama.cpp, LM Studio) e **OAuth de assinatura** | OpenAI, Anthropic, Gemini, Ollama, qualquer compatível, combos com fallback | OAuth de assinatura (decidido contra no P79; reaberto como registro no P116) | **Baixa** |
+| Web search | Doze provedores (Brave, DuckDuckGo, Exa, Perplexity, SearXNG, Tavily...) | Tavily (via MCP) e qualquer MCP | Mais provedores, por MCP | **Baixa** |
+| Apps | macOS, Windows, iOS, Android, Linux, Control UI no navegador | Desktop (Tauri), celular (Flutter), extensão, web servida pelo hub | Equivalente | **Não** |
+
+### O que o Warden tem e o OpenClaw não anuncia
+
+Cofre cifrado por membro com recuperação e consentimento (multiusuário de verdade, P84), sync descentralizado (Arweave pelo
+TruthID ou git), fallback e combos de provedores, a Warden API compatível com OpenAI, o aprendizado com revisão e diff do
+que a IA sugere (P104/P115) e nós entre máquinas com duas travas. Não conferi se o OpenClaw tem algum desses; a
+documentação lida não os cita.
+
+### O que faz sentido trazer, na ordem
+
+1. **Controle de acesso nos bots** (P117): lista de chats ou usuários permitidos e pareamento com aprovação do dono para
+   quem for desconhecido. É a única lacuna que é risco hoje, e já existe o mesmo padrão em `bot_chats`.
+2. **Webhook de entrada** para disparar um agente (a Warden API já recebe chamadas; falta o gatilho com token).
+3. **Sandbox opcional para o `shell`** (contêiner), antes de abrir o shell para membros.
+4. **Discord** (P27), se houver demanda; os demais canais só sob pedido.
+
+Os itens de skills (P85), voz plugável e celular como nó seguem como estão em `PENDING.md`.
+
+### Fontes
+
+- Repositório: https://github.com/openclaw/openclaw
+- Documentação de features: https://docs.openclaw.ai/concepts/features
+- Resumo das tools nativas (terceiros): https://agentic-ai.readthedocs.io/en/latest/AgentPlatforms/openclaw/

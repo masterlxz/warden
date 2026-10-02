@@ -28,7 +28,11 @@
   só adição); Flutter: `skill_diff_test.dart` (4) e `skills_screen_test.dart` (inclui o diff aberto), `analyze` limpo. Os
   clientes web não têm runner de testes, então o helper TS não tem teste no repo.
 - **Não verificado**: nenhuma tela aberta (cores do diff, claro e escuro): entra na rodada de testes em tela do P115.
-- **Próximo passo**: a rodada de testes em tela (P115 e os P95–P114 pendentes); medir o aprendizado com conversas reais.
+- **P51 fechado e P105 feito**: o P51 já estava resolvido pelas partes (Warden API no P12/P91, roteamento no P79/P90), então foi
+  marcado como resolvido, e o OAuth de assinatura ficou **aberto à parte** no P116 (a decisão do P79 foi não fazer; fica
+  como registro para reavaliar). O estudo do OpenClaw (P105) está em `STUDIES.md`: 13 áreas comparadas com prioridade, lendo o
+  README e a documentação, não o código. Achado: **os bots respondem a qualquer pessoa** (P117, 🟠 Média).
+- **Próximo passo**: o P117 (controle de acesso nos bots); a rodada de testes em tela (P115 e os P95–P114 pendentes).
 
 ---
 
