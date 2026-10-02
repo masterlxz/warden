@@ -27,7 +27,7 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_model_for, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
-    append_messages, AgentConfig, AppendOptions, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
+    append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
     Overrides,
     Provider, ProviderConfig, UsageSummary,
 };
@@ -730,8 +730,13 @@ fn list_conversations() -> Result<Vec<Conversation>, String> {
 /// The screen used to save the whole conversation it held, which erased anything another writer
 /// added meanwhile — an agent answering a `message_agent` note in the "A → B" conversation, or the
 /// CLI leaving one. Appending re-reads the file under the bootstrap's write lock instead.
+///
+/// When the messages end with the assistant's answer the turn is over, and the assistant may look for something to
+/// learn from it (P115 g, `learn_in_background`) — the desktop's counterpart to what the hub and the chat bots do
+/// after a turn.
 #[tauri::command]
-fn append_conversation_messages(
+async fn append_conversation_messages(
+    state: State<'_, AppState>,
     conversation_id: String,
     messages: Vec<ConversationMessage>,
     title_seed: String,
@@ -739,10 +744,41 @@ fn append_conversation_messages(
     provider_id: Option<String>,
 ) -> Result<Conversation, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let answered = ends_with_an_answer(&messages);
     let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), create: true };
-    append_messages(&dir, &conversation_id, options, messages)
+    let conversation = append_messages(&dir, &conversation_id, options, messages)
         .map_err(|e| format!("{e:#}"))?
-        .ok_or_else(|| "the conversation could not be created".to_string())
+        .ok_or_else(|| "the conversation could not be created".to_string())?;
+    if answered {
+        learn_in_background(&state, dir, conversation_id, agent_id, provider_id);
+    }
+    Ok(conversation)
+}
+
+/// Whether the last of `messages` is the assistant's: the turn was answered, so there's something to look at.
+fn ends_with_an_answer(messages: &[ConversationMessage]) -> bool {
+    messages.last().is_some_and(|m| m.role == SavedRole::Assistant)
+}
+
+/// After a saved turn, lets the assistant learn from the conversation (P104) without making the window wait or
+/// failing the save: the config is read fresh each time (`[learning]` is off unless the owner turned it on), the model
+/// is the one the conversation picked, and whatever goes wrong is only logged.
+fn learn_in_background(state: &State<'_, AppState>, dir: PathBuf, conversation_id: String, agent_id: Option<String>, provider_id: Option<String>) {
+    let Ok(orchestrator) = state.orchestrator.lock().unwrap().clone() else { return };
+    tauri::async_runtime::spawn(async move {
+        let Some(path) = default_config_path() else { return };
+        let Ok(config) = load_config_from_path(&path, false) else { return };
+        if !config.learning.enabled {
+            return;
+        }
+        let mut orchestrator = orchestrator.with_spend_context(SpendContext::new("desktop"));
+        if let Some(id) = &provider_id {
+            if let Ok(model) = build_model_for(&config, id, None) {
+                orchestrator = orchestrator.with_model(model);
+            }
+        }
+        warden_bootstrap::learning::learn_with_config("warden-desktop", &orchestrator, &config, &dir, &conversation_id, agent_id.as_deref(), None).await;
+    });
 }
 
 /// Backs the "Usage" nav view — the same on-demand aggregation the `usage_stats` tool (`warden-
@@ -921,4 +957,21 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn said(role: SavedRole) -> ConversationMessage {
+        ConversationMessage { id: "m".into(), role, content: "hi".into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+    }
+
+    #[test]
+    fn a_turn_is_over_when_the_saved_messages_end_with_the_assistants_answer() {
+        assert!(ends_with_an_answer(&[said(SavedRole::User), said(SavedRole::Assistant)]));
+        assert!(!ends_with_an_answer(&[said(SavedRole::User)]), "the person's message alone has no answer yet");
+        assert!(!ends_with_an_answer(&[said(SavedRole::Assistant), said(SavedRole::User)]));
+        assert!(!ends_with_an_answer(&[]));
+    }
 }
