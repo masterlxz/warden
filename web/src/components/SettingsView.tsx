@@ -3,6 +3,7 @@ import { SettingsError, type LoadedSettings, type ServerConnection } from "../hu
 import ApiKeysSection from "./ApiKeysSection";
 import type {
   AgentSettings,
+  BotsSettings,
   Combo,
   HubSettings,
   HubSettingsUpdate,
@@ -64,6 +65,13 @@ interface Draft {
    * path, which the web can't save) never blocks saving the rest. */
   gitRemoteLoaded: string;
   gitToken: SecretDraft;
+  /** P118 — the lists are edited as text, one entry per line. */
+  botsLearningEnabled: boolean;
+  botsLearningProvider: string;
+  botsMaxPerDay: string;
+  botsLearningChats: string;
+  botsTelegramUsers: string;
+  botsWhatsappChats: string;
 }
 
 let nextKey = 1;
@@ -87,7 +95,45 @@ function toDraft(s: HubSettings): Draft {
     gitRemoteUrl: s.gitSync.remoteUrl,
     gitRemoteLoaded: s.gitSync.remoteUrl,
     gitToken: { saved: s.gitSync.token, edit: KEEP },
+    botsLearningEnabled: s.bots.learningEnabled,
+    botsLearningProvider: s.bots.learningProvider,
+    botsMaxPerDay: String(s.bots.learningMaxPerDay),
+    botsLearningChats: s.bots.learningBotChats.join("\n"),
+    botsTelegramUsers: s.bots.telegramAllowedUsers.join("\n"),
+    botsWhatsappChats: s.bots.whatsappAllowedChats.join("\n"),
   };
+}
+
+/** One entry per line (a comma works too), blanks dropped. */
+function lines(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+}
+
+function toBots(d: Draft): BotsSettings {
+  return {
+    learningEnabled: d.botsLearningEnabled,
+    learningProvider: d.botsLearningProvider,
+    learningMaxPerDay: Number(d.botsMaxPerDay),
+    learningBotChats: lines(d.botsLearningChats),
+    telegramAllowedUsers: lines(d.botsTelegramUsers).map(Number),
+    whatsappAllowedChats: lines(d.botsWhatsappChats),
+  };
+}
+
+/** What stops the bots block from being saved, in the words the screen shows; `null` when it's fine. */
+function botsError(d: Draft): string | null {
+  const max = Number(d.botsMaxPerDay);
+  if (!Number.isInteger(max) || max < 1) return "Sugestões por dia: um número inteiro, de 1 para cima.";
+  const bad = lines(d.botsTelegramUsers).find((l) => !/^[1-9][0-9]*$/.test(l));
+  if (bad) return `“${bad}” não é um id do Telegram: use o número (o @userinfobot mostra o seu).`;
+  const chat = lines(d.botsLearningChats).find((l) => !/^(telegram|whatsapp):\S+$/.test(l));
+  if (chat) return `“${chat}” não é um chat: escreva telegram:<id> ou whatsapp:<id>.`;
+  const wa = lines(d.botsWhatsappChats).find((l) => /\s/.test(l));
+  if (wa) return `“${wa}” tem espaços: escreva só o número ou o id inteiro.`;
+  return null;
 }
 
 function strip<T>({ key: _key, ...rest }: Keyed<T>): T {
@@ -107,6 +153,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
     ...((d.gitRemoteUrl !== d.gitRemoteLoaded || d.gitToken.edit.action !== "keep") && {
       gitSync: { remoteUrl: d.gitRemoteUrl, token: d.gitRemoteUrl.trim() === "" ? { action: "clear" } : d.gitToken.edit },
     }),
+    bots: toBots(d),
   };
 }
 
@@ -237,6 +284,8 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   }
 
   const { settings, secretsWritable } = loaded;
+  const botsProblem = botsError(draft);
+  const modelIds = [...draft.providers.map((p) => p.id), ...draft.combos.map((c) => c.id)].filter((id) => id.trim() !== "");
   const update = (change: (d: Draft) => Draft) => {
     setDraft((d) => (d ? change(d) : d));
     setSavedAt(null);
@@ -707,6 +756,43 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         </div>
       </Section>
 
+      <Section
+        title="Aprendizado e bots"
+        hint="Quem pode falar com o Telegram e o WhatsApp, e se o assistente sugere o que aprender das conversas. Uma lista vazia significa ninguém."
+      >
+        {botsProblem && <p className="error-banner">{botsProblem}</p>}
+        <div className="settings-checks">
+          <label className="settings-check">
+            <input type="checkbox" checked={draft.botsLearningEnabled} onChange={(e) => update((d) => ({ ...d, botsLearningEnabled: e.target.checked }))} />
+            Aprender com as conversas (cada olhada é uma chamada curta ao modelo, e gasta do seu limite)
+          </label>
+        </div>
+        <div className="settings-grid">
+          <Field label="Modelo do aprendizado" hint="Um modelo barato resolve. Vazio usa o modelo ativo. Cada membro pode ter o seu na aba Pessoas.">
+            <select value={draft.botsLearningProvider} onChange={(e) => update((d) => ({ ...d, botsLearningProvider: e.target.value }))}>
+              <option value="">O modelo ativo</option>
+              {modelIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Sugestões por dia" hint="O teto de cada pessoa em 24 horas.">
+            <input type="number" min={1} step={1} value={draft.botsMaxPerDay} onChange={(e) => update((d) => ({ ...d, botsMaxPerDay: e.target.value }))} />
+          </Field>
+          <Field label="Quem pode falar com o bot do Telegram" hint="Ids numéricos, um por linha. Só conversa privada. Vazio: o bot não responde a ninguém." wide>
+            <textarea rows={3} value={draft.botsTelegramUsers} onChange={(e) => update((d) => ({ ...d, botsTelegramUsers: e.target.value }))} />
+          </Field>
+          <Field label="Quem pode falar com o bot do WhatsApp" hint="Número (5511999999999) ou id inteiro, um por linha. Só conversa privada. Vazio: ninguém." wide>
+            <textarea rows={3} value={draft.botsWhatsappChats} onChange={(e) => update((d) => ({ ...d, botsWhatsappChats: e.target.value }))} />
+          </Field>
+          <Field label="Conversas dos bots de que o assistente pode aprender" hint="telegram:<id> ou whatsapp:<id>, um por linha. Só vale com o aprendizado ligado. Vazio: os bots não aprendem." wide>
+            <textarea rows={3} value={draft.botsLearningChats} onChange={(e) => update((d) => ({ ...d, botsLearningChats: e.target.value }))} />
+          </Field>
+        </div>
+      </Section>
+
       <Section title="Limites de gasto" hint="Valem para todos os canais desta máquina. A janela é móvel: “24 h” são as últimas 24 horas, não desde a meia-noite.">
         {settings.limitsDisabledByEnv && <p className="banner settings-note">WARDEN_SPEND_LIMITS=off está definido no ambiente do hub e desliga tudo o que for salvo aqui.</p>}
         <div className="settings-checks" role="radiogroup" aria-label="Limites">
@@ -877,7 +963,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           </form>
         ) : (
           <div className="skills-actions">
-            <button type="button" className="primary-button" disabled={!dirty || !conn} onClick={() => setAsking(true)}>
+            <button type="button" className="primary-button" disabled={!dirty || !conn || botsProblem !== null} onClick={() => setAsking(true)}>
               Salvar
             </button>
             <button type="button" className="link-button" disabled={!dirty} onClick={() => setDraft(toDraft(settings))}>

@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
 import type { AgentEntry, Combo, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
 import ApiKeysSection from "./ApiKeysSection";
+import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 
 const emptySettings: Settings = {
@@ -1517,6 +1518,9 @@ function SettingsView() {
           {isSaving ? "Saving…" : "Save settings"}
         </button>
       </form>
+
+      {/* P118 — saved on its own, outside the form above. */}
+      <BotsSection />
 
       {/* P12 — saved on its own, outside the form above. */}
       <ApiKeysSection />

@@ -1,4 +1,5 @@
 mod api_key_cmds;
+mod bot_cmds;
 mod approval;
 mod git_sync_cmds;
 mod lend_cmds;
@@ -920,6 +921,8 @@ pub fn run() {
             api_key_cmds::list_api_keys,
             api_key_cmds::create_api_key,
             api_key_cmds::revoke_api_key,
+            bot_cmds::get_bots_settings,
+            bot_cmds::save_bots_settings,
             node_cmds::list_nodes,
             node_cmds::save_node_access,
             people_cmds::list_people,

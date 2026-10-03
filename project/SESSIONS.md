@@ -2,7 +2,38 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-02 (Sessão 117)
+> Última atualização: 2026-10-02 (Sessão 118)
+
+---
+
+### 2026-10-02 — Sessão 118
+
+- **Objetivo**: o P118, a seção "Aprendizado e bots" nas Configurações do desktop e da web (plano aprovado em Plan mode).
+- **Antes de começar**: `cargo clean` (58,8 GB) e `web/dist` apagados, porque `/home` estava em 98%; os volumes e as imagens
+  Docker de build ficaram intocados (P74). Um monitor de `/home` avisa se passar de 85%.
+- **Feito (backend, compartilhado)**: `BotsSettingsDto` no protocolo (`learning_enabled`, `learning_provider`,
+  `learning_max_per_day`, `learning_bot_chats`, `telegram_allowed_users`, `whatsapp_allowed_chats`). `HubSettingsDto.bots`
+  (com `#[serde(default)]`) e `HubSettingsUpdate.bots: Option<_>`: sem o campo, o save mantém o que está no arquivo.
+  `warden_bootstrap::settings::apply_bots_settings` é a única validação, usada pelo hub e pelo desktop: ao menos 1
+  sugestão por dia, modelo do aprendizado precisa ser provider ou combo, `bot_chats` só `telegram:<id>`/`whatsapp:<id>`,
+  ids do Telegram positivos (usuário, não grupo), WhatsApp sem espaço, repetidos e vazios saem. O token do Telegram **não**
+  passa pelo hub (a web esconde segredos); só o desktop o edita.
+- **Feito (web)**: seção "Aprendizado e bots" em `SettingsView.tsx`, salva junto com o resto (chave de pareamento, versão
+  do arquivo), listas em texto, uma entrada por linha, com o erro mostrado e o Salvar travado enquanto houver entrada inválida.
+- **Feito (desktop)**: `bot_cmds.rs` (`get_bots_settings`/`save_bots_settings`, lê o arquivo, muda só essa fatia, grava;
+  token: ausente mantém, vazio remove, texto troca; nunca volta, só se existe e os 4 últimos) e `BotsSection.tsx`, fora do
+  formulário principal, com botão próprio. O `save_settings` do desktop já repassava `learning`/`telegram`/`whatsapp`/token
+  (conferido), então um salvar do formulário não apaga mais a lista.
+- **Verificado**: `cargo test` de protocolo (36), bootstrap (251), server (12 de settings, incluindo o novo que salva,
+  mostra e mantém quando o save não traz `bots`) e desktop (2 novos); `tsc --noEmit` em web e desktop; `cargo clippy
+  --workspace --all-targets` sem aviso novo (o único é do `learning_eval`, que veio do pull). Tela do desktop no Brave
+  headless contra o Vite, com `invoke` mockado, claro e escuro: Salvar travado sem mudança e com id inválido, payload
+  conferido campo a campo, sem erro de console.
+- **Não verificado**: a tela da web (precisaria de um hub rodando; só `tsc` e os testes do hub), a janela nativa do Tauri,
+  bot real (token e número), e o efeito em quente do token e do `[learning]` (só as listas são relidas sem reiniciar).
+- **Achado**: a web precisou de `npm install` (o `qrcode-generator` do login por TruthID é dependência nova do pull).
+- **Próximo passo**: o resto do P117 (pareamento, chat que vira pessoa), o P119 (paridade web×desktop) e a rodada de testes
+  em tela (P115 e os P95–P114).
 
 ---
 

@@ -317,7 +317,7 @@ mod tests {
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use warden_bootstrap::{bootstrap, Overrides};
-    use warden_server_protocol::protocol::{ProviderEditDto, SecretEdit};
+    use warden_server_protocol::protocol::{BotsSettingsDto, ProviderEditDto, SecretEdit};
 
     const KEY: &str = "pairing-key-0123456789";
 
@@ -405,6 +405,7 @@ api_key = "sk-ant-original-secret-9999"
             prices: settings.prices.clone(),
             git_sync: None,
             combos: None,
+            bots: None,
         }
     }
 
@@ -452,6 +453,28 @@ api_key = "sk-ant-original-secret-9999"
             text.contains("enable_shell = false # desligado de propósito") && text.contains("# o provedor principal\n[[providers]]"),
             "comments written by hand survive a save (P82): {text}"
         );
+        std::fs::remove_dir_all(&host.dir).unwrap();
+    }
+
+    /// P118: the bots block round-trips through the hub, and a save that doesn't carry it leaves it be.
+    #[tokio::test]
+    async fn the_bots_block_is_saved_shown_and_kept_when_a_save_leaves_it_out() {
+        let (host, shared) = setup("bots").await;
+        let (settings, version, _) = load(&host, &shared, true);
+        assert_eq!(settings.bots.learning_max_per_day, 3);
+        assert!(settings.bots.telegram_allowed_users.is_empty());
+
+        let mut update = untouched(&settings);
+        update.bots = Some(BotsSettingsDto { telegram_allowed_users: vec![42], whatsapp_allowed_chats: vec!["5511999999999".into()], ..settings.bots.clone() });
+        let reply = save(&host, &shared, true, KEY, &version, update).await;
+        let ServerMessage::SettingsSaved { settings, version, .. } = reply else { panic!("{reply:?}") };
+        assert_eq!(settings.bots.telegram_allowed_users, [42]);
+        let text = std::fs::read_to_string(host.config_path()).unwrap();
+        assert!(text.contains("allowed_users = [42]") && text.contains("5511999999999"), "{text}");
+
+        let reply = save(&host, &shared, true, KEY, &version, untouched(&settings)).await;
+        let ServerMessage::SettingsSaved { settings, .. } = reply else { panic!("{reply:?}") };
+        assert_eq!(settings.bots.telegram_allowed_users, [42], "a save without bots keeps them");
         std::fs::remove_dir_all(&host.dir).unwrap();
     }
 

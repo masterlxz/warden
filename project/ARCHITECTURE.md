@@ -2964,3 +2964,15 @@ aparelho `Approved` e hoje não tem cliente.
   rodada de updates (Telegram) e a cada mensagem (WhatsApp), mantendo a última boa se a leitura falhar. Quem entra segue
   usando o vault e as tools do dono; o desktop repassa os dois campos ao salvar as configurações, para não apagar a lista.
 
+### Tela de "Aprendizado e bots" (P118, Sessão 118)
+
+- **Um bloco só**: `BotsSettingsDto` (`[learning]` inteiro mais as duas listas dos bots) viaja em `HubSettingsDto.bots` e em
+  `HubSettingsUpdate.bots: Option<_>`. Sem o campo o save mantém o arquivo, então cliente antigo não apaga nada. A web usa o
+  `SaveSettings` que já existe (chave de pareamento, versão do arquivo, recusa a membro) em vez de uma mensagem nova.
+- **Uma validação**: `apply_bots_settings` em `warden-bootstrap/src/settings.rs`, usada pelo hub e pelo desktop, para as duas
+  telas recusarem as mesmas coisas.
+- **O token do Telegram fica só no desktop**: a web nunca edita segredo de bot (o hub esconde segredos), então o token não está
+  no DTO; o desktop o troca por `bot_cmds.rs` (ausente mantém, vazio remove) e ele nunca volta, só "salvo, termina em …".
+- **No desktop a seção salva sozinha** (`bot_cmds.rs` relê o arquivo e muda só essa fatia), fora do formulário principal, no
+  molde do `ApiKeysSection`. As listas valem na hora (os bots as releem); o token e o `[learning]` só na próxima partida.
+

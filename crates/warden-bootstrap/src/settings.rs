@@ -14,10 +14,12 @@ use anyhow::Context;
 use warden_core::memory::content_version;
 use warden_core::spend::Price;
 use warden_server_protocol::protocol::{
-    AgentSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
+    AgentSettingsDto, BotsSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
     SecretEdit, SecretStatusDto,
 };
 
+use crate::bot_access::{TelegramSettings, WhatsAppSettings};
+use crate::learning::LearningSettings;
 use crate::{
     default_limit_configs, default_model_for, env_switches_limits_off, forget_agent_in_nodes, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
     Provider, ProviderConfig,
@@ -348,8 +350,63 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             remote_url: config.git_sync.as_ref().map(|g| g.remote_url.clone()).unwrap_or_default(),
             token: secret_status(config.git_sync.as_ref().map(|g| g.token.as_str()).filter(|t| !t.is_empty())),
         },
+        bots: bots_settings(config),
         notes,
     }
+}
+
+/// What the screens show of `[learning]` and the bots' lists (P118).
+pub fn bots_settings(config: &FileConfig) -> BotsSettingsDto {
+    BotsSettingsDto {
+        learning_enabled: config.learning.enabled,
+        learning_provider: config.learning.provider.clone().unwrap_or_default(),
+        learning_max_per_day: config.learning.max_per_day,
+        learning_bot_chats: config.learning.bot_chats.clone(),
+        telegram_allowed_users: config.telegram.allowed_users.clone(),
+        whatsapp_allowed_chats: config.whatsapp.allowed_chats.clone(),
+    }
+}
+
+/// Drops blanks and repeats, keeping the order.
+fn tidy_list(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && seen.insert(s.clone())).collect()
+}
+
+/// Checks a bots block and writes it into `config`: at least one suggestion a day, a learning model
+/// that is a provider or a combo, `bot_chats` as `telegram:<id>` / `whatsapp:<id>`, Telegram ids that
+/// are positive numbers (a user, not a group) and WhatsApp ids without spaces. Repeats and blanks go.
+pub fn apply_bots_settings(config: &mut FileConfig, dto: BotsSettingsDto, providers: &[ProviderConfig], combos: &[ComboConfig]) -> Result<(), String> {
+    if dto.learning_max_per_day == 0 {
+        return Err("learning needs at least one suggestion a day (set it off instead)".to_string());
+    }
+    let provider = non_empty(&dto.learning_provider);
+    if let Some(id) = &provider {
+        if !is_model(id, providers, combos) {
+            return Err(format!("learning model '{id}' is neither a configured provider nor a combo"));
+        }
+    }
+    let bot_chats = tidy_list(dto.learning_bot_chats);
+    for entry in &bot_chats {
+        let valid = entry.split_once(':').is_some_and(|(channel, id)| matches!(channel, "telegram" | "whatsapp") && !id.is_empty() && !id.contains(char::is_whitespace));
+        if !valid {
+            return Err(format!("'{entry}' is not a bot chat: write telegram:<id> or whatsapp:<id>"));
+        }
+    }
+    if let Some(id) = dto.telegram_allowed_users.iter().find(|id| **id <= 0) {
+        return Err(format!("Telegram user id {id} is not a user: ids are positive numbers"));
+    }
+    let mut seen = HashSet::new();
+    let telegram_users: Vec<i64> = dto.telegram_allowed_users.into_iter().filter(|id| seen.insert(*id)).collect();
+    let whatsapp_chats = tidy_list(dto.whatsapp_allowed_chats);
+    if let Some(chat) = whatsapp_chats.iter().find(|c| c.contains(char::is_whitespace)) {
+        return Err(format!("WhatsApp id '{chat}' has spaces: write the number or the whole id"));
+    }
+
+    config.learning = LearningSettings { enabled: dto.learning_enabled, provider, max_per_day: dto.learning_max_per_day, bot_chats };
+    config.telegram = TelegramSettings { allowed_users: telegram_users };
+    config.whatsapp = WhatsAppSettings { allowed_chats: whatsapp_chats };
+    Ok(())
 }
 
 /// `[git_sync]` after a web save. An empty URL turns git sync off. Only `https://` is accepted
@@ -465,6 +522,9 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
         config.api_keys.gemini = None;
         config.api_keys.openai = None;
     }
+    if let Some(bots) = update.bots {
+        apply_bots_settings(&mut config, bots, &providers, &combos)?;
+    }
     config.providers = providers;
     config.active_provider = active_provider;
     config.combos = combos;
@@ -570,7 +630,58 @@ mod tests {
             prices: view.prices,
             git_sync: None,
             combos: None,
+            bots: None,
         }
+    }
+
+    fn bots() -> BotsSettingsDto {
+        BotsSettingsDto {
+            learning_enabled: true,
+            learning_provider: "spare".into(),
+            learning_max_per_day: 5,
+            learning_bot_chats: vec![" telegram:42 ".into(), "telegram:42".into(), "whatsapp:5511999999999@s.whatsapp.net".into()],
+            telegram_allowed_users: vec![42, 7, 42],
+            whatsapp_allowed_chats: vec!["5511999999999".into(), " ".into()],
+        }
+    }
+
+    /// P118: the learning and bot lists are saved, tidied, and only when the save carries them.
+    #[test]
+    fn a_save_with_bots_writes_them_tidied_and_one_without_keeps_them() {
+        let mut update = untouched(&sample());
+        update.bots = Some(bots());
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.learning, LearningSettings { enabled: true, provider: Some("spare".into()), max_per_day: 5, bot_chats: vec!["telegram:42".into(), "whatsapp:5511999999999@s.whatsapp.net".into()] });
+        assert_eq!(saved.telegram.allowed_users, [42, 7]);
+        assert_eq!(saved.whatsapp.allowed_chats, ["5511999999999"]);
+        assert_eq!(bots_settings(&saved).learning_bot_chats.len(), 2);
+
+        let view = hub_settings(&saved, Vec::new(), Vec::new());
+        assert_eq!(view.bots.telegram_allowed_users, [42, 7]);
+        let (learning, telegram, whatsapp) = (saved.learning.clone(), saved.telegram.clone(), saved.whatsapp.clone());
+        let update = untouched(&saved);
+        let again = apply_hub_settings(saved, update).unwrap();
+        assert_eq!(again.learning, learning, "a save that doesn't carry bots keeps them");
+        assert_eq!(again.telegram, telegram);
+        assert_eq!(again.whatsapp, whatsapp);
+    }
+
+    #[test]
+    fn bad_bots_settings_are_refused_and_nothing_is_written() {
+        let refuse = |edit: fn(&mut BotsSettingsDto)| {
+            let mut dto = bots();
+            edit(&mut dto);
+            let mut update = untouched(&sample());
+            update.bots = Some(dto);
+            apply_hub_settings(sample(), update).is_err()
+        };
+        assert!(refuse(|b| b.learning_max_per_day = 0));
+        assert!(refuse(|b| b.learning_provider = "ghost".into()));
+        assert!(refuse(|b| b.learning_bot_chats = vec!["signal:1".into()]));
+        assert!(refuse(|b| b.learning_bot_chats = vec!["telegram:".into()]));
+        assert!(refuse(|b| b.telegram_allowed_users = vec![-100123]));
+        assert!(refuse(|b| b.whatsapp_allowed_chats = vec!["55 11 9".into()]));
+        assert!(!refuse(|b| b.learning_provider = String::new()), "empty means the active model");
     }
 
     fn sample() -> FileConfig {

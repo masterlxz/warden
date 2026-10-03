@@ -204,7 +204,21 @@ export interface HubSettings {
   toolNames: string[];
   /** `[git_sync]` (P61): `remoteUrl` empty = no git sync; the token is never sent. */
   gitSync: { remoteUrl: string; token: SecretStatus };
+  /** `[learning]` and the bots' allow-lists (P118). */
+  bots: BotsSettings;
   notes: string[];
+}
+
+/** Mirrors `BotsSettingsDto`: learning on or off and the lists of who may talk to the bots. Empty lists mean nobody. */
+export interface BotsSettings {
+  learningEnabled: boolean;
+  /** A provider or combo id; empty is the active model. */
+  learningProvider: string;
+  learningMaxPerDay: number;
+  /** `telegram:<id>` / `whatsapp:<id>`. */
+  learningBotChats: string[];
+  telegramAllowedUsers: number[];
+  whatsappAllowedChats: string[];
 }
 
 /** Mirrors `DeviceDto`: one device in the hub's pairing registry, never its token. */
@@ -359,6 +373,8 @@ export interface HubSettingsUpdate {
   combos?: Combo[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
+  /** Omitted: `[learning]` and the bots' lists stay as they are. */
+  bots?: BotsSettings;
 }
 
 /** Mirrors `ComboDto` (P90): provider ids, in order. Its id shares one namespace with the providers'. */

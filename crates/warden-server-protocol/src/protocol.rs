@@ -737,9 +737,29 @@ pub struct HubSettingsDto {
     /// Every tool the hub's orchestrator has, for an agent's allowed-tools list.
     pub tool_names: Vec<String>,
     pub git_sync: GitSyncSettingsDto,
+    /// Learning and the bots' allow-lists (P118).
+    #[serde(default)]
+    pub bots: BotsSettingsDto,
     /// Things outside the file that change what it means on this hub (a `--provider` flag, a
     /// providers list still empty, ...), one sentence each.
     pub notes: Vec<String>,
+}
+
+/// `[learning]`, `[telegram] allowed_users` and `[whatsapp] allowed_chats` (P118), shown and saved
+/// as one block. The Telegram token isn't here: it's a secret, and only the desktop edits it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotsSettingsDto {
+    pub learning_enabled: bool,
+    /// A provider or combo id for the learning calls; empty means the active model.
+    pub learning_provider: String,
+    pub learning_max_per_day: u32,
+    /// `telegram:<chat id>` / `whatsapp:<chat id>`: the bot chats the assistant may learn from.
+    pub learning_bot_chats: Vec<String>,
+    /// Telegram user ids (numbers) that may talk to the bot. Empty means nobody.
+    pub telegram_allowed_users: Vec<i64>,
+    /// WhatsApp numbers or ids that may talk to the bot. Empty means nobody.
+    pub whatsapp_allowed_chats: Vec<String>,
 }
 
 /// A settings save: the whole editable part, replacing what the file has for it. Everything the
@@ -761,6 +781,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) keeps the combos, dropping any provider this save removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combos: Option<Vec<ComboDto>>,
+    /// `None` (or absent) leaves `[learning]` and the bots' lists as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bots: Option<BotsSettingsDto>,
 }
 
 impl HubSettingsUpdate {
@@ -2163,6 +2186,7 @@ mod tests {
             prices: Vec::new(),
             git_sync: None,
             combos: None,
+            bots: Some(BotsSettingsDto { telegram_allowed_users: vec![42], ..BotsSettingsDto::default() }),
         };
         assert!(update.sets_a_secret());
         let token_only = HubSettingsUpdate {
@@ -2180,6 +2204,8 @@ mod tests {
         assert_eq!(json["update"]["providers"][0]["apiKey"], serde_json::json!({ "action": "set", "value": "sk" }));
         assert_eq!(json["update"]["tavilyKey"], serde_json::json!({ "action": "keep" }));
         assert_eq!(json["update"]["whisperKey"], serde_json::json!({ "action": "clear" }));
+        assert_eq!(json["update"]["bots"]["telegramAllowedUsers"], serde_json::json!([42]));
+        assert_eq!(json["update"]["bots"]["learningMaxPerDay"], 0);
         assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), save);
 
         let request: ClientMessage = serde_json::from_str(r#"{"type":"requestSettings","requestId":3}"#).unwrap();
