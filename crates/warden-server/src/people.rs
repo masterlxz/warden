@@ -243,6 +243,13 @@ pub fn member_settings_view(message: ServerMessage, config: &FileConfig, member:
             settings.default_models.clear();
             settings.notes.clear();
             settings.git_sync.remote_url.clear();
+            // The owner's bots (their allow-lists, the learning model), the Telegram token's status, the
+            // delegation/TruthID settings and everything that reaches the machine are the owner's: a
+            // member's screen gets the empty ones (P119; `bots` was missing from this list until then).
+            settings.bots = Default::default();
+            settings.telegram_token = Default::default();
+            settings.advanced = Default::default();
+            settings.machine = Default::default();
             settings.tool_names = tools;
             settings.agents = member_agents_view(config, member);
             ServerMessage::Settings { request_id, settings, version, secrets_writable: false }

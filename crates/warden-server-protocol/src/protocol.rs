@@ -220,7 +220,7 @@ pub struct UsageReportDto {
 /// Whether a secret (an API key) is saved, without the secret itself: the hub never sends one back
 /// (P78). `hint` is its last four characters, only for a secret long enough that they give nothing
 /// away, so the person can tell which key is there.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretStatusDto {
     pub set: bool,
@@ -468,9 +468,10 @@ pub enum DeviceAction {
 
 /// What a settings save does to one secret. `Keep` is what an untouched field sends, since the
 /// client never had the value to send back.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "value", rename_all = "camelCase")]
 pub enum SecretEdit {
+    #[default]
     Keep,
     Set(String),
     Clear,
@@ -711,8 +712,11 @@ pub enum SyncActionDto {
 }
 
 /// The part of the hub's `config.toml` the web settings screen shows (P78): providers, agents, the
-/// Tavily/Whisper keys, spending limits, prices and the git sync remote (P61). Shell, MCP servers, SSH hosts, storage and paths
-/// stay off it on purpose, since they would let a paired device run commands on the hub's machine.
+/// Tavily/Whisper keys, spending limits, prices, the git sync remote (P61), the bots, the Telegram
+/// token and the delegation/TruthID settings (P119). Shell, MCP servers, SSH hosts, storage paths and
+/// the embedded hub (`machine`) would let a paired device run commands on the hub's machine, so they
+/// only change when the hub was started with `--allow-machine-settings`, and only over an encrypted
+/// or local connection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HubSettingsDto {
@@ -740,6 +744,15 @@ pub struct HubSettingsDto {
     /// Learning and the bots' allow-lists (P118).
     #[serde(default)]
     pub bots: BotsSettingsDto,
+    /// The Telegram bot's token (P119): whether one is set, never the token.
+    #[serde(default)]
+    pub telegram_token: SecretStatusDto,
+    /// Delegation ceilings and TruthID (P119).
+    #[serde(default)]
+    pub advanced: AdvancedSettingsDto,
+    /// What reaches the hub's own machine (P119): see [`MachineSettingsDto`].
+    #[serde(default)]
+    pub machine: MachineSettingsDto,
     /// Things outside the file that change what it means on this hub (a `--provider` flag, a
     /// providers list still empty, ...), one sentence each.
     pub notes: Vec<String>,
@@ -762,7 +775,7 @@ pub struct BotPairingDto {
 }
 
 /// `[learning]`, `[telegram] allowed_users` and `[whatsapp] allowed_chats` (P118), shown and saved
-/// as one block. The Telegram token isn't here: it's a secret, and only the desktop edits it.
+/// as one block. The Telegram token isn't here: it's a secret, so it travels as `telegram_token`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotsSettingsDto {
@@ -782,6 +795,154 @@ pub struct BotsSettingsDto {
     /// The same for the WhatsApp bot.
     #[serde(default)]
     pub whatsapp_pairing: bool,
+}
+
+/// Delegation ceilings and TruthID (P119), shown and saved as one block. None is a secret and none
+/// reaches the machine, so it needs no special connection; a ceiling only counts when it changes
+/// (see `apply_advanced`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvancedSettingsDto {
+    /// How deep a sub-agent may itself delegate. `None` keeps the built-in depth.
+    pub delegate_max_depth: Option<u32>,
+    /// Model calls the sub-agents may make between them in one turn. `None` keeps the built-in
+    /// ceiling; `0` (switching it off) is only set by hand in the file.
+    pub max_delegated_calls: Option<u32>,
+    /// Background jobs one turn may run at the same time. `None` keeps the built-in number.
+    pub max_parallel_jobs: Option<u32>,
+    /// `base-mainnet` or `base-sepolia`.
+    pub truthid_network: String,
+    /// Empty uses the network's public endpoint.
+    pub truthid_rpc_url: String,
+    /// The hub's own `https://` address, what a TruthID login is sent to. Empty turns that login off.
+    pub truthid_public_url: String,
+}
+
+/// One external MCP server as the screen shows it: the names of its secret values (env entries or
+/// headers), never the values (P119).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerSettingsDto {
+    pub name: String,
+    /// `stdio` (a local process) or `http`.
+    pub kind: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// The names of the process's environment entries.
+    pub env_keys: Vec<String>,
+    pub url: String,
+    /// The names of the request headers.
+    pub header_keys: Vec<String>,
+    /// Signs in through the OAuth flow, which only the desktop can run.
+    pub oauth: bool,
+}
+
+/// One env entry or header of an MCP server being saved: `Keep` carries the saved value over.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretEntryEdit {
+    pub key: String,
+    pub value: SecretEdit,
+}
+
+/// One MCP server being saved. `original_name` finds the saved one, so `Keep` can carry its values
+/// (and its `oauth` choice) over to a renamed server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerEditDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
+    pub name: String,
+    /// `stdio` or `http`.
+    pub kind: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<SecretEntryEdit>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub headers: Vec<SecretEntryEdit>,
+}
+
+/// One SSH server the AI may run commands on (P47), shown and saved as is: only the path to a key
+/// lives here, never the key. `port` is wide so an out-of-range value reaches the check and gets a
+/// readable refusal instead of a parse error.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostDto {
+    pub id: String,
+    pub host: String,
+    pub user: String,
+    pub port: u32,
+    pub identity_file: String,
+    pub enabled: bool,
+    pub agents: Vec<String>,
+    pub require_approval: bool,
+}
+
+/// The desktop's embedded hub (`[embedded_server]`) as the web edits it. Its `auth_key` is not here:
+/// it is the pairing key this very screen signs in with, and changing it over the same channel would
+/// lock the owner out, so it only changes on the desktop. Nothing here reloads a running listener:
+/// it counts from the hub's next start.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddedServerDto {
+    /// Starts with the desktop.
+    pub enabled: bool,
+    pub port: u16,
+    /// Empty listens on every interface.
+    pub listen_host: String,
+    pub server_name: String,
+    pub tailscale_cert: bool,
+    pub tls_cert: String,
+    pub tls_key: String,
+    pub tls_host: String,
+    pub web_ui: bool,
+}
+
+/// What reaches the hub's own machine (P119): the shell tool, where the vault and generated files
+/// live, the MCP servers it starts, the SSH hosts it may reach and the embedded hub. The hub only lets
+/// a save change any of it when it was started with `--allow-machine-settings` and the connection is
+/// encrypted or local; otherwise `writable` is false and `blocked_reason` says why.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineSettingsDto {
+    pub writable: bool,
+    /// Why `writable` is false, one sentence; empty when it is true.
+    pub blocked_reason: String,
+    pub enable_shell: bool,
+    /// Empty uses the hub's default.
+    pub vault_path: String,
+    /// Empty uses the default next to the vault.
+    pub generated_path: String,
+    pub mcp_servers: Vec<McpServerSettingsDto>,
+    pub ssh_hosts: Vec<SshHostDto>,
+    /// `None` when the hub has no `[embedded_server]`: that one is set up on the desktop.
+    pub embedded_server: Option<EmbeddedServerDto>,
+}
+
+/// The machine settings being saved; see [`MachineSettingsDto`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineEditDto {
+    pub enable_shell: bool,
+    pub vault_path: String,
+    pub generated_path: String,
+    pub mcp_servers: Vec<McpServerEditDto>,
+    pub ssh_hosts: Vec<SshHostDto>,
+    /// `None` leaves `[embedded_server]` as it is; `Some` changes an existing one (the web never creates it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_server: Option<EmbeddedServerDto>,
+}
+
+impl MachineEditDto {
+    /// Whether this save carries a new secret value for an MCP server's env or headers.
+    pub fn sets_a_secret(&self) -> bool {
+        self.mcp_servers.iter().any(|s| s.env.iter().chain(&s.headers).any(|e| e.value.is_set()))
+    }
 }
 
 /// A settings save: the whole editable part, replacing what the file has for it. Everything the
@@ -806,6 +967,16 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) leaves `[learning]` and the bots' lists as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<BotsSettingsDto>,
+    /// What to do with the Telegram bot's token (P119). Absent keeps it.
+    #[serde(default)]
+    pub telegram_token: SecretEdit,
+    /// `None` (or absent) leaves the delegation ceilings and TruthID as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advanced: Option<Box<AdvancedSettingsDto>>,
+    /// `None` (or absent) leaves everything that reaches the machine as it is. A hub started without
+    /// `--allow-machine-settings`, or a connection that isn't encrypted or local, refuses a save that has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<Box<MachineEditDto>>,
 }
 
 impl HubSettingsUpdate {
@@ -814,8 +985,10 @@ impl HubSettingsUpdate {
     pub fn sets_a_secret(&self) -> bool {
         self.tavily_key.is_set()
             || self.whisper_key.is_set()
+            || self.telegram_token.is_set()
             || self.providers.iter().any(|p| p.api_key.is_set())
             || self.git_sync.as_ref().is_some_and(|g| g.token.is_set())
+            || self.machine.as_ref().is_some_and(|m| m.sets_a_secret())
     }
 }
 
@@ -2247,6 +2420,9 @@ mod tests {
             git_sync: None,
             combos: None,
             bots: Some(BotsSettingsDto { telegram_allowed_users: vec![42], ..BotsSettingsDto::default() }),
+            telegram_token: SecretEdit::Keep,
+            advanced: None,
+            machine: None,
         };
         assert!(update.sets_a_secret());
         let token_only = HubSettingsUpdate {
@@ -2257,6 +2433,29 @@ mod tests {
             ..update.clone()
         };
         assert!(token_only.sets_a_secret(), "a git token is a secret too");
+        let nothing = HubSettingsUpdate { providers: Vec::new(), whisper_key: SecretEdit::Keep, git_sync: None, ..update.clone() };
+        assert!(!nothing.sets_a_secret());
+        assert!(HubSettingsUpdate { telegram_token: SecretEdit::Set("123:abc".into()), ..nothing.clone() }.sets_a_secret(), "the Telegram token is a secret");
+        assert!(!HubSettingsUpdate { telegram_token: SecretEdit::Clear, ..nothing.clone() }.sets_a_secret(), "clearing it sends nothing new");
+        let machine = |env: SecretEdit| MachineEditDto {
+            enable_shell: false,
+            vault_path: String::new(),
+            generated_path: String::new(),
+            mcp_servers: vec![McpServerEditDto {
+                original_name: None,
+                name: "notes".into(),
+                kind: "stdio".into(),
+                command: "npx".into(),
+                args: Vec::new(),
+                env: vec![SecretEntryEdit { key: "TOKEN".into(), value: env }],
+                url: String::new(),
+                headers: Vec::new(),
+            }],
+            ssh_hosts: Vec::new(),
+            embedded_server: None,
+        };
+        assert!(HubSettingsUpdate { machine: Some(Box::new(machine(SecretEdit::Set("s".into())))), ..nothing.clone() }.sets_a_secret(), "a new MCP env value is a secret");
+        assert!(!HubSettingsUpdate { machine: Some(Box::new(machine(SecretEdit::Keep))), ..nothing.clone() }.sets_a_secret(), "keeping one is not");
         let save = ClientMessage::SaveSettings { request_id: 1, pairing_key: "k".into(), base_version: "v".into(), update };
         let json = serde_json::to_value(&save).unwrap();
         assert_eq!(json["type"], "saveSettings");
@@ -2266,7 +2465,22 @@ mod tests {
         assert_eq!(json["update"]["whisperKey"], serde_json::json!({ "action": "clear" }));
         assert_eq!(json["update"]["bots"]["telegramAllowedUsers"], serde_json::json!([42]));
         assert_eq!(json["update"]["bots"]["learningMaxPerDay"], 0);
+        assert_eq!(json["update"]["telegramToken"], serde_json::json!({ "action": "keep" }));
+        assert!(json["update"].get("advanced").is_none() && json["update"].get("machine").is_none(), "absent when untouched");
         assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), save);
+
+        // A save from before P119 carries none of the new fields: it keeps the token and touches nothing else.
+        let old: HubSettingsUpdate = serde_json::from_str(r#"{"providers":[],"activeProvider":"","agents":[],"tavilyKey":{"action":"keep"},"whisperKey":{"action":"keep"},"limits":null,"prices":[]}"#).unwrap();
+        assert_eq!((old.telegram_token.clone(), old.advanced.is_none(), old.machine.is_none()), (SecretEdit::Keep, true, true));
+        // And a hub from before it sends a view without the new slices: they default to empty and locked.
+        let machine = MachineSettingsDto::default();
+        assert!(!machine.writable && machine.mcp_servers.is_empty() && machine.embedded_server.is_none());
+        let edit = MachineEditDto { enable_shell: true, vault_path: "/srv/vault".into(), generated_path: String::new(), mcp_servers: Vec::new(), ssh_hosts: vec![SshHostDto { id: "web".into(), port: 22, ..SshHostDto::default() }], embedded_server: None };
+        let json = serde_json::to_value(&edit).unwrap();
+        assert_eq!(json["enableShell"], true);
+        assert_eq!(json["sshHosts"][0]["requireApproval"], false);
+        assert!(json.get("embeddedServer").is_none());
+        assert_eq!(serde_json::from_value::<MachineEditDto>(json).unwrap(), edit);
 
         let request: ClientMessage = serde_json::from_str(r#"{"type":"requestSettings","requestId":3}"#).unwrap();
         assert_eq!(request, ClientMessage::RequestSettings { request_id: 3 });

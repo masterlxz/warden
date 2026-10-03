@@ -111,6 +111,9 @@ pub struct Server {
     node_audit: Option<PathBuf>,
     /// Where members keep their own vaults (P84). `None`: nobody but the root can sign in.
     users_dir: Option<PathBuf>,
+    /// Whether a settings save may change what reaches this machine (P119): the shell, MCP servers,
+    /// SSH hosts, folders and the embedded hub. Off unless the hub was started to allow it.
+    allow_machine_settings: bool,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -148,7 +151,17 @@ impl Server {
             nodes: NodeRegistry::default(),
             node_audit: warden_bootstrap::default_node_audit_log_path(),
             users_dir: None,
+            allow_machine_settings: false,
         })
+    }
+
+    /// Lets a settings save change what reaches this machine (P119): the shell, MCP servers, SSH hosts,
+    /// folders and the embedded hub. Still only over an encrypted or local connection, and with the
+    /// pairing key. Off by default: a hub that was already running doesn't start accepting commands to
+    /// run over the network because the code learned how.
+    pub fn with_machine_settings(mut self, allow: bool) -> Self {
+        self.allow_machine_settings = allow;
+        self
     }
 
     /// Lets the members in `[[users]]` (P84) sign in with their password, each with their own vault
@@ -293,6 +306,7 @@ impl Server {
             users_dir: self.users_dir.map(Arc::new),
             space_vaults: SpaceVaults::default(),
             truthid_logins: Arc::new(TruthIdLogins::default()),
+            allow_machine_settings: self.allow_machine_settings,
         };
         // P84: conversations are a person's, not a device's — every device's move to the root's,
         // once, before any connection can read them.
@@ -383,6 +397,8 @@ struct ConnectionContext {
     space_vaults: SpaceVaults,
     /// The TruthID logins waiting for a phone (P84 fatia 5, P113).
     truthid_logins: Arc<TruthIdLogins>,
+    /// See `Server::with_machine_settings`.
+    allow_machine_settings: bool,
 }
 
 impl ConnectionContext {
@@ -508,7 +524,8 @@ async fn handle_own_agent(
         return error(format!("{err:#}"));
     }
     drop(_serialized);
-    let access = SettingsAccess { host: Some(host), shared, lock, auth_key, secure };
+    // A member's view clears the machine slice anyway, so the gate's answer isn't theirs to see.
+    let access = SettingsAccess { host: Some(host), shared, lock, auth_key, secure, allow_machine: false, peer: None };
     let reply = handle_request_settings(&access, request_id);
     let config = load_config_from_path(&path, false).unwrap_or_default();
     let tools = tools_for(&shared.current(), &config, &member.id);
@@ -695,6 +712,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         users_dir,
         space_vaults,
         truthid_logins,
+        allow_machine_settings,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -1301,7 +1319,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     });
                 }
                 Ok(ClientMessage::RequestSettings { request_id }) => {
-                    let access = SettingsAccess { host: settings.as_deref(), shared: &shared_orchestrator, lock: &settings_lock, auth_key: &auth_key, secure };
+                    let access = SettingsAccess { host: settings.as_deref(), shared: &shared_orchestrator, lock: &settings_lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
                     let reply = handle_request_settings(&access, request_id);
                     // P84: a member only sees the agents they can pick, and their own tools.
                     let _ = tx.send(match &member {
@@ -1321,7 +1339,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let auth_key = auth_key.clone();
                     let reply_tx = tx.clone();
                     tokio::spawn(async move {
-                        let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure };
+                        let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
                         let _ = reply_tx.send(handle_save_settings(&access, request_id, &pairing_key, &base_version, update).await);
                     });
                 }

@@ -517,8 +517,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     }
 
     let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    // The Telegram bot token (Fase 2) and `delegate_max_depth` (P46/P60) have no Settings-screen
-    // UI yet (see PENDING.md P11) — only hand-editable via config.toml. Loaded up front so every
+    // The Telegram bot token is edited in the bots section (P118) and the delegation ceilings in the web
+    // settings (P119); this form has neither, so it carries them forward. Loaded up front so every
     // "carry forward instead of wiping" field below can reference it.
     // P78: the hub's web settings write this same file. A form loaded before such a save would
     // otherwise put the old values (keys included) straight back.

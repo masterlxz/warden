@@ -465,6 +465,13 @@ struct ServeArgs {
     /// file syncs, so turn it on in exactly one hub — the one that's always up.
     #[arg(long)]
     run_tasks: bool,
+
+    /// Let the web settings change what reaches this machine (P119): the shell tool, MCP servers (a
+    /// process this hub starts), SSH hosts, the vault and generated-files folders and the embedded hub.
+    /// Off by default. Even on, a save needs the pairing key and an encrypted (https://) or local
+    /// connection, and the hub logs each change. Turn it on only for a hub you reach over TLS.
+    #[arg(long)]
+    allow_machine_settings: bool,
 }
 
 /// Same fallback warden-telegram/the desktop app use — a background process launched by a
@@ -1058,7 +1065,12 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_sync(runner, Some(AUTO_SYNC_INTERVAL))
         .with_api(api_keys_path()?)
         // P92 — every device lists the tasks' conversations; only `--run-tasks` runs them.
-        .with_tasks(tasks_store()?, args.run_tasks);
+        .with_tasks(tasks_store()?, args.run_tasks)
+        // P119 — whether the web settings may change the shell, MCP servers, SSH hosts, folders and the embedded hub.
+        .with_machine_settings(args.allow_machine_settings);
+    if args.allow_machine_settings {
+        eprintln!("warden-server: --allow-machine-settings is on: whoever holds the pairing key can change this machine's shell, MCP servers, SSH hosts and folders from the web (encrypted or local connections only)");
+    }
     let task_count = args
         .config
         .as_ref()

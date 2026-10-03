@@ -2,8 +2,10 @@
 //! orchestrator a save reloads.
 //!
 //! A save is all-or-nothing. The pairing key is checked first (a device token alone can't change
-//! settings), a new API key is refused on a connection that isn't encrypted or local, and the file
-//! must still be the version the screen loaded. Then the new file is written and the host builds a
+//! settings), a new API key is refused on a connection that isn't encrypted or local, a change to what
+//! reaches this machine (shell, MCP servers, SSH hosts, folders, the embedded hub; P119) is refused unless
+//! the hub was started with `--allow-machine-settings` and the connection is encrypted or local, and the
+//! file must still be the version the screen loaded. Then the new file is written and the host builds a
 //! fresh orchestrator from it; if that fails (a provider with no key, say) the old file goes back
 //! and nothing changes. Only then does the new orchestrator replace the old one. A turn already
 //! running keeps the one it started with.
@@ -128,8 +130,26 @@ fn tool_names(orchestrator: &Orchestrator) -> Vec<String> {
     names
 }
 
-fn view(host: &dyn SettingsHost, config: &FileConfig, orchestrator: &Orchestrator) -> HubSettingsDto {
-    hub_settings(config, tool_names(orchestrator), host.notes())
+/// Whether this connection may save what reaches the hub's machine (P119), and if not, why: the hub has
+/// to have been started to allow it (`--allow-machine-settings`), and the connection has to be encrypted
+/// or local, the same rule a new API key is held to.
+pub fn machine_gate(allow_machine: bool, secure: bool) -> Result<(), &'static str> {
+    if !allow_machine {
+        return Err("This hub was started without --allow-machine-settings, so the shell, MCP servers, SSH hosts, folders and embedded hub can only be changed on its own machine");
+    }
+    if !secure {
+        return Err("The shell, MCP servers, SSH hosts, folders and embedded hub only change over an encrypted connection (https://) or from the hub's own machine");
+    }
+    Ok(())
+}
+
+fn view(host: &dyn SettingsHost, config: &FileConfig, orchestrator: &Orchestrator, access: &SettingsAccess<'_>) -> HubSettingsDto {
+    let mut settings = hub_settings(config, tool_names(orchestrator), host.notes());
+    match machine_gate(access.allow_machine, access.secure) {
+        Ok(()) => settings.machine.writable = true,
+        Err(reason) => settings.machine.blocked_reason = reason.to_string(),
+    }
+    settings
 }
 
 fn settings_error(request_id: u64, message: impl Into<String>) -> ServerMessage {
@@ -149,6 +169,10 @@ pub struct SettingsAccess<'a> {
     pub auth_key: &'a str,
     /// Whether this connection may carry a new API key (`is_secure`).
     pub secure: bool,
+    /// Whether the hub was started to let a save change what reaches its machine (`--allow-machine-settings`).
+    pub allow_machine: bool,
+    /// Who is asking, for the log line a machine change leaves. `None` where there is no connection to name.
+    pub peer: Option<std::net::IpAddr>,
 }
 
 /// Answers `RequestSettings`.
@@ -161,7 +185,7 @@ pub fn handle_request_settings(access: &SettingsAccess<'_>, request_id: u64) -> 
     match loaded {
         Ok((version, config)) => ServerMessage::Settings {
             request_id,
-            settings: view(host, &config, &access.shared.current()),
+            settings: view(host, &config, &access.shared.current(), access),
             version,
             secrets_writable: access.secure,
         },
@@ -186,6 +210,13 @@ pub async fn handle_save_settings(access: &SettingsAccess<'_>, request_id: u64, 
             "API keys can only be changed over an encrypted connection (https://) or from the hub's own machine — nothing was saved",
         );
     }
+    // What reaches this machine (P119) is held to a stricter gate than the rest of a save: refused
+    // before anything is read, let alone written.
+    if update.machine.is_some() {
+        if let Err(reason) = machine_gate(access.allow_machine, secure) {
+            return settings_error(request_id, format!("{reason} — nothing was saved"));
+        }
+    }
 
     let path = host.config_path();
     let previous = match read_optional(&path) {
@@ -204,6 +235,8 @@ pub async fn handle_save_settings(access: &SettingsAccess<'_>, request_id: u64, 
         Ok(config) => config,
         Err(err) => return settings_error(request_id, format!("{err:#}")),
     };
+    // A second read of the file, only to tell the log what a machine change changed (`FileConfig` isn't `Clone`).
+    let before = update.machine.is_some().then(|| load_config_from_path(&path, false).ok()).flatten();
     let config = match apply_hub_settings(existing, update) {
         Ok(config) => config,
         Err(message) => return settings_error(request_id, message),
@@ -227,7 +260,12 @@ pub async fn handle_save_settings(access: &SettingsAccess<'_>, request_id: u64, 
         }
     };
 
-    let settings = view(host, &config, &orchestrator);
+    // Now it is in force: say so in the hub's log, naming what changed and never a value.
+    if let Some(before) = before {
+        let from = access.peer.map(|ip| ip.to_string()).unwrap_or_else(|| "an unknown peer".to_string());
+        eprintln!("warden-server: machine settings changed from {from}: {}", warden_bootstrap::machine_settings::machine_change_summary(&before, &config));
+    }
+    let settings = view(host, &config, &orchestrator, access);
     host.installed(&orchestrator);
     shared.replace(orchestrator);
     match config_version(&path) {
@@ -317,7 +355,7 @@ mod tests {
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use warden_bootstrap::{bootstrap, Overrides};
-    use warden_server_protocol::protocol::{BotsSettingsDto, ProviderEditDto, SecretEdit};
+    use warden_server_protocol::protocol::{AdvancedSettingsDto, BotsSettingsDto, MachineEditDto, McpServerEditDto, ProviderEditDto, SecretEdit, SecretEntryEdit, SshHostDto};
 
     const KEY: &str = "pairing-key-0123456789";
 
@@ -372,7 +410,7 @@ api_key = "sk-ant-original-secret-9999"
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn access<'a>(host: Option<&'a dyn SettingsHost>, shared: &'a SharedOrchestrator, lock: &'a tokio::sync::Mutex<()>, secure: bool) -> SettingsAccess<'a> {
-        SettingsAccess { host, shared, lock, auth_key: KEY, secure }
+        SettingsAccess { host, shared, lock, auth_key: KEY, secure, allow_machine: false, peer: None }
     }
 
     fn load(host: &TestHost, shared: &SharedOrchestrator, secure: bool) -> (HubSettingsDto, String, bool) {
@@ -406,12 +444,151 @@ api_key = "sk-ant-original-secret-9999"
             git_sync: None,
             combos: None,
             bots: None,
+            telegram_token: SecretEdit::Keep,
+            advanced: None,
+            machine: None,
         }
     }
 
     async fn save(host: &TestHost, shared: &SharedOrchestrator, secure: bool, key: &str, version: &str, update: HubSettingsUpdate) -> ServerMessage {
         let lock = tokio::sync::Mutex::new(());
         handle_save_settings(&access(Some(host), shared, &lock, secure), 2, key, version, update).await
+    }
+
+    /// The same, on a hub started with `--allow-machine-settings` (or not).
+    async fn save_machine(host: &TestHost, shared: &SharedOrchestrator, allow: bool, secure: bool, key: &str, version: &str, update: HubSettingsUpdate) -> ServerMessage {
+        let lock = tokio::sync::Mutex::new(());
+        let access = SettingsAccess { allow_machine: allow, ..access(Some(host), shared, &lock, secure) };
+        handle_save_settings(&access, 2, key, version, update).await
+    }
+
+    fn machine_edit(settings: &HubSettingsDto) -> MachineEditDto {
+        MachineEditDto {
+            enable_shell: settings.machine.enable_shell,
+            vault_path: settings.machine.vault_path.clone(),
+            generated_path: settings.machine.generated_path.clone(),
+            mcp_servers: Vec::new(),
+            ssh_hosts: settings.machine.ssh_hosts.clone(),
+            embedded_server: None,
+        }
+    }
+
+    fn has_tool(shared: &SharedOrchestrator, name: &str) -> bool {
+        shared.current().tools().iter().any(|t| t.spec().name == name)
+    }
+
+    /// P119: the view says whether the machine slice can be saved, and why not.
+    #[tokio::test]
+    async fn the_view_says_whether_the_machine_settings_can_be_saved_and_why_not() {
+        let (host, shared) = setup("machine-view").await;
+        let reason = |allow: bool, secure: bool| {
+            let reply = handle_request_settings(&SettingsAccess { allow_machine: allow, ..access(Some(&host), &shared, &LOCK, secure) }, 1);
+            let ServerMessage::Settings { settings, .. } = reply else { panic!("{reply:?}") };
+            (settings.machine.writable, settings.machine.blocked_reason)
+        };
+        let (writable, why) = reason(false, true);
+        assert!(!writable && why.contains("--allow-machine-settings"), "{why}");
+        let (writable, why) = reason(true, false);
+        assert!(!writable && why.contains("encrypted connection"), "{why}");
+        assert_eq!(reason(true, true), (true, String::new()));
+        std::fs::remove_dir_all(&host.dir).unwrap();
+    }
+
+    /// P119: a change to what reaches the machine is refused unless the hub was started to allow it and the
+    /// connection is encrypted or local, and a refusal changes nothing; allowed, it is saved, applied on the
+    /// rebuilt orchestrator and the file keeps its comments.
+    #[tokio::test]
+    async fn the_machine_slice_needs_the_flag_and_a_secure_connection() {
+        let (host, shared) = setup("machine-gate").await;
+        let before = shared.current();
+        assert!(!has_tool(&shared, "shell"));
+        let (settings, version, _) = load(&host, &shared, true);
+        let mut update = untouched(&settings);
+        let mut machine = machine_edit(&settings);
+        machine.enable_shell = true;
+        machine.generated_path = host.dir.join("generated").to_string_lossy().to_string();
+        machine.ssh_hosts = vec![SshHostDto { id: "box".into(), host: "box.example.com".into(), user: "deploy".into(), port: 22, ..SshHostDto::default() }];
+        update.machine = Some(Box::new(machine));
+
+        // The pairing key is checked first, so a wrong one learns nothing about how the hub was started.
+        let reply = save_machine(&host, &shared, false, true, "wrong", &version, update.clone()).await;
+        assert!(matches!(reply, ServerMessage::SettingsError { auth_rejected: true, .. }), "{reply:?}");
+
+        let reply = save_machine(&host, &shared, false, true, KEY, &version, update.clone()).await;
+        let ServerMessage::SettingsError { message, auth_rejected: false, conflict: false, .. } = reply else { panic!("{reply:?}") };
+        assert!(message.contains("--allow-machine-settings") && message.contains("nothing was saved"), "{message}");
+
+        let reply = save_machine(&host, &shared, true, false, KEY, &version, update.clone()).await;
+        let ServerMessage::SettingsError { message, .. } = reply else { panic!("{reply:?}") };
+        assert!(message.contains("encrypted connection"), "{message}");
+        assert_eq!(std::fs::read_to_string(host.config_path()).unwrap(), START, "a refusal writes nothing");
+        assert!(Arc::ptr_eq(&before, &shared.current()) && host.installed.load(Ordering::SeqCst) == 0);
+
+        let reply = save_machine(&host, &shared, true, true, KEY, &version, update).await;
+        let ServerMessage::SettingsSaved { settings, .. } = reply else { panic!("{reply:?}") };
+        assert!(settings.machine.enable_shell && settings.machine.writable);
+        assert_eq!(settings.machine.ssh_hosts.len(), 1);
+        assert!(has_tool(&shared, "shell"), "the rebuilt orchestrator runs with the shell on");
+        let text = std::fs::read_to_string(host.config_path()).unwrap();
+        assert!(text.contains("enable_shell = true"), "{text}");
+        assert!(text.contains("# o provedor principal\n[[providers]]") && text.contains("sk-whisper-kept-secret-abcdef"), "the rest of the file is as it was: {text}");
+        std::fs::remove_dir_all(&host.dir).unwrap();
+    }
+
+    /// P119: a new MCP value or Telegram token is a secret like an API key (encrypted or local only), while
+    /// clearing the token sends nothing and the delegation settings need no special connection at all.
+    #[tokio::test]
+    async fn a_telegram_token_is_a_secret_and_the_delegation_settings_are_not() {
+        let (host, shared) = setup("telegram").await;
+        let (settings, version, _) = load(&host, &shared, false);
+        assert!(!settings.telegram_token.set);
+
+        let mut with_token = untouched(&settings);
+        with_token.telegram_token = SecretEdit::Set("123456:ABC-token-long-enough".into());
+        let reply = save(&host, &shared, false, KEY, &version, with_token.clone()).await;
+        assert!(matches!(reply, ServerMessage::SettingsError { .. }), "refused over plain http: {reply:?}");
+        let reply = save(&host, &shared, true, KEY, &version, with_token).await;
+        let ServerMessage::SettingsSaved { settings, version, .. } = reply else { panic!("{reply:?}") };
+        assert!(settings.telegram_token.set);
+        assert!(!serde_json::to_string(&settings).unwrap().contains("ABC-token"), "the token never comes back");
+        assert!(std::fs::read_to_string(host.config_path()).unwrap().contains("123456:ABC-token-long-enough"));
+
+        let mut tuning = untouched(&settings);
+        tuning.advanced = Some(Box::new(AdvancedSettingsDto { delegate_max_depth: Some(3), max_delegated_calls: Some(80), max_parallel_jobs: Some(2), truthid_network: "base-mainnet".into(), truthid_rpc_url: String::new(), truthid_public_url: String::new() }));
+        let reply = save(&host, &shared, false, KEY, &version, tuning).await;
+        let ServerMessage::SettingsSaved { settings, version, .. } = reply else { panic!("saved over plain http, it holds no secret: {reply:?}") };
+        assert_eq!((settings.advanced.delegate_max_depth, settings.advanced.max_delegated_calls), (Some(3), Some(80)));
+
+        let mut cleared = untouched(&settings);
+        cleared.telegram_token = SecretEdit::Clear;
+        let reply = save(&host, &shared, false, KEY, &version, cleared).await;
+        let ServerMessage::SettingsSaved { settings, .. } = reply else { panic!("clearing sends no secret: {reply:?}") };
+        assert!(!settings.telegram_token.set);
+        std::fs::remove_dir_all(&host.dir).unwrap();
+    }
+
+    /// P119: an MCP server's new secret value is refused over a plain connection even where the hub allows machine settings.
+    #[tokio::test]
+    async fn a_new_mcp_secret_over_a_plain_connection_is_refused() {
+        let (host, shared) = setup("mcp-secret").await;
+        let (settings, version, _) = load(&host, &shared, true);
+        let mut update = untouched(&settings);
+        let mut machine = machine_edit(&settings);
+        machine.mcp_servers = vec![McpServerEditDto {
+            original_name: None,
+            name: "notes".into(),
+            kind: "http".into(),
+            command: String::new(),
+            args: Vec::new(),
+            env: Vec::new(),
+            url: "https://mcp.example.com".into(),
+            headers: vec![SecretEntryEdit { key: "Authorization".into(), value: SecretEdit::Set("Bearer abc".into()) }],
+        }];
+        update.machine = Some(Box::new(machine));
+        let reply = save_machine(&host, &shared, true, false, KEY, &version, update).await;
+        assert!(matches!(reply, ServerMessage::SettingsError { .. }), "{reply:?}");
+        assert_eq!(std::fs::read_to_string(host.config_path()).unwrap(), START);
+        std::fs::remove_dir_all(&host.dir).unwrap();
     }
 
     #[tokio::test]

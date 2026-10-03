@@ -36,6 +36,7 @@ pub mod bot_access;
 pub mod bot_hub;
 pub mod bot_pairing;
 pub mod learning;
+pub mod machine_settings;
 mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;

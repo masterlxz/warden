@@ -206,7 +206,105 @@ export interface HubSettings {
   gitSync: { remoteUrl: string; token: SecretStatus };
   /** `[learning]` and the bots' allow-lists (P118). */
   bots: BotsSettings;
+  /** The Telegram bot's token (P119): whether one is saved, never the token. */
+  telegramToken: SecretStatus;
+  /** Delegation ceilings and TruthID (P119). */
+  advanced: AdvancedSettings;
+  /** What reaches the hub's own machine (P119): read-only unless `machine.writable`. */
+  machine: MachineSettings;
   notes: string[];
+}
+
+/** Mirrors `AdvancedSettingsDto` (P119). A `null` ceiling keeps the hub's built-in one. */
+export interface AdvancedSettings {
+  delegateMaxDepth: number | null;
+  maxDelegatedCalls: number | null;
+  maxParallelJobs: number | null;
+  /** `base-mainnet` or `base-sepolia`. */
+  truthidNetwork: string;
+  truthidRpcUrl: string;
+  truthidPublicUrl: string;
+}
+
+/** Mirrors `McpServerSettingsDto`: the names of the secret values, never the values. */
+export interface McpServerSettings {
+  name: string;
+  kind: "stdio" | "http";
+  command: string;
+  args: string[];
+  envKeys: string[];
+  url: string;
+  headerKeys: string[];
+  /** Signs in with OAuth, which only the desktop can run. */
+  oauth: boolean;
+}
+
+/** Mirrors `SshHostDto`: only the path to a key, never the key. */
+export interface SshHost {
+  id: string;
+  host: string;
+  user: string;
+  port: number;
+  identityFile: string;
+  enabled: boolean;
+  agents: string[];
+  requireApproval: boolean;
+}
+
+/** Mirrors `EmbeddedServerDto`: the desktop's embedded hub, without its key. Counts from its next start. */
+export interface EmbeddedServer {
+  enabled: boolean;
+  port: number;
+  listenHost: string;
+  serverName: string;
+  tailscaleCert: boolean;
+  tlsCert: string;
+  tlsKey: string;
+  tlsHost: string;
+  webUi: boolean;
+}
+
+/** Mirrors `MachineSettingsDto` (P119). `writable` is false unless the hub was started with
+ * `--allow-machine-settings` and this connection is encrypted or local; `blockedReason` says which. */
+export interface MachineSettings {
+  writable: boolean;
+  blockedReason: string;
+  enableShell: boolean;
+  vaultPath: string;
+  generatedPath: string;
+  mcpServers: McpServerSettings[];
+  sshHosts: SshHost[];
+  /** `null`: the hub has none; it is set up on the desktop. */
+  embeddedServer: EmbeddedServer | null;
+}
+
+/** Mirrors `SecretEntryEdit`: one env entry or header of an MCP server. */
+export interface SecretEntryEdit {
+  key: string;
+  value: SecretEdit;
+}
+
+/** Mirrors `McpServerEditDto`. `originalName` finds the saved server, so `keep` carries its values over. */
+export interface McpServerEdit {
+  originalName?: string;
+  name: string;
+  kind: "stdio" | "http";
+  command: string;
+  args: string[];
+  env: SecretEntryEdit[];
+  url: string;
+  headers: SecretEntryEdit[];
+}
+
+/** Mirrors `MachineEditDto`. */
+export interface MachineEdit {
+  enableShell: boolean;
+  vaultPath: string;
+  generatedPath: string;
+  mcpServers: McpServerEdit[];
+  sshHosts: SshHost[];
+  /** Omitted: the embedded hub stays as it is. The web never creates one. */
+  embeddedServer?: EmbeddedServer;
 }
 
 /** Mirrors `BotsSettingsDto`: learning on or off and the lists of who may talk to the bots. Empty lists mean nobody. */
@@ -390,6 +488,13 @@ export interface HubSettingsUpdate {
   gitSync?: { remoteUrl: string; token: SecretEdit };
   /** Omitted: `[learning]` and the bots' lists stay as they are. */
   bots?: BotsSettings;
+  /** What to do with the Telegram bot's token (P119). */
+  telegramToken?: SecretEdit;
+  /** Omitted: the delegation ceilings and TruthID stay as they are. */
+  advanced?: AdvancedSettings;
+  /** Omitted: everything that reaches the hub's machine stays as it is. The hub refuses a save that has it
+   * unless it was started with `--allow-machine-settings` and the connection is encrypted or local. */
+  machine?: MachineEdit;
 }
 
 /** Mirrors `ComboDto` (P90): provider ids, in order. Its id shares one namespace with the providers'. */

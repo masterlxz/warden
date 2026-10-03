@@ -1,11 +1,12 @@
 //! Settings saves (P78): the checks every save runs, shared by the desktop's Settings screen and
 //! the hub's web settings, and the slice of `config.toml` the web screen edits.
 //!
-//! The web slice is providers, agents, the Tavily/Whisper keys, spending limits, prices and the git
-//! sync remote (P61). Secrets
+//! The web slice is providers, agents, the Tavily/Whisper keys, spending limits, prices, the git
+//! sync remote (P61), the bots, the Telegram token and the delegation/TruthID settings. Secrets
 //! never leave the hub: the screen gets a `SecretStatusDto` and sends back a `SecretEdit`.
-//! Everything the screen doesn't show (shell, MCP servers, SSH hosts, storage, paths, the embedded
-//! hub) is carried over from the file untouched.
+//! What reaches the hub's machine (shell, MCP servers, SSH hosts, folders, the embedded hub) is its
+//! own slice (`machine_settings`), which the hub only accepts under its own conditions; a save without
+//! it carries all of that over from the file untouched.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -20,6 +21,7 @@ use warden_server_protocol::protocol::{
 
 use crate::bot_access::{TelegramSettings, WhatsAppSettings};
 use crate::learning::LearningSettings;
+use crate::machine_settings::{advanced_settings, apply_advanced, apply_machine, machine_settings};
 use crate::{
     default_limit_configs, default_model_for, env_switches_limits_off, forget_agent_in_nodes, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
     Provider, ProviderConfig,
@@ -303,6 +305,16 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
     if std::env::var("TAVILY_API_KEY").is_ok_and(|v| !v.is_empty()) {
         notes.push("TAVILY_API_KEY is set in the hub's environment and wins over the Tavily key saved here.".to_string());
     }
+    for (var, what) in [
+        ("WARDEN_ENABLE_SHELL", "the shell setting"),
+        ("WARDEN_DELEGATE_MAX_DEPTH", "the delegation depth"),
+        ("WARDEN_MAX_DELEGATED_CALLS", "the delegated-calls ceiling"),
+        ("WARDEN_MAX_PARALLEL_JOBS", "the parallel jobs"),
+    ] {
+        if std::env::var(var).is_ok_and(|v| !v.is_empty()) {
+            notes.push(format!("{var} is set in the hub's environment and wins over {what} saved here."));
+        }
+    }
 
     HubSettingsDto {
         providers: config
@@ -351,6 +363,9 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             token: secret_status(config.git_sync.as_ref().map(|g| g.token.as_str()).filter(|t| !t.is_empty())),
         },
         bots: bots_settings(config),
+        telegram_token: secret_status(config.api_keys.telegram_bot_token.as_deref()),
+        advanced: advanced_settings(config),
+        machine: machine_settings(config),
         notes,
     }
 }
@@ -514,8 +529,17 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     config.prices = prices_into_config(update.prices)?;
     config.api_keys.tavily = apply_secret(update.tavily_key, config.api_keys.tavily.take());
     config.api_keys.whisper = apply_secret(update.whisper_key, config.api_keys.whisper.take());
+    config.api_keys.telegram_bot_token = apply_secret(update.telegram_token, config.api_keys.telegram_bot_token.take());
     if let Some(edit) = update.git_sync {
         config.git_sync = apply_git_sync(edit, config.git_sync.take())?;
+    }
+    if let Some(advanced) = update.advanced {
+        apply_advanced(&mut config, *advanced)?;
+    }
+    // After the agents above were renamed or removed in the SSH hosts the file had: a list that comes in
+    // replaces those, and is checked against the agents as this save leaves them.
+    if let Some(machine) = update.machine {
+        apply_machine(&mut config, *machine, &agents)?;
     }
 
     // Same as the desktop's save: once the registry holds a provider, the legacy single-provider
@@ -566,7 +590,7 @@ mod tests {
 
     use super::*;
     use crate::SshHostConfig;
-    use warden_server_protocol::protocol::ProviderEditDto;
+    use warden_server_protocol::protocol::{AdvancedSettingsDto, MachineEditDto, ProviderEditDto};
 
     fn provider(id: &str, key: Option<&str>) -> ProviderConfig {
         ProviderConfig { id: id.into(), kind: Provider::Gemini, api_key: key.map(Into::into), base_url: None, model: None, node: None }
@@ -635,6 +659,9 @@ mod tests {
             git_sync: None,
             combos: None,
             bots: None,
+            telegram_token: SecretEdit::Keep,
+            advanced: None,
+            machine: None,
         }
     }
 
@@ -825,6 +852,86 @@ mod tests {
         assert_eq!(saved.vault_path.as_deref(), Some("/somewhere"));
         assert_eq!(saved.api_keys.telegram_bot_token.as_deref(), Some("tg"));
         assert!(saved.prices.is_empty());
+    }
+
+    /// P119: the Telegram token is shown as set (never itself), and a save keeps, replaces or clears it.
+    #[test]
+    fn the_telegram_token_is_kept_replaced_or_cleared_and_never_shown() {
+        let view = hub_settings(&sample(), Vec::new(), Vec::new());
+        assert!(view.telegram_token.set);
+        assert!(!serde_json::to_string(&view).unwrap().contains("\"tg\""), "the token reached the screen");
+        let token_after = |edit: SecretEdit| {
+            let mut update = untouched(&sample());
+            update.telegram_token = edit;
+            apply_hub_settings(sample(), update).unwrap().api_keys.telegram_bot_token
+        };
+        assert_eq!(token_after(SecretEdit::Keep).as_deref(), Some("tg"));
+        assert_eq!(token_after(SecretEdit::Set(" 123:abc ".into())).as_deref(), Some("123:abc"));
+        assert_eq!(token_after(SecretEdit::Clear), None);
+    }
+
+    /// P119: a save without the `advanced` and `machine` slices touches none of what they hold, and the
+    /// view shows it all.
+    #[test]
+    fn a_save_without_the_machine_and_advanced_slices_carries_them_over() {
+        let mut config = sample();
+        config.generated_path = Some("/srv/generated".into());
+        config.mcp_servers = vec![crate::McpServerConfig::Stdio { name: "notes".into(), command: "npx".into(), args: Vec::new(), env: [("TOKEN".to_string(), "s3cret".to_string())].into() }];
+        config.delegate_max_depth = Some(9);
+        config.truthid_public_url = Some("https://hub.example.com".into());
+        let view = hub_settings(&config, Vec::new(), Vec::new());
+        assert_eq!((view.machine.vault_path.as_str(), view.machine.generated_path.as_str(), view.machine.ssh_hosts.len(), view.machine.mcp_servers.len()), ("/somewhere", "/srv/generated", 2, 1));
+        assert_eq!((view.advanced.delegate_max_depth, view.advanced.truthid_public_url.as_str()), (Some(9), "https://hub.example.com"));
+        assert!(!serde_json::to_string(&view).unwrap().contains("s3cret"));
+
+        let saved = apply_hub_settings(config, untouched(&sample())).unwrap();
+        assert_eq!(saved.generated_path.as_deref(), Some("/srv/generated"));
+        assert_eq!(saved.mcp_servers.len(), 1);
+        assert_eq!((saved.delegate_max_depth, saved.truthid_public_url.as_deref()), (Some(9), Some("https://hub.example.com")));
+    }
+
+    /// P119: the machine slice replaces what it holds, and its SSH hosts are checked against the agents as
+    /// this same save leaves them: a host may name an agent renamed in the save, never a removed one.
+    #[test]
+    fn a_machine_save_replaces_its_parts_and_checks_the_hosts_against_the_agents_it_leaves() {
+        let config = sample();
+        let machine_of = |config: &FileConfig| {
+            let view = machine_settings(config);
+            MachineEditDto { enable_shell: view.enable_shell, vault_path: view.vault_path, generated_path: view.generated_path, mcp_servers: Vec::new(), ssh_hosts: view.ssh_hosts, embedded_server: None }
+        };
+        let mut update = untouched(&config);
+        update.agents[0].id = "captain".into(); // pirate renamed
+        let mut machine = machine_of(&config);
+        machine.enable_shell = false;
+        machine.ssh_hosts.truncate(1);
+        machine.ssh_hosts[0].agents = vec!["captain".into()];
+        update.machine = Some(Box::new(machine));
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.enable_shell, Some(false));
+        assert_eq!(saved.ssh_hosts.len(), 1, "the list that came in replaced the file's");
+        assert_eq!(saved.ssh_hosts[0].agents, ["captain"]);
+
+        let mut update = untouched(&config);
+        update.agents.retain(|a| a.id != "chef");
+        let mut machine = machine_of(&config);
+        machine.ssh_hosts[1].agents = vec!["chef".into()];
+        update.machine = Some(Box::new(machine));
+        let error = apply_hub_settings(sample(), update).unwrap_err();
+        assert!(error.contains("unknown agent 'chef'"), "{error}");
+    }
+
+    /// P119: the delegation and TruthID block is saved only when it comes, and a refused value changes nothing.
+    #[test]
+    fn the_advanced_block_is_saved_when_it_comes_and_a_refused_one_is_an_error() {
+        let mut update = untouched(&sample());
+        update.advanced = Some(Box::new(AdvancedSettingsDto { delegate_max_depth: Some(3), max_delegated_calls: Some(50), max_parallel_jobs: None, truthid_network: "base-sepolia".into(), truthid_rpc_url: String::new(), truthid_public_url: "https://hub.example.com".into() }));
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!((saved.delegate_max_depth, saved.max_delegated_calls, saved.max_parallel_jobs), (Some(3), Some(50), None));
+        assert_eq!(saved.truthid_public_url.as_deref(), Some("https://hub.example.com"));
+
+        let mut update = untouched(&sample());
+        update.advanced = Some(Box::new(AdvancedSettingsDto { delegate_max_depth: Some(50), truthid_network: "base-mainnet".into(), ..AdvancedSettingsDto::default() }));
+        assert!(apply_hub_settings(sample(), update).unwrap_err().contains("depth"));
     }
 
     #[test]

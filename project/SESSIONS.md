@@ -2,7 +2,43 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 120)
+> Última atualização: 2026-10-03 (Sessão 121)
+
+---
+
+### 2026-10-03 — Sessão 121
+
+- **Objetivo**: o P119, a paridade da web com o desktop nas configurações (plano aprovado em Plan mode).
+- **Decisões do usuário**: a web edita **tudo**, com confirmação; o hub aplica uma trava de verdade nos campos de máquina
+  (**conexão cifrada ou local + `--allow-machine-settings` na partida**); as chaves de delegação ganham tela **com teto**
+  (`max_delegated_calls = 0` só no arquivo). Duas escolhas minhas, registradas para rever: a `auth_key` do hub embutido não é
+  editável pela web, e o hub embutido do desktop não ganha a flag.
+- **Feito (backend)**: três fatias novas no protocolo (`telegram_token`, `advanced`, `machine`, as duas últimas numa `Box` por
+  causa do `large_enum_variant`); `warden_bootstrap::machine_settings` (visão, `apply_advanced`, `apply_machine`, tetos, caminhos
+  absolutos, segredos de MCP como `Keep`/`Set`/`Clear` por entrada, resumo para o log); a validação de SSH saiu do desktop para o
+  bootstrap e o desktop a chama; `machine_gate`, `SettingsAccess.allow_machine`/`peer`, linha de auditoria e a flag no `serve`.
+- **Feito (web)**: seções "Avançado" e "Máquina do hub", o token do Telegram em "Aprendizado e bots", painel de confirmação com
+  aceite antes da chave de pareamento, e os blocos comuns da tela movidos para `settingsParts.tsx`. A fatia só vai no payload
+  quando mudou.
+- **Achados no caminho**: (1) **vazamento do P118**: o `member_settings_view` limpa campo por campo e o `bots` nunca entrou na
+  lista, então um membro via os ids de Telegram e os números de WhatsApp do dono; corrigido, e o teste novo cai se a linha for
+  tirada (conferi). (2) O primeiro clippy acusou `large_enum_variant` no `ClientMessage`, causado pelo meu `HubSettingsUpdate`
+  maior. (3) O primeiro roteiro do navegador falhou por um seletor meu (o primeiro "Adicionar" da página é o do Tavily), não pelo produto.
+- **Verificado**: testes novos em `machine_settings` (12), `settings` do bootstrap (4), do servidor (5, incluindo trava sem flag,
+  flag sem conexão cifrada, chave de pareamento errada primeiro, segredo de MCP em http remoto), protocolo (JSON e compatibilidade
+  com um cliente antigo) e `people.rs` (membro nunca vê bots, token, avançado nem máquina). `cargo test` dos 6 crates afetados:
+  **633 passando, 0 falhando**; clippy sem aviso novo; `cargo check -p desktop` limpo (os 3 testes de SSH do desktop passam
+  sem mudança, contra o código compartilhado). **De ponta a ponta**: dois hubs reais isolados (`HOME`/`XDG_CONFIG_HOME` próprios,
+  um com a flag e outro sem) e a web real num Chromium headless: **30 de 30** verificações. Cobrem: a confirmação lista shell,
+  SSH e MCP sem o valor secreto e o "Continuar" espera o aceite; o save de máquina leva `machine` e o primeiro, não; o arquivo
+  ganha `enable_shell = true`, o host SSH e o segredo do MCP; a página nunca tem o segredo, nem depois de recarregar; o log do
+  hub diz o que mudou sem valores; renomear um MCP mantém o segredo; pasta relativa é recusada na tela; sem a flag a seção fica
+  só leitura e diz como ligar, e mesmo assim o token do Telegram e o teto de jobs salvam.
+- **Não verificado**: o desktop abrindo a janela nativa com as validações de SSH extraídas; a web atrás de um `wss://` público
+  de verdade (a trava "cifrada" foi exercitada pelo caso local/loopback e pelos testes de `is_secure`); um MCP real subindo
+  um processo de verdade (o teste usou `/bin/true`).
+- **Próximo passo**: escolher o membro ao aprovar no desktop e na web (resto do P117), a rodada de testes em tela (P115 e
+  P95–P118) e, se fizer falta, a flag para o hub embutido do desktop.
 
 ---
 

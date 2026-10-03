@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SettingsError, UserError, type LoadedSettings, type ServerConnection } from "../hub/connection";
 import ApiKeysSection from "./ApiKeysSection";
+import AdvancedSection from "./AdvancedSection";
+import MachineSection from "./MachineSection";
+import { advancedError, machineError, machineSummary, toAdvanced, toAdvancedDraft, toMachineDraft, toMachineEdit, type AdvancedDraft, type MachineDraft } from "./machineDraft";
+import { Field, KEEP, keyed, SecretField, Section, strip, type Keyed, type SecretDraft } from "./settingsParts";
 import type {
+  AdvancedSettings,
   AgentSettings,
   BotPairing,
   BotsSettings,
@@ -10,10 +15,9 @@ import type {
   HubSettingsUpdate,
   LimitScope,
   LimitSettings,
+  MachineEdit,
   PriceSettings,
   ProviderKind,
-  SecretEdit,
-  SecretStatus,
   UserInfo,
 } from "../hub/messages";
 
@@ -39,13 +43,6 @@ const SCOPES: { value: LimitScope; label: string; target: string }[] = [
   { value: "user", label: "Um usuário", target: "canal:id, ex. telegram:12345" },
   { value: "person", label: "Uma pessoa", target: "usuário, ex. ana (em todos os canais)" },
 ];
-
-type Keyed<T> = T & { key: number };
-
-interface SecretDraft {
-  saved: SecretStatus;
-  edit: SecretEdit;
-}
 
 type ProviderDraft = Keyed<{ originalId?: string; id: string; kind: ProviderKind; baseUrl: string; model: string; apiKey: SecretDraft; node: string }>;
 
@@ -75,14 +72,16 @@ interface Draft {
   botsWhatsappChats: string;
   botsTelegramPairing: boolean;
   botsWhatsappPairing: boolean;
+  /** P119 — the Telegram bot's token, a secret like the keys above. */
+  telegramToken: SecretDraft;
+  /** P119 — delegation ceilings and TruthID. Sent only when they changed from `advancedBase` (as loaded). */
+  advanced: AdvancedDraft;
+  advancedBase: AdvancedSettings;
+  /** P119 — what reaches the hub's machine. Sent only when it changed from `machineBase`, so a hub that
+   * doesn't allow editing it (or a connection that isn't encrypted) never receives it by accident. */
+  machine: MachineDraft;
+  machineBase: MachineEdit;
 }
-
-let nextKey = 1;
-function keyed<T>(value: T): Keyed<T> {
-  return { ...value, key: nextKey++ };
-}
-
-const KEEP: SecretEdit = { action: "keep" };
 
 function toDraft(s: HubSettings): Draft {
   return {
@@ -106,6 +105,11 @@ function toDraft(s: HubSettings): Draft {
     botsWhatsappChats: s.bots.whatsappAllowedChats.join("\n"),
     botsTelegramPairing: s.bots.telegramPairing,
     botsWhatsappPairing: s.bots.whatsappPairing,
+    telegramToken: { saved: s.telegramToken, edit: KEEP },
+    advanced: toAdvancedDraft(s.advanced),
+    advancedBase: s.advanced,
+    machine: toMachineDraft(s.machine),
+    machineBase: toMachineEdit(toMachineDraft(s.machine)),
   };
 }
 
@@ -143,10 +147,6 @@ function botsError(d: Draft): string | null {
   return null;
 }
 
-function strip<T>({ key: _key, ...rest }: Keyed<T>): T {
-  return rest as T;
-}
-
 function toUpdate(d: Draft): HubSettingsUpdate {
   return {
     providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit, node: p.kind === "node" ? p.node : "" })),
@@ -161,7 +161,18 @@ function toUpdate(d: Draft): HubSettingsUpdate {
       gitSync: { remoteUrl: d.gitRemoteUrl, token: d.gitRemoteUrl.trim() === "" ? { action: "clear" } : d.gitToken.edit },
     }),
     bots: toBots(d),
+    telegramToken: d.telegramToken.edit,
+    ...(machineChanged(d) && { machine: toMachineEdit(d.machine) }),
+    ...(advancedChanged(d) && { advanced: toAdvanced(d.advanced) }),
   };
+}
+
+function machineChanged(d: Draft): boolean {
+  return JSON.stringify(toMachineEdit(d.machine)) !== JSON.stringify(d.machineBase);
+}
+
+function advancedChanged(d: Draft): boolean {
+  return JSON.stringify(toAdvanced(d.advanced)) !== JSON.stringify(d.advancedBase);
 }
 
 /** `list` with the item at `index` moved one place up (`-1`) or down (`1`). */
@@ -178,74 +189,6 @@ function message(err: unknown): string {
 
 function numberOrNull(value: string): number | null {
   return value.trim() === "" ? null : Number(value);
-}
-
-function Section({ title, hint, action, children }: { title: string; hint?: string; action?: ReactNode; children: ReactNode }) {
-  return (
-    <section className="usage-section settings-section">
-      <div className="settings-section-header">
-        <h2 className="usage-heading">{title}</h2>
-        {action}
-      </div>
-      {hint && <p className="skills-hint">{hint}</p>}
-      {children}
-    </section>
-  );
-}
-
-function Field({ label, hint, children, wide }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
-  return (
-    <label className={wide ? "settings-field settings-field--wide" : "settings-field"}>
-      {label}
-      {children}
-      {hint && <span className="field-hint">{hint}</span>}
-    </label>
-  );
-}
-
-/** A saved secret the page never sees: shows whether one is there and lets it be replaced or removed. */
-function SecretField({ label, value, writable, onChange }: { label: string; value: SecretDraft; writable: boolean; onChange: (edit: SecretEdit) => void }) {
-  const { saved, edit } = value;
-  let status: string;
-  if (edit.action === "set") status = "Nova chave (ainda não salva)";
-  else if (edit.action === "clear") status = "Será removida ao salvar";
-  else if (saved.set) status = saved.hint ? `Salva, termina em …${saved.hint}` : "Salva";
-  else status = "Nenhuma";
-
-  return (
-    <div className="settings-field settings-field--wide">
-      <span className="settings-secret-label">{label}</span>
-      {edit.action === "set" ? (
-        <input
-          type="password"
-          autoComplete="new-password"
-          placeholder="Cole a chave"
-          value={edit.value}
-          onChange={(e) => onChange({ action: "set", value: e.target.value })}
-        />
-      ) : (
-        <span className={edit.action === "clear" ? "settings-secret-status skills-danger" : "settings-secret-status"}>{status}</span>
-      )}
-      <span className="skills-actions">
-        {edit.action === "keep" ? (
-          <>
-            <button type="button" className="link-button" disabled={!writable} onClick={() => onChange({ action: "set", value: "" })}>
-              {saved.set ? "Trocar" : "Adicionar"}
-            </button>
-            {saved.set && (
-              <button type="button" className="link-button skills-danger" onClick={() => onChange({ action: "clear" })}>
-                Remover
-              </button>
-            )}
-          </>
-        ) : (
-          <button type="button" className="link-button" onClick={() => onChange(KEEP)}>
-            Desfazer
-          </button>
-        )}
-      </span>
-    </div>
-  );
 }
 
 /** P117 — people who wrote to a bot and were given a code. The owner approves (they join the bot's list) or
@@ -357,6 +300,9 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   const [keyError, setKeyError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  /** P119 — a save that changes what reaches the hub's machine is read back to the person first. */
+  const [confirmingMachine, setConfirmingMachine] = useState(false);
+  const [machineAck, setMachineAck] = useState(false);
   /** P84 — the workspace's members, for sharing agents with them. */
   const [people, setPeople] = useState<UserInfo[]>([]);
 
@@ -391,6 +337,12 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
 
   const { settings, secretsWritable } = loaded;
   const botsProblem = botsError(draft);
+  // The machine and advanced blocks are only questioned when they changed: a file edited by hand into
+  // something the screen wouldn't write must not stop the rest of it from saving.
+  const machineIsChanged = machineChanged(draft);
+  const machineProblem = machineIsChanged ? machineError(draft.machine, draft.machineBase) : null;
+  const advancedProblem = advancedChanged(draft) ? advancedError(draft.advanced, draft.advancedBase) : null;
+  const agentIds = draft.agents.map((a) => a.id.trim()).filter((id) => id !== "");
   const modelIds = [...draft.providers.map((p) => p.id), ...draft.combos.map((c) => c.id)].filter((id) => id.trim() !== "");
   const update = (change: (d: Draft) => Draft) => {
     setDraft((d) => (d ? change(d) : d));
@@ -489,6 +441,8 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       setLoaded({ ...loaded, settings: result.settings, version: result.version });
       setDraft(toDraft(result.settings));
       setAsking(false);
+      setConfirmingMachine(false);
+      setMachineAck(false);
       setPairingKey("");
       setSavedAt(Date.now());
     } catch (err) {
@@ -510,7 +464,9 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   return (
     <div className="usage-view settings-view">
       <div className="skills-toolbar">
-        <span className="skills-hint">A parte da configuração do hub que dá para mexer daqui. Shell, MCP, SSH e armazenamento ficam no desktop ou no config.toml.</span>
+        <span className="skills-hint">
+          A configuração do hub. O que alcança a máquina dele (shell, MCP, SSH, pastas) só muda daqui se o hub foi iniciado com --allow-machine-settings e a conexão é cifrada; senão, no desktop ou no config.toml.
+        </span>
         <button type="button" className="link-button" onClick={load} disabled={!conn || saving}>
           Recarregar
         </button>
@@ -885,6 +841,14 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         </div>
         <BotPairings conn={conn} disabled={dirty} onResolved={load} />
         <div className="settings-grid">
+          <SecretField
+            label="Token do bot do Telegram (do @BotFather)"
+            placeholder="Cole o token"
+            value={draft.telegramToken}
+            writable={secretsWritable}
+            onChange={(edit) => update((d) => ({ ...d, telegramToken: { ...d.telegramToken, edit } }))}
+          />
+          <p className="field-hint settings-field--wide">O bot do Telegram lê o token quando inicia: depois de trocar, reinicie o bot.</p>
           <Field label="Modelo do aprendizado" hint="Um modelo barato resolve. Vazio usa o modelo ativo. Cada membro pode ter o seu na aba Pessoas.">
             <select value={draft.botsLearningProvider} onChange={(e) => update((d) => ({ ...d, botsLearningProvider: e.target.value }))}>
               <option value="">O modelo ativo</option>
@@ -1033,6 +997,17 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         </ul>
       </Section>
 
+      <AdvancedSection draft={draft.advanced} error={advancedProblem} onChange={(change) => update((d) => ({ ...d, advanced: { ...d.advanced, ...change } }))} />
+
+      <MachineSection
+        draft={draft.machine}
+        settings={settings.machine}
+        agentIds={agentIds}
+        secretsWritable={secretsWritable}
+        error={machineProblem}
+        onChange={(change) => update((d) => ({ ...d, machine: change(d.machine) }))}
+      />
+
       <div className="settings-footer">
         {saveError && (
           <p className="error-banner">
@@ -1048,7 +1023,46 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           </p>
         )}
         {savedAt !== null && !dirty && <p className="settings-saved">✓ Salvo. O hub já está usando as novas configurações.</p>}
-        {asking ? (
+        {confirmingMachine ? (
+          <div className="settings-confirm settings-confirm--danger" role="alertdialog" aria-labelledby="machine-confirm-title">
+            <h3 id="machine-confirm-title" className="settings-subheading">
+              Esta mudança altera o que o hub executa na máquina dele
+            </h3>
+            <ul className="settings-changes">
+              {machineSummary(draft.machineBase, toMachineEdit(draft.machine)).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+            <p className="field-hint">Valores novos de variáveis de ambiente e cabeçalhos seguem para o hub, mas não são mostrados aqui. O hub registra esta mudança no log dele.</p>
+            <label className="settings-check">
+              <input type="checkbox" checked={machineAck} onChange={(e) => setMachineAck(e.target.checked)} />
+              Entendo que isso muda o que o hub pode executar na máquina dele
+            </label>
+            <div className="skills-actions">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!machineAck}
+                onClick={() => {
+                  setConfirmingMachine(false);
+                  setAsking(true);
+                }}
+              >
+                Continuar
+              </button>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  setConfirmingMachine(false);
+                  setMachineAck(false);
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        ) : asking ? (
           <form
             className="settings-confirm"
             onSubmit={(e) => {
@@ -1080,7 +1094,16 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
           </form>
         ) : (
           <div className="skills-actions">
-            <button type="button" className="primary-button" disabled={!dirty || !conn || botsProblem !== null} onClick={() => setAsking(true)}>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!dirty || !conn || botsProblem !== null || machineProblem !== null || advancedProblem !== null}
+              onClick={() => {
+                // What reaches the machine is read back first; the pairing key comes after.
+                if (machineIsChanged) setConfirmingMachine(true);
+                else setAsking(true);
+              }}
+            >
               Salvar
             </button>
             <button type="button" className="link-button" disabled={!dirty} onClick={() => setDraft(toDraft(settings))}>

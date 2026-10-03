@@ -2,11 +2,11 @@
 //! `save_settings` runs on it, and the "Test connection" command. Split out of `lib.rs` the same way
 //! `skills_cmds.rs` is — the hosts themselves are saved through `save_settings` like agents are.
 
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
+use warden_bootstrap::machine_settings::{ssh_host_from_dto, ssh_hosts_into_config};
 use warden_bootstrap::{AgentConfig, SshHostConfig};
 use warden_core::tool::ssh::test_connection;
+use warden_server_protocol::protocol::SshHostDto;
 
 /// `port` is a `u32` here (not `u16`) so an out-of-range value reaches `into_config` and gets a
 /// readable error instead of an opaque serde failure. `identity_file` empty = "none", the same
@@ -42,47 +42,25 @@ impl From<SshHostConfig> for SshHostPayload {
     }
 }
 
+impl From<SshHostPayload> for SshHostDto {
+    fn from(p: SshHostPayload) -> Self {
+        Self { id: p.id, host: p.host, user: p.user, port: p.port, identity_file: p.identity_file, enabled: p.enabled, agents: p.agents, require_approval: p.require_approval }
+    }
+}
+
 impl SshHostPayload {
     /// Trims, range-checks and runs the same validation `ssh_exec` runs on every call, so a bad
-    /// host is refused when it's saved rather than silently skipped at the next startup.
+    /// host is refused when it's saved rather than silently skipped at the next startup. The checks
+    /// are the web settings screen's too (`warden_bootstrap::machine_settings`), so both refuse alike.
     pub fn into_config(self) -> Result<SshHostConfig, String> {
-        let id = self.id.trim().to_string();
-        if id.is_empty() {
-            return Err("every SSH host needs a name".to_string());
-        }
-        let port = u16::try_from(self.port).ok().filter(|p| *p != 0).ok_or_else(|| format!("SSH host '{id}': port must be between 1 and 65535"))?;
-        let identity_file = Some(self.identity_file.trim().to_string()).filter(|p| !p.is_empty());
-        let config = SshHostConfig {
-            id,
-            host: self.host.trim().to_string(),
-            user: self.user.trim().to_string(),
-            port,
-            identity_file,
-            enabled: self.enabled,
-            agents: self.agents,
-            require_approval: self.require_approval,
-        };
-        config.to_host().validate().map_err(|e| format!("{e:#}"))?;
-        Ok(config)
+        ssh_host_from_dto(self.into())
     }
 }
 
 /// The whole list, with the cross-entry checks: ids unique, and every agent a host names must
 /// exist (the frontend prunes a deleted agent from the lists, this is the defensive backstop).
 pub fn hosts_into_config(payloads: Vec<SshHostPayload>, agents: &[AgentConfig]) -> Result<Vec<SshHostConfig>, String> {
-    let mut seen = HashSet::new();
-    let mut hosts = Vec::with_capacity(payloads.len());
-    for payload in payloads {
-        let host = payload.into_config()?;
-        if !seen.insert(host.id.clone()) {
-            return Err(format!("duplicate SSH host name: {}", host.id));
-        }
-        if let Some(unknown) = host.agents.iter().find(|a| !agents.iter().any(|known| &known.id == *a)) {
-            return Err(format!("SSH host '{}' names an unknown agent '{unknown}'", host.id));
-        }
-        hosts.push(host);
-    }
-    Ok(hosts)
+    ssh_hosts_into_config(payloads.into_iter().map(Into::into).collect(), agents)
 }
 
 #[derive(Serialize, Debug, PartialEq)]

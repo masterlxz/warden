@@ -1477,6 +1477,48 @@ async fn the_owner_picks_the_learning_model_of_a_member() {
     }
 }
 
+/// P119: the owner's bots, Telegram token, delegation/TruthID settings and everything that reaches the hub's
+/// machine are the owner's. A member's settings screen gets them empty, and nothing of them in the JSON.
+#[tokio::test]
+async fn a_member_never_sees_the_owners_bots_token_or_machine_settings() {
+    let hub = spin_up().await;
+    let (mut ana, _token, _code) = ana_with_a_code(&hub).await;
+    let config_path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+    config.telegram.allowed_users = vec![424242];
+    config.whatsapp.allowed_chats = vec!["5511987654321".into()];
+    config.learning.bot_chats = vec!["telegram:424242".into()];
+    config.api_keys.telegram_bot_token = Some("123456:OWNER-telegram-token".into());
+    config.enable_shell = Some(true);
+    config.generated_path = Some("/srv/owner-generated".into());
+    config.mcp_servers = vec![warden_bootstrap::McpServerConfig::Stdio { name: "owner-notes".into(), command: "npx".into(), args: Vec::new(), env: [("TOKEN".to_string(), "owner-mcp-secret".to_string())].into() }];
+    config.ssh_hosts = vec![warden_bootstrap::SshHostConfig { id: "owner-box".into(), host: "owner.example.com".into(), user: "root".into(), port: 22, identity_file: None, enabled: false, agents: Vec::new(), require_approval: false }];
+    config.delegate_max_depth = Some(3);
+    config.truthid_public_url = Some("https://owner-hub.example.com".into());
+    save_config(&config_path, &config).unwrap();
+
+    ana.send(&ClientMessage::RequestSettings { request_id: 9 }).await.unwrap();
+    let ServerMessage::Settings { settings, .. } = reply(&mut ana).await else { panic!("her settings") };
+    assert_eq!(settings.bots, Default::default(), "the owner's bot lists are not hers");
+    assert!(!settings.telegram_token.set);
+    assert_eq!(settings.advanced, Default::default());
+    assert_eq!(settings.machine, Default::default());
+    let json = serde_json::to_string(&settings).unwrap();
+    for owner_only in ["424242", "5511987654321", "OWNER-telegram-token", "owner-notes", "owner-mcp-secret", "owner-box", "owner.example.com", "owner-generated", "owner-hub.example.com"] {
+        assert!(!json.contains(owner_only), "'{owner_only}' reached a member's screen: {json}");
+    }
+
+    // The owner, on the same hub, does see it (the machine slice only as read-only: this hub wasn't started to allow edits).
+    let mut owner = ServerConnection::connect(&hub.url, "owner-pc", "Owner's PC", KEY).await.unwrap();
+    owner.send(&ClientMessage::RequestSettings { request_id: 10 }).await.unwrap();
+    let ServerMessage::Settings { settings, .. } = reply(&mut owner).await else { panic!("the owner's settings") };
+    assert_eq!(settings.bots.telegram_allowed_users, [424242]);
+    assert!(settings.telegram_token.set && settings.machine.enable_shell);
+    assert_eq!(settings.machine.mcp_servers[0].env_keys, ["TOKEN"]);
+    assert!(!settings.machine.writable && settings.machine.blocked_reason.contains("--allow-machine-settings"));
+    assert!(!serde_json::to_string(&settings).unwrap().contains("owner-mcp-secret"), "not even the owner's screen carries a secret value");
+}
+
 /// P117: a Telegram or WhatsApp chat that speaks as a member is answered by the hub as her. Linking takes
 /// her password (a wrong one links nothing) and keeps only the device token; a turn lands in her vault and
 /// her conversations, never the owner's; a second turn reuses the connection; when the hub no longer holds

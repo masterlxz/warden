@@ -1749,6 +1749,8 @@ mesma resposta CommonMark via `react-markdown`+`remark-gfm`; faltava o conversor
   pareamento de novo**, então um token de device vazado sozinho não troca chaves de API. **Chave nova só por TLS ou
   pela própria máquina** (`settings::is_secure`: conexão TLS ou peer loopback, incluindo `::ffff:127.0.0.1`).
   Remover uma chave e o resto das configurações funcionam em http:// de LAN, porque nenhum segredo trafega.
+  **Revisto no P119 (Sessão 121)**: a web passou a editar também o que alcança a máquina, mas atrás de uma trava no hub;
+  ver "A web edita a máquina do hub, com trava" mais abaixo.
 - **Segredos nunca voltam ao navegador**: a tela recebe `SecretStatusDto { set, hint }` (os 4 últimos caracteres,
   só a partir de 16) e manda `SecretEdit` (`keep`/`set`/`clear`). Um provedor renomeado acha a chave salva pelo
   `originalId`. Agentes também levam `originalId`, para que renomear ou apagar um agente atualize os hosts SSH que
@@ -3018,8 +3020,52 @@ aparelho `Approved` e hoje não tem cliente.
   `SaveSettings` que já existe (chave de pareamento, versão do arquivo, recusa a membro) em vez de uma mensagem nova.
 - **Uma validação**: `apply_bots_settings` em `warden-bootstrap/src/settings.rs`, usada pelo hub e pelo desktop, para as duas
   telas recusarem as mesmas coisas.
-- **O token do Telegram fica só no desktop**: a web nunca edita segredo de bot (o hub esconde segredos), então o token não está
-  no DTO; o desktop o troca por `bot_cmds.rs` (ausente mantém, vazio remove) e ele nunca volta, só "salvo, termina em …".
+- **O token do Telegram** foi só do desktop no P118 (a web não editava segredo de bot). **No P119 a web também o edita**, como
+  `telegram_token` (`SecretStatusDto` na visão, `SecretEdit` no save; `Set` exige conexão cifrada ou local, como uma chave de API).
+  O desktop o troca por `bot_cmds.rs` (ausente mantém, vazio remove) e ele nunca volta, só "salvo, termina em …".
 - **No desktop a seção salva sozinha** (`bot_cmds.rs` relê o arquivo e muda só essa fatia), fora do formulário principal, no
   molde do `ApiKeysSection`. As listas valem na hora (os bots as releem); o token e o `[learning]` só na próxima partida.
+
+## A web edita a máquina do hub, com trava (P119, Sessão 121)
+
+A paridade da web com o desktop nas configurações. A decisão do P78 (shell, MCP, SSH e caminhos fora da web, porque dariam a
+quem tem a chave de pareamento comandos na máquina do hub) mudou: a web edita tudo, **mas o que alcança a máquina fica atrás
+de uma trava que o hub aplica**, não da tela. Uma confirmação só no navegador não protege nada, porque quem fala o protocolo a
+ignora.
+
+- **Três fatias novas, no padrão de `git_sync`/`bots`** (visão com `#[serde(default)]`, edição opcional, ausente = não mexe;
+  um cliente antigo segue valendo): `telegram_token`; `advanced` (as três chaves de delegação e `truthid_*`); e `machine`
+  (shell, `vault_path`, `generated_path`, servidores MCP, hosts SSH e o hub embutido). `machine` e `advanced` vão numa `Box`
+  no `HubSettingsUpdate`: sem isso o `ClientMessage` passa do limite do `large_enum_variant`.
+- **A trava do `machine`** (`settings::machine_gate`, antes de ler ou gravar qualquer coisa, depois da chave de pareamento):
+  o hub precisa ter subido com **`warden-server serve --allow-machine-settings`** (desligado por padrão: um hub que já roda
+  não passa a aceitar comandos pela rede só porque o código aprendeu) **e** a conexão tem de ser cifrada ou local (a mesma
+  regra de uma chave de API nova). A visão traz `machine.writable` e `blocked_reason`, e a tela fica em somente leitura com o
+  motivo. Cada save que muda a fatia deixa uma linha no log do hub (`machine settings changed from <ip>: shell on, MCP servers
+  (1 now), ...`), com o que mudou e **nunca** com valores. O hub embutido do desktop não ganha a flag (o dono edita ali
+  mesmo); a flag é só do `serve`.
+- **Segredos de MCP**: o valor de uma variável de ambiente ou de um cabeçalho nunca volta; a visão traz os **nomes**
+  (`env_keys`/`header_keys`) e o save manda `{chave, SecretEdit}` por entrada, com `original_name` para o `Keep` achar o valor
+  guardado de um servidor renomeado. `oauth` dos servidores http é carregado do arquivo e não editável (o fluxo OAuth precisa
+  do navegador do desktop); um servidor com OAuth não aceita cabeçalhos. Um `Set` novo entra em `sets_a_secret()`.
+- **Checagens só da web** (em `machine_settings.rs`): pastas **absolutas e sem `..`**; MCP com nome único e `command` (stdio) ou
+  `http(s)://` (http); hosts SSH conferidos contra os agentes **como o mesmo save os deixa**. Um valor que já estava no arquivo
+  passa sem checagem (quem editou à mão não fica impedido de salvar o resto). As **chaves de delegação têm teto na web**
+  (profundidade 5, chamadas 1..=300, jobs 0..=10; `max_delegated_calls = 0` só no arquivo), só para valor **mudado**.
+  `truthid_public_url` exige `https://`.
+- **Uma validação, dois clientes** também aqui: `ssh_host_from_dto`/`ssh_hosts_into_config` moraram no desktop
+  (`ssh_cmds.rs`) e foram para o bootstrap; o desktop passou a chamá-las, e os três testes dele seguem passando sem mudança.
+  A checagem do hub embutido **não** foi compartilhada: as mensagens do desktop são em português e a da web em inglês.
+- **`auth_key` do hub embutido não é editável pela web**: é a própria chave de pareamento com que a tela assina o save; trocá-la
+  pelo mesmo canal trancaria o dono para fora. O resto vale **na próxima partida** (nada recarrega um listener que já roda), e a
+  web só edita um `[embedded_server]` que já existe (nunca cria).
+- **Membros**: `member_settings_view` limpa os campos da visão um a um (uma lista de negação, então um campo novo vazaria por
+  padrão). Passou a zerar `bots`, `telegram_token`, `advanced` e `machine`. **`bots` (P118) estava fora da lista**: um membro
+  via os ids de Telegram e os números de WhatsApp do dono; um teste com valores reais no arquivo do dono pega isso (conferido
+  tirando a linha e vendo o teste cair).
+- **Web**: seções "Avançado" e "Máquina do hub" em arquivos próprios (`AdvancedSection.tsx`, `MachineSection.tsx`,
+  `machineDraft.ts`), e os blocos da tela (`Section`, `Field`, `SecretField`) foram para `settingsParts.tsx`. A fatia só vai no
+  payload quando **mudou** em relação ao carregado (como `gitSync`), então um hub com a trava desligada nunca a recebe sem
+  querer. Antes de pedir a chave de pareamento, um painel lista o que muda (sem valores secretos) e exige marcar o aceite.
+  Todos os controles da seção ficam num `<fieldset disabled>` quando o hub não deixa salvar.
 
