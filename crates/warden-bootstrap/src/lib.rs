@@ -1244,6 +1244,22 @@ pub fn rename_conversation(dir: &Path, id: &str, title: &str) -> anyhow::Result<
     Ok(true)
 }
 
+/// Moves a saved conversation into project `project` (P103), or out of any with `None`. `false` when there is no such
+/// conversation. This is the only thing that changes a conversation's project after it was created: `append_messages`
+/// never does, so a turn in flight (which read the conversation before) can't undo a move, and a move can't be lost
+/// to one — both re-read the file under the same guard. The turn that is running finishes in the scope it began in.
+/// Like a rename it isn't activity, so `updated_at` is left alone. Whether the project exists is the caller's to
+/// check: it is a folder of the person's vault, which this directory knows nothing about.
+pub fn set_conversation_project(dir: &Path, id: &str, project: Option<&str>) -> anyhow::Result<bool> {
+    let _guard = ConversationWriteGuard::acquire(dir)?;
+    let Some(mut conversation) = load_conversation(dir, id)? else {
+        return Ok(false);
+    };
+    conversation.project_id = project.map(str::to_string);
+    save_conversation(dir, &conversation)?;
+    Ok(true)
+}
+
 /// Deletes a saved conversation's file (P78). `false` when there was none.
 pub fn delete_conversation(dir: &Path, id: &str) -> anyhow::Result<bool> {
     let _guard = ConversationWriteGuard::acquire(dir)?;
@@ -2547,7 +2563,7 @@ oauth = true
         let root = temp_dir(name);
         let vault = Arc::new(Vault::new(root.join("vault")));
         warden_core::project::ProjectStore::new(vault.clone())
-            .save(&warden_core::project::Project { id: "tax".into(), name: "Tax return".into(), description: String::new(), instructions: "Answer in Portuguese.".into() })
+            .save(&warden_core::project::Project { id: "tax".into(), name: "Tax return".into(), description: String::new(), instructions: "Answer in Portuguese.".into(), workdir: None })
             .unwrap();
         vault.write("projects/tax/jan.md", "january receipts").unwrap();
         vault.write("diary.md", "the diary").unwrap();
@@ -2611,6 +2627,28 @@ oauth = true
     }
 
     /// `append_messages` is what the desktop calls around every turn: only a *new* conversation takes the project.
+    #[test]
+    fn a_conversation_can_be_moved_between_projects_and_out_of_one_without_counting_as_activity() {
+        let dir = temp_dir("move-project");
+        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
+        let new = AppendOptions { title_seed: "t", project_id: Some("tax"), create: true, ..Default::default() };
+        let created = append_messages(&dir, "c1", new, vec![note("a")]).unwrap().unwrap();
+
+        assert!(set_conversation_project(&dir, "c1", Some("garden")).unwrap());
+        let moved = load_conversation(&dir, "c1").unwrap().unwrap();
+        assert_eq!((moved.project_id.as_deref(), moved.updated_at, moved.messages.len()), (Some("garden"), created.updated_at, 1), "moved, nothing else touched");
+        assert!(set_conversation_project(&dir, "c1", None).unwrap());
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().project_id, None);
+        assert!(!set_conversation_project(&dir, "nope", Some("tax")).unwrap(), "no such conversation");
+        assert!(load_conversation(&dir, "nope").unwrap().is_none(), "and none is made");
+
+        // A later append — a turn that began before the move — doesn't undo it.
+        set_conversation_project(&dir, "c1", Some("garden")).unwrap();
+        append_messages(&dir, "c1", AppendOptions { project_id: Some("tax"), ..Default::default() }, vec![note("b")]).unwrap();
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().project_id.as_deref(), Some("garden"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn append_messages_gives_a_new_conversation_its_project_and_never_changes_an_existing_one() {
         let dir = temp_dir("append-project");

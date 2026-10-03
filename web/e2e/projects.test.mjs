@@ -55,7 +55,9 @@ async function withHub(body) {
   try {
     const opened = await signIn(browser, hub);
     context = opened.context;
-    await opened.page.getByRole("button", { name: "Projetos" }).waitFor();
+    // The list loads after the page is ready, and what is open follows it: a test that clicks before then would be
+    // racing the page's own start-up.
+    await opened.page.getByText("Conversa solta").waitFor();
     await body({ ...opened, hub, disk: (rel) => path.join(home, rel) });
     assert.deepEqual(opened.errors, [], "the page raised no error");
   } finally {
@@ -80,14 +82,12 @@ describe("the chat and its projects", () => {
       assert.doesNotMatch(loose, /Recibos de janeiro/, "and a conversation of a project is not listed twice");
       assert.equal(await page.locator("section.conversation-group").count(), 1, "no group for a project that doesn't exist");
 
-      // Open conversations: the project is theirs and can't be changed.
+      // Open conversations show the project they are in.
       await page.getByRole("button", { name: /Recibos de janeiro/ }).click();
       await picker(page).waitFor();
       assert.equal(await picker(page).inputValue(), "tax");
-      assert.equal(await picker(page).isDisabled(), true, "fixed once the conversation has started");
       await page.getByRole("button", { name: /Conversa solta/ }).click();
       assert.equal(await picker(page).inputValue(), "", "an ordinary conversation shows none");
-      assert.equal(await picker(page).isDisabled(), true);
       await page.getByRole("button", { name: /Conversa de projeto removido/ }).click();
       assert.equal(await picker(page).inputValue(), "", "a removed project shows none, not a blank entry");
     });
@@ -107,6 +107,46 @@ describe("the chat and its projects", () => {
       const [frame] = chatFrames(sent);
       assert.equal(frame?.projectId, "tax", "the first message carries the project it starts in");
       assert.equal(frame?.message, "o que falta declarar?");
+    });
+  });
+
+  test("the picker moves a conversation that exists, after asking, and only then", { timeout: TIMEOUT }, async () => {
+    await withHub(async ({ page, sent }) => {
+      const moves = () => sent.filter((s) => s.includes('"type":"moveConversation"')).map((s) => JSON.parse(s));
+      const group = page.locator("section.conversation-group", { has: page.getByRole("heading", { name: "Declaração" }) });
+      await group.waitFor();
+      await page.getByRole("button", { name: /Conversa solta/ }).click();
+      assert.equal(await picker(page).isDisabled(), false, "a conversation that exists can be moved");
+
+      // Said no: nothing is sent and the picker goes back to what the conversation is.
+      page.once("dialog", (dialog) => dialog.dismiss());
+      await picker(page).selectOption("tax");
+      assert.equal(moves().length, 0, "no move without a yes");
+      assert.equal(await picker(page).inputValue(), "", "the picker still shows where the conversation is");
+      assert.doesNotMatch(await group.innerText(), /Conversa solta/);
+
+      // Said yes: the move is sent, and the list regroups.
+      let warning = "";
+      page.once("dialog", (dialog) => {
+        warning = dialog.message();
+        void dialog.accept();
+      });
+      await picker(page).selectOption("tax");
+      await group.getByText("Conversa solta").waitFor();
+      assert.match(warning, /Mover esta conversa para o projeto "Declaração"/, "it says what moving does");
+      assert.deepEqual(moves().map((m) => [m.conversationId, m.projectId]), [["plain", "tax"]]);
+      assert.equal(await picker(page).inputValue(), "tax");
+
+      // And out again: no `projectId` on the frame, back with the others.
+      page.once("dialog", (dialog) => {
+        warning = dialog.message();
+        void dialog.accept();
+      });
+      await picker(page).selectOption("");
+      await page.locator("aside.conversations > ul.conversations-list").getByText("Conversa solta").waitFor();
+      assert.match(warning, /Tirar esta conversa do projeto/);
+      assert.equal(moves().at(-1).projectId, undefined, "out of any project");
+      assert.doesNotMatch(await group.innerText(), /Conversa solta/);
     });
   });
 

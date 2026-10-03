@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,40 +7,87 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::memory::Vault;
-use crate::tool::{Tool, ToolSpec};
+use crate::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_TIMEOUT_MS: u64 = 300_000;
 const MAX_OUTPUT_BYTES: usize = 20_000;
+/// How long a project's shell waits for the person's yes to one command; no answer counts as no (like the SSH hosts').
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Runs a shell command on the local machine. Deliberately no sandboxing or allowlist — same
 /// trust model the file tools already have (no path scoping either). Gated behind an opt-in
 /// flag at the `bootstrap()` level precisely because this one is a bigger blast radius than
 /// read/write file.
+///
+/// A code project's conversations (P103 b) get the other mode, `in_folder`: it starts in the project's working folder
+/// and asks the person before **every** command. It is still no sandbox — a command can `cd ..` — so the approval is
+/// the protection.
 pub struct ShellTool {
-    vault: Arc<Vault>,
+    mode: Mode,
+}
+
+enum Mode {
+    /// The shell of everyone else: starts in the vault, runs what it is told.
+    Vault(Arc<Vault>),
+    Project(ProjectShell),
+}
+
+struct ProjectShell {
+    /// The project's name, for the person to see whose command it is.
+    project: String,
+    folder: PathBuf,
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl ShellTool {
     pub fn new(vault: Arc<Vault>) -> Self {
-        Self { vault }
+        Self { mode: Mode::Vault(vault) }
+    }
+
+    /// The shell of a code project: starts in `folder` (which must already exist — it is never created) and puts each
+    /// command to `with_approver`'s approver first. Without one it refuses, as a channel that can't ask must.
+    pub fn in_folder(project: impl Into<String>, folder: PathBuf) -> Self {
+        Self { mode: Mode::Project(ProjectShell { project: project.into(), folder, approver: None }) }
     }
 }
 
 #[async_trait]
 impl Tool for ShellTool {
-    /// Its default working directory is the vault's folder, so it follows the vault too.
+    /// Its default working directory is the vault's folder, so it follows the vault too. A project's shell keeps its
+    /// working folder: the vault it was built next to is not what it is about.
     fn with_vault(&self, vault: &Arc<Vault>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self::new(vault.clone())))
+        match &self.mode {
+            Mode::Vault(_) => Some(Arc::new(Self::new(vault.clone()))),
+            Mode::Project(_) => None,
+        }
+    }
+
+    /// Only a project's shell asks; the ordinary one runs as before.
+    fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        match &self.mode {
+            Mode::Vault(_) => None,
+            Mode::Project(shell) => Some(Arc::new(Self {
+                mode: Mode::Project(ProjectShell { project: shell.project.clone(), folder: shell.folder.clone(), approver: Some(approver) }),
+            })),
+        }
     }
 
     fn spec(&self) -> ToolSpec {
+        let description = match &self.mode {
+            Mode::Vault(_) => "Run a shell command on the local machine (sh -c on Linux/macOS, cmd /C on Windows) and return its \
+                 exit code, stdout and stderr. Runs in the vault root directory by default."
+                .to_string(),
+            Mode::Project(shell) => format!(
+                "Run a shell command on the local machine (sh -c on Linux/macOS, cmd /C on Windows) and return its exit code, stdout \
+                 and stderr. Runs in the project's working folder, {}, by default (a relative cwd starts there). It is not confined \
+                 to that folder, and the person is asked to approve every command before it runs, so a refused command did not run.",
+                shell.folder.display()
+            ),
+        };
         ToolSpec {
             name: "shell".to_string(),
-            description:
-                "Run a shell command on the local machine (sh -c on Linux/macOS, cmd /C on Windows) and return its \
-                 exit code, stdout and stderr. Runs in the vault root directory by default."
-                    .to_string(),
+            description,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -69,18 +117,37 @@ impl Tool for ShellTool {
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required 'command' argument"))?;
 
+        let base = match &self.mode {
+            Mode::Vault(vault) => vault.root().clone(),
+            Mode::Project(shell) => shell.folder.clone(),
+        };
         let cwd = match args.get("cwd").and_then(Value::as_str) {
             Some(cwd) => {
                 let path = std::path::Path::new(cwd);
                 if path.is_absolute() {
                     path.to_path_buf()
                 } else {
-                    self.vault.root().join(path)
+                    base.join(path)
                 }
             }
-            None => self.vault.root().clone(),
+            None => base,
         };
-        std::fs::create_dir_all(&cwd)?;
+        match &self.mode {
+            Mode::Vault(_) => std::fs::create_dir_all(&cwd)?,
+            Mode::Project(shell) => {
+                // The folder is the repository the person named: one that isn't there is a mistake to say, not to paper over.
+                if !cwd.is_dir() {
+                    anyhow::bail!("the folder {} doesn't exist on this machine (the project's working folder is {})", cwd.display(), shell.folder.display());
+                }
+                let Some(approver) = &shell.approver else {
+                    anyhow::bail!("this project's shell asks the person before every command, and this channel can't ask (use the desktop app or the web)");
+                };
+                let request = ApprovalRequest { target: shell.project.clone(), action: "shell".to_string(), detail: format!("in {}: {command}", cwd.display()) };
+                if !tokio::time::timeout(APPROVAL_TIMEOUT, approver.approve(request)).await.unwrap_or(false) {
+                    anyhow::bail!("the person did not approve this command, so it did not run");
+                }
+            }
+        }
 
         let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
 

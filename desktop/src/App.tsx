@@ -142,6 +142,18 @@ function App() {
     setSelectedProviderId(isModel(settings, storedProviderId) ? storedProviderId : settings.activeProvider);
   }, [activeConversationId, settings]);
 
+  /** Moves the open conversation into a project, or out of any with "" (P103); the saved copy replaces the one shown. */
+  async function handleMoveProject(projectId: string) {
+    if (activeConversationId === null) return;
+    setSendError(null);
+    try {
+      const saved = await invoke<Conversation>("move_conversation", { conversationId: activeConversationId, projectId: projectId || null });
+      setConversations((prev) => replaceWithSaved(prev, saved));
+    } catch (err) {
+      setSendError(String(err));
+    }
+  }
+
   function handleToggleSidebarCollapsed() {
     setSidebarCollapsed((prev) => {
       const next = !prev;
@@ -318,6 +330,7 @@ function App() {
           projects={projects}
           selectedProjectId={currentProjectId}
           onSelectProject={setSelectedProjectId}
+          onMoveProject={(id) => void handleMoveProject(id)}
           selectedAgentId={selectedAgentId}
           selectedProviderId={selectedProviderId}
           onSelectAgent={handleSelectAgent}

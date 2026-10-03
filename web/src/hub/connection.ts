@@ -612,6 +612,11 @@ export class ServerConnection {
     await this.request((requestId) => ({ type: "deleteConversation", requestId, conversationId }));
   }
 
+  /** P103 — puts a conversation in a project, or out of any (`undefined`). The next turn runs in the new scope. */
+  async moveConversation(conversationId: string, projectId?: string): Promise<void> {
+    await this.request((requestId) => ({ type: "moveConversation", requestId, conversationId, ...(projectId && { projectId }) }));
+  }
+
   async listSkills(): Promise<SkillDto[]> {
     const reply = await this.request((requestId) => ({ type: "listSkills", requestId }));
     return reply.type === "skillList" ? reply.skills : [];

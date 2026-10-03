@@ -51,11 +51,14 @@ pub struct ProjectDto {
     pub description: String,
     #[serde(default)]
     pub instructions: String,
+    /// A code project's working folder on the hub's machine (P103 b); absent for an ordinary project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 impl From<Project> for ProjectDto {
     fn from(project: Project) -> Self {
-        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions }
+        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions, workdir: project.workdir }
     }
 }
 
@@ -1233,6 +1236,16 @@ pub enum ClientMessage {
         request_id: u64,
         conversation_id: String,
     },
+    /// Moves one of the person's conversations into a project (P103), or out of any with no `project_id`. The only way
+    /// to change the project a conversation was started in. The project must exist in the person's vault, and a
+    /// scheduled task's conversation can't be moved. Answered by `ConversationOk`/`ConversationError`; the next turn
+    /// runs in the new scope, and what was already said stays in the conversation.
+    MoveConversation {
+        request_id: u64,
+        conversation_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+    },
     /// Voice input (P78): a recording the hub transcribes with Whisper, the same way the desktop's
     /// mic button does — the text comes back in `Transcription` for the client to put in its
     /// composer, nothing is sent to the model. `TranscriptionError` when the hub has no Whisper key
@@ -1734,7 +1747,7 @@ pub enum ServerMessage {
         request_id: u64,
         conversations: Vec<ConversationSummary>,
     },
-    /// Reply to a successful `RenameConversation`/`DeleteConversation`.
+    /// Reply to a successful `RenameConversation`/`DeleteConversation`/`MoveConversation`.
     ConversationOk {
         request_id: u64,
     },
@@ -2298,14 +2311,14 @@ mod tests {
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","projectId":"tax"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
 
-        let save = ClientMessage::SaveProject { request_id: 1, project: ProjectDto { id: "tax".into(), name: "Tax".into(), description: "d".into(), instructions: "i".into() }, overwrite: false };
+        let save = ClientMessage::SaveProject { request_id: 1, project: ProjectDto { id: "tax".into(), name: "Tax".into(), description: "d".into(), instructions: "i".into(), workdir: None }, overwrite: false };
         let json = serde_json::to_string(&save).unwrap();
         assert_eq!(json, r#"{"type":"saveProject","requestId":1,"project":{"id":"tax","name":"Tax","description":"d","instructions":"i"},"overwrite":false}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
         assert_eq!(serde_json::to_string(&ClientMessage::ListProjects { request_id: 2 }).unwrap(), r#"{"type":"listProjects","requestId":2}"#);
         assert_eq!(serde_json::to_string(&ClientMessage::DeleteProject { request_id: 3, id: "tax".into() }).unwrap(), r#"{"type":"deleteProject","requestId":3,"id":"tax"}"#);
 
-        let list = ServerMessage::ProjectList { request_id: 2, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new() }] };
+        let list = ServerMessage::ProjectList { request_id: 2, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }] };
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(json, r#"{"type":"projectList","requestId":2,"projects":[{"id":"tax","name":"Tax","description":"","instructions":""}]}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), list);
@@ -2376,6 +2389,15 @@ mod tests {
             (
                 ClientMessage::DeleteConversation { request_id: 3, conversation_id: "c1".into() },
                 r#"{"type":"deleteConversation","requestId":3,"conversationId":"c1"}"#,
+            ),
+            (
+                ClientMessage::MoveConversation { request_id: 4, conversation_id: "c1".into(), project_id: Some("tax".into()) },
+                r#"{"type":"moveConversation","requestId":4,"conversationId":"c1","projectId":"tax"}"#,
+            ),
+            // No `projectId` is "out of any project".
+            (
+                ClientMessage::MoveConversation { request_id: 5, conversation_id: "c1".into(), project_id: None },
+                r#"{"type":"moveConversation","requestId":5,"conversationId":"c1"}"#,
             ),
         ];
         for (msg, expected) in cases {

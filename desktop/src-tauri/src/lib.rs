@@ -777,6 +777,35 @@ async fn append_conversation_messages(
     Ok(conversation)
 }
 
+/// Puts conversation `id` in project `project`, or out of any with `None` (P103), and returns it as saved. The project
+/// has to exist in this vault. Split from the command so it can be tested without a window.
+fn move_conversation_in(dir: &std::path::Path, store: &warden_core::project::ProjectStore, id: &str, project: Option<&str>) -> Result<Conversation, String> {
+    // The ids are the window's own UUIDs; this keeps anything else from becoming a path.
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("invalid conversation id '{id}'"));
+    }
+    if let Some(project) = project {
+        warden_core::project::validate_id(project).map_err(|e| format!("{e:#}"))?;
+        if !store.exists(project) {
+            return Err(format!("no project '{project}'"));
+        }
+    }
+    if !warden_bootstrap::set_conversation_project(dir, id, project).map_err(|e| format!("{e:#}"))? {
+        return Err(format!("no conversation with id '{id}'"));
+    }
+    warden_bootstrap::load_conversation(dir, id).map_err(|e| format!("{e:#}"))?.ok_or_else(|| format!("no conversation with id '{id}'"))
+}
+
+/// Moves a conversation into a project, or out of any (P103): the next turn runs in the new scope, and what was already
+/// said stays in the conversation.
+#[tauri::command]
+fn move_conversation(state: State<'_, AppState>, conversation_id: String, project_id: Option<String>) -> Result<Conversation, String> {
+    let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let orchestrator = { state.orchestrator.lock().unwrap().clone() }?;
+    let store = warden_core::project::ProjectStore::new(orchestrator.vault().clone());
+    move_conversation_in(&dir, &store, &conversation_id, project_id.as_deref())
+}
+
 /// Whether the last of `messages` is the assistant's: the turn was answered, so there's something to look at.
 fn ends_with_an_answer(messages: &[ConversationMessage]) -> bool {
     messages.last().is_some_and(|m| m.role == SavedRole::Assistant)
@@ -929,6 +958,7 @@ pub fn run() {
             vault_cmds::search_vault,
             ssh_cmds::test_ssh_host,
             provider_cmds::test_provider_key,
+            move_conversation,
             projects_cmds::list_projects,
             projects_cmds::save_project,
             projects_cmds::delete_project,
@@ -1003,5 +1033,23 @@ mod tests {
         assert!(!ends_with_an_answer(&[said(SavedRole::User)]), "the person's message alone has no answer yet");
         assert!(!ends_with_an_answer(&[said(SavedRole::Assistant), said(SavedRole::User)]));
         assert!(!ends_with_an_answer(&[]));
+    }
+
+    #[test]
+    fn a_conversation_moves_into_a_project_that_exists_and_out_again_and_nothing_else_will_do() {
+        let root = std::env::temp_dir().join(format!("warden-desktop-move-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let dir = root.join("conversations");
+        let store = warden_core::project::ProjectStore::new(Arc::new(warden_core::memory::Vault::new(root.join("vault"))));
+        store.save(&warden_core::project::Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }).unwrap();
+        let options = AppendOptions { title_seed: "t", create: true, ..Default::default() };
+        append_messages(&dir, "c1", options, vec![said(SavedRole::User)]).unwrap();
+
+        assert_eq!(move_conversation_in(&dir, &store, "c1", Some("tax")).unwrap().project_id.as_deref(), Some("tax"));
+        assert_eq!(move_conversation_in(&dir, &store, "c1", None).unwrap().project_id, None);
+        for (what, id, project) in [("a project that isn't there", "c1", Some("nope")), ("a bad project id", "c1", Some("../x")), ("a conversation that isn't there", "ghost", Some("tax")), ("a bad conversation id", "../c1", None)] {
+            assert!(move_conversation_in(&dir, &store, id, project).is_err(), "{what}");
+        }
+        assert_eq!(warden_bootstrap::load_conversation(&dir, "c1").unwrap().unwrap().project_id, None, "a refused move changes nothing");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

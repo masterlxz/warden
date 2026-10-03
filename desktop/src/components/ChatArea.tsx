@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentEntry, Attachment, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import { LogoMark } from "./Icons";
 import MessageBubble from "./MessageBubble";
@@ -17,7 +17,10 @@ interface ChatAreaProps {
   projects: ProjectEntry[];
   /** The conversation's project, or the one a new conversation will start in; "" = none. */
   selectedProjectId: string;
+  /** Chooses where a conversation that hasn't started will begin. */
   onSelectProject: (projectId: string) => void;
+  /** Moves a conversation that has started into a project ("" = out of any). */
+  onMoveProject: (projectId: string) => void;
   selectedAgentId: string;
   selectedProviderId: string;
   onSelectAgent: (agentId: string) => void;
@@ -56,6 +59,7 @@ function ChatArea({
   projects,
   selectedProjectId,
   onSelectProject,
+  onMoveProject,
   selectedAgentId,
   selectedProviderId,
   onSelectAgent,
@@ -63,10 +67,15 @@ function ChatArea({
   onOpenSettings,
 }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  // A project picked for a conversation that has started waits for a yes: moving it changes what the AI can reach.
+  const [pendingMove, setPendingMove] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [activeConversation?.messages.length, isSending]);
+
+  // Another conversation, another question.
+  useEffect(() => setPendingMove(null), [activeConversation?.id]);
 
   const hasMessages = !!activeConversation && activeConversation.messages.length > 0;
   // A conversation's agent is chosen once, before its first message, then locked for good (P45)
@@ -92,14 +101,14 @@ function ChatArea({
           <select
             className="chat-header-select"
             aria-label="Project"
-            title={
-              hasMessages
-                ? "The project this conversation was started in — it can't be changed"
-                : "The AI works only on this project's files, with its instructions"
-            }
+            title="The AI works only on this project's files, with its instructions. Picking another one on a conversation that has started moves it."
             value={knownProject ? selectedProjectId : ""}
-            disabled={hasMessages}
-            onChange={(e) => onSelectProject(e.currentTarget.value)}
+            disabled={isSending}
+            onChange={(e) => {
+              const next = e.currentTarget.value;
+              if (!hasMessages) onSelectProject(next);
+              else if (next !== (knownProject ? selectedProjectId : "")) setPendingMove(next);
+            }}
           >
             <option value="">No project</option>
             {projects.map((p) => (
@@ -127,6 +136,28 @@ function ChatArea({
           ))}
         </select>
       </div>
+      {pendingMove !== null && (
+        <div className="chat-move-banner" role="alert">
+          <span>
+            {pendingMove === ""
+              ? "Take this conversation out of its project? What was said stays in it and becomes part of the context outside the project; the next messages see your whole vault again."
+              : `Move this conversation to "${projects.find((p) => p.id === pendingMove)?.name ?? pendingMove}"? The next messages only work with that project's files and instructions; what was said stays in the conversation.`}
+          </span>
+          <button
+            type="button"
+            className="settings-save-btn"
+            onClick={() => {
+              onMoveProject(pendingMove);
+              setPendingMove(null);
+            }}
+          >
+            Move
+          </button>
+          <button type="button" className="settings-browse-btn" onClick={() => setPendingMove(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
       <div className="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages">
         {needsAgentPick ? (
           <div className="agent-picker">

@@ -439,6 +439,30 @@ export default function App() {
     }
   }
 
+  /** The chat's project picker (P103). Before the conversation exists it only chooses where the first message goes;
+   * on one that exists it moves it, after saying what that does to what was already said. */
+  async function handleChooseProject(next: string) {
+    const connection = connRef.current;
+    const id = activeIdRef.current;
+    if (!conversationsRef.current.some((c) => c.id === id)) {
+      setProjectId(next);
+      return;
+    }
+    if (!connection || next === projectId) return;
+    const target = projects.find((p) => p.id === next)?.name;
+    const warning = target
+      ? `Mover esta conversa para o projeto "${target}"? As próximas mensagens passam a valer só com os arquivos e as instruções dele. O que já foi dito continua na conversa.`
+      : "Tirar esta conversa do projeto? O que já foi dito continua nela, e passa a fazer parte do contexto fora do projeto. As próximas mensagens voltam a ver o cofre inteiro.";
+    if (!window.confirm(warning)) return;
+    try {
+      await connection.moveConversation(id, next || undefined);
+      setProjectId(next);
+      await refreshConversations(connection);
+    } catch (err) {
+      setConversationsError(`Não foi possível mover: ${errorText(err)}`);
+    }
+  }
+
   async function handleRename(id: string, title: string) {
     const connection = connRef.current;
     if (!connection) return;
@@ -647,14 +671,14 @@ export default function App() {
                   </label>
                 )}
                 {(projects.length > 0 || projectId !== "") && (
-                  // Like the agent, chosen before the conversation's first message and fixed after (P103).
+                  // Chosen before the conversation's first message; after it, choosing moves the conversation (P103).
                   <label className="agent-picker">
                     <span className="agent-picker-label">Projeto</span>
                     <select
                       value={projects.some((p) => p.id === projectId) ? projectId : ""}
-                      onChange={(e) => setProjectId(e.target.value)}
-                      disabled={activeId in pendingTurns || conversations.some((c) => c.id === activeId)}
-                      title="A IA trabalha só nos arquivos do projeto, com as instruções dele. Não muda depois da primeira mensagem."
+                      onChange={(e) => void handleChooseProject(e.target.value)}
+                      disabled={activeId in pendingTurns || !phase.connected}
+                      title="A IA trabalha só nos arquivos do projeto, com as instruções dele. Numa conversa que já começou, escolher outro move a conversa."
                     >
                       <option value="">Nenhum</option>
                       {projects.map((p) => (

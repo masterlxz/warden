@@ -71,6 +71,8 @@ export interface ProjectEntry {
   description: string;
   /** What the model is told in every conversation of the project. */
   instructions: string;
+  /** A code project's working folder on the hub's machine (P103 b): gives its conversations a shell that asks first. */
+  workdir?: string;
 }
 
 /** Mirrors `warden_bootstrap::Provider`. `openaiCompatible` covers any other server that speaks

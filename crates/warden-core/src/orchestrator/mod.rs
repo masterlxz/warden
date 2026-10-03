@@ -303,6 +303,12 @@ impl Orchestrator {
         clone
     }
 
+    /// Who this orchestrator asks for a yes, if it can ask (`with_approver`) — for a tool added to a turn later (a
+    /// project's shell, P103) to be handed the same one.
+    pub fn approver(&self) -> Option<Arc<dyn crate::tool::Approver>> {
+        self.approver.clone()
+    }
+
     /// Returns a copy whose turns are held to `guard`'s spending limits (P4): checked before every
     /// model call — sub-agents' included — and booked after it, so a loop is stopped in the middle
     /// of the turn rather than after it. Same cheap-clone reasoning as `with_model`.
@@ -1116,8 +1122,9 @@ mod tests {
         root.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(crate::skill::SkillStore::new(whole.clone()))));
         root.register_tool(Arc::new(crate::tool::file_tools::ReadFileTool::new(whole.clone())));
 
-        let plain = root.handle_turn(&[], "zebras", Vec::new(), Some("Persona.")).await.unwrap().content;
-        assert!(plain.contains("review-pr") && plain.contains("diary.md"), "outside a project the whole vault is in reach: {plain}");
+        let plain = root.handle_turn(&[], "zebras january", Vec::new(), Some("Persona.")).await.unwrap().content;
+        assert!(plain.contains("review-pr") && plain.contains("diary.md"), "outside a project the rest of the vault is in reach: {plain}");
+        assert!(!plain.contains("jan.md"), "but not a project's notes, which are for its own conversations: {plain}");
 
         let project = root.with_project(folder.clone(), "BRIEFING".into());
         let told = project.handle_turn(&[], "january", Vec::new(), Some("Persona.")).await.unwrap().content;

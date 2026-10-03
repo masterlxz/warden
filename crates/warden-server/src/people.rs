@@ -200,7 +200,10 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ChangePassword { .. } | ClientMessage::Ping { .. } | ClientMessage::Goodbye { .. } | ClientMessage::Hello { .. } => return None,
         ClientMessage::Chat { conversation_id, .. } => ServerMessage::ChatError { message: text, conversation_id: conversation_id.clone(), spend_limit_id: None },
         ClientMessage::RequestHistory { request_id, .. } => ServerMessage::HistoryError { request_id: *request_id, message: text },
-        ClientMessage::ListConversations { request_id } | ClientMessage::RenameConversation { request_id, .. } | ClientMessage::DeleteConversation { request_id, .. } => {
+        ClientMessage::ListConversations { request_id }
+        | ClientMessage::RenameConversation { request_id, .. }
+        | ClientMessage::DeleteConversation { request_id, .. }
+        | ClientMessage::MoveConversation { request_id, .. } => {
             ServerMessage::ConversationError { request_id: *request_id, message: text }
         }
         ClientMessage::ListSkills { request_id } | ClientMessage::SaveSkill { request_id, .. } | ClientMessage::DeleteSkill { request_id, .. } => {

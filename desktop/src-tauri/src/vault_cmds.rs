@@ -80,6 +80,6 @@ pub fn delete_vault_note(state: State<'_, AppState>, path: String, expected_vers
 
 #[tauri::command]
 pub fn search_vault(state: State<'_, AppState>, query: String) -> Result<Vec<VaultSearchHitPayload>, VaultCmdError> {
-    let hits = vault(&state)?.search(&query, MAX_SEARCH_HITS)?;
+    let hits = vault(&state)?.search_everywhere(&query, MAX_SEARCH_HITS)?;
     Ok(hits.into_iter().map(|h| VaultSearchHitPayload { path: h.path, line_number: h.line_number, line: h.line }).collect())
 }

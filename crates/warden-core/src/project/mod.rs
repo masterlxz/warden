@@ -24,8 +24,8 @@ use anyhow::{anyhow, bail, Context};
 
 use crate::memory::Vault;
 
-/// Vault-root folder holding the projects, one subfolder each.
-pub const PROJECTS_DIR: &str = "projects";
+/// Vault-root folder holding the projects, one subfolder each (defined with the vault, which hides it from the model's memory).
+pub use crate::memory::PROJECTS_DIR;
 /// The file in a project's folder that makes it a project.
 pub const PROJECT_FILE: &str = "PROJECT.md";
 
@@ -42,6 +42,31 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub instructions: String,
+    /// A code project's working folder (P103 b): a path on the machine the hub runs on — the repository the project is about.
+    /// Only a project with one gets a `shell` in its conversations, which starts there and asks the person before every
+    /// command. Not the project's folder in the vault (that is where its notes live).
+    pub workdir: Option<String>,
+}
+
+pub const MAX_WORKDIR_LEN: usize = 512;
+
+/// A working folder is a path someone typed: absolute (so it names one place whatever the hub's own folder is), with no
+/// `..` and nothing a one-line frontmatter value couldn't hold. Whether it exists is for the machine that has it to say.
+pub fn validate_workdir(workdir: &str) -> anyhow::Result<()> {
+    if workdir.trim().is_empty() || workdir.len() > MAX_WORKDIR_LEN {
+        bail!("the working folder must be 1-{MAX_WORKDIR_LEN} characters");
+    }
+    if workdir != workdir.trim() || workdir.chars().any(char::is_control) {
+        bail!("the working folder has spaces around it or a control character");
+    }
+    let path = std::path::Path::new(workdir);
+    if !path.is_absolute() {
+        bail!("the working folder must be an absolute path (it starts with / or a drive letter)");
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        bail!("the working folder can't contain '..'");
+    }
+    Ok(())
 }
 
 /// A project id doubles as a folder name: 1-64 ASCII letters, digits, `-` or `_`, which rules out separators, `..`
@@ -70,11 +95,15 @@ impl Project {
         if self.instructions.len() > MAX_INSTRUCTIONS_BYTES {
             bail!("project instructions are {} bytes, the limit is {MAX_INSTRUCTIONS_BYTES}", self.instructions.len());
         }
+        if let Some(workdir) = &self.workdir {
+            validate_workdir(workdir)?;
+        }
         Ok(())
     }
 
     pub fn render(&self) -> String {
-        format!("---\nname: {}\ndescription: {}\n---\n{}\n", one_line(&self.name), one_line(&self.description), self.instructions.trim())
+        let workdir = self.workdir.as_ref().map(|dir| format!("workdir: {dir}\n")).unwrap_or_default();
+        format!("---\nname: {}\ndescription: {}\n{workdir}---\n{}\n", one_line(&self.name), one_line(&self.description), self.instructions.trim())
     }
 
     /// Parses `PROJECT.md`. `id` comes from the folder name (the source of truth); the frontmatter is optional, so a
@@ -82,6 +111,7 @@ impl Project {
     pub fn parse(id: &str, raw: &str) -> Project {
         let raw = raw.replace("\r\n", "\n");
         let (mut name, mut description) = (String::new(), String::new());
+        let mut workdir = None;
         let mut body = raw.as_str();
         if let Some(rest) = raw.strip_prefix("---\n") {
             if let Some(end) = rest.find("\n---") {
@@ -91,6 +121,8 @@ impl Project {
                         match key.trim() {
                             "name" => name = value.trim().to_string(),
                             "description" => description = value.trim().to_string(),
+                            // A hand-edited file with a folder that wouldn't pass `validate` has no working folder: no shell.
+                            "workdir" if validate_workdir(value.trim()).is_ok() => workdir = Some(value.trim().to_string()),
                             _ => {}
                         }
                     }
@@ -101,12 +133,14 @@ impl Project {
         if name.is_empty() {
             name = id.to_string();
         }
-        Project { id: id.to_string(), name, description, instructions: body.trim().to_string() }
+        Project { id: id.to_string(), name, description, instructions: body.trim().to_string(), workdir }
     }
 
     /// What the model is told at the start of every turn of a conversation in this project: the instructions, and
-    /// what the file tools reach now. `files` are the project's files as the scoped vault names them.
-    pub fn briefing(&self, files: &[String]) -> String {
+    /// what the file tools reach now. `files` are the project's files as the scoped vault names them. `shell`: this
+    /// turn has the project's shell (a working folder, and a shell on this machine), which the briefing then describes —
+    /// including that it isn't confined to the folder and that every command is put to the person first.
+    pub fn briefing(&self, files: &[String], shell: bool) -> String {
         let mut text = format!("You are working in the project \"{}\".", self.name);
         if !self.description.trim().is_empty() {
             text.push_str(&format!(" {}", one_line(&self.description)));
@@ -114,6 +148,14 @@ impl Project {
         text.push_str(
             "\nYour files and the shell reach only this project's folder; paths are relative to it. Keep what you create for this project there.",
         );
+        if let (true, Some(workdir)) = (shell, &self.workdir) {
+            text.push_str(&format!(
+                "\n\nThis is a code project. Its working folder is {workdir}, and the `shell` tool starts there. The shell is not confined to \
+                 that folder, and every command is shown to the person for approval before it runs, so keep commands few, plain and \
+                 explained. Your file tools reach only the project's notes above, not that folder: read and change the repository's files \
+                 through the shell."
+            ));
+        }
         if !self.instructions.trim().is_empty() {
             text.push_str(&format!("\n\nProject instructions:\n{}", self.instructions.trim()));
         }
@@ -208,7 +250,19 @@ mod tests {
     }
 
     fn sample(id: &str) -> Project {
-        Project { id: id.into(), name: "Tax return".into(), description: "This year's return".into(), instructions: "Answer in Portuguese.\nCite the file.".into() }
+        Project { id: id.into(), name: "Tax return".into(), description: "This year's return".into(), instructions: "Answer in Portuguese.\nCite the file.".into(), workdir: None }
+    }
+
+    #[test]
+    fn a_working_folder_round_trips_and_a_bad_one_is_refused_or_dropped() {
+        let store = store("workdir");
+        let code = Project { workdir: Some("/home/me/repo".into()), ..sample("code") };
+        store.save(&code).unwrap();
+        assert_eq!(store.get("code").unwrap(), code);
+        for bad in ["relative/dir", "/a/../b", "", " /a", "/a\nb"] {
+            assert!(Project { workdir: Some(bad.into()), ..sample("x") }.validate().is_err(), "{bad:?}");
+        }
+        assert_eq!(Project::parse("p", "---\nname: P\nworkdir: relative\n---\nbody").workdir, None, "a hand-edited bad folder means no shell");
     }
 
     #[test]
@@ -317,12 +371,15 @@ mod tests {
     #[test]
     fn the_briefing_tells_the_instructions_and_the_files_without_the_project_file() {
         let project = sample("tax");
-        let text = project.briefing(&["PROJECT.md".into(), "jan.md".into(), "receipts/feb.md".into()]);
+        let text = project.briefing(&["PROJECT.md".into(), "jan.md".into(), "receipts/feb.md".into()], false);
         assert!(text.contains("\"Tax return\"") && text.contains("Answer in Portuguese.") && text.contains("- jan.md") && text.contains("- receipts/feb.md"), "{text}");
         assert!(!text.contains("PROJECT.md"), "the file that defines the project isn't one of its files: {text}");
         let many: Vec<String> = (0..60).map(|n| format!("f{n}.md")).collect();
-        assert!(project.briefing(&many).contains("… and 10 more"));
+        assert!(project.briefing(&many, false).contains("… and 10 more"));
         let bare = Project { instructions: String::new(), description: String::new(), ..sample("tax") };
-        assert!(!bare.briefing(&[]).contains("Project instructions") && !bare.briefing(&[]).contains("Files in the project"));
+        assert!(!bare.briefing(&[], false).contains("Project instructions") && !bare.briefing(&[], false).contains("Files in the project"));
+        let code = Project { workdir: Some("/home/me/repo".into()), ..sample("code") };
+        assert!(code.briefing(&[], true).contains("/home/me/repo"));
+        assert!(!code.briefing(&[], false).contains("/home/me/repo"), "no shell this turn, so no working folder in the briefing");
     }
 }

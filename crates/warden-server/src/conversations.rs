@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use warden_bootstrap::tasks::CONVERSATION_PREFIX as TASK_PREFIX;
 use warden_bootstrap::{
-    delete_conversation, list_conversations, load_conversation, rename_conversation, ChatRole, Conversation,
+    delete_conversation, list_conversations, load_conversation, rename_conversation, set_conversation_project, ChatRole, Conversation,
     ConversationMessage,
 };
 use warden_server_protocol::protocol::{ConversationSummary, HistoryMessage, HistoryRole};
@@ -114,6 +114,28 @@ pub fn handle_conversation_request(dirs: &ConversationDirs, message: ClientMessa
         Ok(()) => ServerMessage::ConversationOk { request_id },
         Err(message) => ServerMessage::ConversationError { request_id, message },
     })
+}
+
+/// Answers a `MoveConversation` (P103). `project_exists` says whether a project of that id is in the vault of the
+/// person asking — the caller holds that vault, this module only knows conversation files. A scheduled task's
+/// conversation belongs to the hub, not to a person's projects, so it isn't moved.
+pub fn handle_move_conversation(dirs: &ConversationDirs, request_id: u64, conversation_id: String, project_id: Option<String>, project_exists: impl Fn(&str) -> bool) -> ServerMessage {
+    let result = existing(conversation_id).and_then(|id| {
+        if id.starts_with(TASK_PREFIX) {
+            return Err("a scheduled task's conversation can't be moved into a project".to_string());
+        }
+        if let Some(project) = project_id.as_deref() {
+            warden_core::project::validate_id(project).map_err(|e| format!("{e:#}"))?;
+            if !project_exists(project) {
+                return Err(format!("no project '{project}'"));
+            }
+        }
+        found(set_conversation_project(dirs.dir_for(&id), &id, project_id.as_deref()), &id)
+    });
+    match result {
+        Ok(()) => ServerMessage::ConversationOk { request_id },
+        Err(message) => ServerMessage::ConversationError { request_id, message },
+    }
 }
 
 /// Rename/delete always name an existing conversation — no default applies.

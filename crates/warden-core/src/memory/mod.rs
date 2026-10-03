@@ -44,6 +44,11 @@ pub struct Vault {
     /// A member's vault whose key the hub doesn't hold (it restarted since they last signed in):
     /// everything is refused, so nothing readable is ever written next to the encrypted files.
     locked: bool,
+    /// Whether the markdown walks (`list_files`, `search`, `search_semantic`) leave out the root `projects/` folder
+    /// (P103): what a project holds is for the conversations in it, not for the memory the others draw on. `true` for
+    /// an ordinary vault; `false` for the vault of a project's folder (`subvault`), where a `projects/` of the
+    /// person's own making is just a folder. `search_everywhere` and `list_all_files` ignore it.
+    hide_projects: bool,
 }
 
 /// What a locked vault (or conversation folder) answers.
@@ -74,6 +79,11 @@ pub struct SearchHit {
 /// `list_all_files`, so sync carries skills across devices without any change to `warden-sync`.
 pub const SKILLS_DIR: &str = "skills";
 
+/// Vault-root directory holding the projects (P103), one subfolder each — see `crate::project`. Like `skills/`, kept out
+/// of the markdown walks that feed the model's memory (`list_files`, `search`, `search_semantic`), but still returned by
+/// `list_all_files` (sync carries it) and by `search_everywhere` (the Vault screen finds a project's notes).
+pub const PROJECTS_DIR: &str = "projects";
+
 impl Vault {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self::build(root.into(), None)
@@ -95,6 +105,7 @@ impl Vault {
         Self {
             cipher,
             locked: false,
+            hide_projects: true,
             root,
             #[cfg(feature = "semantic-search")]
             embedder: Mutex::new(None),
@@ -279,7 +290,7 @@ impl Vault {
     /// Mounts are not carried over: the new vault has none, so `compartilhado/` is an ordinary name in it.
     pub fn subvault(&self, relative_dir: &str) -> anyhow::Result<Vault> {
         let root = self.path_of(relative_dir)?;
-        Ok(Self::build(root, self.cipher.clone()))
+        Ok(Self { hide_projects: false, ..Self::build(root, self.cipher.clone()) })
     }
 
     /// Removes a folder of this vault with everything in it. A folder that isn't there counts as done.
@@ -300,7 +311,7 @@ impl Vault {
     /// All markdown files in the vault, relative to its root — the mounted ones too, under
     /// `MOUNTS_DIR/<prefix>/`.
     pub fn list_files(&self) -> anyhow::Result<Vec<PathBuf>> {
-        let mut files = self.own_markdown_files()?;
+        let mut files = self.own_markdown_files(false)?;
         for mount in self.current_mounts().unwrap_or_default() {
             let prefix = Path::new(MOUNTS_DIR).join(&mount.prefix);
             files.extend(mount.vault.list_files()?.into_iter().map(|f| prefix.join(f)));
@@ -309,10 +320,10 @@ impl Vault {
     }
 
     /// This vault's own markdown files — with mounts, a real `MOUNTS_DIR` folder here is left out
-    /// (it's the mounts' place).
-    fn own_markdown_files(&self) -> anyhow::Result<Vec<PathBuf>> {
+    /// (it's the mounts' place). `include_projects` brings the root `projects/` folder in even when this vault hides it.
+    fn own_markdown_files(&self, include_projects: bool) -> anyhow::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
-        self.collect_files(&self.root, Path::new(""), true, &mut files)?;
+        self.collect_files(&self.root, Path::new(""), true, self.hide_projects && !include_projects, &mut files)?;
         if self.current_mounts().is_some() {
             files.retain(|f| !f.starts_with(MOUNTS_DIR));
         }
@@ -325,17 +336,17 @@ impl Vault {
     /// `.DS_Store`, `.git`) — same "good enough for v1" posture as `search`'s naive grep.
     pub fn list_all_files(&self) -> anyhow::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
-        self.collect_files(&self.root, Path::new(""), false, &mut files)?;
+        self.collect_files(&self.root, Path::new(""), false, false, &mut files)?;
         Ok(files)
     }
 
     /// Walks `dir` (on disk; `readable_dir` is the same folder as this vault names it) and pushes
     /// the files under it by their readable path. `markdown_only` is `list_files`' walk: `.md`
-    /// files, without `skills/`. Otherwise it's `list_all_files`': everything
-    /// but dotfiles. Symlinks are never followed: one pointing out of the vault would put outside
+    /// files, without `skills/` (nor the root `projects/`, with `skip_projects`). Otherwise it's `list_all_files`':
+    /// everything but dotfiles. Symlinks are never followed: one pointing out of the vault would put outside
     /// files in search results and sync, and one pointing at an ancestor would recurse until the
     /// OS path limit.
-    fn collect_files(&self, dir: &Path, readable_dir: &Path, markdown_only: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    fn collect_files(&self, dir: &Path, readable_dir: &Path, markdown_only: bool, skip_projects: bool, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         anyhow::ensure!(!self.locked, LOCKED_MESSAGE);
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -346,10 +357,10 @@ impl Vault {
             }
             let path = entry.path();
             if path.is_dir() {
-                if markdown_only && readable == Path::new(SKILLS_DIR) {
+                if markdown_only && (readable == Path::new(SKILLS_DIR) || (skip_projects && readable == Path::new(PROJECTS_DIR))) {
                     continue;
                 }
-                self.collect_files(&path, &readable, markdown_only, out)?;
+                self.collect_files(&path, &readable, markdown_only, skip_projects, out)?;
             } else if !markdown_only || (readable.extension().and_then(|e| e.to_str()) == Some("md")) {
                 out.push(readable);
             }
@@ -361,6 +372,16 @@ impl Vault {
     /// across every markdown file. Good enough for v1 memory retrieval — semantic
     /// search is Phase 4 territory (see ARCHITECTURE.md, PENDING.md P5/P6).
     pub fn search(&self, query: &str, max_hits: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.search_in(query, max_hits, false)
+    }
+
+    /// `search` for a person looking through their notes (the Vault screen) rather than the model drawing on its
+    /// memory: it also looks in the projects' folders (P103), which `search` leaves out.
+    pub fn search_everywhere(&self, query: &str, max_hits: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.search_in(query, max_hits, true)
+    }
+
+    fn search_in(&self, query: &str, max_hits: usize, include_projects: bool) -> anyhow::Result<Vec<SearchHit>> {
         let words: Vec<String> = query
             .split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
@@ -372,7 +393,7 @@ impl Vault {
         }
 
         let mut hits = Vec::new();
-        for relative in self.own_markdown_files()? {
+        for relative in self.own_markdown_files(include_projects)? {
             if hits.len() >= max_hits {
                 break;
             }
@@ -396,7 +417,7 @@ impl Vault {
                 break;
             }
             let prefix = format!("{MOUNTS_DIR}/{}/", mount.prefix);
-            hits.extend(mount.vault.search(query, max_hits - hits.len())?.into_iter().map(|h| SearchHit { path: format!("{prefix}{}", h.path), ..h }));
+            hits.extend(mount.vault.search_in(query, max_hits - hits.len(), include_projects)?.into_iter().map(|h| SearchHit { path: format!("{prefix}{}", h.path), ..h }));
         }
         Ok(hits)
     }
@@ -450,7 +471,7 @@ impl Vault {
         let index = semantic::SemanticIndex::from_bytes(self.read_file(&index_path).ok().as_deref());
 
         let mut wanted: Vec<(String, usize, String, String)> = Vec::new();
-        for relative in self.own_markdown_files()? {
+        for relative in self.own_markdown_files(false)? {
             let path = relative.to_string_lossy().to_string();
             let content = self.read_own_text(&relative)?;
             for (start_line, text) in semantic::chunk_file(&content, semantic::CHUNK_WINDOW_LINES) {
@@ -691,6 +712,48 @@ mod tests {
         files.sort();
 
         assert_eq!(files, vec!["a.md".to_string(), "nested/notes.txt".to_string()]);
+    }
+
+    /// P103: what a project holds is for the conversations in it. The memory the model draws on (`search`,
+    /// `list_files`) leaves the root `projects/` out, like `skills/`; the Vault screen (`search_everywhere`) and sync
+    /// (`list_all_files`) still see it.
+    #[test]
+    fn the_models_memory_leaves_out_projects_but_the_vault_screen_and_sync_do_not() {
+        let vault = temp_vault();
+        vault.write("diary.md", "the dentist on friday").unwrap();
+        vault.write("projects/tax/jan.md", "the dentist receipts").unwrap();
+        vault.write("notes/projects/x.md", "the dentist, in a folder that only happens to be called projects").unwrap();
+
+        let listed: Vec<String> = vault.list_files().unwrap().iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert!(listed.contains(&"diary.md".to_string()) && listed.contains(&"notes/projects/x.md".to_string()), "{listed:?}");
+        assert!(!listed.iter().any(|f| f.starts_with("projects/")), "{listed:?}");
+        let found = |hits: Vec<SearchHit>| hits.into_iter().map(|h| h.path).collect::<Vec<_>>();
+        let memory = found(vault.search("dentist", 10).unwrap());
+        assert!(memory.contains(&"diary.md".to_string()) && memory.contains(&"notes/projects/x.md".to_string()), "{memory:?}");
+        assert!(!memory.iter().any(|p| p.starts_with("projects/")), "the model's memory doesn't draw on a project: {memory:?}");
+        assert!(found(vault.search_everywhere("dentist", 10).unwrap()).contains(&"projects/tax/jan.md".to_string()), "the Vault screen finds a project's notes");
+        assert!(vault.list_all_files().unwrap().iter().any(|p| p.starts_with("projects")), "sync still carries them");
+    }
+
+    /// The vault of a project's folder hides nothing: a `projects/` the person made inside a project is an ordinary folder.
+    #[test]
+    fn a_projects_own_vault_does_not_hide_a_folder_called_projects() {
+        let vault = temp_vault();
+        vault.write("projects/tax/projects/old.md", "the dentist, an old copy").unwrap();
+        vault.write("projects/tax/jan.md", "the dentist receipts").unwrap();
+        let inside = vault.subvault("projects/tax").unwrap();
+        let hits: Vec<String> = inside.search("dentist", 10).unwrap().into_iter().map(|h| h.path).collect();
+        assert!(hits.contains(&"projects/old.md".to_string()) && hits.contains(&"jan.md".to_string()), "{hits:?}");
+    }
+
+    #[test]
+    fn an_encrypted_vault_hides_its_projects_from_the_models_memory_too() {
+        let (vault, _dir) = encrypted_vault();
+        vault.write("projects/tax/jan.md", "the dentist receipts").unwrap();
+        vault.write("diary.md", "the dentist on friday").unwrap();
+        let paths = |hits: Vec<SearchHit>| hits.into_iter().map(|h| h.path).collect::<Vec<_>>();
+        assert_eq!(paths(vault.search("dentist", 10).unwrap()), ["diary.md"]);
+        assert!(paths(vault.search_everywhere("dentist", 10).unwrap()).contains(&"projects/tax/jan.md".to_string()));
     }
 
     #[test]

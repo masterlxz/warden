@@ -33,6 +33,8 @@ export interface ProjectDto {
   name: string;
   description: string;
   instructions: string;
+  /** A code project's working folder on the hub's machine (P103 b): gives its conversations a shell that asks first. */
+  workdir?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::SkillDto` (P72). `agents` is the agent restriction
@@ -596,6 +598,8 @@ export type ClientMessage =
   | { type: "saveSkill"; requestId: number; skill: SkillDto; overwrite: boolean }
   | { type: "deleteSkill"; requestId: number; name: string }
   /** Projects (P103) — of the person's own vault; `requestId` is echoed on the matching reply. */
+  /** P103 — moves a conversation into a project, or out of any with no `projectId`; answered by `conversationOk`/`conversationError`. */
+  | { type: "moveConversation"; requestId: number; conversationId: string; projectId?: string }
   | { type: "listProjects"; requestId: number }
   | { type: "saveProject"; requestId: number; project: ProjectDto; overwrite: boolean }
   | { type: "deleteProject"; requestId: number; id: string }

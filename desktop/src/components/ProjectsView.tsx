@@ -236,6 +236,17 @@ function ProjectsView({ onChanged }: { onChanged: () => void }) {
           </label>
 
           <label className="settings-field">
+            <span className="settings-label">Working folder (optional)</span>
+            <input
+              className="settings-input"
+              placeholder="/home/you/code/my-repo"
+              value={editor.project.workdir ?? ""}
+              onChange={(e) => updateEditor({ workdir: e.currentTarget.value })}
+            />
+            <span className="settings-hint">An absolute path on this machine. With it, the project's conversations get a shell that starts there and asks you before every command.</span>
+          </label>
+
+          <label className="settings-field">
             <span className="settings-label">Instructions</span>
             <textarea
               className="settings-input settings-textarea"

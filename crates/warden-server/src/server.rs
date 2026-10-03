@@ -1451,6 +1451,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let _ = reply_tx.send(handle_sync_action(&access, request_id, &pairing_key, action).await);
                     });
                 }
+                Ok(ClientMessage::MoveConversation { request_id, conversation_id, project_id }) => {
+                    // P103 — the project has to be one of this person's own, so it is looked up in their vault.
+                    let store = ProjectStore::new(person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults));
+                    let _ = tx.send(crate::conversations::handle_move_conversation(&conversation_dirs, request_id, conversation_id, project_id, |id| store.exists(id)));
+                }
                 Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
                     // P78 — small file I/O, answered inline like `RequestHistory`.
                     if let Some(reply) = handle_conversation_request(&conversation_dirs, message) {

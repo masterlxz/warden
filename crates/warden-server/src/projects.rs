@@ -24,7 +24,7 @@ pub fn handle_project_request(store: &ProjectStore, message: ClientMessage) -> O
 }
 
 fn save(store: &ProjectStore, dto: ProjectDto, overwrite: bool) -> Result<(), String> {
-    let project = Project { id: dto.id.trim().to_string(), name: dto.name.trim().to_string(), description: dto.description, instructions: dto.instructions };
+    let project = Project { id: dto.id.trim().to_string(), name: dto.name.trim().to_string(), description: dto.description, instructions: dto.instructions, workdir: dto.workdir.map(|dir| dir.trim().to_string()).filter(|dir| !dir.is_empty()) };
     project.validate().map_err(|e| format!("{e:#}"))?;
     if !overwrite && store.exists(&project.id) {
         return Err(format!("a project '{}' already exists", project.id));
@@ -46,7 +46,7 @@ mod tests {
     }
 
     fn dto(id: &str) -> ProjectDto {
-        ProjectDto { id: id.into(), name: "Tax".into(), description: "d".into(), instructions: "i".into() }
+        ProjectDto { id: id.into(), name: "Tax".into(), description: "d".into(), instructions: "i".into(), workdir: None }
     }
 
     fn save_req(project: ProjectDto, overwrite: bool) -> ClientMessage {

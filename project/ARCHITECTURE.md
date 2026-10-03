@@ -3099,6 +3099,15 @@ Um projeto agrupa conversas de um assunto, com instruções e arquivos próprios
 - **Limites conhecidos**: a busca do cofre das conversas **fora** de projeto acha os arquivos de projeto (são notas comuns; `skills/` é excluída da busca, `projects/` não); o sync não leva conversas, então em outro
   aparelho o projeto aparece com os arquivos e sem as conversas; um binário de antes de projetos que regrave o arquivo de uma conversa perde o `project_id`; o celular, a extensão e o CLI não conhecem projetos ainda.
 
+### Mover conversa e projeto de código (P103, Sessão 126)
+
+- **Mover**: `MoveConversation` (resposta `ConversationOk`/`ConversationError`) é o **único** jeito de mudar o `project_id` depois da criação (`set_conversation_project`); o projeto precisa existir no cofre da pessoa e
+  a conversa de uma tarefa agendada não se move. O que já foi dito fica; o próximo turno roda no novo escopo. Desktop e web pedem confirmação antes.
+- **Busca das conversas soltas**: `PROJECTS_DIR` mora no `Vault` e `projects/` fica fora da memória fora de projeto (resolve o limite da Sessão 125).
+- **Projeto de código**: `Project.workdir` (frontmatter `workdir:`, absoluto, sem `..`; um valor inválido em arquivo editado à mão vira "sem pasta"). Só um projeto com pasta recebe `shell`, e é o `ShellTool::in_folder`:
+  começa na pasta (que não é criada; se não existe, erro), **pede aprovação a cada comando** (120 s sem resposta = recusa; canal que não pergunta = recusa) e **não é sandbox** (`cd ..` funciona), então a aprovação é a
+  proteção, e o briefing diz isso ao modelo. As tools de arquivo continuam presas às notas do projeto. Se a máquina ou o membro não tem `shell`, o projeto também não ganha.
+
 ## Dólares por provedor, agente e pessoa, por dia, e "Testar chave" (P10, Sessão 124)
 
 O P10 pedia UI de consumo, custo por provedor/modelo e gestão de chaves. Boa parte já existia desde o P4; o que faltava:

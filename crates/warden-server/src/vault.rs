@@ -29,7 +29,7 @@ pub fn handle_vault_request(vault: &Vault, message: ClientMessage) -> Option<Ser
         }
         ClientMessage::SearchVault { request_id, query } => (
             request_id,
-            vault.search(&query, MAX_SEARCH_HITS).map(|hits| ServerMessage::VaultSearchResults {
+            vault.search_everywhere(&query, MAX_SEARCH_HITS).map(|hits| ServerMessage::VaultSearchResults {
                 request_id,
                 hits: hits.into_iter().map(|h| VaultSearchHit { path: h.path, line_number: h.line_number, line: h.line }).collect(),
             }),

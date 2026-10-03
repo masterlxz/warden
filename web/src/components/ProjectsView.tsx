@@ -216,6 +216,15 @@ export default function ProjectsView({ conn, onChanged }: { conn: ServerConnecti
           <input value={editor.project.description} onChange={(e) => updateEditor({ description: e.target.value })} placeholder="Uma frase: do que trata o projeto" />
         </label>
         <label>
+          Pasta de trabalho (opcional)
+          <input
+            value={editor.project.workdir ?? ""}
+            onChange={(e) => updateEditor({ workdir: e.target.value })}
+            placeholder="/home/voce/codigo/meu-repo"
+          />
+          <span className="skills-hint">Caminho absoluto na máquina do hub. Com ela, as conversas do projeto ganham um terminal que começa ali e pede a sua aprovação a cada comando.</span>
+        </label>
+        <label>
           Instruções
           <textarea
             value={editor.project.instructions}

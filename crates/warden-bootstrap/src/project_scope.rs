@@ -48,7 +48,21 @@ pub fn scope_to_project(orchestrator: &Orchestrator, project_id: &str) -> anyhow
     let mut files: Vec<String> = vault.list_all_files()?.into_iter().map(|p| p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")).collect();
     files.sort();
     let allowed: Vec<String> = orchestrator.tools().iter().map(|tool| tool.spec().name).filter(|name| !WITHHELD_IN_A_PROJECT.contains(&name.as_str())).collect();
-    Ok(Some(orchestrator.with_allowed_tools(Some(&allowed)).with_project(vault, project.briefing(&files))))
+    // A code project (P103 b) gets its own shell back — in its working folder, asking before every command — but only
+    // where there is a shell to give: this machine has it on, and the person it speaks for is allowed it (a member's
+    // orchestrator has already lost it).
+    let shell = project.workdir.as_ref().filter(|_| orchestrator.tools().iter().any(|tool| tool.spec().name == "shell"));
+    let briefing = project.briefing(&files, shell.is_some());
+    let mut scoped = orchestrator.with_allowed_tools(Some(&allowed)).with_project(vault, briefing);
+    if let Some(folder) = shell {
+        let tool = warden_core::tool::shell::ShellTool::in_folder(project.name.clone(), std::path::PathBuf::from(folder));
+        let tool: Arc<dyn warden_core::tool::Tool> = match orchestrator.approver().and_then(|approver| warden_core::tool::Tool::with_approver(&tool, approver)) {
+            Some(asking) => asking,
+            None => Arc::new(tool),
+        };
+        scoped = scoped.with_tool(tool);
+    }
+    Ok(Some(scoped))
 }
 
 #[cfg(test)]
@@ -103,7 +117,7 @@ mod tests {
     #[test]
     fn a_project_turn_loses_the_tools_a_folder_cannot_hold_and_keeps_the_rest() {
         let (base, vault) = orchestrator("tools");
-        ProjectStore::new(vault.clone()).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: "Be brief.".into() }).unwrap();
+        ProjectStore::new(vault.clone()).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: "Be brief.".into(), workdir: None }).unwrap();
         vault.write("projects/tax/jan.md", "x").unwrap();
 
         let scoped = scope_to_project(&base, "tax").unwrap().expect("the project exists");
@@ -130,7 +144,7 @@ mod tests {
     #[test]
     fn the_scoped_vault_is_kept_so_a_projects_search_model_loads_once() {
         let (base, vault) = orchestrator("cache");
-        ProjectStore::new(vault).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new() }).unwrap();
+        ProjectStore::new(vault).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }).unwrap();
         let first = scope_to_project(&base, "tax").unwrap().unwrap();
         let second = scope_to_project(&base, "tax").unwrap().unwrap();
         assert!(Arc::ptr_eq(first.vault(), second.vault()));

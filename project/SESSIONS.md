@@ -2,7 +2,22 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 125)
+> Última atualização: 2026-10-03 (Sessão 126)
+
+---
+
+### 2026-10-03 — Sessão 126
+
+- **Objetivo**: terminar o que a Sessão 125 deixou aberto no P103: mover conversa entre projetos, esconder `projects/` da busca das conversas soltas e o projeto de código (b) com pasta de trabalho. A sessão anterior acabou
+  no meio (os tokens acabaram), com o código principal escrito e os testes sem compilar; esta retomou e fechou.
+- **Feito**: `ClientMessage::MoveConversation` (hub: `handle_move_conversation`, desktop: `move_conversation`, web: `moveConversation` e o seletor do chat que move com confirmação); `PROJECTS_DIR` passou para o `Vault` e
+  some do contexto das conversas soltas; `Project.workdir` (frontmatter `workdir:`, caminho absoluto sem `..`), `ShellTool::in_folder` (começa na pasta e **pede aprovação a cada comando**, 120 s sem resposta = não;
+  sem aprovador recusa), `Orchestrator::approver()`, o briefing que descreve o shell, e `scope_to_project` devolvendo o shell só se a máquina tem `shell` ligado. `workdir` no `ProjectDto`/`ProjectPayload` e o campo nas
+  telas de projeto da web e do desktop.
+- **Verificado**: `cargo check --workspace --all-targets` e `tsc` (web e desktop) limpos; testes passando em core (299), protocolo (39), bootstrap/server (334 e 115 contando as lib) e `tests/people` (30).
+  Corrigi os testes que não compilavam (inicializadores sem `workdir`, `briefing` com o novo argumento) e adicionei um para a pasta de trabalho.
+- **Não verificado**: o e2e da web (`projects.test.mjs`, alterado e **não rodado**), o desktop, resposta de modelo real, o shell de projeto com um aprovador de verdade na tela, e a pasta de trabalho num membro.
+- **Próximo passo**: a rodada de testes em tela, agora com o seletor que move conversas e o shell de projeto.
 
 ---
 

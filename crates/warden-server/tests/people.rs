@@ -1710,7 +1710,7 @@ async fn a_bot_chat_that_speaks_as_a_member_is_answered_by_the_hub_with_her_data
 }
 
 fn project(id: &str, name: &str) -> warden_server_protocol::protocol::ProjectDto {
-    warden_server_protocol::protocol::ProjectDto { id: id.into(), name: name.into(), description: String::new(), instructions: format!("Instructions of {name}.") }
+    warden_server_protocol::protocol::ProjectDto { id: id.into(), name: name.into(), description: String::new(), instructions: format!("Instructions of {name}."), workdir: None }
 }
 
 async fn save_project(conn: &mut ServerConnection, id: &str, name: &str) -> ServerMessage {
@@ -1804,4 +1804,86 @@ async fn projects_belong_to_each_person_and_a_project_conversation_is_held_to_it
     assert!(hub.dir.join("vault/projects/tax/report.md").exists(), "the files stay as ordinary notes");
     chat_in(&mut owner, "hello", "in-tax", None).await;
     assert!(last_offered(&hub).contains(&"shell".to_string()), "the conversation is an ordinary one again");
+}
+
+async fn move_to(conn: &mut ServerConnection, conversation: &str, project: Option<&str>) -> ServerMessage {
+    conn.send(&ClientMessage::MoveConversation { request_id: 40, conversation_id: conversation.into(), project_id: project.map(String::from) }).await.unwrap();
+    reply(conn).await
+}
+
+async fn history_len(conn: &mut ServerConnection, conversation: &str) -> usize {
+    conn.send(&ClientMessage::RequestHistory { request_id: 42, limit: None, conversation_id: Some(conversation.into()) }).await.unwrap();
+    match reply(conn).await {
+        ServerMessage::History { messages, .. } => messages.len(),
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn project_of(conn: &mut ServerConnection, conversation: &str) -> Option<String> {
+    conn.send(&ClientMessage::ListConversations { request_id: 41 }).await.unwrap();
+    match reply(conn).await {
+        ServerMessage::ConversationList { conversations, .. } => conversations.into_iter().find(|c| c.id == conversation).unwrap_or_else(|| panic!("no {conversation}")).project_id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// P103: a conversation moves into a project, between projects and out of one; the next turn runs in the new scope, what
+/// was already said stays, and only a project of the person's own, on a conversation that isn't a task's, will do.
+#[tokio::test]
+async fn a_conversation_moves_between_projects_and_the_next_turn_runs_in_the_new_scope() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+
+    // On a provisional password nothing moves, like everything else.
+    match move_to(&mut ana, "x", Some("garden")).await {
+        ServerMessage::ConversationError { message, .. } => assert!(message.contains("your own password"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    ana.send(&ClientMessage::ChangePassword { request_id: 2, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+
+    assert!(matches!(save_project(&mut owner, "tax", "Tax").await, ServerMessage::ProjectOk { .. }));
+    assert!(matches!(save_project(&mut owner, "garden", "Garden").await, ServerMessage::ProjectOk { .. }));
+    assert!(matches!(chat_in(&mut owner, "hi", "c1", None).await, ServerMessage::ChatResponse { .. }));
+    assert!(last_offered(&hub).contains(&"shell".to_string()), "an ordinary conversation has the shell");
+
+    // Into a project: the list says so, and the next turn — which names none — is held to it.
+    assert!(matches!(move_to(&mut owner, "c1", Some("tax")).await, ServerMessage::ConversationOk { request_id: 40 }));
+    assert_eq!(project_of(&mut owner, "c1").await.as_deref(), Some("tax"));
+    assert!(matches!(chat_in(&mut owner, "WRITE after.md", "c1", None).await, ServerMessage::ChatResponse { .. }));
+    assert!(hub.dir.join("vault/projects/tax/after.md").exists(), "what the agent writes now lands in the project");
+    assert!(!last_offered(&hub).contains(&"shell".to_string()));
+    assert_eq!(history_len(&mut owner, "c1").await, 4, "what was said before the move is still there");
+
+    // Between projects, and back out.
+    assert!(matches!(move_to(&mut owner, "c1", Some("garden")).await, ServerMessage::ConversationOk { .. }));
+    chat_in(&mut owner, "WRITE g.md", "c1", None).await;
+    assert!(hub.dir.join("vault/projects/garden/g.md").exists() && !hub.dir.join("vault/projects/tax/g.md").exists());
+    assert!(matches!(move_to(&mut owner, "c1", None).await, ServerMessage::ConversationOk { .. }));
+    assert_eq!(project_of(&mut owner, "c1").await, None);
+    chat_in(&mut owner, "hello", "c1", None).await;
+    assert!(last_offered(&hub).contains(&"shell".to_string()), "out of the project it has the shell again");
+
+    // What can't be moved, and where.
+    for (what, conversation, project) in [
+        ("a project that isn't there", "c1", Some("nope")),
+        ("a bad project id", "c1", Some("../x")),
+        ("a conversation that isn't there", "ghost", Some("tax")),
+        ("a scheduled task's conversation", "task-news", Some("tax")),
+    ] {
+        match move_to(&mut owner, conversation, project).await {
+            ServerMessage::ConversationError { .. } => {}
+            other => panic!("{what}: {other:?}"),
+        }
+    }
+    assert_eq!(project_of(&mut owner, "c1").await, None, "a refused move changes nothing");
+    assert_eq!(project_of(&mut owner, "task-news").await, None, "the task's conversation stayed out of every project");
+
+    // Ana moves into her own project, never the owner's.
+    assert!(matches!(save_project(&mut ana, "mine", "Mine").await, ServerMessage::ProjectOk { .. }));
+    assert!(matches!(chat_in(&mut ana, "hi", "a1", None).await, ServerMessage::ChatResponse { .. }));
+    assert!(matches!(move_to(&mut ana, "a1", Some("tax")).await, ServerMessage::ConversationError { message, .. } if message.contains("no project")), "the owner's project isn't hers");
+    assert!(matches!(move_to(&mut ana, "a1", Some("mine")).await, ServerMessage::ConversationOk { .. }));
+    assert_eq!(project_of(&mut ana, "a1").await.as_deref(), Some("mine"));
 }
