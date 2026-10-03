@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use warden_bootstrap::bot_hub::{self, HubMemberChat, MemberChat, MemberReply};
 use warden_bootstrap::bot_pairing::{self, BotPairing, Issued};
 use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
@@ -139,7 +140,8 @@ impl WhatsAppSidecar for ChildSidecar {
 /// The same read gives `pairing` (P117) and `[learning]` (P104), so turning either on or off counts
 /// from the next message too, without restarting the bot.
 pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, config_path: Option<&Path>) -> anyhow::Result<()> {
-    let mut access = Access { pairing: config_path.map(BotPairing::beside), ..Access::default() };
+    let members: Option<std::sync::Arc<dyn MemberChat>> = config_path.map(|path| std::sync::Arc::new(HubMemberChat::new(path.to_path_buf())) as _);
+    let mut access = Access { pairing: config_path.map(BotPairing::beside), members, ..Access::default() };
     // The last config that read well: where learning comes from.
     let mut live: Option<FileConfig> = None;
     // Events only come when someone writes, so a tick is what notices an approval the owner just made.
@@ -215,6 +217,8 @@ struct Access {
     reported: std::collections::HashSet<String>,
     /// Where a stranger's pairing request goes when `settings.pairing` is on.
     pairing: Option<BotPairing>,
+    /// Who answers the chats mapped to a member (P117); `run_bot` sets the hub client, tests a stand-in.
+    members: Option<std::sync::Arc<dyn MemberChat>>,
 }
 
 /// What the gate decided about one message.
@@ -272,6 +276,31 @@ impl Access {
     }
 }
 
+/// One message from a chat that speaks as `member`: the hub runs the turn (their vault, their tools, their
+/// limits), nothing is kept or learned here. Whatever goes wrong reaches the chat as a short line, never
+/// as an answer from the owner's side.
+async fn handle_member_message(sidecar: &mut impl WhatsAppSidecar, members: Option<&dyn MemberChat>, member: &str, chat_id: &str, text: &str) {
+    let conversation_id = bot_hub::conversation_id("whatsapp", chat_id);
+    let reply = match members {
+        Some(members) => members.ask(member, &conversation_id, text).await,
+        None => MemberReply::Failed(bot_hub::NO_HUB_REPLY.to_string()),
+    };
+    let (content, attachments) = match reply {
+        MemberReply::Text { content, attachments } => (content, attachments),
+        MemberReply::Failed(line) => (line, Vec::new()),
+    };
+    if !content.trim().is_empty() {
+        if let Err(err) = sidecar.send(chat_id, &content).await {
+            eprintln!("failed to send reply to {chat_id}: {err:#}");
+        }
+    }
+    for attachment in &attachments {
+        if let Err(err) = sidecar.send_attachment(chat_id, attachment).await {
+            eprintln!("failed to send attachment to {chat_id}: {err:#}");
+        }
+    }
+}
+
 async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, access: &mut Access, event: SidecarEvent) {
     match event {
         SidecarEvent::Connected => println!("WhatsApp connected."),
@@ -293,6 +322,13 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
                     }
                     return;
                 }
+            }
+            // A chat the owner mapped to a member (P117) is answered by the hub as that member, not by the
+            // owner's orchestrator. Media stays with the notice below: the hub gets text only.
+            let member = access.settings.member_for(&chat_id).map(str::to_owned);
+            if let (Some(text), Some(member)) = (text.as_deref(), member) {
+                handle_member_message(sidecar, access.members.as_deref(), &member, &chat_id, text).await;
+                return;
             }
             let mut learn_from = None;
             let (reply, attachments) = match text {
@@ -487,6 +523,74 @@ mod tests {
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[1], (stranger.to_string(), "echo: hello".to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Stands in for the hub: records what it was asked and gives the scripted answers in order.
+    struct FakeMembers {
+        asked: Mutex<Vec<(String, String, String)>>,
+        answers: Mutex<Vec<MemberReply>>,
+    }
+
+    impl FakeMembers {
+        fn answering(mut answers: Vec<MemberReply>) -> std::sync::Arc<Self> {
+            answers.reverse();
+            std::sync::Arc::new(Self { asked: Mutex::new(Vec::new()), answers: Mutex::new(answers) })
+        }
+    }
+
+    #[async_trait]
+    impl MemberChat for FakeMembers {
+        async fn ask(&self, member: &str, conversation_id: &str, text: &str) -> MemberReply {
+            self.asked.lock().unwrap().push((member.to_string(), conversation_id.to_string(), text.to_string()));
+            self.answers.lock().unwrap().pop().expect("an answer scripted")
+        }
+    }
+
+    /// P117: a chat mapped to a member is answered by the hub as them (the owner's model isn't called,
+    /// nothing is kept here, the hub's media goes on, its refusal is the reply); media from the chat still
+    /// gets the notice and never reaches the hub; a chat nobody mapped still gets the owner's assistant.
+    #[tokio::test]
+    async fn a_chat_mapped_to_a_member_is_answered_by_the_hub_not_by_the_owner() {
+        let orchestrator = temp_orchestrator();
+        let conversations_dir = temp_conversations_dir();
+        let mapped = "5511999999999@lid";
+        let other = "5511888888888@s.whatsapp.net";
+        let message = |chat: &str, text: Option<&str>| SidecarEvent::Message { chat_id: chat.to_string(), sender_name: None, text: text.map(String::from) };
+        let picture = Attachment { mime_type: "image/png".to_string(), data: "aGk=".to_string() };
+        let fake = FakeMembers::answering(vec![
+            MemberReply::Text { content: "hello Ana".to_string(), attachments: vec![picture.clone()] },
+            MemberReply::Failed(warden_core::memory::LOCKED_MESSAGE.to_string()),
+        ]);
+        let mut access = access_for(&["5511999999999", "5511888888888"]);
+        access.settings.members.insert("5511999999999".to_string(), "ana".to_string());
+        access.members = Some(fake.clone());
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+
+        for event in [message(mapped, Some("hi")), message(mapped, Some("again")), message(mapped, None), message(other, Some("hi"))] {
+            handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, event).await;
+        }
+
+        assert_eq!(*fake.asked.lock().unwrap(), [("ana".to_string(), "whatsapp-5511999999999_lid".to_string(), "hi".to_string()), ("ana".to_string(), "whatsapp-5511999999999_lid".to_string(), "again".to_string())]);
+        let sent = sidecar.sent.lock().unwrap();
+        assert_eq!(sent[0], (mapped.to_string(), "hello Ana".to_string()));
+        assert_eq!(sent[1], (mapped.to_string(), warden_core::memory::LOCKED_MESSAGE.to_string()), "the hub's refusal is the reply");
+        assert_eq!(sent[2], (mapped.to_string(), MEDIA_REPLY.to_string()), "media keeps the notice and never reaches the hub");
+        assert_eq!(sent[3], (other.to_string(), "echo: hi".to_string()), "an unmapped chat is answered as before");
+        assert_eq!(sidecar.sent_media.lock().unwrap().as_slice(), [(mapped.to_string(), picture)]);
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, mapped).unwrap().is_none(), "nothing of the member's chat is kept here");
+    }
+
+    /// P117: speaking as a member with no hub to ask never falls back to the owner's assistant.
+    #[tokio::test]
+    async fn a_mapped_chat_with_no_hub_is_told_so_and_never_answered_by_the_owner() {
+        let mut access = access_for(&["5511999999999"]);
+        access.settings.members.insert("5511999999999".to_string(), "ana".to_string());
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+        let event = SidecarEvent::Message { chat_id: "5511999999999@s.whatsapp.net".to_string(), sender_name: None, text: Some("hi".to_string()) };
+
+        handle_event(&mut sidecar, &temp_orchestrator(), &temp_conversations_dir(), None, &mut access, event).await;
+
+        assert_eq!(*sidecar.sent.lock().unwrap(), [("5511999999999@s.whatsapp.net".to_string(), bot_hub::NO_HUB_REPLY.to_string())]);
     }
 
     /// P117: once the owner approves a code the bot tells that chat (at the id it wrote from, `@lid`

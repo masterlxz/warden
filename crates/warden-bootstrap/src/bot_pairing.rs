@@ -156,21 +156,46 @@ impl BotPairing {
     /// Lets the sender in: puts them on the bot's allow-list in the `config.toml` at `config_path`
     /// (once, however many times) and drops the request.
     pub fn approve(&self, code: &str, now: u64, config_path: &Path) -> anyhow::Result<PairingRequest> {
+        self.approve_as(code, now, config_path, None)
+    }
+
+    /// Same as [`approve`](Self::approve), and with a `member` the chat speaks as them (P117): the hub
+    /// answers it with their vault and tools instead of the owner's assistant. Refused, with nothing
+    /// changed, when there's no such member, no `[bot_hub]`, or the member isn't linked (`bot_hub::link`):
+    /// a chat approved as someone the bot can't reach would be a silent dead end.
+    pub fn approve_as(&self, code: &str, now: u64, config_path: &Path, member: Option<&str>) -> anyhow::Result<PairingRequest> {
         let requests = self.read(now)?;
         let wanted = normalize(code);
         let Some(request) = requests.iter().find(|r| r.code == wanted).cloned() else { bail!("no pending pairing with code {}: it may have expired", display_code(&wanted)) };
 
         let mut config = load_config_from_path(config_path, false)?;
+        if let Some(member) = member {
+            if !config.users.iter().any(|u| u.id == member) {
+                bail!("there is no member '{member}' in this workspace");
+            }
+            if config.bot_hub.as_ref().is_none_or(|hub| hub.url.trim().is_empty()) {
+                bail!("a chat can speak as a member only through a hub: set `url` under [bot_hub] in config.toml (or run `warden bots link {member} --hub <url>`)");
+            }
+            if crate::bot_hub::HubTokens::beside(config_path).get(member)?.is_none() {
+                bail!("'{member}' isn't linked to the bots yet: run `warden bots link {member}` first, and have them type their password");
+            }
+        }
         match request.channel.as_str() {
             TELEGRAM => {
                 let id: i64 = request.sender.parse().ok().filter(|id| *id > 0).with_context(|| format!("'{}' is not a Telegram user id", request.sender))?;
                 if !config.telegram.allowed_users.contains(&id) {
                     config.telegram.allowed_users.push(id);
                 }
+                if let Some(member) = member {
+                    config.telegram.members.insert(id.to_string(), member.to_string());
+                }
             }
             WHATSAPP => {
                 if !config.whatsapp.allowed_chats.contains(&request.sender) {
                     config.whatsapp.allowed_chats.push(request.sender.clone());
+                }
+                if let Some(member) = member {
+                    config.whatsapp.members.insert(request.sender.clone(), member.to_string());
                 }
             }
             other => bail!("unknown channel '{other}'"),

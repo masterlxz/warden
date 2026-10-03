@@ -33,6 +33,7 @@ pub mod agent_scope;
 pub mod auto_sync;
 pub mod history;
 pub mod bot_access;
+pub mod bot_hub;
 pub mod bot_pairing;
 pub mod learning;
 mod config_file;
@@ -483,6 +484,10 @@ pub struct FileConfig {
     /// Who may talk to the WhatsApp bot (P117, TOML `[whatsapp]`): nobody until listed. See `bot_access`.
     #[serde(default, skip_serializing_if = "bot_access::WhatsAppSettings::is_default")]
     pub whatsapp: bot_access::WhatsAppSettings,
+    /// The hub the bots ask on behalf of a member (P117, TOML `[bot_hub]`): without it every chat is
+    /// answered as the owner. See `bot_access` and `bot_hub`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_hub: Option<bot_access::BotHubSettings>,
 }
 
 fn is_default_network(network: &warden_truthid::identity::Network) -> bool {
@@ -2126,8 +2131,9 @@ oauth = true
             truthid_rpc_url: None,
             truthid_public_url: None,
             learning: Default::default(),
-            telegram: bot_access::TelegramSettings { allowed_users: vec![42], pairing: true },
-            whatsapp: bot_access::WhatsAppSettings { allowed_chats: vec!["5511999999999".to_string()], pairing: false },
+            telegram: bot_access::TelegramSettings { allowed_users: vec![42], pairing: true, members: [("42".to_string(), "ana".to_string())].into() },
+            whatsapp: bot_access::WhatsAppSettings { allowed_chats: vec!["5511999999999".to_string()], pairing: false, members: Default::default() },
+            bot_hub: Some(bot_access::BotHubSettings { url: "ws://192.168.0.5:7420".to_string() }),
         };
 
         save_config(&path, &config).unwrap();

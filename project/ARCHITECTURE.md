@@ -2985,8 +2985,31 @@ aparelho `Approved` e hoje não tem cliente.
   ~30 s); `sender` vale como chat porque o pareamento é só privado. WhatsApp: a cada 3 s e **assim que o sidecar conecta**,
   só enquanto estiver conectado (cada marcador sai uma vez, e um envio com o sidecar caído o perderia), sempre para o JID
   que escreveu (pode ser `@lid`). Recusar não avisa ninguém. Falha de envio só vai ao log: a pessoa já está na lista.
-- **Fora de propósito**: "chat que vira pessoa" (vault próprio e tools limitadas): o bot é outro processo e não tem a chave
-  cifrada do membro (a chave só vive na memória do hub, desbloqueada com a senha). O caminho limpo é o bot virar cliente do hub.
+- **Chat que vira pessoa (Sessão 120)**: o bot é outro processo e não tem a chave cifrada do membro (ela só vive na memória do
+  hub, aberta pela senha), então **não abre nada**: pergunta ao hub, como o membro, pelo mesmo WebSocket dos apps
+  (`warden_bootstrap::bot_hub`). O hub roda o turno com o vault, as tools e os limites dele; nada do chat fica na pasta do dono.
+  - **Quem é quem**: `[telegram] members` e `[whatsapp] members` (chat → id do membro; o WhatsApp casa o id inteiro ou o número,
+    o id inteiro vence) decidem **como** responder; a lista `allowed_*` continua decidindo **se**. Chat sem entrada segue como
+    antes (dono, orquestrador local). `[bot_hub] url` é o hub (`ws://` em LAN; `wss://` pede certificado de uma autoridade pública,
+    pois o cliente só confia nas raízes públicas e não há fixação de impressão digital).
+  - **Vínculo**: `warden bots link <membro> [--hub url]` pede a senha **do próprio membro**, sem eco, uma vez; guarda só o token de
+    dispositivo em `bot_hub.json` (0o600, ao lado do `config.toml`, `warden-bot-<membro>` como id do dispositivo) e descarta a
+    senha. Entra com `recovery_codes: false` (`handshake_as_member_showing`): um bot não mostra o código de recuperação, e com
+    `true` o hub criaria a chave cifrada do membro ali mesmo e devolveria um código que ninguém veria. Reconecta só com o token.
+  - **Aprovar como membro**: `warden bots pair approve <código> --as <membro>` (`BotPairing::approve_as`) recusa, sem mudar nada, se o
+    membro não existe, se não há `[bot_hub]` ou se ele não está vinculado. Desktop e web seguem aprovando sem membro.
+  - **Cofre trancado**: se o hub reiniciou, o token reconecta mas o `Chat` volta `ChatError` com o texto de "dados trancados", e o bot
+    o repassa ao chat. O membro destranca entrando uma vez pelo web, desktop ou celular. Nenhuma senha vai a disco, de propósito.
+  - **Falhas viram uma linha no chat, nunca uma resposta do dono**: sem `[bot_hub]`, sem vínculo, token revogado (`AuthRejected` ou
+    `AuthError` no meio da conexão), hub fora do ar ou turno além de 180 s. Os turnos de um membro vão um de cada vez (o hub não
+    protege duas conversas iguais disputando o arquivo); uma conexão guardada que caiu ganha **uma** tentativa nova, uma conexão
+    recém-aberta que falha não (um turno custa chamadas de modelo; um turno cortado no meio pode, no pior caso, rodar duas vezes).
+  - **Limites aceitos**: só texto (foto e PDF do chat não vão ao hub; o WhatsApp mostra o aviso de sempre); o gasto aparece no hub
+    como canal `server` com a pessoa (o limite por pessoa vale; o por canal `telegram` não); o aprendizado (P104) não roda em chat
+    de membro; trocar a senha do membro não revoga o token (comportamento do hub; revogar é pelo registro de dispositivos); remover
+    o membro revoga o dispositivo e o mapa fica no `config.toml` (o chat passa a ouvir "não estou mais conectado").
+  - **O save das telas não desmapeia ninguém**: `apply_bots_settings` leva `members` adiante, e o `save_settings` do desktop leva
+    `bot_hub`. Falta uma tela para escolher o membro na aprovação (desktop e web).
 
 ### Tela de "Aprendizado e bots" (P118, Sessão 118)
 

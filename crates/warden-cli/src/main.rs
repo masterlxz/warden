@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
 
     // A subcommand answers before any model is set up: it needs no key.
     if let Some(Command::Bots { action }) = cli.command {
-        return bots::run(action, config_path.as_deref(), &mut io::stdout());
+        return bots::run(action, config_path.as_deref(), &mut io::stdout(), &bots::prompt_password).await;
     }
 
     let orchestrator = bootstrap(

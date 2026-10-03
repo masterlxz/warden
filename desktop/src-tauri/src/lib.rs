@@ -668,6 +668,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // Who may talk to the Telegram and WhatsApp bots (P117): set in the config file, carried forward so a Settings save doesn't wipe the lists.
         telegram: existing.telegram,
         whatsapp: existing.whatsapp,
+        // The hub the bots ask for a member's chats, and who speaks as whom, are set with `warden bots` (P117).
+        bot_hub: existing.bot_hub,
     };
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;

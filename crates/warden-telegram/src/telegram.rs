@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::Deserialize;
+use warden_bootstrap::bot_hub::{self, HubMemberChat, MemberChat, MemberReply};
 use warden_bootstrap::bot_pairing::{self, BotPairing, Issued};
 use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
@@ -234,7 +235,8 @@ fn split_into_chunks(text: &str) -> Vec<&str> {
 /// from the next message too, without restarting the bot.
 pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, config_path: Option<&Path>) -> anyhow::Result<()> {
     let mut offset: Option<i64> = None;
-    let mut access = Access { pairing: config_path.map(BotPairing::beside), ..Access::default() };
+    let members: Option<std::sync::Arc<dyn MemberChat>> = config_path.map(|path| std::sync::Arc::new(HubMemberChat::new(path.to_path_buf())) as _);
+    let mut access = Access { pairing: config_path.map(BotPairing::beside), members, ..Access::default() };
     // The last config that read well: where learning comes from.
     let mut live: Option<FileConfig> = None;
     loop {
@@ -290,6 +292,8 @@ struct Access {
     reported: std::collections::HashSet<i64>,
     /// Where a stranger's pairing request goes when `settings.pairing` is on (P117).
     pairing: Option<BotPairing>,
+    /// Who answers the chats mapped to a member (P117); `run_bot` sets the hub client, tests a stand-in.
+    members: Option<std::sync::Arc<dyn MemberChat>>,
 }
 
 /// What the gate decided about one message.
@@ -369,7 +373,39 @@ async fn process_updates(
             }
         }
         let Some(text) = message.text.clone() else { continue };
+        // A chat the owner mapped to a member (P117) is answered by the hub as that member, not by the
+        // owner's orchestrator: only the greeting stays here, it says nothing about anyone's data.
+        let member = message.from.as_ref().and_then(|s| s.id).and_then(|id| access.settings.member_for(id)).map(str::to_owned);
+        if let (Some(member), false) = (member, text == "/start" || text == "/help") {
+            handle_member_update(api, access.members.as_deref(), &member, &message, &text).await;
+            continue;
+        }
         handle_update(api, orchestrator, conversations_dir, learning, &message, &text).await;
+    }
+}
+
+/// One message from a chat that speaks as `member`: the hub runs the turn (their vault, their tools, their
+/// limits), nothing is kept or learned here. Whatever goes wrong reaches the chat as a short line, never
+/// as an answer from the owner's side.
+async fn handle_member_update(api: &impl TelegramApi, members: Option<&dyn MemberChat>, member: &str, message: &IncomingMessage, text: &str) {
+    let conversation_id = bot_hub::conversation_id("telegram", &message.chat.id.to_string());
+    let reply = match members {
+        Some(members) => members.ask(member, &conversation_id, text).await,
+        None => MemberReply::Failed(bot_hub::NO_HUB_REPLY.to_string()),
+    };
+    let (content, attachments) = match reply {
+        MemberReply::Text { content, attachments } => (content, attachments),
+        MemberReply::Failed(line) => (line, Vec::new()),
+    };
+    if !content.trim().is_empty() {
+        if let Err(err) = api.send_message(message.chat.id, &content).await {
+            eprintln!("failed to send reply to chat {}: {err:#}", message.chat.id);
+        }
+    }
+    for attachment in &attachments {
+        if let Err(err) = api.send_attachment(message.chat.id, attachment).await {
+            eprintln!("failed to send attachment to chat {}: {err:#}", message.chat.id);
+        }
     }
 }
 
@@ -606,6 +642,78 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(api.sent.lock().unwrap().len(), 2, "the answer, after the code");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Stands in for the hub: records what it was asked and gives the scripted answers in order.
+    struct FakeMembers {
+        asked: Mutex<Vec<(String, String, String)>>,
+        answers: Mutex<Vec<MemberReply>>,
+    }
+
+    impl FakeMembers {
+        fn answering(mut answers: Vec<MemberReply>) -> std::sync::Arc<Self> {
+            answers.reverse();
+            std::sync::Arc::new(Self { asked: Mutex::new(Vec::new()), answers: Mutex::new(answers) })
+        }
+    }
+
+    #[async_trait]
+    impl MemberChat for FakeMembers {
+        async fn ask(&self, member: &str, conversation_id: &str, text: &str) -> MemberReply {
+            self.asked.lock().unwrap().push((member.to_string(), conversation_id.to_string(), text.to_string()));
+            self.answers.lock().unwrap().pop().expect("an answer scripted")
+        }
+    }
+
+    /// P117: a chat mapped to a member is answered by the hub as them: the owner's model isn't called,
+    /// nothing is kept here, the hub's media is sent on, its refusal reaches the chat as the answer, and
+    /// a chat nobody mapped still gets the owner's assistant.
+    #[tokio::test]
+    async fn a_chat_mapped_to_a_member_is_answered_by_the_hub_not_by_the_owner() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-telegram-member-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(CountingModel(calls.clone())), vault);
+        let conversations_dir = temp_conversations_dir();
+        let picture = Attachment { mime_type: "image/png".to_string(), data: "aGk=".to_string() };
+        let fake = FakeMembers::answering(vec![
+            MemberReply::Text { content: "hello Ana".to_string(), attachments: vec![picture.clone()] },
+            MemberReply::Failed(warden_core::memory::LOCKED_MESSAGE.to_string()),
+        ]);
+        let mut access = access_for(&[7, 8]);
+        access.settings.members.insert("7".to_string(), "ana".to_string());
+        access.members = Some(fake.clone());
+        let api = ScriptedTelegramApi::new(Vec::new());
+        let mut offset = None;
+
+        let updates = vec![text_update(1, 7, "hi"), text_update(2, 7, "again"), text_update(3, 7, "/help"), text_update(4, 8, "hi")];
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, updates, &mut offset).await;
+
+        assert_eq!(*fake.asked.lock().unwrap(), [("ana".to_string(), "telegram-7".to_string(), "hi".to_string()), ("ana".to_string(), "telegram-7".to_string(), "again".to_string())]);
+        let sent = api.sent.lock().unwrap();
+        assert_eq!(sent[0], (7, "hello Ana".to_string()));
+        assert_eq!(sent[1], (7, warden_core::memory::LOCKED_MESSAGE.to_string()), "the hub's refusal is the reply");
+        assert_eq!(sent[2], (7, HELP_TEXT.to_string()), "the greeting stays local");
+        assert_eq!(api.sent_attachments.lock().unwrap().as_slice(), [(7, picture)]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only the unmapped chat reached the owner's model (its turn plus no learning)");
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, "7").unwrap().is_none(), "nothing of the member's chat is kept here");
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, "8").unwrap().is_some(), "the unmapped chat is kept as before");
+    }
+
+    /// P117: speaking as a member with no hub to ask never falls back to the owner's assistant.
+    #[tokio::test]
+    async fn a_mapped_chat_with_no_hub_is_told_so_and_never_answered_by_the_owner() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-telegram-nohub-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(CountingModel(calls.clone())), vault);
+        let mut access = access_for(&[7]);
+        access.settings.members.insert("7".to_string(), "ana".to_string());
+        let api = ScriptedTelegramApi::new(Vec::new());
+        let mut offset = None;
+
+        process_updates(&api, &orchestrator, &temp_conversations_dir(), None, &mut access, vec![text_update(1, 7, "hi")], &mut offset).await;
+
+        assert_eq!(*api.sent.lock().unwrap(), [(7, bot_hub::NO_HUB_REPLY.to_string())]);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     /// P117: once the owner approves a code the bot tells that person, once, and tells nobody about a

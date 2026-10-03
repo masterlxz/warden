@@ -2,7 +2,35 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 119)
+> Última atualização: 2026-10-03 (Sessão 120)
+
+---
+
+### 2026-10-03 — Sessão 120
+
+- **Objetivo**: o "chat que vira pessoa" do P117, em Plan mode. Decisões do usuário: o bot é **cliente do hub** (desenho A, não
+  mover a lógica de pessoa para o bootstrap); o vínculo é um comando em que **o membro digita a senha uma vez**; com o cofre
+  trancado o bot **avisa e não guarda senha**. Telas de aprovar-como-membro (desktop e web) ficaram para a fatia seguinte.
+- **Feito**: `[telegram]/[whatsapp] members` e `[bot_hub] url` na config; módulo novo `warden_bootstrap::bot_hub` (token store
+  `bot_hub.json` 0o600, `link`, trait `MemberChat` e o cliente real `HubMemberChat`, `conversation_id`); os dois bots roteiam o chat
+  mapeado para o hub (`Access.members`, assinatura dos testes intacta); `warden bots link/unlink` e `pair approve --as` na CLI
+  (senha sem eco com `crossterm`, sem dependência nova, e uma linha lida do stdin quando não é terminal); `approve_as` no store.
+- **Achados no caminho**: (1) `apply_bots_settings` recriava `TelegramSettings`/`WhatsAppSettings` do zero e **apagaria o mapa** num
+  save das telas, e o `save_settings` do desktop montava o `FileConfig` campo a campo e perderia `[bot_hub]`: os dois passaram a
+  levar os campos adiante, com teste. (2) `handshake_as_member` manda `recovery_codes: true`; o `link` do bot faria o hub criar a
+  chave cifrada do membro e devolver um código que ninguém veria. Ganhou `handshake_as_member_showing(.., false)`. (3) Faltava
+  prompt de senha oculta no repositório e `rpassword` não estava no lock.
+- **Verificado**: testes novos no `bot_access` (mapa, id inteiro vence o número, arquivo antigo), `bot_hub` (token store, 0o600,
+  id de conversa, classificação das mensagens do hub, sem hub/sem vínculo/hub fora), `settings` (save não desmapeia), `bot_pairing`
+  e CLI (`approve --as`, `link`, `unlink`, dois pelo binário real); um por bot com um `MemberChat` falso (mapeado vai ao hub e não
+  toca o modelo do dono nem grava conversa; sem hub não cai no dono; `/help` fica local); e **um contra um hub real**
+  (`people.rs`): senha errada não vincula, a senha não vai a disco, o turno grava no cofre e na conversa dela e não na do dono,
+  segundo turno na mesma conexão, cofre trancado vira o texto de trancado, dispositivo revogado vira "não estou mais conectado".
+  `cargo test` de bootstrap, protocolo, server (102 + os de integração), telegram, whatsapp e cli verdes; `cargo check -p desktop`
+  limpo; clippy sem aviso novo (o do `learning_eval` já existia). Não rodei o workspace inteiro.
+- **Não verificado**: bot real (token e número) falando com um hub; `wss://` com certificado público; o prompt de senha num
+  terminal de verdade (só o caminho do stdin foi exercitado; o do `crossterm` em modo raw não); a mensagem chegando ao celular.
+- **Próximo passo**: telas de escolher o membro ao aprovar (desktop e web), a rodada de testes em tela (P115 e P95–P118) e o P119.
 
 ---
 

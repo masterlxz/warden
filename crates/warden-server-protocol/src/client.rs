@@ -127,6 +127,24 @@ impl ServerConnection {
         device_token: Option<String>,
         tls: Arc<ClientConfig>,
     ) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
+        // This client hands the recovery code back to its caller, who has to show it.
+        Self::handshake_as_member_showing(url, device_id, device_name, username, password, device_token, tls, true).await
+    }
+
+    /// Same as `handshake_as_member`, saying whether this client can show the member a recovery code.
+    /// A client that can't (`false`) never makes the hub create the member's data key at this sign-in: it
+    /// would hand back a code nobody sees, and the data would be sealed with a key nobody could recover.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handshake_as_member_showing(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        username: &str,
+        password: &str,
+        device_token: Option<String>,
+        tls: Arc<ClientConfig>,
+        can_show_recovery_code: bool,
+    ) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
         let hello = ClientMessage::Hello {
             device_id: device_id.to_string(),
             device_name: device_name.to_string(),
@@ -136,8 +154,7 @@ impl ServerConnection {
             node: None,
             username: Some(username.to_string()),
             password: Some(password.to_string()),
-            // This client hands the recovery code back to its caller, who has to show it.
-            recovery_codes: true,
+            recovery_codes: can_show_recovery_code,
             truthid_login: false,
         };
         Self::hello(url, hello, tls).await

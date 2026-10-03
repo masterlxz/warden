@@ -1476,3 +1476,60 @@ async fn the_owner_picks_the_learning_model_of_a_member() {
         other => panic!("{other:?}"),
     }
 }
+
+/// P117: a Telegram or WhatsApp chat that speaks as a member is answered by the hub as her. Linking takes
+/// her password (a wrong one links nothing) and keeps only the device token; a turn lands in her vault and
+/// her conversations, never the owner's; a second turn reuses the connection; when the hub no longer holds
+/// her key the chat is told her data is locked; and once the owner revokes the bot's device the chat is told
+/// it isn't connected any more.
+#[tokio::test]
+async fn a_bot_chat_that_speaks_as_a_member_is_answered_by_the_hub_with_her_data() {
+    use warden_bootstrap::bot_access::BotHubSettings;
+    use warden_bootstrap::bot_hub::{self, HubMemberChat, HubTokens, MemberChat, MemberReply};
+
+    let hub = spin_up().await;
+    let (mut ana, token, _code) = ana_with_a_code(&hub).await;
+    let config_path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+    config.bot_hub = Some(BotHubSettings { url: hub.url.clone() });
+    save_config(&config_path, &config).unwrap();
+    let chat = HubMemberChat::new(config_path.clone());
+
+    // Nothing is linked yet: the chat is told so, and the owner's assistant is never the fallback.
+    assert_eq!(chat.ask("ana", "telegram-42", "hello").await, MemberReply::Failed(bot_hub::NOT_LINKED_REPLY.into()));
+    assert!(bot_hub::link(&config_path, &hub.url, "ana", "not-her-password").await.is_err(), "a wrong password links nothing");
+    assert_eq!(HubTokens::beside(&config_path).get("ana").unwrap(), None);
+    let user = bot_hub::link(&config_path, &hub.url, "ana", "anas-own-pass").await.unwrap();
+    assert_eq!((user.id.as_str(), user.must_change_password), ("ana", false));
+    let linked = HubTokens::beside(&config_path).get("ana").unwrap().expect("the token is kept");
+    assert_eq!(linked.device_id, "warden-bot-ana");
+    assert!(!std::fs::read_to_string(config_path.with_file_name("bot_hub.json")).unwrap().contains("anas-own-pass"), "the password is never kept");
+
+    // A turn: the hub runs her agent, which writes to her vault, and the chat's conversation is hers.
+    match chat.ask("ana", "telegram-42", "WRITE notes/from-telegram.md").await {
+        MemberReply::Text { content, .. } => assert!(content.starts_with("tool said"), "{content}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(ana_vault(&hub, "anas-own-pass").read("notes/from-telegram.md").unwrap(), "written");
+    assert!(!hub.dir.join("vault/notes/from-telegram.md").exists(), "never the owner's vault");
+    assert!(conversation_ids(&mut ana).await.contains(&"telegram-42".to_string()), "her conversation, under the chat's id");
+    let mut owner = ServerConnection::connect(&hub.url, "owner-pc", "Owner's PC", KEY).await.unwrap();
+    assert!(!conversation_ids(&mut owner).await.contains(&"telegram-42".to_string()), "not in the owner's list");
+
+    // Another turn, on the same connection: a plain answer.
+    assert_eq!(chat.ask("ana", "telegram-42", "hello").await, MemberReply::Text { content: "plain".into(), attachments: Vec::new() });
+
+    // The hub restarts: her token still gets the bot in, but her data is shut and the chat hears it.
+    forget_anas_key(&hub);
+    match chat.ask("ana", "telegram-42", "hello again").await {
+        MemberReply::Failed(text) => assert!(text.contains("locked"), "{text}"),
+        other => panic!("{other:?}"),
+    }
+    let (_open, _, user) = member(&hub, "anas-own-pass", Some(token)).await.unwrap();
+    assert!(!user.unwrap().locked, "she opens it again with her password, from her own device");
+
+    // The owner revokes the bot's device: it can't speak as her any more.
+    warden_server::PairingStore::new(hub.dir.join("devices.json")).revoke(&linked.device_id).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(chat.ask("ana", "telegram-42", "hello").await, MemberReply::Failed(bot_hub::NOT_LINKED_REPLY.into()));
+}

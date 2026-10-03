@@ -59,6 +59,35 @@ fn bots_pair_runs_without_a_model_key() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// P117: `warden bots link/unlink` and `pair approve --as` answer without a model key, and refuse what
+/// they can see is wrong (an unknown member, no hub) before asking anyone for a password.
+#[test]
+fn bots_link_unlink_and_approve_as_run_without_a_model_key() {
+    let dir = unique_temp_path("warden-cli-test-bots-link");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "").unwrap();
+    let config = config.to_string_lossy().to_string();
+    let run = |args: &[&str]| {
+        let mut full = vec!["--config", config.as_str(), "bots"];
+        full.extend_from_slice(args);
+        warden_command().args(full).stdin(Stdio::null()).output().unwrap()
+    };
+
+    let output = run(&["unlink", "ana"]);
+    assert!(output.status.success(), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("wasn't linked"));
+
+    let output = run(&["link", "ana", "--hub", "ws://127.0.0.1:1"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no member 'ana'"), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+
+    let output = run(&["pair", "approve", "ZZZZ-ZZZZ", "--as", "ana"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no pending pairing"), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn fails_clearly_without_an_openai_key_when_openai_selected() {
     let output = warden_command().args(["--provider", "openai"]).output().unwrap();

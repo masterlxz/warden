@@ -406,8 +406,10 @@ pub fn apply_bots_settings(config: &mut FileConfig, dto: BotsSettingsDto, provid
     }
 
     config.learning = LearningSettings { enabled: dto.learning_enabled, provider, max_per_day: dto.learning_max_per_day, bot_chats };
-    config.telegram = TelegramSettings { allowed_users: telegram_users, pairing: dto.telegram_pairing };
-    config.whatsapp = WhatsAppSettings { allowed_chats: whatsapp_chats, pairing: dto.whatsapp_pairing };
+    // The screens don't edit who speaks as which member (`warden bots link` / `pair approve --as`
+    // do): carry the map over so a save never unmaps anyone.
+    config.telegram = TelegramSettings { allowed_users: telegram_users, pairing: dto.telegram_pairing, members: std::mem::take(&mut config.telegram.members) };
+    config.whatsapp = WhatsAppSettings { allowed_chats: whatsapp_chats, pairing: dto.whatsapp_pairing, members: std::mem::take(&mut config.whatsapp.members) };
     Ok(())
 }
 
@@ -669,6 +671,28 @@ mod tests {
         assert_eq!(again.learning, learning, "a save that doesn't carry bots keeps them");
         assert_eq!(again.telegram, telegram);
         assert_eq!(again.whatsapp, whatsapp);
+    }
+
+    /// P117: who speaks as which member is set by `warden bots`, not by the screens: a save from the web
+    /// or the desktop, with or without the bots slice, never unmaps a chat or forgets the hub.
+    #[test]
+    fn a_save_never_unmaps_a_chat_that_speaks_as_a_member() {
+        let mut config = sample();
+        config.telegram.members.insert("42".into(), "ana".into());
+        config.whatsapp.members.insert("5511999999999".into(), "bia".into());
+        config.bot_hub = Some(crate::bot_access::BotHubSettings { url: "ws://192.168.0.5:7420".into() });
+
+        let mut update = untouched(&config);
+        update.bots = Some(bots());
+        let saved = apply_hub_settings(config, update).unwrap();
+        assert_eq!(saved.telegram.member_for(42), Some("ana"), "a save that carries the bots slice keeps the map");
+        assert_eq!(saved.whatsapp.members.get("5511999999999").map(String::as_str), Some("bia"));
+        assert_eq!(saved.bot_hub.as_ref().map(|h| h.url.as_str()), Some("ws://192.168.0.5:7420"));
+
+        let update = untouched(&saved);
+        let again = apply_hub_settings(saved, update).unwrap();
+        assert_eq!(again.telegram.member_for(42), Some("ana"), "and so does one that doesn't");
+        assert!(again.bot_hub.is_some());
     }
 
     #[test]
