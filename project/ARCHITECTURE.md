@@ -3068,4 +3068,8 @@ ignora.
   payload quando **mudou** em relação ao carregado (como `gitSync`), então um hub com a trava desligada nunca a recebe sem
   querer. Antes de pedir a chave de pareamento, um painel lista o que muda (sem valores secretos) e exige marcar o aceite.
   Todos os controles da seção ficam num `<fieldset disabled>` quando o hub não deixa salvar.
+- **Teste de ponta a ponta** (Sessão 122, `web/e2e/`): `npm run test:e2e`, depois de `npm run build` e
+  `cargo build -p warden-server --bin warden-server`. Sobe um `warden-server` real por teste, isolado (`HOME`/`XDG_*` numa pasta temporária, porta
+  0), e dirige a página num Chromium headless (`PLAYWRIGHT_CHROMIUM_EXECUTABLE`, o do Playwright ou o Chrome do sistema); captura os frames de
+  WebSocket enviados, para provar o que viajou ao hub. O `harness.mjs` serve a qualquer teste futuro da web. Não roda no CI (o `build.yml` só monta o desktop).
 

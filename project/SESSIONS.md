@@ -2,7 +2,32 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 121)
+> Última atualização: 2026-10-03 (Sessão 122)
+
+---
+
+### 2026-10-03 — Sessão 122
+
+- **Objetivo**: trazer para o repositório o roteiro de navegador com que verifiquei a tela de configurações no P119 (ficou só no
+  scratchpad), em Plan mode. O `web/` não tinha teste nenhum e o `cargo test` não passa pela tela.
+- **Feito**: `web/e2e/harness.mjs` (reutilizável por qualquer teste futuro da web) e `web/e2e/settings.test.mjs`, no runner embutido do
+  Node (`node:test`), um teste por comportamento e cada um com seu hub. Dependência nova: `playwright-core` 1.61.1 (`devDependency`; ele
+  não baixa navegador). `npm run test:e2e` roda tudo.
+  - `startHub()` sobe um `warden-server serve` **real e isolado** (`HOME`/`XDG_*` numa pasta temporária, porta 0 lida do log, config mínimo com
+    provedor falso), e `stop()` mata o processo e apaga a pasta. `launchBrowser()` usa `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, o Chromium do
+    Playwright ou o Chrome do sistema. `openSettings()` entra com a chave de pareamento e captura os frames de WebSocket enviados, que é como o
+    teste prova **o que viajou** ao hub. Faltando o binário do hub ou o navegador, o erro diz o comando para resolver.
+  - Os 4 testes: save só de delegação não leva `machine` nem pede confirmação; shell + SSH + MCP com segredo pede confirmação sem mostrar o
+    valor, o segredo nunca está na página nem no log do hub; renomear um MCP mantém o segredo e pasta relativa é recusada; sem a flag a
+    seção é só leitura e o resto (token do Telegram, teto de jobs) ainda salva.
+- **Remendos do roteiro original que saíram**: o `require` apontava para o cache do `npx` (`~/.npm/_npx/<hash>/...`) e as portas eram fixas.
+- **Verificado**: 4 de 4 passando, sem processo do hub nem pasta `warden-e2e-*` sobrando. **Provei que o teste pode falhar**, com duas mutações
+  (desfeitas e conferidas, zero marcas sobrando): hub do teste 2 sem a flag derrubou o teste 2; trocar o `disabled={!writable}` da seção por
+  `false` derrubou o teste 4. `tsc` e `npm run build` limpos. Um erro meu no caminho: copiei "(2 now)" de cabeça na expectativa do log e o hub dizia
+  "(1 now)", certo (o roteiro original tinha "(1 now)").
+- **Não verificado / aberto**: o CI não roda isto (o `build.yml` só monta o desktop, nem a web nem o hub); o runner depende de um navegador na
+  máquina e do binário do hub já compilado (`npm run build` e `cargo build -p warden-server --bin warden-server` antes).
+- **Próximo passo**: escolher o membro ao aprovar no desktop e na web (resto do P117) e a rodada de testes em tela (P115 e P95–P118).
 
 ---
 
