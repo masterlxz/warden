@@ -34,7 +34,7 @@ pub struct Update {
 /// What a stranger is told when they ask to pair (P117).
 fn pairing_reply(code: &str) -> String {
     format!(
-        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). Once they approve it, write to me again.",
+        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). I'll tell you here once they approve it.",
         bot_pairing::display_code(code),
         bot_pairing::VALID_FOR_SECS / 60
     )
@@ -249,6 +249,9 @@ pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conver
                         Err(err) => eprintln!("can't read the config from {}, keeping the last one: {err:#}", path.display()),
                     }
                 }
+                if let Some(store) = access.pairing.as_ref() {
+                    announce_approved(api, store).await;
+                }
                 let learning = live.as_ref().filter(|c| c.learning.enabled);
                 process_updates(api, orchestrator, conversations_dir, learning, &mut access, updates, &mut offset).await
             }
@@ -256,6 +259,25 @@ pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conver
                 eprintln!("error polling Telegram, retrying in {}s: {err:#}", RETRY_DELAY.as_secs());
                 tokio::time::sleep(RETRY_DELAY).await;
             }
+        }
+    }
+}
+
+/// Tells each sender the owner approved since the last poll that they can write now. The pairing is
+/// private-only, so the user id the request came from is also the chat to answer in. A failed send is
+/// logged and not retried: they are on the list either way, and writing to the bot works.
+async fn announce_approved(api: &impl TelegramApi, store: &BotPairing) {
+    let approved = match store.take_approved(bot_pairing::TELEGRAM, warden_bootstrap::bot_access::unix_now()) {
+        Ok(approved) => approved,
+        Err(err) => {
+            eprintln!("can't read the approvals waiting to be announced: {err:#}");
+            return;
+        }
+    };
+    for entry in approved {
+        let Ok(chat_id) = entry.sender.parse::<i64>() else { continue };
+        if let Err(err) = api.send_message(chat_id, bot_pairing::APPROVED_REPLY).await {
+            eprintln!("failed to tell telegram user {chat_id} they were approved: {err:#}");
         }
     }
 }
@@ -583,6 +605,31 @@ mod tests {
         process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, vec![text_update(4, 7, "hello")], &mut offset).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(api.sent.lock().unwrap().len(), 2, "the answer, after the code");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P117: once the owner approves a code the bot tells that person, once, and tells nobody about a
+    /// code the owner denied.
+    #[tokio::test]
+    async fn an_approved_sender_is_told_once_and_a_denied_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("warden-telegram-announce-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[telegram]\npairing = true\n").unwrap();
+        let store = BotPairing::beside(&config_path);
+        let now = warden_bootstrap::bot_access::unix_now();
+        let Issued::Fresh(approved) = store.request(bot_pairing::TELEGRAM, "7", "Ana", now).unwrap() else { panic!("a new request") };
+        let Issued::Fresh(denied) = store.request(bot_pairing::TELEGRAM, "8", "Bia", now).unwrap() else { panic!("a new request") };
+        let api = ScriptedTelegramApi::new(Vec::new());
+
+        announce_approved(&api, &store).await;
+        assert!(api.sent.lock().unwrap().is_empty(), "nothing approved yet");
+
+        store.approve(&approved, now, &config_path).unwrap();
+        store.deny(&denied, now).unwrap();
+        announce_approved(&api, &store).await;
+        announce_approved(&api, &store).await;
+        assert_eq!(*api.sent.lock().unwrap(), [(7, bot_pairing::APPROVED_REPLY.to_string())], "told once, and only the approved one");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

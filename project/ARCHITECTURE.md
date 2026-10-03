@@ -2979,6 +2979,12 @@ aparelho `Approved` e hoje não tem cliente.
   pareamento, 1 s de espera se errada, trava por hub), com respostas `BotPairings` e erros como `UserError`, igual aos espaços.
 - **`[learning]` deixou de ser decidido na partida**: o bot relê o `FileConfig` inteiro a cada rodada/mensagem e usa o
   último que leu bem; só o token do Telegram ainda pede reiniciar.
+- **Aviso ao remetente (Sessão 119)**: `approve` deixa um marcador em `bot_pairing_approved.json` (`channel`, `sender`,
+  `approved_at`; um por remetente, validade de 24 h, para um bot que ficou fora do ar não avisar tarde demais) e cada bot
+  consome os do seu canal com `BotPairing::take_approved`, que devolve e remove. Telegram: depois de cada `getUpdates` (até
+  ~30 s); `sender` vale como chat porque o pareamento é só privado. WhatsApp: a cada 3 s e **assim que o sidecar conecta**,
+  só enquanto estiver conectado (cada marcador sai uma vez, e um envio com o sidecar caído o perderia), sempre para o JID
+  que escreveu (pode ser `@lid`). Recusar não avisa ninguém. Falha de envio só vai ao log: a pessoa já está na lista.
 - **Fora de propósito**: "chat que vira pessoa" (vault próprio e tools limitadas): o bot é outro processo e não tem a chave
   cifrada do membro (a chave só vive na memória do hub, desbloqueada com a senha). O caminho limpo é o bot virar cliente do hub.
 

@@ -2,7 +2,29 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-02 (Sessão 118)
+> Última atualização: 2026-10-03 (Sessão 119)
+
+---
+
+### 2026-10-03 — Sessão 119
+
+- **Objetivo**: o que sobrou do P117, em Plan mode. O usuário escolheu **só o aviso ao remetente**; "chat que vira pessoa"
+  ficou para outra fatia (se voltar, o desenho escolhido foi o A, bot como cliente do hub, e não mover a lógica de pessoa
+  para o bootstrap, que esbarra na chave cifrada que só o hub guarda).
+- **Feito**: `approve` deixa um marcador em `bot_pairing_approved.json` e `BotPairing::take_approved(canal, agora)` o
+  entrega uma vez ao bot do canal (validade de 24 h, filtrado por canal). Telegram avisa depois de cada `getUpdates`.
+  WhatsApp avisa ao conectar e a cada 3 s, mas só conectado. O `run_bot` do WhatsApp virou um `select!` entre o evento do
+  sidecar e o tick. A mensagem do código agora diz "I'll tell you here once they approve it" e o texto do aviso é
+  `bot_pairing::APPROVED_REPLY`.
+- **Achado no caminho**: o primeiro tick de `tokio::time::interval` não é síncrono, então o teste do loop falhava sem erro. Pior,
+  avisar com o sidecar desconectado perderia o marcador, já consumido. Por isso o aviso do WhatsApp só sai conectado e
+  também ao receber `Connected`.
+- **Verificado**: 4 testes novos no `bot_pairing` (11 no módulo), um em cada bot (avisa uma vez, só o aprovado, recusado
+  não) e um do loop do WhatsApp (offline não envia, ao conectar envia). `cargo test` de bootstrap, telegram e whatsapp
+  verde; clippy sem aviso novo (o do `learning_eval` já existia). Não rodei o workspace inteiro.
+- **Não verificado**: bot real (token e número), e o aviso chegando de verdade ao celular; Telegram não precisa de conexão
+  própria, então só o `select!` do WhatsApp merece olho na rodada de testes em tela.
+- **Próximo passo**: "chat que vira pessoa" (desenho A), o P119 e a rodada de testes em tela (P115 e P95–P118).
 
 ---
 

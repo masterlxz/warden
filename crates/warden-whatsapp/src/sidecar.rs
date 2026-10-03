@@ -22,6 +22,9 @@ use warden_core::spend::SpendContext;
 
 const MEDIA_REPLY: &str = "Sorry, I can only read text messages for now.";
 
+/// How often the bot looks for approvals to announce (P117).
+const APPROVAL_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SidecarEvent {
@@ -139,10 +142,37 @@ pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestr
     let mut access = Access { pairing: config_path.map(BotPairing::beside), ..Access::default() };
     // The last config that read well: where learning comes from.
     let mut live: Option<FileConfig> = None;
+    // Events only come when someone writes, so a tick is what notices an approval the owner just made.
+    let mut tick = tokio::time::interval(APPROVAL_CHECK_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Approvals are announced only while WhatsApp is connected: `take_approved` hands each over once,
+    // and a send while the sidecar is down would lose it. A connect announces what piled up meanwhile.
+    let mut connected = false;
     loop {
-        match sidecar.recv_event().await? {
+        let event = tokio::select! {
+            biased;
+            _ = tick.tick() => {
+                if let (true, Some(store)) = (connected, access.pairing.as_ref()) {
+                    announce_approved(sidecar, store).await;
+                }
+                continue;
+            }
+            // Reading a line is cancel-safe: losing the race to the tick drops no event.
+            event = sidecar.recv_event() => event?,
+        };
+        match event {
             None => anyhow::bail!("WhatsApp sidecar process exited unexpectedly"),
             Some(event) => {
+                match &event {
+                    SidecarEvent::Connected => {
+                        connected = true;
+                        if let Some(store) = access.pairing.as_ref() {
+                            announce_approved(sidecar, store).await;
+                        }
+                    }
+                    SidecarEvent::Disconnected { .. } => connected = false,
+                    SidecarEvent::Message { .. } => {}
+                }
                 if let (Some(path), SidecarEvent::Message { .. }) = (config_path, &event) {
                     match warden_bootstrap::bot_access::read_config(path) {
                         Ok(config) => {
@@ -155,6 +185,24 @@ pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestr
                 let learning = live.as_ref().filter(|c| c.learning.enabled);
                 handle_event(sidecar, orchestrator, conversations_dir, learning, &mut access, event).await
             }
+        }
+    }
+}
+
+/// Tells each chat the owner approved since the last look that it can write now, at the chat id the
+/// request came from (it may be an `@lid`, so never a bare number). A failed send is logged and not
+/// retried: they are on the list either way, and writing to the bot works.
+async fn announce_approved(sidecar: &mut impl WhatsAppSidecar, store: &BotPairing) {
+    let approved = match store.take_approved(bot_pairing::WHATSAPP, warden_bootstrap::bot_access::unix_now()) {
+        Ok(approved) => approved,
+        Err(err) => {
+            eprintln!("can't read the approvals waiting to be announced: {err:#}");
+            return;
+        }
+    };
+    for entry in approved {
+        if let Err(err) = sidecar.send(&entry.sender, bot_pairing::APPROVED_REPLY).await {
+            eprintln!("failed to tell whatsapp chat {} it was approved: {err:#}", entry.sender);
         }
     }
 }
@@ -182,7 +230,7 @@ enum Gate {
 /// What a stranger is told when they ask to pair.
 fn pairing_reply(code: &str) -> String {
     format!(
-        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). Once they approve it, write to me again.",
+        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). I'll tell you here once they approve it.",
         bot_pairing::display_code(code),
         bot_pairing::VALID_FOR_SECS / 60
     )
@@ -438,6 +486,57 @@ mod tests {
         let sent = sidecar.sent.lock().unwrap();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[1], (stranger.to_string(), "echo: hello".to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P117: once the owner approves a code the bot tells that chat (at the id it wrote from, `@lid`
+    /// included), once, and tells nobody about a code the owner denied.
+    #[tokio::test]
+    async fn an_approved_chat_is_told_once_and_a_denied_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("warden-whatsapp-announce-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[whatsapp]\npairing = true\n").unwrap();
+        let store = BotPairing::beside(&config_path);
+        let now = warden_bootstrap::bot_access::unix_now();
+        let Issued::Fresh(approved) = store.request(bot_pairing::WHATSAPP, "5511999999999@lid", "Ana", now).unwrap() else { panic!("a new request") };
+        let Issued::Fresh(denied) = store.request(bot_pairing::WHATSAPP, "5511888888888@s.whatsapp.net", "Bia", now).unwrap() else { panic!("a new request") };
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+
+        announce_approved(&mut sidecar, &store).await;
+        assert!(sidecar.sent.lock().unwrap().is_empty(), "nothing approved yet");
+
+        store.approve(&approved, now, &config_path).unwrap();
+        store.deny(&denied, now).unwrap();
+        announce_approved(&mut sidecar, &store).await;
+        announce_approved(&mut sidecar, &store).await;
+        assert_eq!(*sidecar.sent.lock().unwrap(), [("5511999999999@lid".to_string(), bot_pairing::APPROVED_REPLY.to_string())], "told once, and only the approved one");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The loop itself, not just the helper: an approval made while the bot was down is announced as soon
+    /// as WhatsApp connects, with no one writing, and never before (the scripted sidecar then runs dry,
+    /// which ends `run_bot` with its "sidecar exited" error).
+    #[tokio::test]
+    async fn the_loop_announces_an_approval_once_connected_without_waiting_for_a_message() {
+        let dir = std::env::temp_dir().join(format!("warden-whatsapp-loop-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[whatsapp]\npairing = true\n").unwrap();
+        let store = BotPairing::beside(&config_path);
+        let now = warden_bootstrap::bot_access::unix_now();
+        let Issued::Fresh(code) = store.request(bot_pairing::WHATSAPP, "5511999999999@lid", "Ana", now).unwrap() else { panic!("a new request") };
+        store.approve(&code, now, &config_path).unwrap();
+
+        // Never connected: nothing is sent, and the approval is kept for later.
+        let mut offline = ScriptedSidecar::new(Vec::new());
+        run_bot(&mut offline, &temp_orchestrator(), &temp_conversations_dir(), Some(&config_path)).await.unwrap_err();
+        assert!(offline.sent.lock().unwrap().is_empty());
+
+        let mut sidecar = ScriptedSidecar::new(vec![SidecarEvent::Connected]);
+        let err = run_bot(&mut sidecar, &temp_orchestrator(), &temp_conversations_dir(), Some(&config_path)).await.unwrap_err();
+        assert!(err.to_string().contains("exited"), "{err:#}");
+        assert_eq!(*sidecar.sent.lock().unwrap(), [("5511999999999@lid".to_string(), bot_pairing::APPROVED_REPLY.to_string())]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -19,6 +19,8 @@ pub const WHATSAPP: &str = "whatsapp";
 
 /// How long a code stays valid.
 pub const VALID_FOR_SECS: u64 = 60 * 60;
+/// How long an approval waits for its bot: a bot that was down for longer doesn't announce it late.
+pub const NOTIFY_WITHIN_SECS: u64 = 24 * 60 * 60;
 /// Pending requests kept per channel: past this, a stranger gets nothing until one expires, so a flood
 /// of strangers can't grow the file or bury the owner's list.
 pub const MAX_PENDING_PER_CHANNEL: usize = 10;
@@ -37,6 +39,20 @@ pub struct PairingRequest {
     pub code: String,
     /// Unix seconds.
     pub expires_at: u64,
+}
+
+/// What the bot tells a sender once the owner has approved them.
+pub const APPROVED_REPLY: &str = "Approved. You can talk to me now.";
+
+/// Someone the owner let in, waiting for their bot to say so.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Approved {
+    /// `telegram` or `whatsapp`.
+    pub channel: String,
+    /// The id the request came from: the chat the bot answers in.
+    pub sender: String,
+    /// Unix seconds.
+    pub approved_at: u64,
 }
 
 /// What asking for a code came to.
@@ -161,7 +177,55 @@ impl BotPairing {
         }
         save_config(config_path, &config)?;
         self.deny(&wanted, now)?;
+        self.mark_approved(&request, now)?;
         Ok(request)
+    }
+
+    /// Beside the requests: the approvals the bots haven't announced yet.
+    fn approved_path(&self) -> PathBuf {
+        self.path.with_file_name("bot_pairing_approved.json")
+    }
+
+    fn read_approved(&self, now: u64) -> anyhow::Result<Vec<Approved>> {
+        let path = self.approved_path();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut approved: Vec<Approved> = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        approved.retain(|a| a.approved_at + NOTIFY_WITHIN_SECS > now);
+        Ok(approved)
+    }
+
+    fn write_approved(&self, approved: &[Approved]) -> anyhow::Result<()> {
+        let path = self.approved_path();
+        let text = serde_json::to_string_pretty(approved)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))
+    }
+
+    /// Notes that `request`'s sender is in, once per sender, for their bot to pick up.
+    fn mark_approved(&self, request: &PairingRequest, now: u64) -> anyhow::Result<()> {
+        let mut approved = self.read_approved(now)?;
+        if approved.iter().any(|a| a.channel == request.channel && a.sender == request.sender) {
+            return Ok(());
+        }
+        approved.push(Approved { channel: request.channel.clone(), sender: request.sender.clone(), approved_at: now });
+        self.write_approved(&approved)
+    }
+
+    /// The approvals on `channel` the bot hasn't announced, removed as they are handed over (other
+    /// channels' and expired ones aside): the bot tells each sender it can write now.
+    pub fn take_approved(&self, channel: &str, now: u64) -> anyhow::Result<Vec<Approved>> {
+        let approved = self.read_approved(now)?;
+        if !approved.iter().any(|a| a.channel == channel) {
+            return Ok(Vec::new());
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) = approved.into_iter().partition(|a| a.channel == channel);
+        self.write_approved(&rest)?;
+        Ok(mine)
     }
 }
 
@@ -247,6 +311,49 @@ mod tests {
         let again = fresh(store.request(TELEGRAM, "42", "Ana", 300).unwrap());
         store.approve(&again, 300, &path).unwrap();
         assert_eq!(load_config_from_path(&path, false).unwrap().telegram.allowed_users, [7, 42]);
+    }
+
+    #[test]
+    fn an_approval_is_handed_to_its_own_bot_once() {
+        let (path, store) = setup("");
+        let tg = fresh(store.request(TELEGRAM, "42", "", 100).unwrap());
+        let wa = fresh(store.request(WHATSAPP, "5511999999999@lid", "", 100).unwrap());
+        assert!(store.take_approved(TELEGRAM, 150).unwrap().is_empty(), "nothing approved yet");
+        store.approve(&tg, 200, &path).unwrap();
+        store.approve(&wa, 200, &path).unwrap();
+
+        let taken = store.take_approved(TELEGRAM, 210).unwrap();
+        assert_eq!(taken, [Approved { channel: TELEGRAM.into(), sender: "42".into(), approved_at: 200 }]);
+        assert!(store.take_approved(TELEGRAM, 220).unwrap().is_empty(), "announced once");
+        let whatsapp = store.take_approved(WHATSAPP, 220).unwrap();
+        assert_eq!(whatsapp.len(), 1, "the other channel's approval was left alone");
+        assert_eq!(whatsapp[0].sender, "5511999999999@lid");
+    }
+
+    #[test]
+    fn an_approval_waiting_for_a_bot_that_was_down_goes_stale() {
+        let (path, store) = setup("");
+        let code = fresh(store.request(TELEGRAM, "42", "", 100).unwrap());
+        store.approve(&code, 200, &path).unwrap();
+        assert!(store.take_approved(TELEGRAM, 200 + NOTIFY_WITHIN_SECS).unwrap().is_empty());
+    }
+
+    #[test]
+    fn approving_twice_before_the_bot_looks_announces_once() {
+        let (path, store) = setup("");
+        let first = fresh(store.request(TELEGRAM, "42", "", 100).unwrap());
+        store.approve(&first, 150, &path).unwrap();
+        let again = fresh(store.request(TELEGRAM, "42", "", 160).unwrap());
+        store.approve(&again, 170, &path).unwrap();
+        assert_eq!(store.take_approved(TELEGRAM, 180).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn denying_announces_nothing() {
+        let (_, store) = setup("");
+        let code = fresh(store.request(TELEGRAM, "42", "", 100).unwrap());
+        store.deny(&code, 150).unwrap();
+        assert!(store.take_approved(TELEGRAM, 160).unwrap().is_empty());
     }
 
     #[test]
