@@ -26,6 +26,15 @@ export interface ToolSpec {
   parameters: unknown;
 }
 
+/** Mirrors `warden_server_protocol::protocol::ProjectDto` (P103). `id` is the folder name and never changes; the files of
+ * a project are notes of the vault under `projects/<id>/`. */
+export interface ProjectDto {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+}
+
 /** Mirrors `warden_server_protocol::protocol::SkillDto` (P72). `agents` is the agent restriction
  * (empty = every agent) — this client only displays it; an edit that sends `[]` keeps whatever the
  * server has stored. */
@@ -52,6 +61,8 @@ export interface ConversationSummary {
   updatedAt: number;
   /** The agent (P46) this conversation last spoke with — absent for none. */
   agentId?: string;
+  /** The project (P103) the conversation was started in — fixed for its life; absent for none (or a hub from before projects). */
+  projectId?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
@@ -575,7 +586,7 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string }
+  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string; projectId?: string }
   /** P46 — the person's answer to an `approvalRequest`. */
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "toolCallResult"; callId: number; result: unknown }
@@ -584,6 +595,10 @@ export type ClientMessage =
   | { type: "listSkills"; requestId: number }
   | { type: "saveSkill"; requestId: number; skill: SkillDto; overwrite: boolean }
   | { type: "deleteSkill"; requestId: number; name: string }
+  /** Projects (P103) — of the person's own vault; `requestId` is echoed on the matching reply. */
+  | { type: "listProjects"; requestId: number }
+  | { type: "saveProject"; requestId: number; project: ProjectDto; overwrite: boolean }
+  | { type: "deleteProject"; requestId: number; id: string }
   /** P40 — this device's persisted conversation, answered by `history`/`historyError` with the same
    * `requestId`. `limit` keeps only the most recent messages. */
   | { type: "requestHistory"; requestId: number; limit?: number; conversationId?: string }
@@ -689,6 +704,9 @@ export type ServerMessage =
   | { type: "skillList"; requestId: number; skills: SkillDto[] }
   | { type: "skillOk"; requestId: number }
   | { type: "skillError"; requestId: number; message: string }
+  | { type: "projectList"; requestId: number; projects: ProjectDto[] }
+  | { type: "projectOk"; requestId: number }
+  | { type: "projectError"; requestId: number; message: string }
   | { type: "history"; requestId: number; messages: HistoryMessage[] }
   | { type: "historyError"; requestId: number; message: string }
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
@@ -790,6 +808,9 @@ export function decode(text: string): ServerMessage {
     }
     case "skillOk":
     case "skillError":
+    case "projectList":
+    case "projectOk":
+    case "projectError":
     case "historyError":
     case "conversationList":
     case "conversationOk":

@@ -9,6 +9,7 @@ import ApiKeysSection from "./components/ApiKeysSection";
 import LoginView, { type LoginCredentials, type TruthIdQr } from "./components/LoginView";
 import MyAgentsView from "./components/MyAgentsView";
 import PeopleView from "./components/PeopleView";
+import ProjectsView from "./components/ProjectsView";
 import RecoveryCodeView from "./components/RecoveryCodeView";
 import RecoveryNoticeView from "./components/RecoveryNoticeView";
 import SettingsView from "./components/SettingsView";
@@ -19,7 +20,7 @@ import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
-import type { Attachment, ConversationSummary, UserInfo } from "./hub/messages";
+import type { Attachment, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
 const HISTORY_LIMIT = 200;
@@ -34,7 +35,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "tasks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
+type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -89,6 +90,10 @@ export default function App() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   /** The agent the open conversation speaks with — "" for none. */
   const [agentId, setAgentId] = useState("");
+  /** The person's projects (P103), for the chat's picker and the list's groups. */
+  const [projects, setProjects] = useState<ProjectDto[]>([]);
+  /** The project the open conversation is in — "" for none. Chosen before its first message, fixed after. */
+  const [projectId, setProjectId] = useState("");
   /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
   /** P84: the member this browser belongs to — `undefined` for the owner. */
@@ -139,6 +144,16 @@ export default function App() {
       if (connRef.current === connection) setAgentIds(settings.agents.map((a) => a.id));
     } catch {
       if (connRef.current === connection) setAgentIds([]);
+    }
+  }, []);
+
+  /** Re-reads the projects. Without them (a hub from before projects, a provisional password) there are none to pick. */
+  const refreshProjects = useCallback(async (connection: ServerConnection) => {
+    try {
+      const list = await connection.listProjects();
+      if (connRef.current === connection) setProjects(list);
+    } catch {
+      if (connRef.current === connection) setProjects([]);
     }
   }, []);
 
@@ -257,6 +272,7 @@ export default function App() {
       });
 
       void refreshAgents(connection);
+      void refreshProjects(connection);
       const list = await refreshConversations(connection);
       if (connRef.current !== connection) return;
       // Keep the open conversation across reconnects. A remembered one that was deleted
@@ -266,11 +282,14 @@ export default function App() {
         setActiveId(list[0]?.id ?? newConversationId());
       }
       const open = list?.find((c) => c.id === activeIdRef.current);
-      if (open) setAgentId(open.agentId ?? "");
+      if (open) {
+        setAgentId(open.agentId ?? "");
+        setProjectId(open.projectId ?? "");
+      }
       await loadConversation(connection, activeIdRef.current);
     },
     // `scheduleReconnect` (below) only touches refs and state setters, so it's safe to leave out.
-    [clearReconnect, forgetToken, loadConversation, refreshAgents, refreshConversations, setActiveId, setPendingTurns],
+    [clearReconnect, forgetToken, loadConversation, refreshAgents, refreshProjects, refreshConversations, setActiveId, setPendingTurns],
   );
 
   function scheduleReconnect() {
@@ -316,6 +335,7 @@ export default function App() {
     const connection = connRef.current;
     if (!connection) return;
     void refreshAgents(connection);
+    void refreshProjects(connection);
     void refreshConversations(connection).then(() => loadConversation(connection, activeIdRef.current));
   }
 
@@ -331,6 +351,8 @@ export default function App() {
     setPendingTurns(() => ({}));
     setApprovals([]);
     setAgentIds([]);
+    setProjects([]);
+    setProjectId("");
     setServerName(null);
     setUser(undefined);
     setChangingPassword(false);
@@ -359,12 +381,13 @@ export default function App() {
     if (!conversations.some((c) => c.id === id)) {
       const now = Date.now();
       setConversations((current) => [
-        { id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now, ...(agentId && { agentId }) },
+        { id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now, ...(agentId && { agentId }), ...(projectId && { projectId }) },
         ...current,
       ]);
     }
     try {
-      connection.sendChat(message, id, attachments, agentId || undefined);
+      // The project only counts when this turn starts the conversation: the hub keeps an existing one where it was made.
+      connection.sendChat(message, id, attachments, agentId || undefined, projectId || undefined);
     } catch (err) {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
@@ -391,6 +414,7 @@ export default function App() {
     setEntries([]);
     // Each conversation remembers the agent it spoke with last (P46).
     setAgentId(conversationsRef.current.find((c) => c.id === id)?.agentId ?? "");
+    setProjectId(conversationsRef.current.find((c) => c.id === id)?.projectId ?? "");
     const connection = connRef.current;
     if (connection) void loadConversation(connection, id);
   }
@@ -403,12 +427,16 @@ export default function App() {
     setActiveId(newConversationId());
     setEntries([]);
     setAgentId("");
+    setProjectId("");
   }
 
   function showView(next: View) {
     setView(next);
     // Agents may have been added or renamed in Settings meanwhile.
-    if (next === "chat" && connRef.current) void refreshAgents(connRef.current);
+    if (next === "chat" && connRef.current) {
+      void refreshAgents(connRef.current);
+      void refreshProjects(connRef.current);
+    }
   }
 
   async function handleRename(id: string, title: string) {
@@ -528,6 +556,9 @@ export default function App() {
           <button type="button" className={view === "skills" ? "tab tab--active" : "tab"} onClick={() => setView("skills")}>
             Skills
           </button>
+          <button type="button" className={view === "projects" ? "tab tab--active" : "tab"} onClick={() => setView("projects")}>
+            Projetos
+          </button>
           {isOwner && (
             <>
               <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
@@ -584,6 +615,7 @@ export default function App() {
           <div className={sidebarOpen ? "chat-layout chat-layout--drawer-open" : "chat-layout"}>
             <ConversationList
               conversations={conversations}
+              projects={projects}
               activeId={activeId}
               pendingIds={Object.keys(pendingTurns)}
               error={conversationsError}
@@ -614,6 +646,25 @@ export default function App() {
                     </select>
                   </label>
                 )}
+                {(projects.length > 0 || projectId !== "") && (
+                  // Like the agent, chosen before the conversation's first message and fixed after (P103).
+                  <label className="agent-picker">
+                    <span className="agent-picker-label">Projeto</span>
+                    <select
+                      value={projects.some((p) => p.id === projectId) ? projectId : ""}
+                      onChange={(e) => setProjectId(e.target.value)}
+                      disabled={activeId in pendingTurns || conversations.some((c) => c.id === activeId)}
+                      title="A IA trabalha só nos arquivos do projeto, com as instruções dele. Não muda depois da primeira mensagem."
+                    >
+                      <option value="">Nenhum</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
               </div>
               <ChatView
                 entries={entries}
@@ -629,6 +680,8 @@ export default function App() {
           <VaultView conn={conn} />
         ) : view === "usage" ? (
           <UsageView conn={conn} />
+        ) : view === "projects" ? (
+          <ProjectsView conn={conn} onChanged={setProjects} />
         ) : view === "tasks" ? (
           <TasksView conn={conn} onOpenConversation={openConversation} />
         ) : view === "devices" ? (

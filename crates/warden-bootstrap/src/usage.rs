@@ -224,6 +224,7 @@ mod tests {
             updated_at: 0,
             agent_id: agent_id.map(str::to_string),
             provider_id: provider_id.map(str::to_string),
+            project_id: None,
         }
     }
 

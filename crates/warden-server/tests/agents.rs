@@ -118,7 +118,7 @@ async fn spin_up() -> Hub {
 }
 
 fn chat(message: &str, conversation_id: &str, agent_id: Option<&str>) -> ClientMessage {
-    ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation_id.into()), attachments: Vec::new(), agent_id: agent_id.map(str::to_string) }
+    ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation_id.into()), attachments: Vec::new(), agent_id: agent_id.map(str::to_string), project_id: None }
 }
 
 /// Reads until the turn's `ChatResponse`/`ChatError`, answering every `ApprovalRequest` with

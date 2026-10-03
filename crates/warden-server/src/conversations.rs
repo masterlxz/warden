@@ -136,6 +136,7 @@ fn to_summary(conversation: Conversation) -> ConversationSummary {
         created_at: conversation.created_at,
         updated_at: conversation.updated_at,
         agent_id: conversation.agent_id,
+        project_id: conversation.project_id,
     }
 }
 
@@ -184,6 +185,7 @@ mod tests {
             updated_at,
             agent_id: None,
             provider_id: None,
+            project_id: None,
         };
         save_conversation(dir, &conversation).unwrap();
     }

@@ -3078,6 +3078,27 @@ ignora.
   0), e dirige a página num Chromium headless (`PLAYWRIGHT_CHROMIUM_EXECUTABLE`, o do Playwright ou o Chrome do sistema); captura os frames de
   WebSocket enviados, para provar o que viajou ao hub. O `harness.mjs` serve a qualquer teste futuro da web. Não roda no CI (o `build.yml` só monta o desktop).
 
+## Projetos (P103 a, Sessão 125)
+
+Um projeto agrupa conversas de um assunto, com instruções e arquivos próprios, como os Projects do Claude e do ChatGPT.
+
+- **No disco**: `projects/<id>/PROJECT.md` no cofre **da pessoa** (o do dono, ou o do membro, cifrado junto: os nomes de pasta cifram por componente, então uma sub-pasta é raiz válida para a mesma cifra). Frontmatter
+  `name` e `description`, corpo = instruções (até 16 KB: vão a toda chamada). O `id` é o nome da pasta (`[A-Za-z0-9_-]`, 1–64, a mesma regra do id de conversa) e **não muda**; o nome de exibição muda sem quebrar
+  o vínculo. Os arquivos do projeto são as notas da pasta (qualquer tipo, subpastas): sincronizam com o cofre, e o desktop e a web listam e acrescentam notas ali. `ProjectStore` (`warden_core::project`)
+  é o molde do `SkillStore`; no `Vault`, `dirs_in` lista pastas e `subvault` abre uma pasta como cofre próprio.
+- **A conversa**: `Conversation.project_id` (e `ConversationSummary.project_id`, `Chat.project_id`), `#[serde(default, skip_serializing_if)]`. **Só vale na criação**: `append_messages` não mexe nele numa conversa que
+  já existe, ao contrário do `agent_id`, que é regravado a cada turno. Copiar o molde do `agent_id` apagaria o projeto a cada turno de qualquer cliente que não o enviasse (todos os que existem). Um projeto
+  que não existe mais (sem `PROJECT.md`) lê como "sem projeto": a conversa segue como comum e a lista a mostra com as outras. Começar uma conversa num projeto que não existe é erro, e nada é gravado.
+- **O turno** (`warden_bootstrap::scope_to_project`, usado por `handle_agent_turn` no hub e por `send_message` no desktop, **depois** do agente e do modelo): `Orchestrator::with_project` troca o cofre pelo da pasta (`with_vault`, que
+  religa as tools e os sub-agentes) e guarda o briefing, que entra logo depois da persona. Como o catálogo de skills e o contexto semântico leem `self.vault`, **vêm da pasta**: é o isolamento escolhido, e por isso as skills
+  e a memória geral não existem numa conversa de projeto. **Tools que uma pasta não segura saem do turno** (`WITHHELD_IN_A_PROJECT`: `shell`, `ssh_exec`, `node_shell`, `search_history`): o `shell` é deliberadamente sem
+  sandbox (`cd ..`, `cwd` absoluto), `ssh_exec`/`node_shell` rodam em outro lugar e `search_history` lê todas as conversas. As tools de MCP e da web não são acesso ao cofre e ficam. O cofre escopado fica num cache do processo,
+  chaveado pelo caminho e, se cifrado, por uma impressão da chave: o modelo de busca de cada projeto carrega uma vez, não por turno.
+- **No hub**: `ListProjects`/`SaveProject`/`DeleteProject` (`projects.rs`, no cofre de **quem pergunta**, como as skills); membros usam o próprio, e o `password_gate` fecha a tela enquanto a senha é a provisória
+  (**o braço explícito é necessário**: a lista termina em `_ => None`, e uma mensagem nova passaria). **Remover só tira o `PROJECT.md`**: os arquivos ficam como notas comuns.
+- **Limites conhecidos**: a busca do cofre das conversas **fora** de projeto acha os arquivos de projeto (são notas comuns; `skills/` é excluída da busca, `projects/` não); o sync não leva conversas, então em outro
+  aparelho o projeto aparece com os arquivos e sem as conversas; um binário de antes de projetos que regrave o arquivo de uma conversa perde o `project_id`; o celular, a extensão e o CLI não conhecem projetos ainda.
+
 ## Dólares por provedor, agente e pessoa, por dia, e "Testar chave" (P10, Sessão 124)
 
 O P10 pedia UI de consumo, custo por provedor/modelo e gestão de chaves. Boa parte já existia desde o P4; o que faltava:

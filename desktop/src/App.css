@@ -189,6 +189,32 @@ body {
   padding: 0 0.25rem;
 }
 
+/* A project's conversations (P103), under its name. */
+.conversation-group {
+  margin-bottom: 0.6rem;
+}
+
+.conversation-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75em;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-file-list {
+  margin: 0.2rem 0 0.5rem;
+  padding-left: 1.2rem;
+  font-size: 0.87em;
+}
+
 .conversation-list-item {
   width: 100%;
   text-align: left;

@@ -31,6 +31,7 @@ pub mod device_registry;
 pub mod openai_api;
 pub mod people;
 pub mod provider_admin;
+pub mod projects;
 pub mod devices;
 pub mod member_backup;
 pub mod node_client;

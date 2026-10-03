@@ -261,6 +261,27 @@ impl Vault {
             .collect())
     }
 
+    /// The names of the folders directly inside a folder of this vault (not the files), in no particular
+    /// order. Empty when the folder doesn't exist. Symlinks are not folders here, as in `list_all_files`.
+    pub fn dirs_in(&self, relative_dir: &str) -> anyhow::Result<Vec<String>> {
+        let Ok(entries) = std::fs::read_dir(self.path_of(relative_dir)?) else { return Ok(Vec::new()) };
+        Ok(entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| self.readable_name(&entry.file_name().to_string_lossy()))
+            .collect())
+    }
+
+    /// A vault of its own rooted at the folder `relative_dir` of this one (P103: a project's folder), with
+    /// the same encryption — an encrypted vault names every folder with the same per-name cipher whatever
+    /// its parent, so the folder on disk is a root the cipher still reads. The folder is created if it
+    /// isn't there. Refused for a locked vault, and for a path `path_of` refuses (absolute, `..`).
+    /// Mounts are not carried over: the new vault has none, so `compartilhado/` is an ordinary name in it.
+    pub fn subvault(&self, relative_dir: &str) -> anyhow::Result<Vault> {
+        let root = self.path_of(relative_dir)?;
+        Ok(Self::build(root, self.cipher.clone()))
+    }
+
     /// Removes a folder of this vault with everything in it. A folder that isn't there counts as done.
     pub fn remove_dir_all(&self, relative_dir: &str) -> anyhow::Result<()> {
         match std::fs::remove_dir_all(self.path_of(relative_dir)?) {

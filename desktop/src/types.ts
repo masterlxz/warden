@@ -57,6 +57,20 @@ export interface Conversation {
    * currently resolves to. */
   agentId?: string;
   providerId?: string;
+  /** The project (P103) this conversation was started in — fixed for its life. Absent: no project, or one that
+   * was removed since (the list then shows it with the others). */
+  projectId?: string;
+}
+
+/** One project (P103) — mirrors `ProjectPayload` in `src-tauri/src/projects_cmds.rs`. Its files are notes of the
+ * vault under `projects/<id>/`. */
+export interface ProjectEntry {
+  /** The folder name: letters, digits, `-` and `_`. Can't change after saving: conversations point at it. */
+  id: string;
+  name: string;
+  description: string;
+  /** What the model is told in every conversation of the project. */
+  instructions: string;
 }
 
 /** Mirrors `warden_bootstrap::Provider`. `openaiCompatible` covers any other server that speaks

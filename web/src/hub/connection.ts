@@ -28,6 +28,7 @@ import {
   type ServerMessage,
   type UsageReport,
   type NodeInfo,
+  type ProjectDto,
   type SkillDto,
   type SpaceInfo,
   type Task,
@@ -478,6 +479,8 @@ export class ServerConnection {
         break;
       case "skillList":
       case "skillOk":
+      case "projectList":
+      case "projectOk":
       case "history":
       case "conversationList":
       case "conversationOk":
@@ -551,6 +554,7 @@ export class ServerConnection {
         );
         break;
       case "skillError":
+      case "projectError":
       case "historyError":
       case "conversationError":
       case "transcriptionError":
@@ -567,11 +571,18 @@ export class ServerConnection {
   }
 
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation), with any
-   * images/PDFs, spoken by `agentId` (P46) when set. The reply arrives asynchronously via
-   * `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string): void {
+   * images/PDFs, spoken by `agentId` (P46) when set. `projectId` (P103) is the project a *new* conversation starts in;
+   * the hub ignores it for one that exists. The reply arrives asynchronously via `onChatMessage`, tagged with the same id. */
+  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string): void {
     this.socket.send(
-      encode({ type: "chat", message, conversationId, ...(attachments.length > 0 && { attachments }), ...(agentId && { agentId }) }),
+      encode({
+        type: "chat",
+        message,
+        conversationId,
+        ...(attachments.length > 0 && { attachments }),
+        ...(agentId && { agentId }),
+        ...(projectId && { projectId }),
+      }),
     );
   }
 
@@ -612,6 +623,21 @@ export class ServerConnection {
 
   async deleteSkill(name: string): Promise<void> {
     await this.request((requestId) => ({ type: "deleteSkill", requestId, name }));
+  }
+
+  /** P103 — the projects of the person's own vault, by name. */
+  async listProjects(): Promise<ProjectDto[]> {
+    const reply = await this.request((requestId) => ({ type: "listProjects", requestId }));
+    return reply.type === "projectList" ? reply.projects : [];
+  }
+
+  async saveProject(project: ProjectDto, overwrite: boolean): Promise<void> {
+    await this.request((requestId) => ({ type: "saveProject", requestId, project, overwrite }));
+  }
+
+  /** Removes only the project's `PROJECT.md`: its files stay in the vault, and its conversations go on without a project. */
+  async deleteProject(id: string): Promise<void> {
+    await this.request((requestId) => ({ type: "deleteProject", requestId, id }));
   }
 
   /** Every file in the hub's vault a person can browse (not the fixed files, `skills/` or dotfiles). */

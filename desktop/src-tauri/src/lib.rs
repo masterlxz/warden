@@ -5,6 +5,7 @@ mod git_sync_cmds;
 mod lend_cmds;
 mod node_cmds;
 mod people_cmds;
+mod projects_cmds;
 mod provider_cmds;
 mod qr;
 mod recording;
@@ -177,6 +178,10 @@ struct SendMessageResult {
 /// unambiguous `Option<String>` deserialization. Both only ever affect this one call: `history`
 /// (built fresh from the conversation's stored messages each time) is what makes a mid-conversation
 /// switch apply "from here on" without needing to touch anything already said.
+///
+/// `project_id` (P103) is the project of the conversation (the one it was created in), or `null`: the turn then runs on
+/// the project's folder, with its instructions. A project that was removed since is read as no project.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn send_message(
     app: AppHandle,
@@ -186,6 +191,7 @@ async fn send_message(
     attachments: Vec<AttachmentPayload>,
     agent_id: Option<String>,
     provider_id: Option<String>,
+    project_id: Option<String>,
 ) -> Result<SendMessageResult, String> {
     // Spends as the desktop (P4) — set before scoping, so the agents this one delegates or writes to
     // spend the same way.
@@ -216,6 +222,13 @@ async fn send_message(
         if let Some(id) = &provider_id {
             let model = build_model_for(&config, id, None).map_err(|e| format!("{e:#}"))?;
             orchestrator = orchestrator.with_model(model);
+        }
+    }
+
+    // After the agent and the model: the project narrows what the turn can reach, whoever is speaking.
+    if let Some(id) = project_id.as_deref() {
+        if let Some(scoped) = warden_bootstrap::scope_to_project(&orchestrator, id).map_err(|e| format!("{e:#}"))? {
+            orchestrator = scoped;
         }
     }
 
@@ -749,10 +762,12 @@ async fn append_conversation_messages(
     title_seed: String,
     agent_id: Option<String>,
     provider_id: Option<String>,
+    project_id: Option<String>,
 ) -> Result<Conversation, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     let answered = ends_with_an_answer(&messages);
-    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), create: true };
+    // `project_id` only counts when this call creates the conversation (P103): an existing one keeps its own.
+    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), create: true };
     let conversation = append_messages(&dir, &conversation_id, options, messages)
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| "the conversation could not be created".to_string())?;
@@ -914,6 +929,9 @@ pub fn run() {
             vault_cmds::search_vault,
             ssh_cmds::test_ssh_host,
             provider_cmds::test_provider_key,
+            projects_cmds::list_projects,
+            projects_cmds::save_project,
+            projects_cmds::delete_project,
             skills_cmds::list_skills,
             skills_cmds::save_skill,
             skills_cmds::delete_skill,

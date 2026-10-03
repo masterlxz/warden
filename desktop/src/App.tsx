@@ -7,12 +7,13 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import SkillsView from "./components/SkillsView";
+import ProjectsView from "./components/ProjectsView";
 import ApprovalModal from "./components/ApprovalModal";
 import SyncView from "./components/SyncView";
 import TasksView from "./components/TasksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
-import type { Attachment, ChatMessage, Conversation, ProviderFallback, Settings, Usage } from "./types";
+import type { Attachment, ChatMessage, Conversation, ProjectEntry, ProviderFallback, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -75,19 +76,34 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "tasks" | "workspace">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
+  // The project a *new* conversation will start in (P103); an existing one has its own, fixed at creation.
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  const currentProjectId = activeConversation ? (activeConversation.projectId ?? "") : selectedProjectId;
+
+  function loadProjects() {
+    invoke<ProjectEntry[]>("list_projects")
+      .then(setProjects)
+      .catch((err) => console.error("failed to load projects:", err));
+  }
 
   useEffect(() => {
     invoke<Conversation[]>("list_conversations")
       .then(setConversations)
       .catch((err) => console.error("failed to load conversation history:", err));
   }, []);
+
+  // A project made, edited or removed in its screen shows up in the sidebar and the picker on coming back.
+  useEffect(() => {
+    if (view === "chat") loadProjects();
+  }, [view]);
 
   // An agent left a message for another, or answered one (P46 `message_agent`): the backend wrote
   // that conversation to disk, so take the saved copy of it — only it, the rest stays as is here.
@@ -147,6 +163,7 @@ function App() {
   function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {
     const agentId = selectedAgentId || undefined;
     const providerId = selectedProviderId || undefined;
+    const projectId = currentProjectId || undefined;
     // Shown at once; the saved copy then replaces it (P87).
     setConversations((prev) => {
       const existing = prev.find((c) => c.id === conversationId);
@@ -160,6 +177,7 @@ function App() {
             updatedAt: message.createdAt,
             agentId,
             providerId,
+            projectId,
           };
       return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
@@ -173,6 +191,8 @@ function App() {
       titleSeed: titleSeed ?? message.content,
       agentId: agentId ?? null,
       providerId: providerId ?? null,
+      // Only counts when this append creates the conversation: an existing one keeps the project it was made in.
+      projectId: projectId ?? null,
     })
       .then((onDisk) => setConversations((prev) => replaceWithSaved(prev, onDisk)))
       .catch((err) => console.error("failed to persist conversation:", err));
@@ -213,6 +233,8 @@ function App() {
         // Only sent as an override when it actually differs from the active provider — the base
         // orchestrator already uses that one, no need to rebuild a `ModelProvider` for it.
         providerId: selectedProviderId && selectedProviderId !== settings.activeProvider ? selectedProviderId : null,
+        // The conversation's project (P103): the turn runs on its folder, with its instructions.
+        projectId: currentProjectId || null,
       });
       appendMessage(conversationId, {
         id: crypto.randomUUID(),
@@ -245,6 +267,7 @@ function App() {
     <div className={`app-shell${sidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}>
       <Sidebar
         conversations={conversations}
+        projects={projects}
         activeConversationId={activeConversationId}
         onSelectConversation={(id) => {
           setActiveConversationId(id);
@@ -252,6 +275,7 @@ function App() {
         }}
         onNewConversation={() => {
           setActiveConversationId(null);
+          setSelectedProjectId("");
           setView("chat");
         }}
         onOpenSettings={() => setView("settings")}
@@ -259,6 +283,7 @@ function App() {
         onOpenSync={() => setView("sync")}
         onOpenVault={() => setView("vault")}
         onOpenSkills={() => setView("skills")}
+        onOpenProjects={() => setView("projects")}
         onOpenTasks={() => setView("tasks")}
         onOpenWorkspace={() => setView("workspace")}
         view={view}
@@ -275,6 +300,8 @@ function App() {
         <VaultView />
       ) : view === "skills" ? (
         <SkillsView agents={settings.agents} providers={settings.providers} activeProvider={settings.activeProvider} />
+      ) : view === "projects" ? (
+        <ProjectsView onChanged={loadProjects} />
       ) : view === "tasks" ? (
         <TasksView agents={settings.agents} />
       ) : view === "workspace" ? (
@@ -288,6 +315,9 @@ function App() {
           agents={settings.agents}
           providers={settings.providers}
           combos={settings.combos}
+          projects={projects}
+          selectedProjectId={currentProjectId}
+          onSelectProject={setSelectedProjectId}
           selectedAgentId={selectedAgentId}
           selectedProviderId={selectedProviderId}
           onSelectAgent={handleSelectAgent}

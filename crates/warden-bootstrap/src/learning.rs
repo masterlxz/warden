@@ -484,6 +484,7 @@ mod tests {
                 updated_at: 4,
                 agent_id: None,
                 provider_id: None,
+                project_id: None,
             },
         )
         .unwrap();

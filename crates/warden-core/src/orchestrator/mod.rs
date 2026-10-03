@@ -86,6 +86,9 @@ pub struct Orchestrator {
     /// Tools the caller runs itself (P91, the Warden API's client `tools`): offered to the model
     /// next to this orchestrator's own, but a call to one ends the turn instead of running.
     client_tools: Vec<ToolSpec>,
+    /// What a conversation in a project (P103) is told before anything else but the persona: the project's
+    /// instructions and files. Set per turn through `with_project`; `None` for every other conversation.
+    project_briefing: Option<Arc<str>>,
 }
 
 impl Orchestrator {
@@ -104,6 +107,7 @@ impl Orchestrator {
             spend_ctx: SpendContext::default(),
             approver: None,
             client_tools: Vec::new(),
+            project_briefing: None,
         }
     }
 
@@ -197,6 +201,14 @@ impl Orchestrator {
         }
         clone.vault = vault;
         clone
+    }
+
+    /// Returns a copy for a turn of a conversation in a project (P103): it reads and writes `vault` (the project's
+    /// folder, `ProjectStore::scope`) exactly as `with_vault` does, and tells the model `briefing` right after the
+    /// persona. Because the skill catalog and the vault context are read from the vault, they come from the project's
+    /// folder too — that is the isolation.
+    pub fn with_project(&self, vault: Arc<Vault>, briefing: String) -> Self {
+        Self { project_briefing: Some(Arc::from(briefing)), ..self.with_vault(vault) }
     }
 
     /// Returns a copy of this orchestrator that only has the tools named in `allowed` (P46, tool
@@ -504,6 +516,10 @@ impl Orchestrator {
             if !persona.trim().is_empty() {
                 messages.push(Message::system(persona.to_string()));
             }
+        }
+
+        if let Some(briefing) = &self.project_briefing {
+            messages.push(Message::system(briefing.to_string()));
         }
 
         // Skill catalog (P16) — names + descriptions only; bodies load on demand via `use_skill`.
@@ -1086,6 +1102,36 @@ mod tests {
             assert!(part.starts_with("System:Relevant context found in the user's memory vault"), "{part}");
         }
         assert_eq!(&parts[parts.len() - 2..], ["User:earlier message", "User:hello there"]);
+    }
+
+    /// P103: a turn in a project runs on the project's folder — the briefing comes right after the persona, the file
+    /// tools reach only that folder, and neither the skills nor the notes of the rest of the vault are offered.
+    #[tokio::test]
+    async fn a_project_turn_is_told_the_briefing_and_sees_only_the_projects_folder() {
+        let whole = vault_with_skill();
+        whole.write("diary.md", "zebras are my secret").unwrap();
+        let folder = Arc::new(whole.subvault("projects/tax").unwrap());
+        folder.write("jan.md", "january receipts").unwrap();
+        let mut root = Orchestrator::new(Arc::new(EchoesAllMessagesModel), whole.clone());
+        root.register_tool(Arc::new(crate::tool::skill_tools::UseSkillTool::new(crate::skill::SkillStore::new(whole.clone()))));
+        root.register_tool(Arc::new(crate::tool::file_tools::ReadFileTool::new(whole.clone())));
+
+        let plain = root.handle_turn(&[], "zebras", Vec::new(), Some("Persona.")).await.unwrap().content;
+        assert!(plain.contains("review-pr") && plain.contains("diary.md"), "outside a project the whole vault is in reach: {plain}");
+
+        let project = root.with_project(folder.clone(), "BRIEFING".into());
+        let told = project.handle_turn(&[], "january", Vec::new(), Some("Persona.")).await.unwrap().content;
+        let parts: Vec<&str> = told.split('|').collect();
+        assert_eq!((parts[0], parts[1]), ("System:Persona.", "System:BRIEFING"), "the briefing follows the persona: {told}");
+        assert!(told.contains("jan.md"), "the project's own files are the context: {told}");
+        assert!(!told.contains("review-pr") && !told.contains("diary.md") && !told.contains("zebras"), "nothing of the rest of the vault: {told}");
+        let read = project.tools.iter().find(|t| t.spec().name == "read_file").unwrap();
+        assert!(read.call(json!({ "path": "jan.md" })).await.is_ok());
+        for outside in ["diary.md", "../../diary.md", "projects/tax/jan.md"] {
+            assert!(read.call(json!({ "path": outside })).await.is_err(), "{outside}");
+        }
+        // The original is untouched, and a turn without a project carries no briefing.
+        assert!(root.project_briefing.is_none());
     }
 
     fn vault_with_skill() -> Arc<Vault> {

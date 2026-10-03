@@ -90,6 +90,14 @@ export function SkillsIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function ProjectsIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    </svg>
+  );
+}
+
 export function ClockIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">

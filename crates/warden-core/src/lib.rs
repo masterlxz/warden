@@ -3,6 +3,7 @@ pub mod jobs;
 pub mod memory;
 pub mod model;
 pub mod orchestrator;
+pub mod project;
 pub mod skill;
 pub mod speech;
 pub mod spend;

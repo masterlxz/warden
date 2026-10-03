@@ -206,6 +206,9 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         ClientMessage::ListSkills { request_id } | ClientMessage::SaveSkill { request_id, .. } | ClientMessage::DeleteSkill { request_id, .. } => {
             ServerMessage::SkillError { request_id: *request_id, message: text }
         }
+        ClientMessage::ListProjects { request_id } | ClientMessage::SaveProject { request_id, .. } | ClientMessage::DeleteProject { request_id, .. } => {
+            ServerMessage::ProjectError { request_id: *request_id, message: text }
+        }
         ClientMessage::ListVaultFiles { request_id }
         | ClientMessage::ReadVaultNote { request_id, .. }
         | ClientMessage::SaveVaultNote { request_id, .. }
@@ -384,6 +387,7 @@ mod tests {
             }],
             agent_id: None,
             provider_id: None,
+            project_id: None,
         }
     }
 

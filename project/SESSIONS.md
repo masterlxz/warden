@@ -2,7 +2,36 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 124)
+> Última atualização: 2026-10-03 (Sessão 125)
+
+---
+
+### 2026-10-03 — Sessão 125
+
+- **Objetivo**: o P103 (a), em Plan mode: projetos no estilo dos Projects do Claude/ChatGPT. O usuário decidiu: **isolamento** (numa conversa de projeto o cofre do turno é a pasta do projeto),
+  **fatia 1 em desktop e web com a lista agrupada**, e **remover um projeto só tira o `PROJECT.md`** (os arquivos ficam).
+- **Feito**: `warden_core::project` (`ProjectStore`, `projects/<id>/PROJECT.md`) e, no `Vault`, `dirs_in` e `subvault` (um cofre enraizado numa pasta, com a mesma cifra); `Orchestrator::with_project`
+  (cofre da pasta + briefing logo depois da persona); `warden_bootstrap::scope_to_project` (tira as tools que uma pasta não segura, cache do cofre escopado); `project_id` em `Conversation`/`AppendOptions`
+  (**só na criação**) e em `handle_agent_turn`; protocolo (`ListProjects`/`SaveProject`/`DeleteProject`, `Chat.project_id`, `ConversationSummary.project_id`) e o hub (`projects.rs`, no cofre **da pessoa**,
+  `password_gate`); desktop (`projects_cmds.rs`, `ProjectsView`, seletor no cabeçalho do chat, lista agrupada) e web (`ProjectsView`, aba Projetos, seletor, lista agrupada).
+- **Divergências do plano, minhas**: (1) **o `shell` não entra num turno de projeto**, nem `ssh_exec`, `node_shell` e `search_history`. O plano dizia "o shell passa a ter a pasta do projeto como cwd (bom)", mas o `shell` é
+  deliberadamente sem sandbox (`cd ..`, `cwd` absoluto, `cat ../x`), então apontá-lo para a pasta prometeria um isolamento que ele quebra. Se o usuário preferir o shell com a ressalva, é só tirar `"shell"` de
+  `WITHHELD_IN_A_PROJECT`. (2) O briefing vai por um campo do orquestrador (`with_project`), não por um parâmetro novo de `handle_turn`, para não mexer em todas as assinaturas.
+  (3) O cofre escopado fica num cache do processo, para o modelo de busca de cada projeto carregar uma vez, não a cada turno.
+- **Verificado**: **997 testes passando, 0 falhando** nos 7 crates (+8 do `ProjectStore`, 1 do orquestrador, 3 do `project_scope`, 4 do turno no bootstrap, 4 do `projects.rs`, 1 do protocolo, 1 do hub real) e 33 no desktop.
+  Hub real (`people.rs`): a escrita do agente cai em `projects/<id>/`, o que está fora não se lê, `shell` e `search_history` não são oferecidos, o dono e a Ana têm cada um os seus (a dela cifrada em disco),
+  um projeto do dono não é da Ana, projeto inexistente é `ChatError` e não cria conversa, a lista diz o projeto de cada conversa, remover mantém os arquivos, e a senha provisória fecha a tela.
+  **Ponta a ponta na web** (hub real + Chromium headless, cofre e conversas semeados no disco): lista agrupada, conversa de projeto removido listada como comum, seletor travado numa conversa que existe, o primeiro
+  quadro `chat` leva o `projectId`, criar/adicionar nota/remover pela aba. **Oito mutações, todas derrubaram o teste certo e foram desfeitas** (zero marcas sobrando): o `subvault` enraizado no cofre inteiro, `with_project` sem trocar o cofre, o turno obedecendo o
+  projeto que o cliente manda, o hub sem passar o projeto ao turno, o braço do `password_gate`, `sendChat` sem o projeto, o seletor sem travar, e a lista solta mostrando tudo.
+- **Erros meus no caminho**: (1) rodei um `cat >>` vazio por Bash contra a preferência de ver o diff (não escreveu nada); todo o resto foi `Edit`/`Write`. (2) Dois testes do bootstrap com expectativa errada: o contexto
+  do cofre inteiro acha o `PROJECT.md` (é uma nota comum) e o eco do modelo repete o histórico; passei a olhar a primeira mensagem enviada. (3) Dois avisos novos do clippy (tipo complexo, 8 argumentos), corrigidos.
+  (4) O teste da web "envia nenhum projeto" passava vazio se o quadro não existisse; revisto antes das mutações, junto com uma checagem que faltava (a conversa do projeto não aparece duas vezes).
+- **Não verificado**: uma resposta de modelo de verdade dentro de um projeto (nos testes o modelo é um roteiro; o que o modelo recebe foi conferido, não o que ele faz com isso); as telas do desktop numa janela nativa
+  (só `tsc`, build e testes Rust); a aba e o seletor da web num celular; a extensão do navegador e o celular, que não foram tocados (o protocolo só ganhou campos opcionais, coberto por teste de leitura de peer antigo).
+- **Perguntas em aberto para o usuário**: os arquivos de um projeto são notas comuns do cofre, então **o contexto do cofre das conversas fora de projeto também os acha**. Não escondi (`skills/` é escondida, `projects/`
+  não): é o que deixa achar uma nota de projeto numa conversa solta, mas é o contrário do isolamento. Dá para excluir `projects/` da busca das conversas soltas se for o desejado.
+- **Próximo passo**: a rodada de testes em tela (P115, P95–P118, o "Testar chave" com chave real e agora projetos).
 
 ---
 

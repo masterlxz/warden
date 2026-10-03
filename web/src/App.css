@@ -741,6 +741,42 @@ button:focus-visible {
   gap: 0.2rem;
 }
 
+/* A project's conversations (P103), under its name. */
+.conversation-group {
+  margin-top: 0.6rem;
+}
+
+.conversation-group-title {
+  margin: 0 0 0.25rem;
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-files {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.project-file-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.9rem;
+}
+
+.project-file-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .conversation {
   border-radius: 8px;
 }

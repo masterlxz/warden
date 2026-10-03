@@ -133,7 +133,7 @@ async fn spin_up() -> Hub {
 
     // A scheduled task's conversation: the owner's, never listed to a member.
     let tasks = TaskStore::new(dir.join("tasks"));
-    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None }).unwrap();
+    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None }).unwrap();
 
     let offered: Offered = Arc::default();
     let vault = Arc::new(Vault::new(dir.join("vault")));
@@ -175,7 +175,7 @@ async fn reply(conn: &mut ServerConnection) -> ServerMessage {
 }
 
 async fn chat(conn: &mut ServerConnection, message: &str, conversation: &str) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: None }).await.unwrap();
     reply(conn).await
 }
 
@@ -319,7 +319,7 @@ async fn the_owner_creates_and_resets_members_with_a_password_shown_once() {
 }
 
 async fn chat_as(conn: &mut ServerConnection, message: &str, conversation: &str, agent: &str) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some(agent.into()) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None }).await.unwrap();
     reply(conn).await
 }
 
@@ -696,7 +696,7 @@ async fn a_member_from_before_gets_her_data_encrypted_when_she_signs_in() {
     save_config(&config_path, &config).unwrap();
     std::fs::create_dir_all(hub.dir.join("users/ana/vault/notes")).unwrap();
     std::fs::write(hub.dir.join("users/ana/vault/notes/velha.md"), "nota antiga da ana").unwrap();
-    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None }).unwrap();
+    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None }).unwrap();
 
     let (mut ana, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
     assert!(user.unwrap().encrypted, "the sign-in turned it on");
@@ -1707,4 +1707,101 @@ async fn a_bot_chat_that_speaks_as_a_member_is_answered_by_the_hub_with_her_data
     warden_server::PairingStore::new(hub.dir.join("devices.json")).revoke(&linked.device_id).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(chat.ask("ana", "telegram-42", "hello").await, MemberReply::Failed(bot_hub::NOT_LINKED_REPLY.into()));
+}
+
+fn project(id: &str, name: &str) -> warden_server_protocol::protocol::ProjectDto {
+    warden_server_protocol::protocol::ProjectDto { id: id.into(), name: name.into(), description: String::new(), instructions: format!("Instructions of {name}.") }
+}
+
+async fn save_project(conn: &mut ServerConnection, id: &str, name: &str) -> ServerMessage {
+    conn.send(&ClientMessage::SaveProject { request_id: 20, project: project(id, name), overwrite: false }).await.unwrap();
+    reply(conn).await
+}
+
+async fn project_names(conn: &mut ServerConnection) -> Vec<String> {
+    conn.send(&ClientMessage::ListProjects { request_id: 21 }).await.unwrap();
+    match reply(conn).await {
+        ServerMessage::ProjectList { projects, .. } => projects.into_iter().map(|p| p.id).collect(),
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn chat_in(conn: &mut ServerConnection, message: &str, conversation: &str, project: Option<&str>) -> ServerMessage {
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: project.map(String::from) }).await.unwrap();
+    reply(conn).await
+}
+
+/// P103 on a real hub: a project belongs to whoever made it, a conversation started in one is held to its folder —
+/// what the agent writes lands there, what is outside can't be read, no shell and no history search are offered — and
+/// the list tells which project each conversation is in.
+#[tokio::test]
+async fn projects_belong_to_each_person_and_a_project_conversation_is_held_to_its_folder() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+
+    // On a provisional password the Projects screen is as shut as everything else.
+    ana.send(&ClientMessage::ListProjects { request_id: 1 }).await.unwrap();
+    match reply(&mut ana).await {
+        ServerMessage::ProjectError { message, .. } => assert!(message.contains("your own password"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    ana.send(&ClientMessage::ChangePassword { request_id: 2, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+
+    // Each makes their own, and sees only theirs.
+    assert!(matches!(save_project(&mut owner, "tax", "Tax return").await, ServerMessage::ProjectOk { .. }));
+    assert!(matches!(save_project(&mut ana, "garden", "Garden").await, ServerMessage::ProjectOk { .. }));
+    assert!(matches!(save_project(&mut owner, "tax", "Again").await, ServerMessage::ProjectError { .. }), "an id taken");
+    assert_eq!(project_names(&mut owner).await, ["tax"]);
+    assert_eq!(project_names(&mut ana).await, ["garden"]);
+    assert!(hub.dir.join("vault/projects/tax/PROJECT.md").exists(), "the owner's is a folder of the vault");
+    assert!(!hub.dir.join("users/ana/vault/projects").exists(), "and Ana's is encrypted on disk, name and all");
+
+    // The owner starts conversations: one in the project, one outside it.
+    chat_in(&mut owner, "WRITE outside.md", "plain", None).await;
+    let answer = chat_in(&mut owner, "WRITE report.md", "in-tax", Some("tax")).await;
+    assert!(matches!(answer, ServerMessage::ChatResponse { .. }), "{answer:?}");
+    assert_eq!(std::fs::read_to_string(hub.dir.join("vault/projects/tax/report.md")).unwrap(), "written", "what the agent writes lands in the project's folder");
+    assert!(!hub.dir.join("vault/report.md").exists());
+    let offered = last_offered(&hub);
+    assert!(offered.contains(&"write_file".to_string()) && !offered.contains(&"shell".to_string()) && !offered.contains(&"search_history".to_string()), "{offered:?}");
+    // From inside, the rest of the vault isn't there.
+    match chat_in(&mut owner, "READ outside.md", "in-tax", None).await {
+        ServerMessage::ChatResponse { content, .. } => assert!(content.contains("tool said") && !content.contains("written"), "the note outside can't be read from the project: {content}"),
+        other => panic!("{other:?}"),
+    }
+    // The project belongs to the conversation, not to what the client sends: this one named none and stayed in it.
+    assert!(last_offered(&hub).contains(&"write_file".to_string()) && !last_offered(&hub).contains(&"shell".to_string()));
+    // An ordinary conversation still has everything.
+    chat_in(&mut owner, "READ outside.md", "plain", None).await;
+    assert!(last_offered(&hub).contains(&"shell".to_string()));
+
+    // A project that isn't there can't be started in.
+    assert!(matches!(chat_in(&mut owner, "hi", "ghost", Some("nope")).await, ServerMessage::ChatError { message, .. } if message.contains("no project")));
+    assert!(!conversation_ids(&mut owner).await.contains(&"ghost".to_string()));
+
+    // The list says which project each conversation is in.
+    owner.send(&ClientMessage::ListConversations { request_id: 30 }).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::ConversationList { conversations, .. } => {
+            let project_of = |id: &str| conversations.iter().find(|c| c.id == id).unwrap().project_id.clone();
+            assert_eq!((project_of("in-tax").as_deref(), project_of("plain")), (Some("tax"), None));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // Ana's turn in her project writes to her own (encrypted) vault, and she can't start one in the owner's.
+    assert!(matches!(chat_in(&mut ana, "WRITE seeds.md", "ana-garden", Some("garden")).await, ServerMessage::ChatResponse { .. }));
+    assert_eq!(ana_vault(&hub, "anas-own-pass").read("projects/garden/seeds.md").unwrap(), "written");
+    assert!(matches!(chat_in(&mut ana, "hi", "ana-tax", Some("tax")).await, ServerMessage::ChatError { message, .. } if message.contains("no project")), "the owner's project isn't hers");
+    assert!(!hub.dir.join("vault/projects/garden").exists());
+
+    // Removing a project only unmarks it: the file stays, and the conversation goes on without one.
+    owner.send(&ClientMessage::DeleteProject { request_id: 31, id: "tax".into() }).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::ProjectOk { .. }));
+    assert!(project_names(&mut owner).await.is_empty());
+    assert!(hub.dir.join("vault/projects/tax/report.md").exists(), "the files stay as ordinary notes");
+    chat_in(&mut owner, "hello", "in-tax", None).await;
+    assert!(last_offered(&hub).contains(&"shell".to_string()), "the conversation is an ordinary one again");
 }

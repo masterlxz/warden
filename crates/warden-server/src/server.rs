@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 use warden_core::orchestrator::Orchestrator;
+use warden_core::project::ProjectStore;
 use warden_core::skill::SkillStore;
 use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
@@ -35,6 +36,7 @@ use crate::user_admin::{
     handle_space_change, handle_user_change, open_member_data_at_sign_in, DataDirs, SpaceChange, UserChange,
 };
 use crate::devices::{handle_list_devices, handle_set_device_status};
+use crate::projects::handle_project_request;
 use crate::skills::handle_skill_request;
 use crate::usage::{handle_extend_limit, handle_usage_request, member_limit_message, spend_limit_id};
 use crate::vault::handle_vault_request;
@@ -1151,9 +1153,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id }) => {
+                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id }) => {
                     let checked = resolve_conversation_id(conversation_id.clone())
-                        .and_then(|id| validate_attachments(&attachments).map(|()| id));
+                        .and_then(|id| validate_attachments(&attachments).map(|()| id))
+                        .and_then(|id| project_id.as_deref().map_or(Ok(()), |p| warden_core::project::validate_id(p).map_err(|e| format!("{e:#}"))).map(|()| id));
                     let conversation_id = match checked {
                         Ok(id) => id,
                         Err(message) => {
@@ -1206,6 +1209,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             &message,
                             attachments,
                             agent,
+                            project_id.as_deref(),
                         )
                         .await
                         {
@@ -1275,6 +1279,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let vault = person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults);
                     let store = SkillStore::new(vault);
                     if let Some(reply) = handle_skill_request(&store, message) {
+                        let _ = tx.send(reply);
+                    }
+                }
+                Ok(message @ (ClientMessage::ListProjects { .. } | ClientMessage::SaveProject { .. } | ClientMessage::DeleteProject { .. })) => {
+                    // P103 — a few small files of the person's own vault, answered inline like the skills.
+                    let vault = person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults);
+                    let store = ProjectStore::new(vault);
+                    if let Some(reply) = handle_project_request(&store, message) {
                         let _ = tx.send(reply);
                     }
                 }

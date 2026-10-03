@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AgentEntry, Attachment, Combo, Conversation, ProviderEntry } from "../types";
+import type { AgentEntry, Attachment, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import { LogoMark } from "./Icons";
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
@@ -13,6 +13,11 @@ interface ChatAreaProps {
   providers: ProviderEntry[];
   /** Combos (P90) are picked here like providers. */
   combos: Combo[];
+  /** Projects (P103) a new conversation can start in. */
+  projects: ProjectEntry[];
+  /** The conversation's project, or the one a new conversation will start in; "" = none. */
+  selectedProjectId: string;
+  onSelectProject: (projectId: string) => void;
   selectedAgentId: string;
   selectedProviderId: string;
   onSelectAgent: (agentId: string) => void;
@@ -48,6 +53,9 @@ function ChatArea({
   agents,
   providers,
   combos,
+  projects,
+  selectedProjectId,
+  onSelectProject,
   selectedAgentId,
   selectedProviderId,
   onSelectAgent,
@@ -65,6 +73,10 @@ function ChatArea({
   // — this is the "not chosen yet" gate: no messages persisted yet, and no agent picked yet
   // either (picking one doesn't send a message by itself, see onSelectAgent below).
   const needsAgentPick = !hasMessages && !selectedAgentId;
+  // Like the agent, a conversation's project is chosen before its first message and then fixed (P103). One whose
+  // project was removed since has nothing to show.
+  const knownProject = projects.some((p) => p.id === selectedProjectId);
+  const showProjectPicker = projects.length > 0 || knownProject;
 
   return (
     <div className="chat-area">
@@ -75,6 +87,27 @@ function ChatArea({
           <span className="chat-header-label" title="The agent driving this conversation — locked once chosen">
             {selectedAgentId || "No agent"}
           </span>
+        )}
+        {showProjectPicker && (
+          <select
+            className="chat-header-select"
+            aria-label="Project"
+            title={
+              hasMessages
+                ? "The project this conversation was started in — it can't be changed"
+                : "The AI works only on this project's files, with its instructions"
+            }
+            value={knownProject ? selectedProjectId : ""}
+            disabled={hasMessages}
+            onChange={(e) => onSelectProject(e.currentTarget.value)}
+          >
+            <option value="">No project</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
         )}
         <select
           className="chat-header-select"

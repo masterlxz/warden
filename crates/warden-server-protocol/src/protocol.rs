@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use warden_core::model::{Attachment, Message, StreamEvent, Usage};
+use warden_core::project::Project;
 use warden_core::skill::Skill;
 use warden_core::spend::{LimitStatus, Price, SpendBreakdown, SpendBucket, SpendGuard};
 use warden_core::tool::ToolSpec;
@@ -38,6 +39,26 @@ impl From<Skill> for SkillDto {
     }
 }
 
+/// A project (P103) on the wire — what a client's Projects screen lists and edits over `ListProjects`/`SaveProject`.
+/// The files of a project are ordinary notes of the vault (`projects/<id>/…`) and travel over the vault messages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDto {
+    /// The folder name: letters, digits, `-` and `_`. Never changes; conversations point at it.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub instructions: String,
+}
+
+impl From<Project> for ProjectDto {
+    fn from(project: Project) -> Self {
+        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions }
+    }
+}
+
 /// Who said a message in a `History` reply (P40) — the same two roles the persisted conversation
 /// ever holds (`warden_bootstrap::ChatRole`, which this crate can't depend on without a cycle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +92,10 @@ pub struct ConversationSummary {
     /// The agent (P46) this conversation last spoke with, so a client restores its selector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// The project (P103) this conversation belongs to, so a client groups its list. Absent for a conversation
+    /// outside any project, and for a hub from before projects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// One line matching a `SearchVault` query (P78) — `warden_core::memory::SearchHit` on the wire.
@@ -1090,6 +1115,11 @@ pub enum ClientMessage {
         /// what every client from before this field sends.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
+        /// The project (P103) a conversation **starts** in: it is saved on the conversation when this turn
+        /// creates it and runs in the project's folder, with its instructions. Ignored for a conversation
+        /// that already exists, which stays where it was created. A project the hub doesn't have is a `ChatError`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
     },
     /// The person's answer to a `ServerMessage::ApprovalRequest` (P46 `manage_agents`, SSH hosts
     /// that need approval). An id with no pending request is ignored.
@@ -1156,6 +1186,24 @@ pub enum ClientMessage {
     DeleteSkill {
         request_id: u64,
         name: String,
+    },
+    /// Projects (P103) — the projects of the person's own vault. Answered by `ProjectList`, `ProjectOk` or `ProjectError`
+    /// with the same `request_id`.
+    ListProjects {
+        request_id: u64,
+    },
+    /// Creates (`overwrite: false`, refuses a taken id) or edits (`overwrite: true`) a project's name, description and
+    /// instructions; its files are not touched.
+    SaveProject {
+        request_id: u64,
+        project: ProjectDto,
+        overwrite: bool,
+    },
+    /// Removes the project: only its `PROJECT.md`. The files stay in the vault as ordinary notes, and the conversations
+    /// that were in it go on as conversations without a project.
+    DeleteProject {
+        request_id: u64,
+        id: String,
     },
     /// Asks for this device's persisted conversation (P40) — the one `Chat` turns are appended to,
     /// keyed by `Hello.device_id`, so a client that reconnects (or was restarted) can show what was
@@ -1546,7 +1594,7 @@ pub enum ClientMessage {
 impl ClientMessage {
     /// A plain text `Chat` turn to the default conversation, with no attachments.
     pub fn chat(message: impl Into<String>) -> Self {
-        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None }
+        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None, project_id: None }
     }
 }
 
@@ -1652,6 +1700,20 @@ pub enum ServerMessage {
     /// A `ListSkills`/`SaveSkill`/`DeleteSkill` failed (invalid skill, name taken, no such skill) —
     /// the raw error text, same posture as `ChatError`.
     SkillError {
+        request_id: u64,
+        message: String,
+    },
+    /// Reply to `ClientMessage::ListProjects`.
+    ProjectList {
+        request_id: u64,
+        projects: Vec<ProjectDto>,
+    },
+    /// Reply to a successful `SaveProject`/`DeleteProject`.
+    ProjectOk {
+        request_id: u64,
+    },
+    /// A `ListProjects`/`SaveProject`/`DeleteProject` failed (invalid project, id taken, no such project).
+    ProjectError {
         request_id: u64,
         message: String,
     },
@@ -2221,15 +2283,47 @@ mod tests {
         assert_eq!(msg, ClientMessage::chat("hi"));
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
 
-        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None };
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
     }
 
+    /// P103: a chat names the project it starts in; the project messages and the summary's `projectId` use the names
+    /// the web and the desktop expect, and everything from before projects (no field) still reads.
+    #[test]
+    fn projects_travel_with_the_names_the_clients_expect_and_old_peers_still_read() {
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: Some("tax".into()) };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","projectId":"tax"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
+
+        let save = ClientMessage::SaveProject { request_id: 1, project: ProjectDto { id: "tax".into(), name: "Tax".into(), description: "d".into(), instructions: "i".into() }, overwrite: false };
+        let json = serde_json::to_string(&save).unwrap();
+        assert_eq!(json, r#"{"type":"saveProject","requestId":1,"project":{"id":"tax","name":"Tax","description":"d","instructions":"i"},"overwrite":false}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
+        assert_eq!(serde_json::to_string(&ClientMessage::ListProjects { request_id: 2 }).unwrap(), r#"{"type":"listProjects","requestId":2}"#);
+        assert_eq!(serde_json::to_string(&ClientMessage::DeleteProject { request_id: 3, id: "tax".into() }).unwrap(), r#"{"type":"deleteProject","requestId":3,"id":"tax"}"#);
+
+        let list = ServerMessage::ProjectList { request_id: 2, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new() }] };
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(json, r#"{"type":"projectList","requestId":2,"projects":[{"id":"tax","name":"Tax","description":"","instructions":""}]}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), list);
+        assert_eq!(serde_json::to_string(&ServerMessage::ProjectOk { request_id: 4 }).unwrap(), r#"{"type":"projectOk","requestId":4}"#);
+        assert_eq!(serde_json::to_string(&ServerMessage::ProjectError { request_id: 5, message: "m".into() }).unwrap(), r#"{"type":"projectError","requestId":5,"message":"m"}"#);
+
+        // A client from before projects sends no `projectId`; a hub from before them sends none in a summary.
+        let old_chat = serde_json::from_str::<ClientMessage>(r#"{"type":"chat","message":"hi"}"#).unwrap();
+        assert!(matches!(old_chat, ClientMessage::Chat { project_id: None, .. }));
+        let summary = serde_json::from_str::<ConversationSummary>(r#"{"id":"c","title":"t","createdAt":1,"updatedAt":2}"#).unwrap();
+        assert_eq!(summary.project_id, None);
+        let grouped = ConversationSummary { project_id: Some("tax".into()), ..summary };
+        assert!(serde_json::to_string(&grouped).unwrap().contains(r#""projectId":"tax""#));
+    }
+
     #[test]
     fn a_chat_can_name_an_agent_and_approvals_round_trip() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()) };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2254,6 +2348,7 @@ mod tests {
             conversation_id: None,
             attachments: vec![Attachment { mime_type: "application/pdf".into(), data: "JVBE".into() }],
             agent_id: None,
+            project_id: None,
         };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"","attachments":[{"mimeType":"application/pdf","data":"JVBE"}]}"#);
@@ -2293,7 +2388,7 @@ mod tests {
             (
                 ServerMessage::ConversationList {
                     request_id: 1,
-                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None }],
+                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None }],
                 },
                 r#"{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}"#,
             ),

@@ -1,8 +1,10 @@
-import type { Conversation } from "../types";
-import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
+import type { Conversation, ProjectEntry } from "../types";
+import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
+  /** The projects that exist (P103): the list groups the conversations that were started in one. */
+  projects: ProjectEntry[];
   activeConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
@@ -11,15 +13,17 @@ interface SidebarProps {
   onOpenSync: () => void;
   onOpenVault: () => void;
   onOpenSkills: () => void;
+  onOpenProjects: () => void;
   onOpenTasks: () => void;
   onOpenWorkspace: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "tasks" | "workspace";
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
 
 function Sidebar({
   conversations,
+  projects,
   activeConversationId,
   onSelectConversation,
   onNewConversation,
@@ -28,12 +32,35 @@ function Sidebar({
   onOpenSync,
   onOpenVault,
   onOpenSkills,
+  onOpenProjects,
   onOpenTasks,
   onOpenWorkspace,
   view,
   collapsed,
   onToggleCollapsed,
 }: SidebarProps) {
+  // A conversation whose project no longer exists (removed since) is listed with the others, as an ordinary one.
+  const projectIds = new Set(projects.map((p) => p.id));
+  const loose = conversations.filter((c) => !c.projectId || !projectIds.has(c.projectId));
+  const groups = projects
+    .map((project) => ({ project, items: conversations.filter((c) => c.projectId === project.id) }))
+    .filter((group) => group.items.length > 0);
+
+  const renderItem = (conversation: Conversation) => (
+    <li key={conversation.id}>
+      <button
+        type="button"
+        className={
+          "conversation-list-item" +
+          (view === "chat" && conversation.id === activeConversationId ? " conversation-list-item--active" : "")
+        }
+        onClick={() => onSelectConversation(conversation.id)}
+      >
+        {conversation.title}
+      </button>
+    </li>
+  );
+
   return (
     <div className={`sidebar${collapsed ? " sidebar--collapsed" : ""}`}>
       <div className="sidebar-header">
@@ -63,22 +90,18 @@ function Sidebar({
           {conversations.length === 0 ? (
             <p className="conversation-list-empty">No conversations yet.</p>
           ) : (
-            <ul className="conversation-list">
-              {conversations.map((conversation) => (
-                <li key={conversation.id}>
-                  <button
-                    type="button"
-                    className={
-                      "conversation-list-item" +
-                      (view === "chat" && conversation.id === activeConversationId ? " conversation-list-item--active" : "")
-                    }
-                    onClick={() => onSelectConversation(conversation.id)}
-                  >
-                    {conversation.title}
-                  </button>
-                </li>
+            <>
+              {groups.map(({ project, items }) => (
+                <div className="conversation-group" key={project.id}>
+                  <div className="conversation-group-title" title={project.description || project.name}>
+                    <ProjectsIcon size={13} />
+                    {project.name}
+                  </div>
+                  <ul className="conversation-list">{items.map(renderItem)}</ul>
+                </div>
               ))}
-            </ul>
+              {loose.length > 0 && <ul className="conversation-list">{loose.map(renderItem)}</ul>}
+            </>
           )}
         </div>
       )}
@@ -119,6 +142,15 @@ function Sidebar({
         >
           <SkillsIcon size={17} />
           {!collapsed && "Skills"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "projects" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenProjects}
+          title="Projects"
+        >
+          <ProjectsIcon size={17} />
+          {!collapsed && "Projects"}
         </button>
         <button
           type="button"

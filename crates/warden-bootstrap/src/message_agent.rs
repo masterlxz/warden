@@ -185,7 +185,7 @@ impl MessageAgentTool {
             generated_files: Vec::new(), tools_used: Vec::new(),
         };
         // Saved before B starts, so the person sees the message while B works on it.
-        append_to_conversation(&dir, &conversation_id, &thread_title(&self.caller, to), Some(to), true, vec![user])?;
+        append_to_conversation(&dir, &conversation_id, &thread_title(&self.caller, to), Some(to), None, true, vec![user])?;
         self.notify(&conversation_id);
 
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
@@ -197,7 +197,7 @@ impl MessageAgentTool {
             let outcome = target.orchestrator.handle_turn(&history, &content, Vec::new(), target.persona.as_deref()).await;
             let reply = match outcome {
                 Ok(outcome) => {
-                    let saved = append_to_conversation(&dir, &thread, "", Some(&to_owned), false, vec![assistant_message(&outcome)]);
+                    let saved = append_to_conversation(&dir, &thread, "", Some(&to_owned), None, false, vec![assistant_message(&outcome)]);
                     match saved {
                         Ok(_) => Ok(outcome.content),
                         Err(err) => Err(format!("{err:#}")),
@@ -214,7 +214,7 @@ impl MessageAgentTool {
                         attachments: Vec::new(),
                         generated_files: Vec::new(), tools_used: Vec::new(),
                     };
-                    let _ = append_to_conversation(&dir, &thread, "", Some(&to_owned), false, vec![note]);
+                    let _ = append_to_conversation(&dir, &thread, "", Some(&to_owned), None, false, vec![note]);
                     Err(format!("{err:#}"))
                 }
             };

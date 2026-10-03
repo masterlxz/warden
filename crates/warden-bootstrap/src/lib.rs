@@ -46,6 +46,7 @@ pub mod member_crypto;
 pub mod recovery;
 pub mod node_model;
 pub mod message_agent;
+pub mod project_scope;
 pub mod settings;
 pub mod skill_gen;
 pub mod spend;
@@ -57,6 +58,7 @@ pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use manage_tasks::ManageTasksTool;
 pub use message_agent::{ConversationsChanged, MessageAgentTool};
+pub use project_scope::{scope_to_project, WITHHELD_IN_A_PROJECT};
 pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
@@ -817,6 +819,10 @@ pub struct Conversation {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub provider_id: Option<String>,
+    /// The project this conversation belongs to (P103), set when it is created and never changed by a later
+    /// turn. A project that is gone (its `PROJECT.md` removed) is read as "no project".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
@@ -1051,7 +1057,7 @@ pub async fn handle_turn(
     user_input: &str,
     attachments: Vec<Attachment>,
 ) -> anyhow::Result<MessageOutcome> {
-    handle_agent_turn(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, None).await
+    handle_agent_turn(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, None, None).await
 }
 
 /// The named agent a `handle_agent_turn` speaks as: its persona goes in as the system prompt, and
@@ -1065,6 +1071,11 @@ pub struct TurnAgent<'a> {
 /// `handle_turn` with an optional agent (P46): `orchestrator` should already be scoped to it
 /// (`agent_scope::scope_to_agent`). `None` is exactly `handle_turn` — no persona, and the
 /// conversation's `agent_id` is cleared, since a client that sends none has no agent selected.
+///
+/// `project` (P103) is the project a conversation *starts* in: it is saved on the conversation when this call creates
+/// it (an unknown project is an error, nothing is run). A conversation that already exists runs in the project it was
+/// created in, whatever is sent; one whose project was removed since runs as an ordinary conversation.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_agent_turn(
     orchestrator: &Orchestrator,
     conversations_dir: &Path,
@@ -1073,11 +1084,24 @@ pub async fn handle_agent_turn(
     user_input: &str,
     attachments: Vec<Attachment>,
     agent: Option<TurnAgent<'_>>,
+    project: Option<&str>,
 ) -> anyhow::Result<MessageOutcome> {
     let existing = load_conversation(conversations_dir, conversation_id)?;
     let existed = existing.is_some();
     let history: Vec<Message> = existing.iter().flat_map(|c| &c.messages).map(to_message).collect();
-    let outcome = orchestrator.handle_turn(&history, user_input, attachments.clone(), agent.map(|a| a.persona)).await?;
+    // P103: a conversation's project is the one it was created in; what a client sends later doesn't move it.
+    let project_id = match &existing {
+        Some(conversation) => conversation.project_id.clone(),
+        None => project.map(str::to_string),
+    };
+    let scoped = match &project_id {
+        Some(id) => scope_to_project(orchestrator, id)?,
+        None => None,
+    };
+    if !existed && project.is_some() && scoped.is_none() {
+        anyhow::bail!("there is no project '{}'", project.unwrap_or_default());
+    }
+    let outcome = scoped.as_ref().unwrap_or(orchestrator).handle_turn(&history, user_input, attachments.clone(), agent.map(|a| a.persona)).await?;
 
     let user = ConversationMessage {
         id: message_id(),
@@ -1094,6 +1118,7 @@ pub async fn handle_agent_turn(
         conversation_id,
         title_seed,
         agent.map(|a| a.id),
+        project_id.as_deref().filter(|_| !existed),
         !existed,
         vec![user, assistant_message(&outcome)],
     )?;
@@ -1122,6 +1147,10 @@ pub struct AppendOptions<'a> {
     pub agent_id: Option<&'a str>,
     /// `None` leaves it as it is; `Some(None)` clears it. Only the desktop tracks one.
     pub provider_id: Option<Option<&'a str>>,
+    /// The project of a conversation this call creates (P103). Unlike `agent_id`, a conversation that already exists
+    /// keeps the one it has whatever is sent here: every client that doesn't know projects sends none, and one of
+    /// them must not take a conversation out of its project by talking in it.
+    pub project_id: Option<&'a str>,
     /// Create the file when it's missing. Otherwise a missing file was deleted meanwhile and stays
     /// deleted.
     pub create: bool,
@@ -1148,6 +1177,7 @@ pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, message
                 updated_at: now,
                 agent_id: None,
                 provider_id: None,
+                project_id: options.project_id.map(str::to_string),
             }
         }
     };
@@ -1166,10 +1196,11 @@ fn append_to_conversation(
     id: &str,
     title_seed: &str,
     agent_id: Option<&str>,
+    project_id: Option<&str>,
     create: bool,
     messages: Vec<ConversationMessage>,
 ) -> anyhow::Result<bool> {
-    let options = AppendOptions { title_seed, agent_id, provider_id: None, create };
+    let options = AppendOptions { title_seed, agent_id, provider_id: None, project_id, create };
     Ok(append_messages(dir, id, options, messages)?.is_some())
 }
 
@@ -2224,6 +2255,7 @@ oauth = true
             updated_at,
             agent_id: None,
             provider_id: None,
+            project_id: None,
         }
     }
 
@@ -2323,12 +2355,12 @@ oauth = true
             generated_files: Vec::new(),
             tools_used: Vec::new(),
         };
-        let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), create: true };
+        let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), project_id: None, create: true };
         let created = append_messages(&dir, "c1", options, vec![note("hi", ChatRole::User)]).unwrap().unwrap();
         assert_eq!((created.title.as_str(), created.agent_id.as_deref(), created.provider_id.as_deref()), ("first words", Some("writer"), Some("openai")));
 
         // Another writer (an agent answering a note) adds to it; the screen's next append keeps it.
-        append_to_conversation(&dir, "c1", "", Some("writer"), false, vec![note("from B", ChatRole::Assistant)]).unwrap();
+        append_to_conversation(&dir, "c1", "", Some("writer"), None, false, vec![note("from B", ChatRole::Assistant)]).unwrap();
         let options = AppendOptions { agent_id: Some("writer"), ..Default::default() };
         let saved = append_messages(&dir, "c1", options, vec![note("me again", ChatRole::User)]).unwrap().unwrap();
         let contents: Vec<&str> = saved.messages.iter().map(|m| m.content.as_str()).collect();
@@ -2494,6 +2526,106 @@ oauth = true
         assert_eq!(saved.messages[0].attachments, vec![pdf]);
         assert!(saved.messages[1].attachments.is_empty());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Answers with every message it was sent ("|"-separated), so a test sees exactly what a turn told the model.
+    struct EchoesWhatItWasTold;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for EchoesWhatItWasTold {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            let told = messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("|");
+            Ok(warden_core::model::response_stream(warden_core::model::Response { content: told, tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    /// How a project's briefing begins (`Project::briefing`): what tells a project turn from an ordinary one.
+    const PROJECT_BRIEFING: &str = "You are working in the project \"Tax return\".";
+
+    /// A hub-like setup: a vault with the project `tax` (instructions, one file) and a note outside it.
+    fn project_setup(name: &str) -> (PathBuf, Orchestrator) {
+        let root = temp_dir(name);
+        let vault = Arc::new(Vault::new(root.join("vault")));
+        warden_core::project::ProjectStore::new(vault.clone())
+            .save(&warden_core::project::Project { id: "tax".into(), name: "Tax return".into(), description: String::new(), instructions: "Answer in Portuguese.".into() })
+            .unwrap();
+        vault.write("projects/tax/jan.md", "january receipts").unwrap();
+        vault.write("diary.md", "the diary").unwrap();
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesWhatItWasTold), vault.clone());
+        orchestrator.register_tool(Arc::new(ReadFileTool::new(vault)));
+        (root, orchestrator)
+    }
+
+    /// P103: a conversation created in a project keeps it, runs in the project's folder with its instructions, and
+    /// no later turn — from any client, whatever it sends — takes it out.
+    #[tokio::test]
+    async fn a_conversation_created_in_a_project_runs_there_and_keeps_it_whatever_is_sent_later() {
+        let (root, orchestrator) = project_setup("project-turn");
+        let dir = root.join("conversations");
+
+        let first = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax")).await.unwrap();
+        assert!(first.content.starts_with(PROJECT_BRIEFING), "the first thing the model is told is the project's briefing: {}", first.content);
+        assert!(first.content.contains("Answer in Portuguese.") && first.content.contains("jan.md"), "with its instructions and files: {}", first.content);
+        assert!(!first.content.contains("the diary"), "and nothing of the rest of the vault: {}", first.content);
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().project_id.as_deref(), Some("tax"));
+
+        // A client that doesn't know projects, and one naming another project, both leave it where it is.
+        let second = handle_agent_turn(&orchestrator, &dir, "c1", "", "again", Vec::new(), None, None).await.unwrap();
+        assert!(second.content.starts_with(PROJECT_BRIEFING), "still in the project: {}", second.content);
+        handle_agent_turn(&orchestrator, &dir, "c1", "", "once more", Vec::new(), None, Some("other")).await.unwrap();
+        let saved = load_conversation(&dir, "c1").unwrap().unwrap();
+        assert_eq!((saved.project_id.as_deref(), saved.messages.len()), (Some("tax"), 6));
+
+        // Outside a project the same orchestrator still sees the whole vault, and is told no briefing.
+        let plain = handle_agent_turn(&orchestrator, &dir, "c2", "hi", "diary", Vec::new(), None, None).await.unwrap();
+        assert!(plain.content.contains("the diary") && !plain.content.starts_with(PROJECT_BRIEFING), "{}", plain.content);
+        assert_eq!(load_conversation(&dir, "c2").unwrap().unwrap().project_id, None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_conversation_cannot_start_in_a_project_that_does_not_exist() {
+        let (root, orchestrator) = project_setup("project-unknown");
+        let dir = root.join("conversations");
+        for id in ["nope", "loose"] {
+            let err = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some(id)).await.unwrap_err();
+            assert!(err.to_string().contains("there is no project"), "{id}: {err:#}");
+        }
+        assert!(handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some("../x")).await.is_err());
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), None, "nothing was run or saved");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Removing a project only removes `PROJECT.md`: what was in it goes on as ordinary conversations.
+    #[tokio::test]
+    async fn a_conversation_whose_project_was_removed_goes_on_as_an_ordinary_one() {
+        let (root, orchestrator) = project_setup("project-removed");
+        let dir = root.join("conversations");
+        handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax")).await.unwrap();
+
+        warden_core::project::ProjectStore::new(orchestrator.vault().clone()).delete("tax").unwrap();
+        let after = handle_agent_turn(&orchestrator, &dir, "c1", "", "diary", Vec::new(), None, None).await.unwrap();
+        assert!(after.content.contains("the diary") && !after.content.starts_with(PROJECT_BRIEFING), "the whole vault again, no briefing: {}", after.content);
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().messages.len(), 4, "the conversation is intact");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `append_messages` is what the desktop calls around every turn: only a *new* conversation takes the project.
+    #[test]
+    fn append_messages_gives_a_new_conversation_its_project_and_never_changes_an_existing_one() {
+        let dir = temp_dir("append-project");
+        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
+        let new = AppendOptions { title_seed: "t", project_id: Some("tax"), create: true, ..Default::default() };
+        assert_eq!(append_messages(&dir, "c1", new, vec![note("a")]).unwrap().unwrap().project_id.as_deref(), Some("tax"));
+        for sent in [None, Some("other")] {
+            let again = AppendOptions { project_id: sent, ..Default::default() };
+            assert_eq!(append_messages(&dir, "c1", again, vec![note("b")]).unwrap().unwrap().project_id.as_deref(), Some("tax"), "sent {sent:?}");
+        }
+        // A file from before projects reads without one, and a new file keeps no field when there is none.
+        let plain = AppendOptions { title_seed: "t", create: true, ..Default::default() };
+        append_messages(&dir, "c2", plain, vec![note("x")]).unwrap();
+        assert!(!std::fs::read_to_string(dir.join("c2.json")).unwrap().contains("projectId"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

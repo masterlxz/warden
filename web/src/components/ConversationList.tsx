@@ -1,8 +1,10 @@
 import { useState } from "react";
-import type { ConversationSummary } from "../hub/messages";
+import type { ConversationSummary, ProjectDto } from "../hub/messages";
 
 interface Props {
   conversations: ConversationSummary[];
+  /** The projects that exist (P103): the conversations started in one are listed under its name. */
+  projects: ProjectDto[];
   activeId: string;
   /** Conversations with a turn waiting for its answer. */
   pendingIds: string[];
@@ -25,8 +27,8 @@ function shortDate(millis: number): string {
 }
 
 /** This device's conversations on the hub (P78): open, start, rename and delete. A sidebar on wide
- * screens, a drawer on phones (`.chat-layout` in `App.css`). */
-export default function ConversationList({ conversations, activeId, pendingIds, error, disabled, onOpen, onNew, onRename, onDelete }: Props) {
+ * screens, a drawer on phones (`.chat-layout` in `App.css`). The ones started in a project (P103) are grouped under its name. */
+export default function ConversationList({ conversations, projects, activeId, pendingIds, error, disabled, onOpen, onNew, onRename, onDelete }: Props) {
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -51,6 +53,68 @@ export default function ConversationList({ conversations, activeId, pendingIds, 
     setBusyId(null);
   }
 
+  function renderItem(conversation: ConversationSummary) {
+    const active = conversation.id === activeId;
+    const answering = pendingIds.includes(conversation.id);
+    // Also covers a conversation started here whose first turn hasn't reached the hub's disk yet.
+    const locked = busyId === conversation.id || disabled || answering;
+    if (editing?.id === conversation.id) {
+      return (
+        <li key={conversation.id} className="conversation conversation--editing">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveRename();
+            }}
+          >
+            <input
+              autoFocus
+              value={editing.title}
+              maxLength={120}
+              aria-label="Novo título"
+              disabled={busyId === conversation.id}
+              onChange={(e) => setEditing({ id: conversation.id, title: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setEditing(null);
+              }}
+            />
+            <div className="conversation-actions">
+              <button type="submit" className="link-button" disabled={locked}>
+                Salvar
+              </button>
+              <button type="button" className="link-button" onClick={() => setEditing(null)}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </li>
+      );
+    }
+    return (
+      <li key={conversation.id} className={active ? "conversation conversation--active" : "conversation"}>
+        <button type="button" className="conversation-open" onClick={() => onOpen(conversation.id)} aria-current={active ? "true" : undefined}>
+          <span className="conversation-title">{conversation.title || "Sem título"}</span>
+          <span className="conversation-meta">{answering ? "respondendo…" : shortDate(conversation.updatedAt)}</span>
+        </button>
+        <div className="conversation-actions">
+          <button type="button" className="link-button" disabled={locked} onClick={() => setEditing({ id: conversation.id, title: conversation.title })}>
+            Renomear
+          </button>
+          <button type="button" className="link-button skills-danger" disabled={locked} onClick={() => void remove(conversation)}>
+            Apagar
+          </button>
+        </div>
+      </li>
+    );
+  }
+
+  // A conversation whose project no longer exists (removed since) is listed with the others, as an ordinary one.
+  const projectIds = new Set(projects.map((p) => p.id));
+  const loose = conversations.filter((c) => !c.projectId || !projectIds.has(c.projectId));
+  const groups = projects
+    .map((project) => ({ project, items: conversations.filter((c) => c.projectId === project.id) }))
+    .filter((group) => group.items.length > 0);
+
   return (
     <aside className="conversations" aria-label="Conversas">
       <button type="button" className="primary-button conversations-new" onClick={onNew}>
@@ -60,62 +124,17 @@ export default function ConversationList({ conversations, activeId, pendingIds, 
       {conversations.length === 0 ? (
         <p className="conversations-empty">Nenhuma conversa ainda.</p>
       ) : (
-        <ul className="conversations-list">
-          {conversations.map((conversation) => {
-            const active = conversation.id === activeId;
-            const answering = pendingIds.includes(conversation.id);
-            // Also covers a conversation started here whose first turn hasn't reached the hub's disk yet.
-            const locked = busyId === conversation.id || disabled || answering;
-            if (editing?.id === conversation.id) {
-              return (
-                <li key={conversation.id} className="conversation conversation--editing">
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void saveRename();
-                    }}
-                  >
-                    <input
-                      autoFocus
-                      value={editing.title}
-                      maxLength={120}
-                      aria-label="Novo título"
-                      disabled={busyId === conversation.id}
-                      onChange={(e) => setEditing({ id: conversation.id, title: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") setEditing(null);
-                      }}
-                    />
-                    <div className="conversation-actions">
-                      <button type="submit" className="link-button" disabled={locked}>
-                        Salvar
-                      </button>
-                      <button type="button" className="link-button" onClick={() => setEditing(null)}>
-                        Cancelar
-                      </button>
-                    </div>
-                  </form>
-                </li>
-              );
-            }
-            return (
-              <li key={conversation.id} className={active ? "conversation conversation--active" : "conversation"}>
-                <button type="button" className="conversation-open" onClick={() => onOpen(conversation.id)} aria-current={active ? "true" : undefined}>
-                  <span className="conversation-title">{conversation.title || "Sem título"}</span>
-                  <span className="conversation-meta">{answering ? "respondendo…" : shortDate(conversation.updatedAt)}</span>
-                </button>
-                <div className="conversation-actions">
-                  <button type="button" className="link-button" disabled={locked} onClick={() => setEditing({ id: conversation.id, title: conversation.title })}>
-                    Renomear
-                  </button>
-                  <button type="button" className="link-button skills-danger" disabled={locked} onClick={() => void remove(conversation)}>
-                    Apagar
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          {groups.map(({ project, items }) => (
+            <section className="conversation-group" key={project.id} aria-label={`Projeto ${project.name}`}>
+              <h3 className="conversation-group-title" title={project.description || project.name}>
+                {project.name}
+              </h3>
+              <ul className="conversations-list">{items.map(renderItem)}</ul>
+            </section>
+          ))}
+          {loose.length > 0 && <ul className="conversations-list">{loose.map(renderItem)}</ul>}
+        </>
       )}
     </aside>
   );
