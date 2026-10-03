@@ -774,6 +774,16 @@ pub struct BotPairingDto {
     pub expires_at: u64,
 }
 
+/// A member of the workspace a chat may speak as when its pairing is approved (P117): whether the bots are
+/// linked to the hub as them (`warden bots link`), without which approving a chat as them is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotMemberDto {
+    pub id: String,
+    pub name: String,
+    pub linked: bool,
+}
+
 /// `[learning]`, `[telegram] allowed_users` and `[whatsapp] allowed_chats` (P118), shown and saved
 /// as one block. The Telegram token isn't here: it's a secret, so it travels as `telegram_token`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1466,11 +1476,15 @@ pub enum ClientMessage {
     },
     /// The owner approves (`approve`: the sender joins the bot's allow-list) or denies the request
     /// behind `code`. Answered by `BotPairings` with what is still waiting, or `UserError`.
+    /// `member`: approve the chat as speaking as that member of the workspace (it must be linked to the
+    /// bots); absent, it is answered as the owner, as before. Denying ignores it.
     ResolveBotPairing {
         request_id: u64,
         pairing_key: String,
         code: String,
         approve: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
     },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
@@ -1839,6 +1853,9 @@ pub enum ServerMessage {
     BotPairings {
         request_id: u64,
         pairings: Vec<BotPairingDto>,
+        /// Who a chat may be approved as speaking as, and whether the bots are linked to them.
+        #[serde(default)]
+        members: Vec<BotMemberDto>,
     },
     /// A user request failed. `auth_rejected`: the pairing key was wrong, or this connection isn't
     /// the root's; nothing changed.
@@ -2382,21 +2399,34 @@ mod tests {
     /// P117: the shapes the web client sends and reads for the bots' pairing requests.
     #[test]
     fn bot_pairing_messages_use_the_names_the_web_expects() {
-        let resolve = ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: true };
+        let resolve = ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: true, member: None };
         let json = serde_json::to_value(&resolve).unwrap();
-        assert_eq!(json, serde_json::json!({ "type": "resolveBotPairing", "requestId": 4, "pairingKey": "k", "code": "ABCD-EFGH", "approve": true }));
+        assert_eq!(json, serde_json::json!({ "type": "resolveBotPairing", "requestId": 4, "pairingKey": "k", "code": "ABCD-EFGH", "approve": true }), "no member, no field");
         assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), resolve);
+        // Approving as a member of the workspace (P117): the member travels by name.
+        let as_ana = ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: true, member: Some("ana".into()) };
+        let json = serde_json::to_value(&as_ana).unwrap();
+        assert_eq!(json["member"], "ana");
+        assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), as_ana);
         let list: ClientMessage = serde_json::from_str(r#"{"type":"listBotPairings","requestId":5}"#).unwrap();
         assert_eq!(list, ClientMessage::ListBotPairings { request_id: 5 });
 
         let waiting = ServerMessage::BotPairings {
             request_id: 5,
             pairings: vec![BotPairingDto { channel: "telegram".into(), sender: "42".into(), label: "ana".into(), code: "ABCD-EFGH".into(), expires_at: 1_700_000_000 }],
+            members: vec![BotMemberDto { id: "ana".into(), name: "Ana".into(), linked: true }, BotMemberDto { id: "bia".into(), name: "Bia".into(), linked: false }],
         };
         let json = serde_json::to_value(&waiting).unwrap();
         assert_eq!(json["type"], "botPairings");
         assert_eq!(json["pairings"][0]["expiresAt"], 1_700_000_000u64);
+        assert_eq!(json["members"], serde_json::json!([{ "id": "ana", "name": "Ana", "linked": true }, { "id": "bia", "name": "Bia", "linked": false }]));
         assert_eq!(serde_json::from_value::<ServerMessage>(json).unwrap(), waiting);
+
+        // A hub from before it sends no `members`, and a client from before it sends no `member`: both still read.
+        let old: ServerMessage = serde_json::from_str(r#"{"type":"botPairings","requestId":5,"pairings":[]}"#).unwrap();
+        assert_eq!(old, ServerMessage::BotPairings { request_id: 5, pairings: Vec::new(), members: Vec::new() });
+        let old: ClientMessage = serde_json::from_str(r#"{"type":"resolveBotPairing","requestId":4,"pairingKey":"k","code":"ABCD-EFGH","approve":false}"#).unwrap();
+        assert_eq!(old, ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: false, member: None });
     }
 
     #[test]

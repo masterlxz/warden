@@ -6,10 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 use warden_bootstrap::bot_access::unix_now;
+use warden_bootstrap::bot_hub::bot_members;
 use warden_bootstrap::bot_pairing::BotPairing;
 use warden_bootstrap::settings::{apply_bots_settings, bots_settings, secret_status};
 use warden_bootstrap::{load_config_from_path, save_config};
-use warden_server_protocol::protocol::{BotPairingDto, BotsSettingsDto, SecretStatusDto};
+use warden_server_protocol::protocol::{BotMemberDto, BotPairingDto, BotsSettingsDto, SecretStatusDto};
 
 /// What the section shows: the shared block plus whether a Telegram token is saved (never the token).
 #[derive(Serialize, Debug, PartialEq)]
@@ -21,6 +22,8 @@ pub struct BotsPayload {
     model_ids: Vec<String>,
     /// Strangers waiting for the owner to let them talk to a bot (P117).
     pairings: Vec<BotPairingDto>,
+    /// Who an approved chat may speak as, and whether the bots are linked to them (`warden bots link`).
+    members: Vec<BotMemberDto>,
 }
 
 /// What a save carries. `telegram_token`: `None` keeps the saved one, an empty string removes it, any
@@ -45,11 +48,16 @@ fn payload(config: &warden_bootstrap::FileConfig, path: &std::path::Path) -> Bot
             Vec::new()
         }
     };
+    let members = bot_members(path).unwrap_or_else(|err| {
+        eprintln!("can't read who a chat may speak as: {err:#}");
+        Vec::new()
+    });
     BotsPayload {
         bots: bots_settings(config),
         telegram_token: secret_status(config.api_keys.telegram_bot_token.as_deref()),
         model_ids: config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect(),
         pairings,
+        members,
     }
 }
 
@@ -80,13 +88,20 @@ pub fn save_bots_settings(update: BotsUpdate) -> Result<BotsPayload, String> {
     Ok(payload(&config, &path))
 }
 
-/// Lets the sender behind `code` talk to their bot (P117): they land on its allow-list. Answers with the
-/// section as it is now, so the lists and the waiting requests both show the change.
+/// Lets the sender behind `code` talk to their bot (P117): they land on its allow-list. With `member`, the chat
+/// speaks as that member of the workspace instead of as the owner; that is refused, changing nothing, when there
+/// is no such member, no `[bot_hub]` or the bots aren't linked to them. Answers with the section as it is now,
+/// so the lists and the waiting requests both show the change.
 #[tauri::command]
-pub fn approve_bot_pairing(code: String) -> Result<BotsPayload, String> {
+pub fn approve_bot_pairing(code: String, member: Option<String>) -> Result<BotsPayload, String> {
     let path = config_path()?;
-    BotPairing::beside(&path).approve(&code, unix_now(), &path).map_err(|e| format!("{e:#}"))?;
+    approve_in(&path, &code, member.as_deref())?;
     get_bots_settings()
+}
+
+/// `approve_bot_pairing` on the config at `path`; split out so a test needn't touch the user's own file.
+fn approve_in(path: &std::path::Path, code: &str, member: Option<&str>) -> Result<(), String> {
+    BotPairing::beside(path).approve_as(code, unix_now(), path, member.filter(|m| !m.is_empty())).map(|_| ()).map_err(|e| format!("{e:#}"))
 }
 
 /// Drops the request behind `code` without letting the sender in.
@@ -135,6 +150,52 @@ mod tests {
         assert_eq!((pairing["channel"].as_str(), pairing["sender"].as_str(), pairing["label"].as_str()), (Some("telegram"), Some("7"), Some("ana")));
         assert!(pairing["code"].as_str().unwrap().contains('-'), "shown as ABCD-EFGH");
         assert!(pairing["expiresAt"].is_u64());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P117: the section lists who a chat may speak as (and whether the bots are linked to them), and an approval
+    /// can name one. A refusal lets nobody in and keeps the request; linked, the chat lands on the list and in
+    /// `members`; an empty name is no name.
+    #[test]
+    fn an_approval_can_name_the_member_the_chat_speaks_as() {
+        use warden_bootstrap::bot_access::BotHubSettings;
+        use warden_bootstrap::bot_hub::{HubTokens, Linked};
+        let dir = std::env::temp_dir().join(format!("warden-bot-cmds-members-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let mut config = FileConfig::default();
+        warden_bootstrap::users::add_user(&mut config, "ana", "Ana", "provisional-pass").unwrap();
+        config.bot_hub = Some(BotHubSettings { url: "ws://127.0.0.1:7420".into() });
+        save_config(&path, &config).unwrap();
+        let store = BotPairing::beside(&path);
+        let request = |sender: &str| match store.request("telegram", sender, "", unix_now()).unwrap() {
+            warden_bootstrap::bot_pairing::Issued::Fresh(code) => code,
+            other => panic!("{other:?}"),
+        };
+        let (first, second, third) = (request("7"), request("8"), request("9"));
+        let reload = || load_config_from_path(&path, false).unwrap();
+
+        // The wire names the frontend reads.
+        let json = serde_json::to_value(payload(&reload(), &path)).unwrap();
+        assert_eq!(json["members"], serde_json::json!([{ "id": "ana", "name": "Ana", "linked": false }]));
+
+        // Not linked: refused with the way out, nothing changes, the request is still there.
+        let err = approve_in(&path, &first, Some("ana")).unwrap_err();
+        assert!(err.contains("warden bots link ana"), "{err}");
+        assert!(reload().telegram.allowed_users.is_empty());
+        assert_eq!(store.list(unix_now()).unwrap().len(), 3);
+
+        HubTokens::beside(&path).set("ana", Linked { device_id: "warden-bot-ana".into(), device_token: "t".into() }).unwrap();
+        assert_eq!(serde_json::to_value(payload(&reload(), &path)).unwrap()["members"][0]["linked"], true);
+        approve_in(&path, &first, Some("ana")).unwrap();
+        assert_eq!((reload().telegram.allowed_users, reload().telegram.member_for(7).map(String::from)), (vec![7], Some("ana".to_string())));
+
+        // No member, or an empty one (what a select left on "me" sends): the owner's assistant, nothing mapped.
+        approve_in(&path, &second, None).unwrap();
+        approve_in(&path, &third, Some("")).unwrap();
+        let after = reload();
+        assert_eq!(after.telegram.allowed_users, [7, 8, 9]);
+        assert_eq!(after.telegram.members.len(), 1, "only the first chat speaks as a member");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

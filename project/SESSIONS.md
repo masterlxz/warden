@@ -2,7 +2,33 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 122)
+> Última atualização: 2026-10-03 (Sessão 123)
+
+---
+
+### 2026-10-03 — Sessão 123
+
+- **Objetivo**: o que sobrou do P117, em Plan mode: escolher o membro ao aprovar um pareamento no **desktop e na web** (a CLI já fazia
+  `--as`). O núcleo (`BotPairing::approve_as`) já recusava o que não pode; esta fatia só o expôs.
+- **Feito**: `BotMemberDto { id, name, linked }`; `ResolveBotPairing` ganhou `member` e `BotPairings` ganhou `members` (os dois com `default`,
+  compatíveis nos dois sentidos); `bot_hub::bot_members` (uma função para os dois clientes); o hub (`bot_admin.rs`) lista os membros e repassa o
+  membro ao `approve_as`; o desktop (`approve_bot_pairing(code, member)` sobre um `approve_in` testável, `members` no payload e o seletor em
+  `BotsSection`); a web (`BotPairingsView`, `resolveBotPairing(.., member?)` e o seletor em `BotPairings`, cujo diálogo da chave diz "como Ana").
+  Decisão de desenho: o seletor lista **todos** os membros, mas só os vinculados são escolhíveis, e um não vinculado mostra o caminho
+  (`warden bots link <id>`) em vez de sumir.
+- **Verificado**: protocolo (JSON com e sem os campos, cliente e hub antigos); `bot_members` (com e sem token, token de quem não é membro não
+  entra); **hub real** (`people.rs`): sem `[bot_hub]`, não vinculado e inexistente dão `UserError` e **não** deixam entrar nem tiram o pedido, vinculado
+  grava `[telegram] members`, sem membro não mapeia ninguém, negar ignora o membro; desktop (`approve_in`, o payload com os nomes de campo do
+  TypeScript, nome vazio é nenhum); **ponta a ponta na web** (`web/e2e/bot-pairing.test.mjs`, 3 testes, hub real + Chromium headless): só o vinculado é
+  escolhível, aprovar como Ana manda `member` e grava o mapa, aprovar sem escolher e negar não mapeiam. `cargo test` dos 6 crates: **635 passando, 0
+  falhando**; desktop 28; clippy sem aviso novo; `tsc` e `build` da web e do desktop limpos. **Provei que o teste cai**: tirar o `member` do frame derrubou
+  "the choice travelled to the hub", e depois desfiz (zero marcas sobrando).
+- **Erros meus no caminho**: (1) a primeira mutação não compilava (`false && ...` num spread), então o `build` falhou e o teste rodou contra o `dist` antigo e
+  passou: não provava nada; refiz com uma mutação que compila. (2) escrevi o primeiro teste com um `.catch(() => {})` que engolia erro, e o reescrevi inteiro.
+  (3) o `isDisabled()` do Playwright ignora `<option>`, e o `selectOption` seleciona uma opção desabilitada por script, o que uma pessoa não faz: tirei essa
+  asserção (a trava real é o hub, já testado) em vez de afirmar algo falso.
+- **Não verificado**: o app Tauri aberto de verdade com o seletor novo; bot real (token e número); o prompt de senha do `warden bots link` num terminal de verdade.
+- **Próximo passo**: a rodada de testes em tela (P115 e P95–P118) e, se um dia o CI montar a web, ligar o `npm run test:e2e` a ele.
 
 ---
 

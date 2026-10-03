@@ -1404,7 +1404,7 @@ async fn the_owner_approves_and_denies_the_bots_pairing_requests() {
     let Issued::Fresh(telegram) = store.request(TELEGRAM, "42", "ana", now).unwrap() else { panic!("a fresh request") };
     let Issued::Fresh(whatsapp) = store.request(WHATSAPP, "5511999999999@s.whatsapp.net", "", now).unwrap() else { panic!("a fresh request") };
     let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
-    let resolve = |request_id, key: &str, code: &str, approve| ClientMessage::ResolveBotPairing { request_id, pairing_key: key.into(), code: code.into(), approve };
+    let resolve = |request_id, key: &str, code: &str, approve| ClientMessage::ResolveBotPairing { request_id, pairing_key: key.into(), code: code.into(), approve, member: None };
 
     owner.send(&ClientMessage::ListBotPairings { request_id: 2 }).await.unwrap();
     match reply(&mut owner).await {
@@ -1443,6 +1443,83 @@ async fn the_owner_approves_and_denies_the_bots_pairing_requests() {
     assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
     ana.send(&resolve(3, KEY, &telegram, true)).await.unwrap();
     assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+}
+
+/// What `ListBotPairings` answers: who is waiting, and who a chat may be approved as speaking as.
+async fn bot_pairings(conn: &mut ServerConnection) -> (Vec<warden_server_protocol::protocol::BotPairingDto>, Vec<warden_server_protocol::protocol::BotMemberDto>) {
+    conn.send(&ClientMessage::ListBotPairings { request_id: 70 }).await.unwrap();
+    match reply(conn).await {
+        ServerMessage::BotPairings { pairings, members, .. } => (pairings, members),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// P117: the owner approves a pairing request as a member of the workspace. The list says who can be chosen and
+/// whether the bots are linked to them; a refusal (no `[bot_hub]`, not linked, not a member) lets nobody in and
+/// leaves the request waiting; once linked, the chat lands on the allow-list *and* in `members`; an approval
+/// without a member, and a denial that names one, map nobody.
+#[tokio::test]
+async fn the_owner_approves_a_pairing_request_as_a_member_of_the_workspace() {
+    use warden_bootstrap::bot_access::BotHubSettings;
+    use warden_bootstrap::bot_hub::{HubTokens, Linked};
+    use warden_bootstrap::bot_pairing::{BotPairing, Issued, TELEGRAM, WHATSAPP};
+    let hub = spin_up().await;
+    let config_path = hub.dir.join("config.toml");
+    let store = BotPairing::beside(&config_path);
+    let now = warden_bootstrap::bot_access::unix_now();
+    let code = |channel: &str, sender: &str| match store.request(channel, sender, "", now).unwrap() {
+        Issued::Fresh(code) => code,
+        other => panic!("{other:?}"),
+    };
+    let (telegram, whatsapp, stranger) = (code(TELEGRAM, "42"), code(WHATSAPP, "5511999999999@lid"), code(TELEGRAM, "43"));
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let resolve = |request_id, code: &str, approve, member: Option<&str>| ClientMessage::ResolveBotPairing { request_id, pairing_key: KEY.into(), code: code.into(), approve, member: member.map(String::from) };
+    let refused = |reply: ServerMessage| match reply {
+        ServerMessage::UserError { message, auth_rejected: false, .. } => message,
+        other => panic!("a refusal, got {other:?}"),
+    };
+    let config = || warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+
+    let (pairings, members) = bot_pairings(&mut owner).await;
+    assert_eq!(pairings.len(), 3);
+    assert_eq!(members.iter().map(|m| (m.id.as_str(), m.name.as_str(), m.linked)).collect::<Vec<_>>(), [("ana", "Ana", false)], "the member exists, the bots aren't linked to her yet");
+
+    // Each refusal says what to do, and changes nothing.
+    owner.send(&resolve(71, &telegram, true, Some("ana"))).await.unwrap();
+    assert!(refused(reply(&mut owner).await).contains("[bot_hub]"), "no hub set up yet");
+    let mut with_hub = config();
+    with_hub.bot_hub = Some(BotHubSettings { url: hub.url.replacen("http://", "ws://", 1) });
+    save_config(&config_path, &with_hub).unwrap();
+    owner.send(&resolve(72, &telegram, true, Some("ana"))).await.unwrap();
+    assert!(refused(reply(&mut owner).await).contains("warden bots link ana"), "not linked yet");
+    owner.send(&resolve(73, &telegram, true, Some("ghost"))).await.unwrap();
+    assert!(refused(reply(&mut owner).await).contains("no member 'ghost'"), "not a member of the workspace");
+    assert!(config().telegram.allowed_users.is_empty() && config().telegram.members.is_empty(), "a refusal lets nobody in");
+    assert_eq!(bot_pairings(&mut owner).await.0.len(), 3, "and the request stays");
+
+    // Linked, she can be chosen, and the chat speaks as her.
+    HubTokens::beside(&config_path).set("ana", Linked { device_id: "warden-bot-ana".into(), device_token: "t".into() }).unwrap();
+    assert!(bot_pairings(&mut owner).await.1[0].linked);
+    owner.send(&resolve(74, &telegram, true, Some("ana"))).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::BotPairings { pairings, .. } => assert_eq!(pairings.len(), 2),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(config().telegram.allowed_users, [42]);
+    assert_eq!(config().telegram.member_for(42), Some("ana"));
+
+    // Without a member it is the owner's assistant, as before; a denial ignores the member it was given.
+    owner.send(&resolve(75, &whatsapp, true, None)).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::BotPairings { .. }));
+    assert_eq!(config().whatsapp.allowed_chats, ["5511999999999@lid"]);
+    assert!(config().whatsapp.members.is_empty(), "no member chosen, none mapped");
+    owner.send(&resolve(76, &stranger, false, Some("ana"))).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::BotPairings { pairings, .. } => assert!(pairings.is_empty()),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(config().telegram.allowed_users, [42], "denied, so nobody else got in");
+    assert_eq!(config().telegram.members.len(), 1, "and nothing was mapped");
 }
 
 /// P115: the owner picks the model the assistant learns with for a member — a model the hub has, with

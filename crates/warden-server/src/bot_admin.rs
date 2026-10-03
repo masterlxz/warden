@@ -6,6 +6,7 @@
 //! the pairing key, with the same 1 s wait on a wrong one and the same per-hub lock as a settings save.
 
 use warden_bootstrap::bot_access::unix_now;
+use warden_bootstrap::bot_hub::bot_members;
 use warden_bootstrap::bot_pairing::BotPairing;
 use warden_server_protocol::ServerMessage;
 
@@ -17,11 +18,12 @@ fn error(request_id: u64, message: String, auth_rejected: bool) -> ServerMessage
     ServerMessage::UserError { request_id, message, auth_rejected }
 }
 
-/// What is waiting, oldest first.
+/// What is waiting, oldest first, and who a chat may be approved as speaking as (P117).
 fn pairings(settings: &dyn SettingsHost, request_id: u64) -> ServerMessage {
-    match BotPairing::beside(&settings.config_path()).list(unix_now()) {
-        Ok(requests) => ServerMessage::BotPairings { request_id, pairings: requests.into_iter().map(Into::into).collect() },
-        Err(err) => error(request_id, format!("{err:#}"), false),
+    let path = settings.config_path();
+    match (BotPairing::beside(&path).list(unix_now()), bot_members(&path)) {
+        (Ok(requests), Ok(members)) => ServerMessage::BotPairings { request_id, pairings: requests.into_iter().map(Into::into).collect(), members },
+        (Err(err), _) | (_, Err(err)) => error(request_id, format!("{err:#}"), false),
     }
 }
 
@@ -34,7 +36,10 @@ pub fn handle_list_bot_pairings(settings: Option<&dyn SettingsHost>, request_id:
 }
 
 /// Answers `ResolveBotPairing` with what is still waiting: `approve` lets the sender in, otherwise the
-/// request is dropped. An unknown or expired code is an error and changes nothing.
+/// request is dropped. An unknown or expired code is an error and changes nothing. With `member`, an approved
+/// chat speaks as that member of the workspace (it has to exist and the bots have to be linked to it, or the
+/// approval is refused whole: the sender isn't let in and the request stays); denying ignores it.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_resolve_bot_pairing(
     settings: Option<&dyn SettingsHost>,
     lock: &tokio::sync::Mutex<()>,
@@ -43,6 +48,7 @@ pub async fn handle_resolve_bot_pairing(
     pairing_key: &str,
     code: &str,
     approve: bool,
+    member: Option<&str>,
 ) -> ServerMessage {
     let Some(settings) = settings else { return error(request_id, NO_SETTINGS.to_string(), false) };
     let _serialized = lock.lock().await;
@@ -52,7 +58,7 @@ pub async fn handle_resolve_bot_pairing(
     }
     let config_path = settings.config_path();
     let store = BotPairing::beside(&config_path);
-    let done = if approve { store.approve(code, unix_now(), &config_path) } else { store.deny(code, unix_now()) };
+    let done = if approve { store.approve_as(code, unix_now(), &config_path, member.filter(|m| !m.is_empty())) } else { store.deny(code, unix_now()) };
     match done {
         Ok(_) => pairings(settings, request_id),
         Err(err) => error(request_id, format!("{err:#}"), false),

@@ -1104,10 +1104,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::ListBotPairings { request_id }) => {
                     let _ = tx.send(handle_list_bot_pairings(settings.as_deref(), request_id));
                 }
-                Ok(ClientMessage::ResolveBotPairing { request_id, pairing_key, code, approve }) => {
+                Ok(ClientMessage::ResolveBotPairing { request_id, pairing_key, code, approve, member: as_member }) => {
                     let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
                     tokio::spawn(async move {
-                        let reply = handle_resolve_bot_pairing(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, &code, approve).await;
+                        let reply = handle_resolve_bot_pairing(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, &code, approve, as_member.as_deref()).await;
                         let _ = reply_tx.send(reply);
                     });
                 }

@@ -13,7 +13,7 @@ import {
   type AgentSettings,
   type ApiKey,
   type Attachment,
-  type BotPairing,
+  type BotPairingsView,
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
@@ -855,20 +855,22 @@ export class ServerConnection {
   }
 
   /** P117: the strangers waiting to talk to the Telegram or WhatsApp bot (the owner's connection only). */
-  async listBotPairings(): Promise<BotPairing[]> {
+  async listBotPairings(): Promise<BotPairingsView> {
     return this.botPairingRequest((requestId) => ({ type: "listBotPairings", requestId }));
   }
 
   /** The owner lets the sender behind `code` in (`approve`) or drops the request; answers with what is still
-   * waiting. Rejects with `UserError`. */
-  async resolveBotPairing(pairingKey: string, code: string, approve: boolean): Promise<BotPairing[]> {
-    return this.botPairingRequest((requestId) => ({ type: "resolveBotPairing", requestId, pairingKey, code, approve }));
+   * waiting. `member` approves the chat as speaking as that member of the workspace (they have to be linked to the
+   * bots), otherwise as the owner. Rejects with `UserError`. */
+  async resolveBotPairing(pairingKey: string, code: string, approve: boolean, member?: string): Promise<BotPairingsView> {
+    return this.botPairingRequest((requestId) => ({ type: "resolveBotPairing", requestId, pairingKey, code, approve, ...(member && { member }) }));
   }
 
-  private async botPairingRequest(build: (requestId: number) => ClientMessage): Promise<BotPairing[]> {
+  private async botPairingRequest(build: (requestId: number) => ClientMessage): Promise<BotPairingsView> {
     const reply = await this.request(build);
     if (reply.type !== "botPairings") throw new Error("resposta inesperada do hub");
-    return reply.pairings;
+    // A hub from before the choice of member sends none: nobody can be chosen, the owner is what there was.
+    return { pairings: reply.pairings, members: reply.members ?? [] };
   }
 
   private async spaceRequest(build: (requestId: number) => ClientMessage): Promise<SpaceInfo[]> {

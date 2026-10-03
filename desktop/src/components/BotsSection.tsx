@@ -27,12 +27,21 @@ interface Pairing {
   expiresAt: number;
 }
 
+/** Mirrors `BotMemberDto` (P117): a member of the workspace an approved chat may speak as, and whether the bots
+ * are linked to the hub as them (`warden bots link`) — without which approving a chat as them is refused. */
+interface BotMember {
+  id: string;
+  name: string;
+  linked: boolean;
+}
+
 /** Mirrors `bot_cmds::BotsPayload` — never the token, only whether one is saved. */
 interface BotsPayload {
   bots: BotsSettings;
   telegramToken: { set: boolean; hint: string | null };
   modelIds: string[];
   pairings: Pairing[];
+  members: BotMember[];
 }
 
 /** The lists are edited as text, one entry per line. */
@@ -115,6 +124,8 @@ function BotsSection() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  /** P117 — who each waiting request is approved as speaking as, by code. Missing or "" is the owner. */
+  const [speakAs, setSpeakAs] = useState<Record<string, string>>({});
 
   useEffect(() => {
     invoke<BotsPayload>("get_bots_settings")
@@ -165,7 +176,9 @@ function BotsSection() {
   async function pairingAction(command: "get_bots_settings" | "approve_bot_pairing" | "deny_bot_pairing", code?: string) {
     setError(null);
     try {
-      const payload = await invoke<BotsPayload>(command, code === undefined ? undefined : { code });
+      // Only an approval has someone to speak as; a refusal here (not linked, no hub) leaves the request waiting.
+      const args = code === undefined ? undefined : command === "approve_bot_pairing" ? { code, member: speakAs[code] || null } : { code };
+      const payload = await invoke<BotsPayload>(command, args);
       setLoaded(payload);
       // Only the lists change under an approval, and only a clean draft can take them without losing an edit.
       setDraft(toDraft(payload.bots));
@@ -272,6 +285,17 @@ function BotsSection() {
                   <code>{p.code}</code> {p.channel} {p.sender}
                   {p.label && ` (${p.label})`} — {expiresIn(p)}
                 </span>
+                <label className="settings-hint">
+                  Speak as{" "}
+                  <select className="settings-input" value={speakAs[p.code] ?? ""} onChange={(e) => setSpeakAs({ ...speakAs, [p.code]: e.currentTarget.value })}>
+                    <option value="">Me, the owner (your usual assistant)</option>
+                    {loaded.members.map((m) => (
+                      <option key={m.id} value={m.id} disabled={!m.linked}>
+                        {m.name} ({m.id}){m.linked ? "" : ` — link first: warden bots link ${m.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <span className="api-key-actions">
                   <button type="button" className="settings-browse-btn" disabled={dirty} onClick={() => void pairingAction("approve_bot_pairing", p.code)}>
                     Approve

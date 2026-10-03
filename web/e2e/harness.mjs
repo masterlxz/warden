@@ -42,14 +42,16 @@ persona = "You operate."
 /**
  * A real `warden-server serve` on a free loopback port, in a folder of its own: HOME and the XDG folders
  * point there, so the hub's devices, conversations and vault never touch the user's. `extraConfig` is TOML
- * appended to the minimal config (a provider with a fake key and two agents).
+ * appended to the minimal config (a provider with a fake key and two agents). `files` maps a file name to its
+ * text, written beside `config.toml` (where the hub keeps `bot_pairing.json` and `bot_hub.json`).
  * Returns `{ url, config, log(), stop() }`; `stop()` ends the process and deletes the folder.
  */
-export async function startHub({ allowMachineSettings = false, extraConfig = "" } = {}) {
+export async function startHub({ allowMachineSettings = false, extraConfig = "", files = {} } = {}) {
   const bin = serverBinary();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "warden-e2e-"));
   const config = path.join(home, "config.toml");
   fs.writeFileSync(config, BASE_CONFIG + extraConfig);
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(home, name), text);
   const args = ["serve", "--listen", "127.0.0.1:0", "--auth-key", PAIRING_KEY, "--config", config, "--vault-path", path.join(home, "vault")];
   if (allowMachineSettings) args.push("--allow-machine-settings");
   const child = spawn(bin, args, {

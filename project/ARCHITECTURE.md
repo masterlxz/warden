@@ -2999,7 +2999,12 @@ aparelho `Approved` e hoje não tem cliente.
     senha. Entra com `recovery_codes: false` (`handshake_as_member_showing`): um bot não mostra o código de recuperação, e com
     `true` o hub criaria a chave cifrada do membro ali mesmo e devolveria um código que ninguém veria. Reconecta só com o token.
   - **Aprovar como membro**: `warden bots pair approve <código> --as <membro>` (`BotPairing::approve_as`) recusa, sem mudar nada, se o
-    membro não existe, se não há `[bot_hub]` ou se ele não está vinculado. Desktop e web seguem aprovando sem membro.
+    membro não existe, se não há `[bot_hub]` ou se ele não está vinculado. **O desktop e a web também escolhem o membro** (Sessão 123):
+    cada pedido pendente ganha um seletor "Falar como" (padrão: o dono), e o `ResolveBotPairing` leva `member` (opcional; ausente, como
+    antes). A listagem (`BotPairings`) traz `members` (`BotMemberDto { id, name, linked }`, de `bot_hub::bot_members`, a mesma função
+    para os dois clientes): todos os membros aparecem, mas só os **vinculados** são escolhíveis, e um não vinculado mostra o caminho
+    (`warden bots link <id>`) em vez de sumir. A trava de verdade é o hub, que recusa a aprovação inteira (ninguém entra, o pedido fica);
+    o `disabled` do seletor só poupa a ida. Negar ignora o membro. Compatível nos dois sentidos (campos com `default`).
   - **Cofre trancado**: se o hub reiniciou, o token reconecta mas o `Chat` volta `ChatError` com o texto de "dados trancados", e o bot
     o repassa ao chat. O membro destranca entrando uma vez pelo web, desktop ou celular. Nenhuma senha vai a disco, de propósito.
   - **Falhas viram uma linha no chat, nunca uma resposta do dono**: sem `[bot_hub]`, sem vínculo, token revogado (`AuthRejected` ou
@@ -3011,7 +3016,7 @@ aparelho `Approved` e hoje não tem cliente.
     de membro; trocar a senha do membro não revoga o token (comportamento do hub; revogar é pelo registro de dispositivos); remover
     o membro revoga o dispositivo e o mapa fica no `config.toml` (o chat passa a ouvir "não estou mais conectado").
   - **O save das telas não desmapeia ninguém**: `apply_bots_settings` leva `members` adiante, e o `save_settings` do desktop leva
-    `bot_hub`. Falta uma tela para escolher o membro na aprovação (desktop e web).
+    `bot_hub`. Nenhuma tela edita o mapa à mão: ele nasce na aprovação (CLI, desktop ou web) e some editando o `config.toml`.
 
 ### Tela de "Aprendizado e bots" (P118, Sessão 118)
 

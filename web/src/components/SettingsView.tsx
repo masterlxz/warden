@@ -9,6 +9,7 @@ import type {
   AdvancedSettings,
   AgentSettings,
   BotPairing,
+  BotPairingsView,
   BotsSettings,
   Combo,
   HubSettings,
@@ -195,24 +196,30 @@ function numberOrNull(value: string): number | null {
  * denies each one, with the pairing key. Not part of the draft: it acts on its own, so it's off while the
  * form has unsaved edits (an approval reloads the settings, and the lists in them change). */
 function BotPairings({ conn, disabled, onResolved }: { conn: ServerConnection | null; disabled: boolean; onResolved: () => void }) {
-  const [pairings, setPairings] = useState<BotPairing[]>([]);
-  const [ask, setAsk] = useState<{ code: string; approve: boolean } | null>(null);
+  const [view, setView] = useState<BotPairingsView>({ pairings: [], members: [] });
+  const { pairings, members } = view;
+  /** `member` empty: the chat is answered as the owner. */
+  const [ask, setAsk] = useState<{ code: string; approve: boolean; member: string } | null>(null);
+  /** P117 — who each waiting request is approved as speaking as, by code. Missing or "" is the owner. */
+  const [speakAs, setSpeakAs] = useState<Record<string, string>>({});
   const [key, setKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(() => {
     if (!conn) return;
-    conn.listBotPairings().then(setPairings, () => setPairings([]));
+    conn.listBotPairings().then(setView, () => setView({ pairings: [], members: [] }));
   }, [conn]);
   useEffect(refresh, [refresh]);
+
+  const nameOf = (id: string) => members.find((m) => m.id === id)?.name ?? id;
 
   async function resolve() {
     if (!conn || !ask) return;
     setBusy(true);
     setError(null);
     try {
-      setPairings(await conn.resolveBotPairing(key, ask.code, ask.approve));
+      setView(await conn.resolveBotPairing(key, ask.code, ask.approve, ask.member || undefined));
       const approved = ask.approve;
       setAsk(null);
       setKey("");
@@ -239,11 +246,21 @@ function BotPairings({ conn, disabled, onResolved }: { conn: ServerConnection | 
                 <code>{p.code}</code> {p.channel === "telegram" ? "Telegram" : "WhatsApp"} {p.sender}
                 {p.label && ` (${p.label})`} — expira em {minutes(p)} min
               </p>
+              <Field label="Falar como" hint="Quem o bot passa a ser para esse chat. Um membro só aparece liberado depois de vinculado: warden bots link <usuário>.">
+                <select value={speakAs[p.code] ?? ""} onChange={(e) => setSpeakAs({ ...speakAs, [p.code]: e.target.value })}>
+                  <option value="">Eu, o dono (o assistente de sempre)</option>
+                  {members.map((m) => (
+                    <option key={m.id} value={m.id} disabled={!m.linked}>
+                      {m.name} ({m.id}){m.linked ? "" : " — vincule antes"}
+                    </option>
+                  ))}
+                </select>
+              </Field>
               <div className="skills-actions">
-                <button type="button" className="primary-button" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: true })}>
+                <button type="button" className="primary-button" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: true, member: speakAs[p.code] ?? "" })}>
                   Aprovar
                 </button>
-                <button type="button" className="link-button skills-danger" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: false })}>
+                <button type="button" className="link-button skills-danger" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: false, member: "" })}>
                   Recusar
                 </button>
               </div>
@@ -260,7 +277,7 @@ function BotPairings({ conn, disabled, onResolved }: { conn: ServerConnection | 
             void resolve();
           }}
         >
-          <Field label={`Chave de pareamento do hub, para ${ask.approve ? "aprovar" : "recusar"} ${ask.code}`}>
+          <Field label={`Chave de pareamento do hub, para ${ask.approve ? "aprovar" : "recusar"} ${ask.code}${ask.approve && ask.member ? ` como ${nameOf(ask.member)}` : ""}`}>
             <input type="password" autoComplete="current-password" autoFocus value={key} onChange={(e) => setKey(e.target.value)} />
           </Field>
           {error && <p className="error-banner">{error}</p>}

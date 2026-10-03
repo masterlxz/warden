@@ -334,6 +334,20 @@ export interface BotPairing {
   expiresAt: number;
 }
 
+/** Mirrors `BotMemberDto` (P117): a member of the workspace an approved chat may speak as, and whether the bots
+ * are linked to the hub as them (`warden bots link`); the hub refuses to approve a chat as someone who isn't. */
+export interface BotMember {
+  id: string;
+  name: string;
+  linked: boolean;
+}
+
+/** What the pairing screen shows: who is waiting, and who a chat may be approved as speaking as. */
+export interface BotPairingsView {
+  pairings: BotPairing[];
+  members: BotMember[];
+}
+
 /** Mirrors `DeviceDto`: one device in the hub's pairing registry, never its token. */
 export interface HubDevice {
   deviceId: string;
@@ -633,7 +647,8 @@ export type ClientMessage =
   | { type: "deleteSpace"; requestId: number; pairingKey: string; id: string }
   /** P117 — the owner answers the bots' pairing requests; deciding needs the pairing key. */
   | { type: "listBotPairings"; requestId: number }
-  | { type: "resolveBotPairing"; requestId: number; pairingKey: string; code: string; approve: boolean }
+  /** `member`: approve the chat as speaking as that member of the workspace; absent, as the owner. */
+  | { type: "resolveBotPairing"; requestId: number; pairingKey: string; code: string; approve: boolean; member?: string }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -705,7 +720,7 @@ export type ServerMessage =
   | { type: "recoveryNoticesAcked"; requestId: number }
   | { type: "learningSet"; requestId: number }
   /** P117 — the strangers waiting for the owner to let them talk to a bot, oldest first. */
-  | { type: "botPairings"; requestId: number; pairings: BotPairing[] }
+  | { type: "botPairings"; requestId: number; pairings: BotPairing[]; members?: BotMember[] }
   /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
   | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
   /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after

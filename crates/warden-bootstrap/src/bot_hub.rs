@@ -17,7 +17,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use warden_core::model::Attachment;
-use warden_server_protocol::protocol::{ClientMessage, ServerMessage, UserInfoDto};
+use warden_server_protocol::protocol::{BotMemberDto, ClientMessage, ServerMessage, UserInfoDto};
 use warden_server_protocol::tls::default_client_config;
 use warden_server_protocol::{AuthRejected, ServerConnection};
 
@@ -122,6 +122,15 @@ impl HubTokens {
     pub fn linked(&self) -> anyhow::Result<Vec<String>> {
         Ok(self.read()?.members.into_keys().collect())
     }
+}
+
+/// Who a chat may be approved as speaking as: every member in the `config.toml` at `config_path`, in the file's
+/// order, and whether the bots are linked to the hub as them. One answer for the desktop and the web, so both
+/// show the same choices (an unlinked member can't be chosen: `BotPairing::approve_as` refuses it).
+pub fn bot_members(config_path: &Path) -> anyhow::Result<Vec<BotMemberDto>> {
+    let config = crate::load_config_from_path(config_path, false)?;
+    let linked = HubTokens::beside(config_path).linked()?;
+    Ok(config.users.iter().map(|u| BotMemberDto { id: u.id.clone(), name: u.name.clone(), linked: linked.contains(&u.id) }).collect())
 }
 
 /// Signs in to the hub at `hub_url` as `member` with their password and keeps the device token it
@@ -313,6 +322,23 @@ mod tests {
         assert!(tokens.remove("ana").unwrap());
         assert!(!tokens.remove("ana").unwrap(), "nothing left to remove");
         assert_eq!(tokens.linked().unwrap(), ["bia"]);
+    }
+
+    #[test]
+    fn the_members_a_chat_may_speak_as_are_listed_with_whether_the_bots_are_linked_to_them() {
+        let config = scratch();
+        assert!(bot_members(&config).unwrap().is_empty(), "no file, no members");
+        let mut file = crate::FileConfig::default();
+        crate::users::add_user(&mut file, "ana", "Ana", "provisional-pass").unwrap();
+        crate::users::add_user(&mut file, "bia", "Bia", "provisional-pass").unwrap();
+        crate::save_config(&config, &file).unwrap();
+        let members = |config: &Path| bot_members(config).unwrap().into_iter().map(|m| (m.id, m.name, m.linked)).collect::<Vec<_>>();
+        assert_eq!(members(&config), [("ana".to_string(), "Ana".to_string(), false), ("bia".to_string(), "Bia".to_string(), false)]);
+
+        HubTokens::beside(&config).set("bia", Linked { device_id: "warden-bot-bia".into(), device_token: "t".into() }).unwrap();
+        // A link to someone who isn't (or is no longer) a member lists nobody extra.
+        HubTokens::beside(&config).set("ghost", Linked { device_id: "warden-bot-ghost".into(), device_token: "t".into() }).unwrap();
+        assert_eq!(members(&config), [("ana".to_string(), "Ana".to_string(), false), ("bia".to_string(), "Bia".to_string(), true)]);
     }
 
     #[cfg(unix)]
