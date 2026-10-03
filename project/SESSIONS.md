@@ -40,7 +40,11 @@
   no `bot_access`, dois no Telegram e um no WhatsApp (estranho, grupo e status sem resposta, sem conversa e sem chamada ao
   modelo; listado responde), mais o ciclo gravar/ler do `FileConfig`; clippy sem aviso novo; `cargo check --workspace --tests`
   limpo. **Não verificado**: bot real (token e número).
-- **Próximo passo**: o resto do P117 (pareamento, chat que vira pessoa); a rodada de testes em tela (P115 e os P95–P114).
+- **O que ainda não tem tela**: cruzando os campos do `config.toml` com o desktop, a web, o celular e a extensão, saíram dois
+  itens novos: **P118** (tela de "Aprendizado e bots": `[learning]`, as listas dos bots e o token do Telegram) e **P119**
+  (a web não edita o que o desktop edita, e as chaves de delegação e o `truthid_*` seguem só no arquivo).
+- **Próximo passo**: o P118 (a tela de aprendizado e bots), o resto do P117 (pareamento, chat que vira pessoa) e a rodada de
+  testes em tela (P115 e os P95–P114).
 
 ---
 
