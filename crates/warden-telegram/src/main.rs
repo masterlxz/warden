@@ -80,6 +80,11 @@ async fn main() -> anyhow::Result<()> {
         .context("could not determine the OS config directory for conversations")?;
 
     let api = TelegramClient::new(token);
+    // P117: the bot answers only who the config lists, and the list is read again while it runs.
+    let config_path = warden_bootstrap::bot_access::config_path(cli.config.as_deref());
+    if config.telegram.allowed_users.is_empty() {
+        println!("warning: [telegram] allowed_users is empty, so the bot answers nobody. Write to it and read its log for your id, then add it to config.toml.");
+    }
     println!("Warden Telegram bot is running (long polling)...");
-    run_bot(&api, &orchestrator, &conversations_dir, learning.as_ref()).await
+    run_bot(&api, &orchestrator, &conversations_dir, learning.as_ref(), config_path.as_deref()).await
 }

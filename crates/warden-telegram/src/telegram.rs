@@ -42,10 +42,16 @@ pub struct IncomingMessage {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Chat {
     pub id: i64,
+    /// `private`, `group`, `supergroup` or `channel`. Missing counts as not private (P117).
+    #[serde(rename = "type", default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sender {
+    /// The user's id: what `[telegram] allowed_users` lists (P117).
+    #[serde(default)]
+    pub id: Option<i64>,
     #[serde(default)]
     pub username: Option<String>,
     #[serde(default)]
@@ -210,16 +216,57 @@ fn split_into_chunks(text: &str) -> Vec<&str> {
 /// Runs forever: long-polls for updates and handles each one. A polling error (network blip,
 /// Telegram briefly unreachable) is logged and retried after `RETRY_DELAY` rather than crashing
 /// the process — same graceful-degradation spirit as the rest of the project.
-pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>) -> anyhow::Result<()> {
+///
+/// Answers only who `[telegram] allowed_users` lists in `config_path` (P117), read again after each
+/// poll so an edit counts from the next message; nobody when there is no file or list.
+pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, config_path: Option<&Path>) -> anyhow::Result<()> {
     let mut offset: Option<i64> = None;
+    let mut access = Access::default();
     loop {
         match api.get_updates(offset, POLL_TIMEOUT_SECS).await {
-            Ok(updates) => process_updates(api, orchestrator, conversations_dir, learning, updates, &mut offset).await,
+            Ok(updates) => {
+                if let Some(path) = config_path {
+                    match warden_bootstrap::bot_access::read_lists(path) {
+                        Ok((telegram, _)) => access.settings = telegram,
+                        Err(err) => eprintln!("can't read the allowed users from {}, keeping the last list: {err:#}", path.display()),
+                    }
+                }
+                process_updates(api, orchestrator, conversations_dir, learning, &mut access, updates, &mut offset).await
+            }
             Err(err) => {
                 eprintln!("error polling Telegram, retrying in {}s: {err:#}", RETRY_DELAY.as_secs());
                 tokio::time::sleep(RETRY_DELAY).await;
             }
         }
+    }
+}
+
+/// Who may talk to the bot (P117), and who it has already said it ignored.
+#[derive(Default)]
+struct Access {
+    settings: warden_bootstrap::bot_access::TelegramSettings,
+    /// Ignored users already logged, so a stranger who keeps writing costs one line, not one per message.
+    reported: std::collections::HashSet<i64>,
+}
+
+impl Access {
+    /// Whether `message` may be answered. A refusal is silent to the sender (no reply, no conversation
+    /// kept) and logged once per user, with what the owner adds to allow them.
+    fn allows(&mut self, message: &IncomingMessage) -> bool {
+        let user = message.from.as_ref().and_then(|s| s.id);
+        if self.settings.allows(user, &message.chat.kind) {
+            return true;
+        }
+        let who = user.unwrap_or(message.chat.id);
+        if self.reported.insert(who) {
+            let name = message.from.as_ref().and_then(|s| s.username.as_deref()).map(|u| format!(" (@{u})")).unwrap_or_default();
+            if message.chat.kind == "private" {
+                eprintln!("ignored telegram user {who}{name}: to allow them, add {who} to [telegram] allowed_users in config.toml");
+            } else {
+                eprintln!("ignored a telegram {} chat ({}): the bot only answers private chats", message.chat.kind, message.chat.id);
+            }
+        }
+        false
     }
 }
 
@@ -231,6 +278,7 @@ async fn process_updates(
     orchestrator: &Orchestrator,
     conversations_dir: &Path,
     learning: Option<&FileConfig>,
+    access: &mut Access,
     updates: Vec<Update>,
     offset: &mut Option<i64>,
 ) {
@@ -238,6 +286,10 @@ async fn process_updates(
         *offset = Some(update.update_id + 1);
 
         let Some(message) = update.message else { continue };
+        // Before anything else, `/start` and `/help` included: a stranger gets no answer at all.
+        if !access.allows(&message) {
+            continue;
+        }
         let Some(text) = message.text.clone() else { continue };
         handle_update(api, orchestrator, conversations_dir, learning, &message, &text).await;
     }
@@ -370,15 +422,66 @@ mod tests {
         }
     }
 
+    /// A private chat: the user's id is the chat's.
     fn text_update(update_id: i64, chat_id: i64, text: &str) -> Update {
         Update {
             update_id,
             message: Some(IncomingMessage {
-                chat: Chat { id: chat_id },
+                chat: Chat { id: chat_id, kind: "private".to_string() },
                 text: Some(text.to_string()),
-                from: Some(Sender { username: Some("fabio".to_string()), first_name: None }),
+                from: Some(Sender { id: Some(chat_id), username: Some("fabio".to_string()), first_name: None }),
             }),
         }
+    }
+
+    /// The people `[telegram] allowed_users` lists.
+    fn access_for(users: &[i64]) -> Access {
+        Access { settings: warden_bootstrap::bot_access::TelegramSettings { allowed_users: users.to_vec() }, ..Access::default() }
+    }
+
+    /// P117: a stranger gets nothing: no reply (`/start` included), no conversation, no model call; a
+    /// listed person in a group is a stranger too; and a user is logged once, not once per message.
+    #[tokio::test]
+    async fn only_a_listed_person_in_a_private_chat_is_answered() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-telegram-access-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(CountingModel(calls.clone())), vault);
+        let conversations_dir = temp_conversations_dir();
+        let mut group = text_update(4, 99, "hi from a group");
+        if let Some(message) = group.message.as_mut() {
+            message.chat = Chat { id: -1001, kind: "supergroup".to_string() };
+            message.from = Some(Sender { id: Some(42), username: None, first_name: None });
+        }
+        let api = ScriptedTelegramApi::new(Vec::new());
+        let mut access = access_for(&[42]);
+        let mut offset = None;
+        let updates = vec![text_update(1, 7, "hello"), text_update(2, 7, "/start"), text_update(3, 7, "hello again"), group];
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, updates, &mut offset).await;
+
+        assert_eq!(offset, Some(5), "every update is consumed, answered or not");
+        assert!(api.sent.lock().unwrap().is_empty(), "no reply to a stranger, not even the help text: {:?}", api.sent.lock().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no model call");
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, "7").unwrap().is_none(), "no conversation kept");
+        assert_eq!(access.reported.len(), 2, "the stranger (once) and the group, not one line per message");
+
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, vec![text_update(6, 42, "hello")], &mut offset).await;
+        assert_eq!(api.sent.lock().unwrap().len(), 1, "the listed person is answered");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// An empty list is nobody, and a message with no sender or no chat kind never passes.
+    #[tokio::test]
+    async fn an_empty_list_answers_no_one() {
+        let api = ScriptedTelegramApi::new(Vec::new());
+        let orchestrator = temp_orchestrator();
+        let mut offset = None;
+        let mut no_sender = text_update(2, 42, "hello");
+        if let Some(message) = no_sender.message.as_mut() {
+            message.from = None;
+        }
+        process_updates(&api, &orchestrator, &temp_conversations_dir(), None, &mut access_for(&[]), vec![text_update(1, 42, "hello")], &mut offset).await;
+        process_updates(&api, &orchestrator, &temp_conversations_dir(), None, &mut access_for(&[42]), vec![no_sender], &mut offset).await;
+        assert!(api.sent.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -389,7 +492,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access_for(&[42]), updates, &mut offset).await;
 
         assert_eq!(offset, Some(2));
         let sent = api.sent.lock().unwrap();
@@ -428,7 +531,7 @@ mod tests {
             let api = ScriptedTelegramApi::new(vec![vec![text_update(1, 42, "no, use tabs, not spaces")]]);
             let mut offset = None;
             let updates = api.get_updates(offset, 30).await.unwrap();
-            process_updates(&api, &orchestrator, &temp_conversations_dir(), Some(&config), updates, &mut offset).await;
+            process_updates(&api, &orchestrator, &temp_conversations_dir(), Some(&config), &mut access_for(&[42]), updates, &mut offset).await;
             calls.load(Ordering::SeqCst)
         };
 
@@ -445,7 +548,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access_for(&[42]), updates, &mut offset).await;
 
         let sent = api.sent.lock().unwrap();
         assert_eq!(sent[0], (42, HELP_TEXT.to_string()));
@@ -461,7 +564,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access_for(&[42]), updates, &mut offset).await;
 
         assert_eq!(offset, Some(6));
         assert!(api.sent.lock().unwrap().is_empty());
@@ -547,7 +650,7 @@ mod tests {
         let mut offset = None;
 
         let updates = api.get_updates(offset, 30).await.unwrap();
-        process_updates(&api, &orchestrator, &conversations_dir, None, updates, &mut offset).await;
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access_for(&[42]), updates, &mut offset).await;
 
         let sent = api.sent.lock().unwrap();
         assert_eq!(sent[0], (42, "here you go".to_string()));

@@ -32,6 +32,7 @@ use warden_core::tool::{Tool, ToolProvider};
 pub mod agent_scope;
 pub mod auto_sync;
 pub mod history;
+pub mod bot_access;
 pub mod learning;
 mod config_file;
 pub mod manage_agents;
@@ -475,6 +476,12 @@ pub struct FileConfig {
     /// The assistant learning from conversations (P104, TOML `[learning]`): off unless turned on. See `learning`.
     #[serde(default, skip_serializing_if = "learning::LearningSettings::is_default")]
     pub learning: learning::LearningSettings,
+    /// Who may talk to the Telegram bot (P117, TOML `[telegram]`): nobody until listed. See `bot_access`.
+    #[serde(default, skip_serializing_if = "bot_access::TelegramSettings::is_default")]
+    pub telegram: bot_access::TelegramSettings,
+    /// Who may talk to the WhatsApp bot (P117, TOML `[whatsapp]`): nobody until listed. See `bot_access`.
+    #[serde(default, skip_serializing_if = "bot_access::WhatsAppSettings::is_default")]
+    pub whatsapp: bot_access::WhatsAppSettings,
 }
 
 fn is_default_network(network: &warden_truthid::identity::Network) -> bool {
@@ -2118,6 +2125,8 @@ oauth = true
             truthid_rpc_url: None,
             truthid_public_url: None,
             learning: Default::default(),
+            telegram: bot_access::TelegramSettings { allowed_users: vec![42] },
+            whatsapp: bot_access::WhatsAppSettings { allowed_chats: vec!["5511999999999".to_string()] },
         };
 
         save_config(&path, &config).unwrap();

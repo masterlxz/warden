@@ -32,7 +32,15 @@
   marcado como resolvido, e o OAuth de assinatura ficou **aberto à parte** no P116 (a decisão do P79 foi não fazer; fica
   como registro para reavaliar). O estudo do OpenClaw (P105) está em `STUDIES.md`: 13 áreas comparadas com prioridade, lendo o
   README e a documentação, não o código. Achado: **os bots respondem a qualquer pessoa** (P117, 🟠 Média).
-- **Próximo passo**: o P117 (controle de acesso nos bots); a rodada de testes em tela (P115 e os P95–P114 pendentes).
+- **P117, fatia 1 (a lista dos bots)**: `[telegram] allowed_users` e `[whatsapp] allowed_chats` (módulo novo
+  `warden_bootstrap::bot_access`), relidos do `config.toml` enquanto o bot roda; vazia é ninguém; só conversa privada; o
+  desconhecido não recebe nada e o log diz uma vez o que adicionar. Decisões suas: quem entra segue no vault do dono, e sem
+  pareamento nesta fatia. Achado ao compilar o workspace: o desktop montava o `FileConfig` por extenso, e sem repassar os
+  campos novos um salvar das configurações **apagaria a lista** e travaria os bots em silêncio (agora repassa). Testes: três
+  no `bot_access`, dois no Telegram e um no WhatsApp (estranho, grupo e status sem resposta, sem conversa e sem chamada ao
+  modelo; listado responde), mais o ciclo gravar/ler do `FileConfig`; clippy sem aviso novo; `cargo check --workspace --tests`
+  limpo. **Não verificado**: bot real (token e número).
+- **Próximo passo**: o resto do P117 (pareamento, chat que vira pessoa); a rodada de testes em tela (P115 e os P95–P114).
 
 ---
 

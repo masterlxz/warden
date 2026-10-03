@@ -2955,4 +2955,12 @@ aparelho `Approved` e hoje não tem cliente.
   conversa do bot) dos quais o assistente pode aprender; vazia, os bots não aprendem, porque quem escrevesse ao bot deixaria
   sugestões no vault do dono. A checagem (`LearningSettings::bot_chat_allowed`) fica nos dois bots, não em
   `learn_with_config`, que o hub e o desktop também usam e que não têm essa lista.
+- **Quem pode falar com os bots** (P117, fatia 1): `warden_bootstrap::bot_access` com `[telegram] allowed_users` (ids
+  numéricos; nome de usuário não serve, muda e pode faltar) e `[whatsapp] allowed_chats` (número ou JID, casa por igual ou por
+  `número@`). Vazia é ninguém. Só conversa privada: no Telegram, `chat.type == "private"` e `from.id` na lista; no WhatsApp,
+  o sufixo do JID (`@s.whatsapp.net` ou `@lid`), então `@g.us`, `status@broadcast` e newsletters caem sem mexer no sidecar
+  JS. O gate roda **antes** de tudo (inclusive `/start` e o aviso de mídia): o desconhecido não recebe resposta, nada é
+  gravado, e uma linha de log por id (`Access::reported`) diz o que adicionar. Os bots releem a lista do `config.toml` a cada
+  rodada de updates (Telegram) e a cada mensagem (WhatsApp), mantendo a última boa se a leitura falhar. Quem entra segue
+  usando o vault e as tools do dono; o desktop repassa os dois campos ao salvar as configurações, para não apagar a lista.
 

@@ -128,16 +128,54 @@ impl WhatsAppSidecar for ChildSidecar {
 /// from this loop (reconnecting to WhatsApp after a *dropped connection* is the sidecar's own
 /// job, handled entirely inside `index.mjs`; a `disconnected` event for that case still comes
 /// through as a normal event here, not a stream end).
-pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>) -> anyhow::Result<()> {
+///
+/// Answers only the chats `[whatsapp] allowed_chats` lists in `config_path` (P117), read again at each
+/// message so an edit counts from the next one; nobody when there is no file or list.
+pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let mut access = Access::default();
     loop {
         match sidecar.recv_event().await? {
             None => anyhow::bail!("WhatsApp sidecar process exited unexpectedly"),
-            Some(event) => handle_event(sidecar, orchestrator, conversations_dir, learning, event).await,
+            Some(event) => {
+                if let (Some(path), SidecarEvent::Message { .. }) = (config_path, &event) {
+                    match warden_bootstrap::bot_access::read_lists(path) {
+                        Ok((_, whatsapp)) => access.settings = whatsapp,
+                        Err(err) => eprintln!("can't read the allowed chats from {}, keeping the last list: {err:#}", path.display()),
+                    }
+                }
+                handle_event(sidecar, orchestrator, conversations_dir, learning, &mut access, event).await
+            }
         }
     }
 }
 
-async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, event: SidecarEvent) {
+/// Who may talk to the bot (P117), and who it has already said it ignored.
+#[derive(Default)]
+struct Access {
+    settings: warden_bootstrap::bot_access::WhatsAppSettings,
+    /// Ignored chats already logged, so a stranger who keeps writing costs one line, not one per message.
+    reported: std::collections::HashSet<String>,
+}
+
+impl Access {
+    /// Whether chat `chat_id` may be answered. A refusal is silent to the sender (no reply, no
+    /// conversation kept, the media notice included) and logged once per chat, with what to add to allow it.
+    fn allows(&mut self, chat_id: &str) -> bool {
+        if self.settings.allows(chat_id) {
+            return true;
+        }
+        if self.reported.insert(chat_id.to_string()) {
+            if warden_bootstrap::bot_access::is_private_chat(chat_id) {
+                eprintln!("ignored whatsapp chat {chat_id}: to allow it, add \"{chat_id}\" (or just its number) to [whatsapp] allowed_chats in config.toml");
+            } else {
+                eprintln!("ignored whatsapp chat {chat_id}: the bot only answers private chats, never groups");
+            }
+        }
+        false
+    }
+}
+
+async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, access: &mut Access, event: SidecarEvent) {
     match event {
         SidecarEvent::Connected => println!("WhatsApp connected."),
         SidecarEvent::Disconnected { logged_out } => {
@@ -148,6 +186,10 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
             }
         }
         SidecarEvent::Message { chat_id, sender_name, text } => {
+            // Before anything else, the "I only read text" notice included: a stranger gets no answer at all.
+            if !access.allows(&chat_id) {
+                return;
+            }
             let mut learn_from = None;
             let (reply, attachments) = match text {
                 None => (MEDIA_REPLY.to_string(), Vec::new()),
@@ -258,6 +300,50 @@ mod tests {
         }
     }
 
+    /// The chats `[whatsapp] allowed_chats` lists.
+    fn access_for(chats: &[&str]) -> Access {
+        Access { settings: warden_bootstrap::bot_access::WhatsAppSettings { allowed_chats: chats.iter().map(|c| c.to_string()).collect() }, ..Access::default() }
+    }
+
+    /// P117: a stranger gets nothing (no reply, no media notice, no conversation, no model call), a group
+    /// is never answered even if its id is listed, and a chat is logged once, not once per message.
+    #[tokio::test]
+    async fn only_a_listed_private_chat_is_answered() {
+        struct Counting(std::sync::Arc<AtomicUsize>);
+        #[async_trait]
+        impl ModelProvider for Counting {
+            async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(response_stream(Response { content: "hi".to_string(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-whatsapp-access-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(Counting(calls.clone())), vault);
+        let conversations_dir = temp_conversations_dir();
+        let message = |chat: &str, text: Option<&str>| SidecarEvent::Message { chat_id: chat.to_string(), sender_name: None, text: text.map(String::from) };
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+        let mut access = access_for(&["5511999999999", "120363000000000000@g.us"]);
+
+        for event in [
+            message("5511000000000@s.whatsapp.net", Some("hello")),
+            message("5511000000000@s.whatsapp.net", Some("hello again")),
+            message("5511000000000@s.whatsapp.net", None),
+            message("120363000000000000@g.us", Some("hello group")),
+            message("status@broadcast", Some("a status")),
+        ] {
+            handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, event).await;
+        }
+        assert!(sidecar.sent.lock().unwrap().is_empty(), "no reply to a stranger, a group or a status, not even the media notice: {:?}", sidecar.sent.lock().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no model call");
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, "5511000000000@s.whatsapp.net").unwrap().is_none(), "no conversation kept");
+        assert_eq!(access.reported.len(), 3, "each ignored chat once, not once per message");
+
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, message("5511999999999@s.whatsapp.net", Some("hello"))).await;
+        assert_eq!(sidecar.sent.lock().unwrap().len(), 1, "the listed number is answered");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn text_message_calls_the_orchestrator_and_persists_the_conversation() {
         let mut sidecar = ScriptedSidecar::new(vec![SidecarEvent::Message {
@@ -269,7 +355,7 @@ mod tests {
         let conversations_dir = temp_conversations_dir();
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access_for(&["5511999999999"]), event).await;
 
         let sent = sidecar.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
@@ -305,7 +391,7 @@ mod tests {
             let orchestrator = Orchestrator::new(std::sync::Arc::new(VerdictModel(calls.clone())), vault);
             let mut sidecar = ScriptedSidecar::new(vec![SidecarEvent::Message { chat_id: CHAT.to_string(), sender_name: None, text: Some("no, use tabs, not spaces".to_string()) }]);
             let event = sidecar.recv_event().await.unwrap().unwrap();
-            handle_event(&mut sidecar, &orchestrator, &temp_conversations_dir(), Some(&config), event).await;
+            handle_event(&mut sidecar, &orchestrator, &temp_conversations_dir(), Some(&config), &mut access_for(&["5511999999999"]), event).await;
             calls.load(Ordering::SeqCst)
         };
 
@@ -342,7 +428,7 @@ mod tests {
         }]);
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access_for(&["5511999999999"]), event).await;
 
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let sent = sidecar.sent.lock().unwrap();
@@ -356,9 +442,9 @@ mod tests {
         let conversations_dir = temp_conversations_dir();
         let mut sidecar = ScriptedSidecar::new(Vec::new());
 
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Connected).await;
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Disconnected { logged_out: false }).await;
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, SidecarEvent::Disconnected { logged_out: true }).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut Access::default(), SidecarEvent::Connected).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut Access::default(), SidecarEvent::Disconnected { logged_out: false }).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut Access::default(), SidecarEvent::Disconnected { logged_out: true }).await;
 
         assert!(sidecar.sent.lock().unwrap().is_empty());
     }
@@ -415,7 +501,7 @@ mod tests {
         }]);
 
         let event = sidecar.recv_event().await.unwrap().unwrap();
-        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, event).await;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access_for(&["5511999999999"]), event).await;
 
         let sent = sidecar.sent.lock().unwrap();
         assert_eq!(sent[0], ("5511999999999@s.whatsapp.net".to_string(), "here you go".to_string()));

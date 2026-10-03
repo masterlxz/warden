@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Kept for the assistant learning from conversations (P104), only when the config turns it on.
+    let config = load_config(cli.config.as_deref())?;
     let learning = load_config(cli.config.as_deref())?;
     let learning = learning.learning.enabled.then_some(learning);
 
@@ -90,6 +91,11 @@ async fn main() -> anyhow::Result<()> {
     let script_path = cli.sidecar_script.map(PathBuf::from).unwrap_or_else(default_sidecar_script_path);
 
     let mut sidecar = ChildSidecar::spawn(&script_path, &auth_dir).await?;
+    // P117: the bot answers only who the config lists, and the list is read again while it runs.
+    let config_path = warden_bootstrap::bot_access::config_path(cli.config.as_deref());
+    if config.whatsapp.allowed_chats.is_empty() {
+        println!("warning: [whatsapp] allowed_chats is empty, so the bot answers nobody. Write to it and read its log for your chat id (or just your number), then add it to config.toml.");
+    }
     println!("Warden WhatsApp bot is starting — scan the QR code below with your phone if this is the first run.");
-    run_bot(&mut sidecar, &orchestrator, &conversations_dir, learning.as_ref()).await
+    run_bot(&mut sidecar, &orchestrator, &conversations_dir, learning.as_ref(), config_path.as_deref()).await
 }
