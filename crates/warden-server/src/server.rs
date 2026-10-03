@@ -23,6 +23,7 @@ use warden_bootstrap::tasks::TaskStore;
 use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
 use crate::approval::WsApprover;
+use crate::bot_admin::{handle_list_bot_pairings, handle_resolve_bot_pairing};
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::truthid_login::{self, TruthIdLogins};
@@ -1081,6 +1082,16 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::RemoveUser { request_id, pairing_key, id }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::Remove { id });
+                }
+                Ok(ClientMessage::ListBotPairings { request_id }) => {
+                    let _ = tx.send(handle_list_bot_pairings(settings.as_deref(), request_id));
+                }
+                Ok(ClientMessage::ResolveBotPairing { request_id, pairing_key, code, approve }) => {
+                    let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let reply = handle_resolve_bot_pairing(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, &code, approve).await;
+                        let _ = reply_tx.send(reply);
+                    });
                 }
                 Ok(ClientMessage::ListSpaces { request_id }) => {
                     let _ = tx.send(handle_list_spaces(settings.as_deref(), member.as_ref().map(|m| m.id.as_str()), request_id));

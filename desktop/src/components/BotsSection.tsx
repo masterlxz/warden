@@ -11,6 +11,20 @@ interface BotsSettings {
   learningBotChats: string[];
   telegramAllowedUsers: number[];
   whatsappAllowedChats: string[];
+  /** A stranger who writes to the bot gets a code for you to approve. */
+  telegramPairing: boolean;
+  whatsappPairing: boolean;
+}
+
+/** Mirrors `BotPairingDto` (P117): a stranger waiting for you to let them talk to a bot. */
+interface Pairing {
+  channel: "telegram" | "whatsapp";
+  sender: string;
+  label: string;
+  /** As the sender was told: `ABCD-EFGH`. */
+  code: string;
+  /** Unix seconds. */
+  expiresAt: number;
 }
 
 /** Mirrors `bot_cmds::BotsPayload` — never the token, only whether one is saved. */
@@ -18,6 +32,7 @@ interface BotsPayload {
   bots: BotsSettings;
   telegramToken: { set: boolean; hint: string | null };
   modelIds: string[];
+  pairings: Pairing[];
 }
 
 /** The lists are edited as text, one entry per line. */
@@ -28,6 +43,8 @@ interface Draft {
   learningChats: string;
   telegramUsers: string;
   whatsappChats: string;
+  telegramPairing: boolean;
+  whatsappPairing: boolean;
   /** `null` keeps the saved token, "" removes it, anything else replaces it. */
   telegramToken: string | null;
 }
@@ -40,6 +57,8 @@ function toDraft(bots: BotsSettings): Draft {
     learningChats: bots.learningBotChats.join("\n"),
     telegramUsers: bots.telegramAllowedUsers.join("\n"),
     whatsappChats: bots.whatsappAllowedChats.join("\n"),
+    telegramPairing: bots.telegramPairing,
+    whatsappPairing: bots.whatsappPairing,
     telegramToken: null,
   };
 }
@@ -60,7 +79,15 @@ function toBots(d: Draft): BotsSettings {
     learningBotChats: lines(d.learningChats),
     telegramAllowedUsers: lines(d.telegramUsers).map(Number),
     whatsappAllowedChats: lines(d.whatsappChats),
+    telegramPairing: d.telegramPairing,
+    whatsappPairing: d.whatsappPairing,
   };
+}
+
+/** How long a request still counts, for the list. */
+function expiresIn(pairing: Pairing): string {
+  const minutes = Math.max(0, Math.ceil((pairing.expiresAt * 1000 - Date.now()) / 60000));
+  return `expires in ${minutes} min`;
 }
 
 /** What stops a save, in the words the screen shows; `null` when the draft is fine. */
@@ -134,6 +161,19 @@ function BotsSection() {
     }
   }
 
+  /** P117 — approve, deny or just look again; each answers with the section as it is now. */
+  async function pairingAction(command: "get_bots_settings" | "approve_bot_pairing" | "deny_bot_pairing", code?: string) {
+    setError(null);
+    try {
+      const payload = await invoke<BotsPayload>(command, code === undefined ? undefined : { code });
+      setLoaded(payload);
+      // Only the lists change under an approval, and only a clean draft can take them without losing an edit.
+      setDraft(toDraft(payload.bots));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   const token = loaded.telegramToken;
   const tokenStatus =
     draft.telegramToken === null ? (token.set ? (token.hint ? `Saved, ends in …${token.hint}` : "Saved") : "Not set") : draft.telegramToken === "" ? "Will be removed on save" : "New token (not saved yet)";
@@ -145,8 +185,8 @@ function BotsSection() {
       </div>
       <p className="settings-hint">
         Who may talk to the Telegram and WhatsApp bots, and whether the assistant suggests what to learn from conversations.
-        An empty list means nobody. The lists apply as soon as you save; a new token or learning setting is read when the bots
-        start.
+        An empty list means nobody. The lists, pairing and learning apply from the bot's next message once you save; only a
+        new token waits for the bots to restart.
       </p>
 
       {error && <p className="settings-error-banner">{error}</p>}
@@ -203,6 +243,54 @@ function BotsSection() {
           )}
         </span>
       </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input type="checkbox" checked={draft.telegramPairing} onChange={(e) => change({ telegramPairing: e.currentTarget.checked })} />
+          <span className="settings-label">Let strangers ask to pair on Telegram</span>
+        </span>
+        <span className="settings-hint">A stranger who writes to the bot gets a one-hour code instead of silence; you approve it below or with `warden bots pair approve`. Off: strangers get no answer at all.</span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input type="checkbox" checked={draft.whatsappPairing} onChange={(e) => change({ whatsappPairing: e.currentTarget.checked })} />
+          <span className="settings-label">Let strangers ask to pair on WhatsApp</span>
+        </span>
+        <span className="settings-hint">The same for the WhatsApp bot. Private chats only.</span>
+      </label>
+
+      <div className="settings-field">
+        <span className="settings-label">Waiting for your approval</span>
+        {loaded.pairings.length === 0 ? (
+          <span className="settings-hint">Nobody is waiting.</span>
+        ) : (
+          <ul className="api-key-list">
+            {loaded.pairings.map((p) => (
+              <li key={`${p.channel}:${p.sender}`} className="api-key-item">
+                <span>
+                  <code>{p.code}</code> {p.channel} {p.sender}
+                  {p.label && ` (${p.label})`} — {expiresIn(p)}
+                </span>
+                <span className="api-key-actions">
+                  <button type="button" className="settings-browse-btn" disabled={dirty} onClick={() => void pairingAction("approve_bot_pairing", p.code)}>
+                    Approve
+                  </button>
+                  <button type="button" className="settings-browse-btn" disabled={dirty} onClick={() => void pairingAction("deny_bot_pairing", p.code)}>
+                    Deny
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <span className="settings-hint">
+          {dirty && "Save your changes first: approving updates the lists above. "}
+          <button type="button" className="settings-browse-btn" disabled={dirty} onClick={() => void pairingAction("get_bots_settings")}>
+            Refresh
+          </button>
+        </span>
+      </div>
 
       <label className="settings-field">
         <span className="settings-label">Who may talk to the Telegram bot</span>

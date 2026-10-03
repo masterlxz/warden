@@ -40,6 +40,25 @@ fn fails_clearly_without_a_gemini_key() {
     assert!(stderr.contains("GEMINI_API_KEY"), "stderr was: {stderr}");
 }
 
+/// P117: `warden bots pair ...` answers without any model key, and a wrong code is a clear failure.
+#[test]
+fn bots_pair_runs_without_a_model_key() {
+    let dir = unique_temp_path("warden-cli-test-bots");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "").unwrap();
+    let config = config.to_string_lossy().to_string();
+
+    let output = warden_command().args(["--config", &config, "bots", "pair", "list"]).output().unwrap();
+    assert!(output.status.success(), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("No pairing requests"));
+
+    let output = warden_command().args(["--config", &config, "bots", "pair", "approve", "ZZZZ-ZZZZ"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no pending pairing"), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn fails_clearly_without_an_openai_key_when_openai_selected() {
     let output = warden_command().args(["--provider", "openai"]).output().unwrap();

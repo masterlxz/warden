@@ -1392,6 +1392,59 @@ async fn a_correction_for_an_existing_skill_becomes_a_pending_change_that_applie
     assert!(!after[0].proposed && after[0].body.contains("Added, Fixed and Removed"), "{after:?}");
 }
 
+/// P117: the owner lists, approves and denies the bots' pairing requests; approving puts the sender on the
+/// bot's allow-list in `config.toml`, a wrong key or a member changes nothing.
+#[tokio::test]
+async fn the_owner_approves_and_denies_the_bots_pairing_requests() {
+    use warden_bootstrap::bot_pairing::{BotPairing, Issued, TELEGRAM, WHATSAPP};
+    let hub = spin_up().await;
+    let config_path = hub.dir.join("config.toml");
+    let store = BotPairing::beside(&config_path);
+    let now = warden_bootstrap::bot_access::unix_now();
+    let Issued::Fresh(telegram) = store.request(TELEGRAM, "42", "ana", now).unwrap() else { panic!("a fresh request") };
+    let Issued::Fresh(whatsapp) = store.request(WHATSAPP, "5511999999999@s.whatsapp.net", "", now).unwrap() else { panic!("a fresh request") };
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let resolve = |request_id, key: &str, code: &str, approve| ClientMessage::ResolveBotPairing { request_id, pairing_key: key.into(), code: code.into(), approve };
+
+    owner.send(&ClientMessage::ListBotPairings { request_id: 2 }).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::BotPairings { pairings, .. } => {
+            assert_eq!(pairings.len(), 2);
+            assert_eq!((pairings[0].channel.as_str(), pairings[0].sender.as_str(), pairings[0].label.as_str()), ("telegram", "42", "ana"));
+            assert!(pairings[0].code.contains('-'), "shown as ABCD-EFGH");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    owner.send(&resolve(3, "wrong", &telegram, true)).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    assert!(warden_bootstrap::load_config_from_path(&config_path, false).unwrap().telegram.allowed_users.is_empty(), "a wrong key changes nothing");
+
+    owner.send(&resolve(4, KEY, "NOPE-NOPE", true)).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: false, .. }), "an unknown code is refused");
+
+    owner.send(&resolve(5, KEY, &telegram, true)).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::BotPairings { pairings, .. } => assert_eq!(pairings.len(), 1, "only the WhatsApp one is left"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(warden_bootstrap::load_config_from_path(&config_path, false).unwrap().telegram.allowed_users, [42]);
+
+    owner.send(&resolve(6, KEY, &whatsapp, false)).await.unwrap();
+    match reply(&mut owner).await {
+        ServerMessage::BotPairings { pairings, .. } => assert!(pairings.is_empty()),
+        other => panic!("{other:?}"),
+    }
+    assert!(warden_bootstrap::load_config_from_path(&config_path, false).unwrap().whatsapp.allowed_chats.is_empty(), "denying lets nobody in");
+
+    // A member never sees or decides them.
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+    ana.send(&ClientMessage::ListBotPairings { request_id: 2 }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    ana.send(&resolve(3, KEY, &telegram, true)).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+}
+
 /// P115: the owner picks the model the assistant learns with for a member — a model the hub has, with
 /// the pairing key — and the pick lands in `config.toml` and in what the owner sees.
 #[tokio::test]

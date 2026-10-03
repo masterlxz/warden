@@ -2964,6 +2964,24 @@ aparelho `Approved` e hoje não tem cliente.
   rodada de updates (Telegram) e a cada mensagem (WhatsApp), mantendo a última boa se a leitura falhar. Quem entra segue
   usando o vault e as tools do dono; o desktop repassa os dois campos ao salvar as configurações, para não apagar a lista.
 
+### Pareamento dos bots (P117 fatia 2, Sessão 118)
+
+- **Um arquivo compartilhado, não um serviço**: os bots, a CLI e o desktop são processos separados e só se encontram no
+  `config.toml` e no `bot_pairing.json` (ao lado dele), relidos a cada chamada, o mesmo padrão do registro de dispositivos do hub.
+  Aprovar grava na lista do bot e o bot, que relê o config a cada mensagem, passa a responder sem reiniciar. Não há trava
+  de arquivo: dois escritores no mesmo instante podem perder um pedido, aceito por ser raro e por o remetente poder pedir de novo.
+- **Opt-in, e calado por padrão**: com `pairing` desligado o bot segue ignorando o desconhecido (decisão da fatia 1). Ligado,
+  responde **uma vez** (o código) e depois silêncio enquanto ele vale, para uma pessoa não conseguir fazer o bot falar à vontade;
+  teto de 10 pendentes por canal para uma enxurrada não crescer o arquivo; só conversa privada.
+- **O código não é um segredo de autenticação**: só diz ao dono qual pedido aprovar; quem decide é o dono, por um canal
+  que já o autentica (a CLI e o desktop são a máquina dele; a web pede a chave de pareamento). Por isso não há limite de tentativas.
+- **O hub reaproveita os moldes existentes**: `ListBotPairings` (só o dono, `member_refusal`) e `ResolveBotPairing` (chave de
+  pareamento, 1 s de espera se errada, trava por hub), com respostas `BotPairings` e erros como `UserError`, igual aos espaços.
+- **`[learning]` deixou de ser decidido na partida**: o bot relê o `FileConfig` inteiro a cada rodada/mensagem e usa o
+  último que leu bem; só o token do Telegram ainda pede reiniciar.
+- **Fora de propósito**: "chat que vira pessoa" (vault próprio e tools limitadas): o bot é outro processo e não tem a chave
+  cifrada do membro (a chave só vive na memória do hub, desbloqueada com a senha). O caminho limpo é o bot virar cliente do hub.
+
 ### Tela de "Aprendizado e bots" (P118, Sessão 118)
 
 - **Um bloco só**: `BotsSettingsDto` (`[learning]` inteiro mais as duas listas dos bots) viaja em `HubSettingsDto.bots` e em

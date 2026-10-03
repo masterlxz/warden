@@ -364,6 +364,8 @@ pub fn bots_settings(config: &FileConfig) -> BotsSettingsDto {
         learning_bot_chats: config.learning.bot_chats.clone(),
         telegram_allowed_users: config.telegram.allowed_users.clone(),
         whatsapp_allowed_chats: config.whatsapp.allowed_chats.clone(),
+        telegram_pairing: config.telegram.pairing,
+        whatsapp_pairing: config.whatsapp.pairing,
     }
 }
 
@@ -404,8 +406,8 @@ pub fn apply_bots_settings(config: &mut FileConfig, dto: BotsSettingsDto, provid
     }
 
     config.learning = LearningSettings { enabled: dto.learning_enabled, provider, max_per_day: dto.learning_max_per_day, bot_chats };
-    config.telegram = TelegramSettings { allowed_users: telegram_users };
-    config.whatsapp = WhatsAppSettings { allowed_chats: whatsapp_chats };
+    config.telegram = TelegramSettings { allowed_users: telegram_users, pairing: dto.telegram_pairing };
+    config.whatsapp = WhatsAppSettings { allowed_chats: whatsapp_chats, pairing: dto.whatsapp_pairing };
     Ok(())
 }
 
@@ -642,6 +644,8 @@ mod tests {
             learning_bot_chats: vec![" telegram:42 ".into(), "telegram:42".into(), "whatsapp:5511999999999@s.whatsapp.net".into()],
             telegram_allowed_users: vec![42, 7, 42],
             whatsapp_allowed_chats: vec!["5511999999999".into(), " ".into()],
+            telegram_pairing: true,
+            whatsapp_pairing: false,
         }
     }
 
@@ -654,6 +658,7 @@ mod tests {
         assert_eq!(saved.learning, LearningSettings { enabled: true, provider: Some("spare".into()), max_per_day: 5, bot_chats: vec!["telegram:42".into(), "whatsapp:5511999999999@s.whatsapp.net".into()] });
         assert_eq!(saved.telegram.allowed_users, [42, 7]);
         assert_eq!(saved.whatsapp.allowed_chats, ["5511999999999"]);
+        assert!(saved.telegram.pairing && !saved.whatsapp.pairing);
         assert_eq!(bots_settings(&saved).learning_bot_chats.len(), 2);
 
         let view = hub_settings(&saved, Vec::new(), Vec::new());

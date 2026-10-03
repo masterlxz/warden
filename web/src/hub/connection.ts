@@ -13,6 +13,7 @@ import {
   type AgentSettings,
   type ApiKey,
   type Attachment,
+  type BotPairing,
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
@@ -502,6 +503,7 @@ export class ServerConnection {
       case "recoveryPolicyAccepted":
       case "recoveryNoticesAcked":
       case "learningSet":
+      case "botPairings":
       case "truthIdLinked":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
@@ -850,6 +852,23 @@ export class ServerConnection {
   /** Stops sharing a folder; it stays in the owner's vault. */
   async deleteSpace(pairingKey: string, id: string): Promise<SpaceInfo[]> {
     return this.spaceRequest((requestId) => ({ type: "deleteSpace", requestId, pairingKey, id }));
+  }
+
+  /** P117: the strangers waiting to talk to the Telegram or WhatsApp bot (the owner's connection only). */
+  async listBotPairings(): Promise<BotPairing[]> {
+    return this.botPairingRequest((requestId) => ({ type: "listBotPairings", requestId }));
+  }
+
+  /** The owner lets the sender behind `code` in (`approve`) or drops the request; answers with what is still
+   * waiting. Rejects with `UserError`. */
+  async resolveBotPairing(pairingKey: string, code: string, approve: boolean): Promise<BotPairing[]> {
+    return this.botPairingRequest((requestId) => ({ type: "resolveBotPairing", requestId, pairingKey, code, approve }));
+  }
+
+  private async botPairingRequest(build: (requestId: number) => ClientMessage): Promise<BotPairing[]> {
+    const reply = await this.request(build);
+    if (reply.type !== "botPairings") throw new Error("resposta inesperada do hub");
+    return reply.pairings;
   }
 
   private async spaceRequest(build: (requestId: number) => ClientMessage): Promise<SpaceInfo[]> {

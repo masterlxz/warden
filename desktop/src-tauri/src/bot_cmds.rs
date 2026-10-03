@@ -5,9 +5,11 @@
 //! (`warden_bootstrap::settings::apply_bots_settings`), so both screens refuse the same things.
 
 use serde::{Deserialize, Serialize};
+use warden_bootstrap::bot_access::unix_now;
+use warden_bootstrap::bot_pairing::BotPairing;
 use warden_bootstrap::settings::{apply_bots_settings, bots_settings, secret_status};
 use warden_bootstrap::{load_config_from_path, save_config};
-use warden_server_protocol::protocol::{BotsSettingsDto, SecretStatusDto};
+use warden_server_protocol::protocol::{BotPairingDto, BotsSettingsDto, SecretStatusDto};
 
 /// What the section shows: the shared block plus whether a Telegram token is saved (never the token).
 #[derive(Serialize, Debug, PartialEq)]
@@ -17,6 +19,8 @@ pub struct BotsPayload {
     telegram_token: SecretStatusDto,
     /// Provider and combo ids, for the learning model picker.
     model_ids: Vec<String>,
+    /// Strangers waiting for the owner to let them talk to a bot (P117).
+    pairings: Vec<BotPairingDto>,
 }
 
 /// What a save carries. `telegram_token`: `None` keeps the saved one, an empty string removes it, any
@@ -32,11 +36,20 @@ fn config_path() -> Result<std::path::PathBuf, String> {
     warden_bootstrap::default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())
 }
 
-fn payload(config: &warden_bootstrap::FileConfig) -> BotsPayload {
+/// `config` as the section shows it, with the pairing requests waiting beside the file at `path`.
+fn payload(config: &warden_bootstrap::FileConfig, path: &std::path::Path) -> BotsPayload {
+    let pairings = match BotPairing::beside(path).list(unix_now()) {
+        Ok(requests) => requests.into_iter().map(Into::into).collect(),
+        Err(err) => {
+            eprintln!("can't read the pairing requests: {err:#}");
+            Vec::new()
+        }
+    };
     BotsPayload {
         bots: bots_settings(config),
         telegram_token: secret_status(config.api_keys.telegram_bot_token.as_deref()),
         model_ids: config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect(),
+        pairings,
     }
 }
 
@@ -53,8 +66,9 @@ fn apply(config: &mut warden_bootstrap::FileConfig, update: BotsUpdate) -> Resul
 
 #[tauri::command]
 pub fn get_bots_settings() -> Result<BotsPayload, String> {
-    let config = load_config_from_path(&config_path()?, false).map_err(|e| format!("{e:#}"))?;
-    Ok(payload(&config))
+    let path = config_path()?;
+    let config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    Ok(payload(&config, &path))
 }
 
 #[tauri::command]
@@ -63,7 +77,24 @@ pub fn save_bots_settings(update: BotsUpdate) -> Result<BotsPayload, String> {
     let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
     apply(&mut config, update)?;
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
-    Ok(payload(&config))
+    Ok(payload(&config, &path))
+}
+
+/// Lets the sender behind `code` talk to their bot (P117): they land on its allow-list. Answers with the
+/// section as it is now, so the lists and the waiting requests both show the change.
+#[tauri::command]
+pub fn approve_bot_pairing(code: String) -> Result<BotsPayload, String> {
+    let path = config_path()?;
+    BotPairing::beside(&path).approve(&code, unix_now(), &path).map_err(|e| format!("{e:#}"))?;
+    get_bots_settings()
+}
+
+/// Drops the request behind `code` without letting the sender in.
+#[tauri::command]
+pub fn deny_bot_pairing(code: String) -> Result<BotsPayload, String> {
+    let path = config_path()?;
+    BotPairing::beside(&path).deny(&code, unix_now()).map_err(|e| format!("{e:#}"))?;
+    get_bots_settings()
 }
 
 #[cfg(test)]
@@ -90,10 +121,21 @@ mod tests {
         assert!(config.learning.enabled);
         assert_eq!(config.telegram.allowed_users, [42]);
         assert_eq!(config.whatsapp.allowed_chats, ["5511999999999"]);
-        let json = serde_json::to_value(payload(&config)).unwrap();
+        let dir = std::env::temp_dir().join(format!("warden-bot-cmds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        BotPairing::beside(&path).request("telegram", "7", "ana", unix_now()).unwrap();
+
+        let json = serde_json::to_value(payload(&config, &path)).unwrap();
         assert_eq!(json["bots"]["telegramAllowedUsers"], serde_json::json!([42]));
+        assert_eq!(json["bots"]["telegramPairing"], false);
         assert_eq!(json["telegramToken"]["set"], true);
         assert!(!json.to_string().contains("123:abc"), "the token never comes back");
+        let pairing = &json["pairings"][0];
+        assert_eq!((pairing["channel"].as_str(), pairing["sender"].as_str(), pairing["label"].as_str()), (Some("telegram"), Some("7"), Some("ana")));
+        assert!(pairing["code"].as_str().unwrap().contains('-'), "shown as ABCD-EFGH");
+        assert!(pairing["expiresAt"].is_u64());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The token: absent keeps it, empty removes it, text replaces it. A refused block changes nothing.

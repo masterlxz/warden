@@ -923,6 +923,8 @@ pub fn run() {
             api_key_cmds::revoke_api_key,
             bot_cmds::get_bots_settings,
             bot_cmds::save_bots_settings,
+            bot_cmds::approve_bot_pairing,
+            bot_cmds::deny_bot_pairing,
             node_cmds::list_nodes,
             node_cmds::save_node_access,
             people_cmds::list_people,

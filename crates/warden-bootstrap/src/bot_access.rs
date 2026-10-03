@@ -11,11 +11,15 @@ pub fn config_path(explicit: Option<&str>) -> Option<PathBuf> {
     explicit.map(PathBuf::from).or_else(crate::default_config_path)
 }
 
-/// The lists in the `config.toml` at `path`, read again (the owner edits them while the bot runs).
-/// An error when the file can't be read or parsed, so the caller keeps what it had.
-pub fn read_lists(path: &Path) -> anyhow::Result<(TelegramSettings, WhatsAppSettings)> {
-    let config = crate::load_config_from_path(path, false)?;
-    Ok((config.telegram, config.whatsapp))
+/// The `config.toml` at `path`, read again (the owner edits the lists, `pairing` and `[learning]`
+/// while the bot runs). An error when the file can't be read or parsed, so the caller keeps what it had.
+pub fn read_config(path: &Path) -> anyhow::Result<crate::FileConfig> {
+    crate::load_config_from_path(path, false)
+}
+
+/// Seconds since the Unix epoch, what `bot_pairing` counts expiry in.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// `[telegram]` in `config.toml`.
@@ -26,6 +30,10 @@ pub struct TelegramSettings {
     /// isn't used: it can change and may be missing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_users: Vec<i64>,
+    /// Gives a stranger in a private chat a code to hand to the owner (`bot_pairing.rs`), instead of
+    /// silence. Off unless the owner turns it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pairing: bool,
 }
 
 impl TelegramSettings {
@@ -48,6 +56,10 @@ pub struct WhatsAppSettings {
     /// (`5511999999999@s.whatsapp.net`, or an `@lid` one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_chats: Vec<String>,
+    /// Gives a stranger in a private chat a code to hand to the owner (`bot_pairing.rs`), instead of
+    /// silence. Off unless the owner turns it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pairing: bool,
 }
 
 impl WhatsAppSettings {
@@ -80,7 +92,7 @@ mod tests {
     fn telegram_answers_only_a_listed_person_in_a_private_chat() {
         let none = TelegramSettings::default();
         assert!(!none.allows(Some(42), "private"), "an empty list is nobody");
-        let settings = TelegramSettings { allowed_users: vec![42] };
+        let settings = TelegramSettings { allowed_users: vec![42], ..Default::default() };
         assert!(settings.allows(Some(42), "private"));
         assert!(!settings.allows(Some(43), "private"));
         assert!(!settings.allows(None, "private"), "a message with no sender is never allowed");
@@ -93,7 +105,7 @@ mod tests {
     fn whatsapp_answers_a_listed_number_or_id_in_a_private_chat_only() {
         let none = WhatsAppSettings::default();
         assert!(!none.allows("5511999999999@s.whatsapp.net"));
-        let settings = WhatsAppSettings { allowed_chats: vec!["5511999999999".into(), "+5511888888888".into(), "abc123@lid".into(), "  ".into(), "".into()] };
+        let settings = WhatsAppSettings { allowed_chats: vec!["5511999999999".into(), "+5511888888888".into(), "abc123@lid".into(), "  ".into(), "".into()], ..Default::default() };
         assert!(settings.allows("5511999999999@s.whatsapp.net"), "by number");
         assert!(settings.allows("5511888888888@s.whatsapp.net"), "a leading + is ignored");
         assert!(settings.allows("abc123@lid"), "by the whole id");
@@ -102,7 +114,7 @@ mod tests {
         assert!(!settings.allows("5511999999999@g.us"), "a group is never a chat to answer");
         assert!(!settings.allows("status@broadcast"));
         assert!(!settings.allows("@s.whatsapp.net"), "blank entries match nothing");
-        let group = WhatsAppSettings { allowed_chats: vec!["5511999999999@g.us".into()] };
+        let group = WhatsAppSettings { allowed_chats: vec!["5511999999999@g.us".into()], ..Default::default() };
         assert!(!group.allows("5511999999999@g.us"), "listing a group doesn't open it");
     }
 
@@ -110,9 +122,9 @@ mod tests {
     fn the_lists_stay_out_of_the_file_when_empty_and_round_trip_when_set() {
         assert!(!toml::to_string(&TelegramSettings::default()).unwrap().contains("allowed_users"));
         assert!(!toml::to_string(&WhatsAppSettings::default()).unwrap().contains("allowed_chats"));
-        let telegram = TelegramSettings { allowed_users: vec![1, 2] };
+        let telegram = TelegramSettings { allowed_users: vec![1, 2], ..Default::default() };
         assert_eq!(toml::from_str::<TelegramSettings>(&toml::to_string(&telegram).unwrap()).unwrap(), telegram);
-        let whatsapp = WhatsAppSettings { allowed_chats: vec!["5511999999999".into()] };
+        let whatsapp = WhatsAppSettings { allowed_chats: vec!["5511999999999".into()], pairing: true };
         assert_eq!(toml::from_str::<WhatsAppSettings>(&toml::to_string(&whatsapp).unwrap()).unwrap(), whatsapp);
     }
 }

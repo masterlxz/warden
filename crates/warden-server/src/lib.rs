@@ -24,6 +24,7 @@
 pub mod api_key_admin;
 pub mod api_keys;
 pub mod approval;
+pub mod bot_admin;
 pub mod chat_input;
 pub mod conversations;
 pub mod device_registry;

@@ -33,6 +33,7 @@ pub mod agent_scope;
 pub mod auto_sync;
 pub mod history;
 pub mod bot_access;
+pub mod bot_pairing;
 pub mod learning;
 mod config_file;
 pub mod manage_agents;
@@ -2125,8 +2126,8 @@ oauth = true
             truthid_rpc_url: None,
             truthid_public_url: None,
             learning: Default::default(),
-            telegram: bot_access::TelegramSettings { allowed_users: vec![42] },
-            whatsapp: bot_access::WhatsAppSettings { allowed_chats: vec!["5511999999999".to_string()] },
+            telegram: bot_access::TelegramSettings { allowed_users: vec![42], pairing: true },
+            whatsapp: bot_access::WhatsAppSettings { allowed_chats: vec!["5511999999999".to_string()], pairing: false },
         };
 
         save_config(&path, &config).unwrap();

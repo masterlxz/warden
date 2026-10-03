@@ -65,10 +65,6 @@ async fn main() -> anyhow::Result<()> {
         "TELEGRAM_BOT_TOKEN not set (env var or config file) — create a bot via @BotFather on Telegram to get one",
     )?;
 
-    // Kept for the assistant learning from conversations (P104), only when the config turns it on.
-    let learning = load_config(cli.config.as_deref())?;
-    let learning = learning.learning.enabled.then_some(learning);
-
     let orchestrator = bootstrap(
         cli.config.as_deref(),
         Overrides { provider: cli.provider.map(Into::into), model: cli.model, vault_path: cli.vault_path, ..Default::default() },
@@ -83,8 +79,8 @@ async fn main() -> anyhow::Result<()> {
     // P117: the bot answers only who the config lists, and the list is read again while it runs.
     let config_path = warden_bootstrap::bot_access::config_path(cli.config.as_deref());
     if config.telegram.allowed_users.is_empty() {
-        println!("warning: [telegram] allowed_users is empty, so the bot answers nobody. Write to it and read its log for your id, then add it to config.toml.");
+        println!("warning: [telegram] allowed_users is empty, so the bot answers nobody. Write to it and read its log for your id, then add it to config.toml; or set pairing = true under [telegram], write to the bot and approve your code with `warden bots pair approve`.");
     }
     println!("Warden Telegram bot is running (long polling)...");
-    run_bot(&api, &orchestrator, &conversations_dir, learning.as_ref(), config_path.as_deref()).await
+    run_bot(&api, &orchestrator, &conversations_dir, config_path.as_deref()).await
 }

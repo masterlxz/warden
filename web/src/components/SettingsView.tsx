@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { SettingsError, type LoadedSettings, type ServerConnection } from "../hub/connection";
+import { SettingsError, UserError, type LoadedSettings, type ServerConnection } from "../hub/connection";
 import ApiKeysSection from "./ApiKeysSection";
 import type {
   AgentSettings,
+  BotPairing,
   BotsSettings,
   Combo,
   HubSettings,
@@ -72,6 +73,8 @@ interface Draft {
   botsLearningChats: string;
   botsTelegramUsers: string;
   botsWhatsappChats: string;
+  botsTelegramPairing: boolean;
+  botsWhatsappPairing: boolean;
 }
 
 let nextKey = 1;
@@ -101,6 +104,8 @@ function toDraft(s: HubSettings): Draft {
     botsLearningChats: s.bots.learningBotChats.join("\n"),
     botsTelegramUsers: s.bots.telegramAllowedUsers.join("\n"),
     botsWhatsappChats: s.bots.whatsappAllowedChats.join("\n"),
+    botsTelegramPairing: s.bots.telegramPairing,
+    botsWhatsappPairing: s.bots.whatsappPairing,
   };
 }
 
@@ -120,6 +125,8 @@ function toBots(d: Draft): BotsSettings {
     learningBotChats: lines(d.botsLearningChats),
     telegramAllowedUsers: lines(d.botsTelegramUsers).map(Number),
     whatsappAllowedChats: lines(d.botsWhatsappChats),
+    telegramPairing: d.botsTelegramPairing,
+    whatsappPairing: d.botsWhatsappPairing,
   };
 }
 
@@ -237,6 +244,105 @@ function SecretField({ label, value, writable, onChange }: { label: string; valu
           </button>
         )}
       </span>
+    </div>
+  );
+}
+
+/** P117 — people who wrote to a bot and were given a code. The owner approves (they join the bot's list) or
+ * denies each one, with the pairing key. Not part of the draft: it acts on its own, so it's off while the
+ * form has unsaved edits (an approval reloads the settings, and the lists in them change). */
+function BotPairings({ conn, disabled, onResolved }: { conn: ServerConnection | null; disabled: boolean; onResolved: () => void }) {
+  const [pairings, setPairings] = useState<BotPairing[]>([]);
+  const [ask, setAsk] = useState<{ code: string; approve: boolean } | null>(null);
+  const [key, setKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(() => {
+    if (!conn) return;
+    conn.listBotPairings().then(setPairings, () => setPairings([]));
+  }, [conn]);
+  useEffect(refresh, [refresh]);
+
+  async function resolve() {
+    if (!conn || !ask) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setPairings(await conn.resolveBotPairing(key, ask.code, ask.approve));
+      const approved = ask.approve;
+      setAsk(null);
+      setKey("");
+      if (approved) onResolved();
+    } catch (err) {
+      setError(err instanceof UserError && err.authRejected ? "Chave de pareamento errada." : message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const minutes = (p: BotPairing) => Math.max(0, Math.ceil((p.expiresAt * 1000 - Date.now()) / 60000));
+
+  return (
+    <div className="settings-field">
+      <strong>Esperando a sua aprovação</strong>
+      {pairings.length === 0 ? (
+        <p className="skills-hint">Ninguém esperando. Com o pedido de acesso ligado acima, quem escrever para um bot aparece aqui.</p>
+      ) : (
+        <ul className="skills-list">
+          {pairings.map((p) => (
+            <li key={`${p.channel}:${p.sender}`} className="skills-item settings-card">
+              <p>
+                <code>{p.code}</code> {p.channel === "telegram" ? "Telegram" : "WhatsApp"} {p.sender}
+                {p.label && ` (${p.label})`} — expira em {minutes(p)} min
+              </p>
+              <div className="skills-actions">
+                <button type="button" className="primary-button" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: true })}>
+                  Aprovar
+                </button>
+                <button type="button" className="link-button skills-danger" disabled={disabled || !conn} onClick={() => setAsk({ code: p.code, approve: false })}>
+                  Recusar
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {disabled && pairings.length > 0 && <p className="skills-hint">Salve ou descarte as mudanças acima antes: aprovar atualiza as listas.</p>}
+      {ask && (
+        <form
+          className="settings-confirm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void resolve();
+          }}
+        >
+          <Field label={`Chave de pareamento do hub, para ${ask.approve ? "aprovar" : "recusar"} ${ask.code}`}>
+            <input type="password" autoComplete="current-password" autoFocus value={key} onChange={(e) => setKey(e.target.value)} />
+          </Field>
+          {error && <p className="error-banner">{error}</p>}
+          <div className="skills-actions">
+            <button type="submit" className="primary-button" disabled={busy || key.trim() === ""}>
+              Confirmar
+            </button>
+            <button
+              type="button"
+              className="link-button"
+              disabled={busy}
+              onClick={() => {
+                setAsk(null);
+                setKey("");
+                setError(null);
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </form>
+      )}
+      <button type="button" className="link-button" onClick={refresh}>
+        Atualizar a lista
+      </button>
     </div>
   );
 }
@@ -767,6 +873,17 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             Aprender com as conversas (cada olhada é uma chamada curta ao modelo, e gasta do seu limite)
           </label>
         </div>
+        <div className="settings-checks">
+          <label className="settings-check">
+            <input type="checkbox" checked={draft.botsTelegramPairing} onChange={(e) => update((d) => ({ ...d, botsTelegramPairing: e.target.checked }))} />
+            Deixar desconhecidos pedirem acesso no Telegram (recebem um código de 1 hora para você aprovar; desligado, não recebem resposta)
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={draft.botsWhatsappPairing} onChange={(e) => update((d) => ({ ...d, botsWhatsappPairing: e.target.checked }))} />
+            O mesmo no WhatsApp (só conversa privada)
+          </label>
+        </div>
+        <BotPairings conn={conn} disabled={dirty} onResolved={load} />
         <div className="settings-grid">
           <Field label="Modelo do aprendizado" hint="Um modelo barato resolve. Vazio usa o modelo ativo. Cada membro pode ter o seu na aba Pessoas.">
             <select value={draft.botsLearningProvider} onChange={(e) => update((d) => ({ ...d, botsLearningProvider: e.target.value }))}>

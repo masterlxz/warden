@@ -1,10 +1,11 @@
+mod bots;
 mod commands;
 mod interactive;
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::{bootstrap, Overrides};
 use warden_core::model::Message;
 use warden_core::orchestrator::Orchestrator;
@@ -43,6 +44,18 @@ struct Cli {
     /// Path to the config file (TOML). Defaults to the OS config dir (e.g. ~/.config/warden/config.toml on Linux).
     #[arg(long)]
     config: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// The Telegram and WhatsApp bots (P117).
+    Bots {
+        #[command(subcommand)]
+        action: bots::BotsCommand,
+    },
 }
 
 /// Where `interactive::run` persists readline history across sessions — opaque app data, same
@@ -61,6 +74,11 @@ async fn main() -> anyhow::Result<()> {
     // to hand its own resolved path back out.
     let config_path = cli.config.clone().map(PathBuf::from).or_else(warden_bootstrap::default_config_path);
     let vault_path_override = cli.vault_path.clone();
+
+    // A subcommand answers before any model is set up: it needs no key.
+    if let Some(Command::Bots { action }) = cli.command {
+        return bots::run(action, config_path.as_deref(), &mut io::stdout());
+    }
 
     let orchestrator = bootstrap(
         cli.config.as_deref(),

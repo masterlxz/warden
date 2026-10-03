@@ -219,6 +219,21 @@ export interface BotsSettings {
   learningBotChats: string[];
   telegramAllowedUsers: number[];
   whatsappAllowedChats: string[];
+  /** A stranger who writes to the bot gets a code for the owner to approve (P117). */
+  telegramPairing: boolean;
+  whatsappPairing: boolean;
+}
+
+/** Mirrors `BotPairingDto` (P117): a stranger waiting for the owner to let them talk to a bot. */
+export interface BotPairing {
+  channel: "telegram" | "whatsapp";
+  /** The Telegram user id or the WhatsApp chat id that would go on the allow-list. */
+  sender: string;
+  label: string;
+  /** As the sender was told: `ABCD-EFGH`. */
+  code: string;
+  /** Unix seconds. */
+  expiresAt: number;
 }
 
 /** Mirrors `DeviceDto`: one device in the hub's pairing registry, never its token. */
@@ -511,6 +526,9 @@ export type ClientMessage =
   | { type: "listSpaces"; requestId: number }
   | { type: "saveSpace"; requestId: number; pairingKey: string; originalId?: string; space: SpaceInfo }
   | { type: "deleteSpace"; requestId: number; pairingKey: string; id: string }
+  /** P117 — the owner answers the bots' pairing requests; deciding needs the pairing key. */
+  | { type: "listBotPairings"; requestId: number }
+  | { type: "resolveBotPairing"; requestId: number; pairingKey: string; code: string; approve: boolean }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -581,6 +599,8 @@ export type ServerMessage =
   | { type: "recoveryPolicyAccepted"; requestId: number; recoveryCode?: string }
   | { type: "recoveryNoticesAcked"; requestId: number }
   | { type: "learningSet"; requestId: number }
+  /** P117 — the strangers waiting for the owner to let them talk to a bot, oldest first. */
+  | { type: "botPairings"; requestId: number; pairings: BotPairing[] }
   /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
   | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
   /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after
@@ -660,6 +680,7 @@ export function decode(text: string): ServerMessage {
     case "recoveryPolicyAccepted":
     case "recoveryNoticesAcked":
     case "learningSet":
+    case "botPairings":
     case "truthIdLinked":
     case "truthIdChallenge":
       return json as ServerMessage;

@@ -32,8 +32,38 @@
 - **Não verificado**: a tela da web (precisaria de um hub rodando; só `tsc` e os testes do hub), a janela nativa do Tauri,
   bot real (token e número), e o efeito em quente do token e do `[learning]` (só as listas são relidas sem reiniciar).
 - **Achado**: a web precisou de `npm install` (o `qrcode-generator` do login por TruthID é dependência nova do pull).
-- **Próximo passo**: o resto do P117 (pareamento, chat que vira pessoa), o P119 (paridade web×desktop) e a rodada de testes
-  em tela (P115 e os P95–P114).
+- **Commit**: o P118 foi commitado (`feat: tela de aprendizado e bots...`).
+- **P117, fatia 2 (pareamento + aprendizado ao vivo)**, plano aprovado em Plan mode, escopo decidido com o usuário
+  (pareamento aprovado por CLI, desktop e web; "chat que vira pessoa" fica de fora):
+  - `warden_bootstrap::bot_pairing` (novo): store em `bot_pairing.json` ao lado do `config.toml`, relido a cada chamada
+    (bots, CLI e desktop são processos separados). Código de 8 caracteres do `warden_sync::pairing::protocol`, validade de 1
+    hora, até 10 pendentes por canal, um código por remetente (`Issued::Fresh/Existing/Full`); `approve` grava na lista
+    certa (id positivo no Telegram, sem repetir) e remove o pedido; o código vale uma vez e aceita qualquer caixa, com ou sem
+    traço.
+  - **Opt-in**: `[telegram] pairing` e `[whatsapp] pairing` (padrão `false`), então o silêncio da fatia 1 continua o padrão.
+    Entram no `BotsSettingsDto` (`telegram_pairing`, `whatsapp_pairing`) e na validação compartilhada.
+  - **Gate dos bots**: `Access::allows` virou `Access::check` com `Gate::{Allowed, Silent, Pair(code)}` (Telegram e
+    WhatsApp). Só conversa privada; só a primeira mensagem recebe o código, as outras ficam em silêncio; o log do dono cita o
+    comando de aprovar. Os avisos de partida dos dois bots também.
+  - **`[learning]` ao vivo**: `bot_access::read_lists` virou `read_config` (o `FileConfig` inteiro, mantendo o último bom se a
+    leitura falhar); `run_bot` dos dois bots perdeu o parâmetro `learning` e usa o config relido; os `main.rs` não decidem mais
+    na partida.
+  - **Aprovação**: `warden bots pair list|approve|deny` (`warden-cli/src/bots.rs`, subcomando opcional que responde antes de
+    montar o modelo, então não precisa de chave); desktop (`approve_bot_pairing`/`deny_bot_pairing` em `bot_cmds.rs`, lista
+    com Aprovar/Recusar na `BotsSection`, travada enquanto há edição não salva); web via hub (`bot_admin.rs`,
+    `ListBotPairings`/`ResolveBotPairing` → `BotPairings`, erros como `UserError`, braços em `member_refusal`, chave de
+    pareamento e trava por hub como o resto, e na `SettingsView` a lista com a chave pedida na hora).
+  - **Verificado**: testes novos no `bot_pairing` (7), nos dois bots (um de ponta a ponta cada: código uma vez, silêncio,
+    grupo nada, aprovar e passar a ser respondido), na CLI (unitário e o binário real sem chave de modelo), no hub real
+    (`tests/people.rs`: chave errada, código desconhecido, aprovar grava no `config.toml`, recusar não deixa ninguém entrar,
+    membro recusado), no formato JSON do protocolo e no desktop; `cargo test --workspace --no-fail-fast` verde,
+    `tsc` em web e desktop limpos, clippy sem aviso novo; seção do desktop no Brave headless com `invoke` mockado, claro e
+    escuro (aprovar move o id para a lista, recusar tira o pedido, sem erro de console).
+  - **Não verificado**: bot real (token e número), a web contra um hub numa tela (só `tsc` e o teste do hub), e a janela
+    nativa do Tauri. Um teste de `nodes` (`a_node_that_drops_mid_command_fails_the_call_at_once`) falhou uma vez no
+    `cargo test --workspace` e passou 3 de 3 isolado e na rodada seguinte: instável sob carga, não ligado a esta mudança.
+- **Próximo passo**: o que sobrou do P117 (chat que vira pessoa, aviso ao remetente), o P119 (paridade web×desktop) e a
+  rodada de testes em tela (P115 e os P95–P114).
 
 ---
 

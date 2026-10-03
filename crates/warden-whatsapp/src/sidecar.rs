@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use warden_bootstrap::bot_pairing::{self, BotPairing, Issued};
 use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
@@ -131,18 +132,27 @@ impl WhatsAppSidecar for ChildSidecar {
 ///
 /// Answers only the chats `[whatsapp] allowed_chats` lists in `config_path` (P117), read again at each
 /// message so an edit counts from the next one; nobody when there is no file or list.
-pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, config_path: Option<&Path>) -> anyhow::Result<()> {
-    let mut access = Access::default();
+///
+/// The same read gives `pairing` (P117) and `[learning]` (P104), so turning either on or off counts
+/// from the next message too, without restarting the bot.
+pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestrator, conversations_dir: &Path, config_path: Option<&Path>) -> anyhow::Result<()> {
+    let mut access = Access { pairing: config_path.map(BotPairing::beside), ..Access::default() };
+    // The last config that read well: where learning comes from.
+    let mut live: Option<FileConfig> = None;
     loop {
         match sidecar.recv_event().await? {
             None => anyhow::bail!("WhatsApp sidecar process exited unexpectedly"),
             Some(event) => {
                 if let (Some(path), SidecarEvent::Message { .. }) = (config_path, &event) {
-                    match warden_bootstrap::bot_access::read_lists(path) {
-                        Ok((_, whatsapp)) => access.settings = whatsapp,
-                        Err(err) => eprintln!("can't read the allowed chats from {}, keeping the last list: {err:#}", path.display()),
+                    match warden_bootstrap::bot_access::read_config(path) {
+                        Ok(config) => {
+                            access.settings = config.whatsapp.clone();
+                            live = Some(config);
+                        }
+                        Err(err) => eprintln!("can't read the config from {}, keeping the last one: {err:#}", path.display()),
                     }
                 }
+                let learning = live.as_ref().filter(|c| c.learning.enabled);
                 handle_event(sidecar, orchestrator, conversations_dir, learning, &mut access, event).await
             }
         }
@@ -155,23 +165,62 @@ struct Access {
     settings: warden_bootstrap::bot_access::WhatsAppSettings,
     /// Ignored chats already logged, so a stranger who keeps writing costs one line, not one per message.
     reported: std::collections::HashSet<String>,
+    /// Where a stranger's pairing request goes when `settings.pairing` is on.
+    pairing: Option<BotPairing>,
+}
+
+/// What the gate decided about one message.
+#[derive(Debug, PartialEq)]
+enum Gate {
+    Allowed,
+    /// Ignored: no reply, no conversation kept.
+    Silent,
+    /// A stranger who just asked to pair: tell them this code.
+    Pair(String),
+}
+
+/// What a stranger is told when they ask to pair.
+fn pairing_reply(code: &str) -> String {
+    format!(
+        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). Once they approve it, write to me again.",
+        bot_pairing::display_code(code),
+        bot_pairing::VALID_FOR_SECS / 60
+    )
 }
 
 impl Access {
     /// Whether chat `chat_id` may be answered. A refusal is silent to the sender (no reply, no
     /// conversation kept, the media notice included) and logged once per chat, with what to add to allow it.
-    fn allows(&mut self, chat_id: &str) -> bool {
+    /// With `pairing` on, a stranger in a private chat gets a code once instead (then silence while it's
+    /// valid); `label` is the name they go by, for the owner to recognise them.
+    fn check(&mut self, chat_id: &str, label: Option<&str>) -> Gate {
         if self.settings.allows(chat_id) {
-            return true;
+            return Gate::Allowed;
         }
+        let private = warden_bootstrap::bot_access::is_private_chat(chat_id);
         if self.reported.insert(chat_id.to_string()) {
-            if warden_bootstrap::bot_access::is_private_chat(chat_id) {
+            if private {
                 eprintln!("ignored whatsapp chat {chat_id}: to allow it, add \"{chat_id}\" (or just its number) to [whatsapp] allowed_chats in config.toml");
             } else {
                 eprintln!("ignored whatsapp chat {chat_id}: the bot only answers private chats, never groups");
             }
         }
-        false
+        let (true, true, Some(store)) = (private, self.settings.pairing, self.pairing.as_ref()) else { return Gate::Silent };
+        match store.request(bot_pairing::WHATSAPP, chat_id, label.unwrap_or_default(), warden_bootstrap::bot_access::unix_now()) {
+            Ok(Issued::Fresh(code)) => {
+                eprintln!("whatsapp chat {chat_id} asked to pair: approve with `warden bots pair approve {}`", bot_pairing::display_code(&code));
+                Gate::Pair(code)
+            }
+            Ok(Issued::Existing) => Gate::Silent,
+            Ok(Issued::Full) => {
+                eprintln!("whatsapp chat {chat_id} asked to pair, but {} requests are already waiting: not answering", bot_pairing::MAX_PENDING_PER_CHANNEL);
+                Gate::Silent
+            }
+            Err(err) => {
+                eprintln!("can't record the pairing request of whatsapp chat {chat_id}: {err:#}");
+                Gate::Silent
+            }
+        }
     }
 }
 
@@ -187,8 +236,15 @@ async fn handle_event(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchest
         }
         SidecarEvent::Message { chat_id, sender_name, text } => {
             // Before anything else, the "I only read text" notice included: a stranger gets no answer at all.
-            if !access.allows(&chat_id) {
-                return;
+            match access.check(&chat_id, sender_name.as_deref()) {
+                Gate::Allowed => {}
+                Gate::Silent => return,
+                Gate::Pair(code) => {
+                    if let Err(err) = sidecar.send(&chat_id, &pairing_reply(&code)).await {
+                        eprintln!("failed to send the pairing code to {chat_id}: {err:#}");
+                    }
+                    return;
+                }
             }
             let mut learn_from = None;
             let (reply, attachments) = match text {
@@ -302,7 +358,7 @@ mod tests {
 
     /// The chats `[whatsapp] allowed_chats` lists.
     fn access_for(chats: &[&str]) -> Access {
-        Access { settings: warden_bootstrap::bot_access::WhatsAppSettings { allowed_chats: chats.iter().map(|c| c.to_string()).collect() }, ..Access::default() }
+        Access { settings: warden_bootstrap::bot_access::WhatsAppSettings { allowed_chats: chats.iter().map(|c| c.to_string()).collect(), ..Default::default() }, ..Access::default() }
     }
 
     /// P117: a stranger gets nothing (no reply, no media notice, no conversation, no model call), a group
@@ -342,6 +398,47 @@ mod tests {
         handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, message("5511999999999@s.whatsapp.net", Some("hello"))).await;
         assert_eq!(sidecar.sent.lock().unwrap().len(), 1, "the listed number is answered");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// P117: with `pairing` on, a stranger in a private chat gets a code once and then silence, a group gets
+    /// nothing, and once the owner approves the code the next message is answered.
+    #[tokio::test]
+    async fn a_stranger_gets_a_pairing_code_once_and_is_answered_after_the_owner_approves() {
+        let dir = std::env::temp_dir().join(format!("warden-whatsapp-pairing-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[whatsapp]\npairing = true\n").unwrap();
+
+        let orchestrator = temp_orchestrator();
+        let conversations_dir = temp_conversations_dir();
+        let stranger = "5511000000000@s.whatsapp.net";
+        let message = |chat: &str, text: &str| SidecarEvent::Message { chat_id: chat.to_string(), sender_name: Some("Ana".to_string()), text: Some(text.to_string()) };
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+        let mut access = Access { pairing: Some(BotPairing::beside(&config_path)), ..access_for(&[]) };
+        access.settings.pairing = true;
+
+        for event in [message(stranger, "hello"), message(stranger, "hello again"), message("120363000000000000@g.us", "hello group")] {
+            handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, event).await;
+        }
+        let pending = BotPairing::beside(&config_path).list(warden_bootstrap::bot_access::unix_now()).unwrap();
+        assert_eq!(pending.len(), 1, "one request, from the private chat only");
+        assert_eq!((pending[0].channel.as_str(), pending[0].sender.as_str(), pending[0].label.as_str()), ("whatsapp", stranger, "Ana"));
+        {
+            let sent = sidecar.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1, "the code once, then silence: {sent:?}");
+            assert_eq!(sent[0].0, stranger);
+            assert!(sent[0].1.contains(&bot_pairing::display_code(&pending[0].code)), "{}", sent[0].1);
+        }
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, stranger).unwrap().is_none(), "no conversation kept");
+
+        // The owner approves; the bot reads the config again and the same chat is answered.
+        BotPairing::beside(&config_path).approve(&pending[0].code, warden_bootstrap::bot_access::unix_now(), &config_path).unwrap();
+        access.settings = warden_bootstrap::bot_access::read_config(&config_path).unwrap().whatsapp;
+        handle_event(&mut sidecar, &orchestrator, &conversations_dir, None, &mut access, message(stranger, "hello")).await;
+        let sent = sidecar.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1], (stranger.to_string(), "echo: hello".to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

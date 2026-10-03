@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use serde::Deserialize;
+use warden_bootstrap::bot_pairing::{self, BotPairing, Issued};
 use warden_bootstrap::FileConfig;
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
@@ -28,6 +29,15 @@ pub struct Update {
     pub update_id: i64,
     #[serde(default)]
     pub message: Option<IncomingMessage>,
+}
+
+/// What a stranger is told when they ask to pair (P117).
+fn pairing_reply(code: &str) -> String {
+    format!(
+        "I only talk to people my owner has approved. Give them this code: {} (valid for {} minutes). Once they approve it, write to me again.",
+        bot_pairing::display_code(code),
+        bot_pairing::VALID_FOR_SECS / 60
+    )
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -219,18 +229,27 @@ fn split_into_chunks(text: &str) -> Vec<&str> {
 ///
 /// Answers only who `[telegram] allowed_users` lists in `config_path` (P117), read again after each
 /// poll so an edit counts from the next message; nobody when there is no file or list.
-pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, learning: Option<&FileConfig>, config_path: Option<&Path>) -> anyhow::Result<()> {
+///
+/// The same read gives `pairing` (P117) and `[learning]` (P104), so turning either on or off counts
+/// from the next message too, without restarting the bot.
+pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conversations_dir: &Path, config_path: Option<&Path>) -> anyhow::Result<()> {
     let mut offset: Option<i64> = None;
-    let mut access = Access::default();
+    let mut access = Access { pairing: config_path.map(BotPairing::beside), ..Access::default() };
+    // The last config that read well: where learning comes from.
+    let mut live: Option<FileConfig> = None;
     loop {
         match api.get_updates(offset, POLL_TIMEOUT_SECS).await {
             Ok(updates) => {
                 if let Some(path) = config_path {
-                    match warden_bootstrap::bot_access::read_lists(path) {
-                        Ok((telegram, _)) => access.settings = telegram,
-                        Err(err) => eprintln!("can't read the allowed users from {}, keeping the last list: {err:#}", path.display()),
+                    match warden_bootstrap::bot_access::read_config(path) {
+                        Ok(config) => {
+                            access.settings = config.telegram.clone();
+                            live = Some(config);
+                        }
+                        Err(err) => eprintln!("can't read the config from {}, keeping the last one: {err:#}", path.display()),
                     }
                 }
+                let learning = live.as_ref().filter(|c| c.learning.enabled);
                 process_updates(api, orchestrator, conversations_dir, learning, &mut access, updates, &mut offset).await
             }
             Err(err) => {
@@ -247,26 +266,56 @@ struct Access {
     settings: warden_bootstrap::bot_access::TelegramSettings,
     /// Ignored users already logged, so a stranger who keeps writing costs one line, not one per message.
     reported: std::collections::HashSet<i64>,
+    /// Where a stranger's pairing request goes when `settings.pairing` is on (P117).
+    pairing: Option<BotPairing>,
+}
+
+/// What the gate decided about one message.
+#[derive(Debug, PartialEq)]
+enum Gate {
+    Allowed,
+    /// Ignored: no reply, no conversation kept.
+    Silent,
+    /// A stranger who just asked to pair: tell them this code.
+    Pair(String),
 }
 
 impl Access {
     /// Whether `message` may be answered. A refusal is silent to the sender (no reply, no conversation
-    /// kept) and logged once per user, with what the owner adds to allow them.
-    fn allows(&mut self, message: &IncomingMessage) -> bool {
+    /// kept) and logged once per user, with what the owner adds to allow them. With `pairing` on, a
+    /// stranger in a private chat gets a code once instead (and then silence while it's valid).
+    fn check(&mut self, message: &IncomingMessage) -> Gate {
         let user = message.from.as_ref().and_then(|s| s.id);
         if self.settings.allows(user, &message.chat.kind) {
-            return true;
+            return Gate::Allowed;
         }
         let who = user.unwrap_or(message.chat.id);
+        let username = message.from.as_ref().and_then(|s| s.username.as_deref());
+        let name = username.map(|u| format!(" (@{u})")).unwrap_or_default();
+        let private = message.chat.kind == "private";
         if self.reported.insert(who) {
-            let name = message.from.as_ref().and_then(|s| s.username.as_deref()).map(|u| format!(" (@{u})")).unwrap_or_default();
-            if message.chat.kind == "private" {
+            if private {
                 eprintln!("ignored telegram user {who}{name}: to allow them, add {who} to [telegram] allowed_users in config.toml");
             } else {
                 eprintln!("ignored a telegram {} chat ({}): the bot only answers private chats", message.chat.kind, message.chat.id);
             }
         }
-        false
+        let (true, true, Some(user), Some(store)) = (private, self.settings.pairing, user, self.pairing.as_ref()) else { return Gate::Silent };
+        match store.request(bot_pairing::TELEGRAM, &user.to_string(), username.unwrap_or_default(), warden_bootstrap::bot_access::unix_now()) {
+            Ok(Issued::Fresh(code)) => {
+                eprintln!("telegram user {user}{name} asked to pair: approve with `warden bots pair approve {}`", bot_pairing::display_code(&code));
+                Gate::Pair(code)
+            }
+            Ok(Issued::Existing) => Gate::Silent,
+            Ok(Issued::Full) => {
+                eprintln!("telegram user {user}{name} asked to pair, but {} requests are already waiting: not answering", bot_pairing::MAX_PENDING_PER_CHANNEL);
+                Gate::Silent
+            }
+            Err(err) => {
+                eprintln!("can't record the pairing request of telegram user {user}: {err:#}");
+                Gate::Silent
+            }
+        }
     }
 }
 
@@ -287,8 +336,15 @@ async fn process_updates(
 
         let Some(message) = update.message else { continue };
         // Before anything else, `/start` and `/help` included: a stranger gets no answer at all.
-        if !access.allows(&message) {
-            continue;
+        match access.check(&message) {
+            Gate::Allowed => {}
+            Gate::Silent => continue,
+            Gate::Pair(code) => {
+                if let Err(err) = api.send_message(message.chat.id, &pairing_reply(&code)).await {
+                    eprintln!("failed to send the pairing code to chat {}: {err:#}", message.chat.id);
+                }
+                continue;
+            }
         }
         let Some(text) = message.text.clone() else { continue };
         handle_update(api, orchestrator, conversations_dir, learning, &message, &text).await;
@@ -436,7 +492,7 @@ mod tests {
 
     /// The people `[telegram] allowed_users` lists.
     fn access_for(users: &[i64]) -> Access {
-        Access { settings: warden_bootstrap::bot_access::TelegramSettings { allowed_users: users.to_vec() }, ..Access::default() }
+        Access { settings: warden_bootstrap::bot_access::TelegramSettings { allowed_users: users.to_vec(), ..Default::default() }, ..Access::default() }
     }
 
     /// P117: a stranger gets nothing: no reply (`/start` included), no conversation, no model call; a
@@ -482,6 +538,52 @@ mod tests {
         process_updates(&api, &orchestrator, &temp_conversations_dir(), None, &mut access_for(&[]), vec![text_update(1, 42, "hello")], &mut offset).await;
         process_updates(&api, &orchestrator, &temp_conversations_dir(), None, &mut access_for(&[42]), vec![no_sender], &mut offset).await;
         assert!(api.sent.lock().unwrap().is_empty());
+    }
+
+    /// P117: with `pairing` on, a stranger in a private chat gets a code once and then silence, a group
+    /// gets nothing, and once the owner approves the code the next message is answered.
+    #[tokio::test]
+    async fn a_stranger_gets_a_pairing_code_once_and_is_answered_after_the_owner_approves() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let vault = std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join(format!("warden-telegram-pairing-vault-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(std::sync::Arc::new(CountingModel(calls.clone())), vault);
+        let conversations_dir = temp_conversations_dir();
+        let dir = std::env::temp_dir().join(format!("warden-telegram-pairing-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "[telegram]\npairing = true\n").unwrap();
+
+        let api = ScriptedTelegramApi::new(Vec::new());
+        let mut access = Access { pairing: Some(BotPairing::beside(&config_path)), ..access_for(&[]) };
+        access.settings.pairing = true;
+        let mut group = text_update(3, 99, "hi from a group");
+        if let Some(message) = group.message.as_mut() {
+            message.chat = Chat { id: -1001, kind: "supergroup".to_string() };
+            message.from = Some(Sender { id: Some(7), username: None, first_name: None });
+        }
+        let mut offset = None;
+        let updates = vec![text_update(1, 7, "hello"), text_update(2, 7, "hello again"), group];
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, updates, &mut offset).await;
+
+        let pending = BotPairing::beside(&config_path).list(warden_bootstrap::bot_access::unix_now()).unwrap();
+        assert_eq!(pending.len(), 1, "one request, from the private chat only");
+        assert_eq!((pending[0].channel.as_str(), pending[0].sender.as_str(), pending[0].label.as_str()), ("telegram", "7", "fabio"));
+        {
+            let sent = api.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1, "the code once, then silence: {sent:?}");
+            assert_eq!(sent[0].0, 7);
+            assert!(sent[0].1.contains(&bot_pairing::display_code(&pending[0].code)), "{}", sent[0].1);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no model call for a stranger");
+        assert!(warden_bootstrap::load_conversation(&conversations_dir, "7").unwrap().is_none());
+
+        // The owner approves; the bot reads the config again and the same person is answered.
+        BotPairing::beside(&config_path).approve(&pending[0].code, warden_bootstrap::bot_access::unix_now(), &config_path).unwrap();
+        access.settings = warden_bootstrap::bot_access::read_config(&config_path).unwrap().telegram;
+        process_updates(&api, &orchestrator, &conversations_dir, None, &mut access, vec![text_update(4, 7, "hello")], &mut offset).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(api.sent.lock().unwrap().len(), 2, "the answer, after the code");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

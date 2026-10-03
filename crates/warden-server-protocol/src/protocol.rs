@@ -745,6 +745,22 @@ pub struct HubSettingsDto {
     pub notes: Vec<String>,
 }
 
+/// A stranger waiting for the owner to approve their access to a bot (P117).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotPairingDto {
+    /// `telegram` or `whatsapp`.
+    pub channel: String,
+    /// The Telegram user id or the WhatsApp chat id that would go on the allow-list.
+    pub sender: String,
+    /// The name they go by, possibly empty.
+    pub label: String,
+    /// What the sender was told, as `ABCD-EFGH`.
+    pub code: String,
+    /// Unix seconds.
+    pub expires_at: u64,
+}
+
 /// `[learning]`, `[telegram] allowed_users` and `[whatsapp] allowed_chats` (P118), shown and saved
 /// as one block. The Telegram token isn't here: it's a secret, and only the desktop edits it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -760,6 +776,12 @@ pub struct BotsSettingsDto {
     pub telegram_allowed_users: Vec<i64>,
     /// WhatsApp numbers or ids that may talk to the bot. Empty means nobody.
     pub whatsapp_allowed_chats: Vec<String>,
+    /// A stranger who writes to the Telegram bot gets a code for the owner to approve (P117).
+    #[serde(default)]
+    pub telegram_pairing: bool,
+    /// The same for the WhatsApp bot.
+    #[serde(default)]
+    pub whatsapp_pairing: bool,
 }
 
 /// A settings save: the whole editable part, replacing what the file has for it. Everything the
@@ -1264,6 +1286,19 @@ pub enum ClientMessage {
         pairing_key: String,
         id: String,
     },
+    /// P117: the strangers waiting to talk to the Telegram or WhatsApp bot, answered by `BotPairings`.
+    /// The root's connection only.
+    ListBotPairings {
+        request_id: u64,
+    },
+    /// The owner approves (`approve`: the sender joins the bot's allow-list) or denies the request
+    /// behind `code`. Answered by `BotPairings` with what is still waiting, or `UserError`.
+    ResolveBotPairing {
+        request_id: u64,
+        pairing_key: String,
+        code: String,
+        approve: bool,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -1626,6 +1661,11 @@ pub enum ServerMessage {
     SpaceList {
         request_id: u64,
         spaces: Vec<SpaceDto>,
+    },
+    /// P117: the strangers waiting for the owner to let them talk to a bot, oldest first.
+    BotPairings {
+        request_id: u64,
+        pairings: Vec<BotPairingDto>,
     },
     /// A user request failed. `auth_rejected`: the pairing key was wrong, or this connection isn't
     /// the root's; nothing changed.
@@ -2164,6 +2204,26 @@ mod tests {
         let extended = ServerMessage::LimitExtended { request_id: 2, limit };
         let json = serde_json::to_string(&extended).unwrap();
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), extended);
+    }
+
+    /// P117: the shapes the web client sends and reads for the bots' pairing requests.
+    #[test]
+    fn bot_pairing_messages_use_the_names_the_web_expects() {
+        let resolve = ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: true };
+        let json = serde_json::to_value(&resolve).unwrap();
+        assert_eq!(json, serde_json::json!({ "type": "resolveBotPairing", "requestId": 4, "pairingKey": "k", "code": "ABCD-EFGH", "approve": true }));
+        assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), resolve);
+        let list: ClientMessage = serde_json::from_str(r#"{"type":"listBotPairings","requestId":5}"#).unwrap();
+        assert_eq!(list, ClientMessage::ListBotPairings { request_id: 5 });
+
+        let waiting = ServerMessage::BotPairings {
+            request_id: 5,
+            pairings: vec![BotPairingDto { channel: "telegram".into(), sender: "42".into(), label: "ana".into(), code: "ABCD-EFGH".into(), expires_at: 1_700_000_000 }],
+        };
+        let json = serde_json::to_value(&waiting).unwrap();
+        assert_eq!(json["type"], "botPairings");
+        assert_eq!(json["pairings"][0]["expiresAt"], 1_700_000_000u64);
+        assert_eq!(serde_json::from_value::<ServerMessage>(json).unwrap(), waiting);
     }
 
     #[test]
