@@ -329,7 +329,7 @@ impl Orchestrator {
         }
         let response = self.model.chat(messages, Vec::new()).await?;
         if let (Some(guard), Some(usage)) = (&self.spend, &response.usage) {
-            guard.record(&ctx, self.model.model_id(), usage);
+            guard.record_served(&ctx, self.model.model_id(), self.model.provider_id(), usage);
         }
         Ok(Some(response.content))
     }
@@ -603,6 +603,8 @@ impl Orchestrator {
             })
             .await?;
             let served_model = switched.as_ref().map_or_else(|| self.model.model_id().to_string(), |s| s.model.clone());
+            // The provider that answered, for the ledger (P10): in a combo that fell back, the member that took over.
+            let served_provider = switched.as_ref().map_or_else(|| self.model.provider_id().to_string(), |s| s.to.clone());
             if let Some(switch) = switched {
                 if !fallbacks.iter().any(|f| f.from == switch.from && f.to == switch.to) {
                     fallbacks.push(switch);
@@ -613,7 +615,7 @@ impl Orchestrator {
                 budget.record(response.usage.as_ref());
             }
             if let (Some(spend), Some(u)) = (spend, response.usage.as_ref()) {
-                spend.record(&served_model, u);
+                spend.record(&served_model, &served_provider, u);
             }
             if let Some(u) = response.usage {
                 usage.prompt_tokens += u.prompt_tokens;
@@ -2073,6 +2075,27 @@ mod tests {
             assert_eq!((outcome.fallbacks[0].from.as_str(), outcome.fallbacks[0].to.as_str()), ("main", "spare"));
             let by_model = guard.breakdown().by_model;
             assert_eq!(by_model.iter().map(|b| (b.key.as_str(), b.calls)).collect::<Vec<_>>(), vec![("reserve-model", 2)]);
+            // P10: and to the provider that answered, not the combo's first member that was down.
+            let by_provider = guard.breakdown().by_provider;
+            assert_eq!(by_provider.iter().map(|b| (b.key.as_str(), b.calls)).collect::<Vec<_>>(), vec![("spare", 2)]);
+        }
+
+        /// P10: a call is booked to the provider the model was labelled with; one nobody labelled has no provider.
+        #[tokio::test]
+        async fn a_call_is_booked_to_the_provider_it_was_labelled_with() {
+            let guard = guard(vec![day(1_000)], vec![]);
+            let mut labelled = Orchestrator::new(crate::model::labeled::Labeled::wrap("main", Arc::new(Reserve(AtomicUsize::new(0)))), temp_vault());
+            labelled.register_tool(Arc::new(NamedTool("noop")));
+            let labelled = labelled.with_spend_guard(guard.clone()).with_spend_context(SpendContext::new("cli"));
+            labelled.handle_message(&[], "go").await.unwrap();
+
+            let mut unlabelled = Orchestrator::new(Arc::new(Reserve(AtomicUsize::new(0))), temp_vault());
+            unlabelled.register_tool(Arc::new(NamedTool("noop")));
+            let unlabelled = unlabelled.with_spend_guard(guard.clone()).with_spend_context(SpendContext::new("cli"));
+            unlabelled.handle_message(&[], "go").await.unwrap();
+
+            let by_provider = guard.breakdown().by_provider;
+            assert_eq!(by_provider.iter().map(|b| (b.key.as_str(), b.calls)).collect::<Vec<_>>(), vec![("main", 2), ("", 2)]);
         }
 
         #[tokio::test]

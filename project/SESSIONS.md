@@ -2,7 +2,35 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 123)
+> Última atualização: 2026-10-03 (Sessão 124)
+
+---
+
+### 2026-10-03 — Sessão 124
+
+- **Objetivo**: o P10, em Plan mode. A auditoria mostrou que o consumo de tokens e o cadastro de chaves já existiam desde o P4; faltavam dólares no desktop e
+  por provedor/agente/pessoa, a série diária em dólares e um jeito de conferir uma chave. O usuário escolheu **fazer os quatro** (e eu corrigi o texto da tool `usage_stats`,
+  que ainda dizia que não havia estimativa de dólar).
+- **Feito (ledger e telas)**: `SpendEvent.provider` (campo opcional compatível); `ModelProvider::provider_id()` + `Labeled`, aplicado em `build_model_for`;
+  `record_served`; `breakdown()` por provedor, agente e pessoa; `daily_cost`; `RecentSpendDto`/`UsageReportDto` com os campos novos (`default`); desktop
+  (`spend_status.recent` e as cinco tabelas) e web (tabelas e o gráfico "Gasto por dia", com o `DailyChart` agora genérico).
+- **Feito ("Testar chave")**: `KeyCheck` e `check_key()` nos três provedores (`GET /models`, sem seguir redirecionamento, timeout de ~10 s, resposta sem a chave, o corpo nem o
+  endereço); `warden_bootstrap::test_provider`; comando `test_provider_key` no desktop e o botão; `TestProvider`/`ProviderTest` no hub (`provider_admin.rs`) e o botão na web.
+- **Decisões minhas**: "por agente" é o agente com que o turno começou (mudar isso mexeria nos limites por agente); `record` ficou como era e ganhou `record_served` ao lado
+  (evitou mexer em ~40 testes); sem `covers_hours` no relatório (a janela já vem em `recent.windowHours`); o desktop não ganhou gráfico diário; a web só testa um `base_url` que o hub já tem salvo.
+- **Verificado**: **975 testes passando, 0 falhando** nos 7 crates afetados (+31 no desktop e 11 de ponta a ponta na web). Ledger: linha antiga lê, o provedor entra, num combo vale o
+  membro que respondeu, `for_agent` preserva o rótulo, `daily_cost` por fuso. Chave: servidores falsos por provedor (caminho e cabeçalhos exatos, 401/403/429/5xx, Gemini 400,
+  compatível 404, rede caída, redirecionamento **não** seguido, nada de chave/corpo/endereço na mensagem). Hub real (`people.rs`): `Keep` usa a chave salva, `Set` a digitada, chave de
+  pareamento errada e membro recusados. **Ponta a ponta na web** (hub real + Chromium headless): as tabelas por provedor/agente/pessoa e o gráfico em dólares a partir de um ledger semeado, e o botão contra um provedor
+  falso em Node (aceita, rejeita sem repetir a chave, recusa endereço não salvo e chave de pareamento errada), com o **arquivo do ledger idêntico** antes e depois. **Três mutações, todas
+  derrubaram o teste certo e foram desfeitas** (zero marcas sobrando): trocar a fonte da tabela "Por provedor", tirar o braço do `member_refusal`, mostrar "rejeitada" como ✓.
+- **Erros meus no caminho**: (1) editei o `provider_admin.rs` **por heredoc no Bash** (os testes), contra a preferência de ver o diff; o resto foi por `Edit`/`Write`. (2) Três expectativas de teste
+  erradas minhas (a ordem do `by_person`/`by_agent`, que o `breakdown` ordena por tokens) e um nome de função com apóstrofo (`shouldn't`). (3) O primeiro teste do botão localizava o cartão pelo texto
+  "Testar chave", que **some do cartão quando o formulário abre**: o seletor se invalidava sozinho. (4) Um **crash do linker** (o P101) derrubou uma rodada inteira; repeti e conferi que nenhum teste tinha rodado
+  naquela, em vez de contar a saída como resultado. (5) O `isDisabled()` do Playwright e outras armadilhas de teste já registradas na Sessão 123.
+- **Não verificado**: o botão contra Gemini, OpenAI e Anthropic de verdade (precisa de chave real; só o formato do pedido foi conferido); as telas do desktop numa janela nativa (só `tsc` e testes Rust);
+  um hub com `wss://` público para a regra "chave digitada só em conexão cifrada" (coberta por teste unitário com `secure = false`, não por rede de verdade).
+- **Próximo passo**: a rodada de testes em tela (P115 e P95–P118), agora incluindo o botão de testar chave com uma chave real.
 
 ---
 

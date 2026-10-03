@@ -10,8 +10,9 @@
 //!   directly from a Tauri command, the same way `list_conversations` already backs
 //!   `list_conversations` (the IPC command of the same name).
 //!
-//! Deliberately token-only, no `$` figure: there's no per-model price table in the project yet
-//! (same gap noted in `PENDING.md` P4 for the dashboard). Deliberately no per-message model
+//! Token-only, on purpose: dollars come from the spend ledger (`warden_core::spend`, priced by the model that
+//! actually ran, with the provider that answered), which the usage screens and the `budget` tool read; this is what
+//! the conversations themselves hold. Deliberately no per-message model
 //! attribution either: `Conversation.agent_id`/`provider_id` record only the *last* selection for
 //! the whole conversation (the desktop's per-conversation selectors), not per-message — a
 //! conversation that switched provider partway through has every message's usage counted under
@@ -26,6 +27,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use warden_core::model::Usage;
+use warden_core::spend::SpendEvent;
 use warden_core::tool::{Tool, ToolSpec};
 
 use crate::{list_conversations, Conversation};
@@ -122,6 +124,40 @@ pub fn daily_usage(conversations: &[Conversation], days: u32, tz_offset_minutes:
     out
 }
 
+/// Dollars spent on one calendar day, in `daily_cost` (P10).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyCost {
+    /// `YYYY-MM-DD` in the viewer's time zone.
+    pub date: String,
+    pub calls: u64,
+    /// Dollars for the calls that had a price; the ones without one are only counted in `unpriced_calls`.
+    pub cost_usd: f64,
+    pub unpriced_calls: u64,
+}
+
+/// The last `days` days (today included, oldest first, empty days as zero) of what the spend ledger holds, bucketed
+/// by each call's time in the viewer's day, like `daily_usage`. The ledger only keeps its longest limit window, so a
+/// day older than that is zero because it is *gone*, not because nothing was spent: the screen says how far it reaches.
+pub fn daily_cost(events: &[SpendEvent], days: u32, tz_offset_minutes: i32, now_ms: i64) -> Vec<DailyCost> {
+    let offset_ms = tz_offset_minutes as i64 * 60_000;
+    let today = (now_ms + offset_ms).div_euclid(DAY_MS);
+    let first = today - days as i64 + 1;
+    let mut out: Vec<DailyCost> = (first..=today).map(|day| DailyCost { date: format_day(day), ..Default::default() }).collect();
+
+    for event in events {
+        let day = (event.ts as i64 + offset_ms).div_euclid(DAY_MS);
+        if let Some(bucket) = (day >= first && day <= today).then(|| &mut out[(day - first) as usize]) {
+            bucket.calls += 1;
+            match event.cost_usd {
+                Some(cost) => bucket.cost_usd += cost,
+                None => bucket.unpriced_calls += 1,
+            }
+        }
+    }
+    out
+}
+
 /// Days since 1970-01-01 as `YYYY-MM-DD` (proleptic Gregorian) — Howard Hinnant's `civil_from_days`,
 /// so a date needs no calendar crate.
 fn format_day(days: i64) -> String {
@@ -156,7 +192,7 @@ impl Tool for UsageStatsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "usage_stats".to_string(),
-            description: "Get token usage across every saved conversation on this device: total prompt/completion/total tokens, how many model calls and conversations, and a breakdown by named agent and by model provider. Token counts only — no dollar cost estimate is available.".to_string(),
+            description: "Get token usage across every saved conversation on this device: total prompt/completion/total tokens, how many model calls and conversations, and a breakdown by named agent and by model provider. Token counts only: dollars are in the spending meter (the `budget` tool) and on the Usage screens, not here.".to_string(),
             parameters: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -227,6 +263,29 @@ mod tests {
             ("2026-09-24", 10),
             ("2026-09-25", 0),
         ]);
+    }
+
+    /// P10: dollars per day from the ledger, in the viewer's day, with empty days as zero and what had no price counted apart.
+    #[test]
+    fn daily_cost_buckets_the_ledgers_calls_by_the_viewers_day() {
+        let event = |ts: i64, cost_usd: Option<f64>| SpendEvent { ts: ts as u64, channel: "cli".into(), user: None, agent: None, model: "m".into(), tokens: 10, cost_usd, person: None, provider: None };
+        let day = 20_721 * DAY_MS; // 2026-09-25T00:00Z
+        let now = day + 12 * 3_600_000;
+        let events = vec![
+            event(day + 3_600_000, Some(1.5)),           // 01:00Z: the 25th in UTC, still the 24th at UTC-3
+            event(day + 2 * 3_600_000, Some(0.25)),
+            event(day + 3 * 3_600_000, None),            // no price: a call, no dollars
+            event(day - 2 * DAY_MS + 6 * 3_600_000, Some(4.0)),
+            event(day - 10 * DAY_MS, Some(99.0)),        // outside a 3-day range
+        ];
+
+        let utc = daily_cost(&events, 3, 0, now);
+        assert_eq!(utc.iter().map(|d| (d.date.as_str(), d.calls, d.unpriced_calls)).collect::<Vec<_>>(), vec![("2026-09-23", 1, 0), ("2026-09-24", 0, 0), ("2026-09-25", 3, 1)]);
+        assert_eq!((utc[0].cost_usd, utc[1].cost_usd, utc[2].cost_usd), (4.0, 0.0, 1.75));
+
+        let brasilia = daily_cost(&events, 3, -180, now);
+        assert_eq!(brasilia.iter().map(|d| (d.date.as_str(), d.cost_usd)).collect::<Vec<_>>(), vec![("2026-09-23", 4.0), ("2026-09-24", 1.75), ("2026-09-25", 0.0)]);
+        assert!(daily_cost(&[], 2, 0, now).iter().all(|d| d.calls == 0 && d.cost_usd == 0.0), "no ledger, all zero");
     }
 
     #[test]

@@ -104,6 +104,17 @@ pub struct DailyUsageDto {
     pub tokens: u64,
 }
 
+/// Dollars spent on one day of a `UsageReport`, from the spend ledger (P10); `date` is `YYYY-MM-DD` in the
+/// viewer's time zone. The ledger only keeps `RecentSpendDto.window_hours`, so an older day reads zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyCostDto {
+    pub date: String,
+    pub calls: u64,
+    pub cost_usd: f64,
+    pub unpriced_calls: u64,
+}
+
 /// Where one spending limit (P4) stands — `warden_core::spend::LimitStatus` on the wire, plus what
 /// one `ExtendLimit` would add (`extend_tokens`/`extend_cost_usd`, 0 for a ceiling it doesn't have).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +183,9 @@ impl From<SpendBreakdown> for RecentSpendDto {
             window_hours: b.window_hours,
             by_model: b.by_model.into_iter().map(Into::into).collect(),
             by_channel: b.by_channel.into_iter().map(Into::into).collect(),
+            by_provider: b.by_provider.into_iter().map(Into::into).collect(),
+            by_agent: b.by_agent.into_iter().map(Into::into).collect(),
+            by_person: b.by_person.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -195,6 +209,15 @@ pub struct RecentSpendDto {
     pub window_hours: u32,
     pub by_model: Vec<SpendBucketDto>,
     pub by_channel: Vec<SpendBucketDto>,
+    /// The `[[providers]]` id that answered (P10); an empty key is a call from before it was kept.
+    #[serde(default)]
+    pub by_provider: Vec<SpendBucketDto>,
+    /// The agent the turn started with; an empty key is a turn with no agent chosen.
+    #[serde(default)]
+    pub by_agent: Vec<SpendBucketDto>,
+    /// The workspace member (P84); an empty key is the owner.
+    #[serde(default)]
+    pub by_person: Vec<SpendBucketDto>,
 }
 
 /// Reply body of `RequestUsage` (P78): tokens from every conversation the hub keeps (all devices,
@@ -207,6 +230,9 @@ pub struct UsageReportDto {
     pub message_count: usize,
     pub by_device: Vec<DeviceUsage>,
     pub daily: Vec<DailyUsageDto>,
+    /// Dollars per day from the spend ledger (P10); empty with spending limits off, which keeps no ledger.
+    #[serde(default)]
+    pub daily_cost: Vec<DailyCostDto>,
     /// False when the hub runs with spending limits switched off — `limits` and `recent` are empty.
     pub limits_enabled: bool,
     pub limits: Vec<LimitStatusDto>,
@@ -1486,6 +1512,15 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         member: Option<String>,
     },
+    /// Checks a model provider's key without spending a conversation (P10), answered by `ProviderTest` or
+    /// `UserError`. `provider` is the form as the screen has it: `Keep` on its key uses the saved one (found by
+    /// `original_id`), `Set` is a key typed but not saved (so only over an encrypted or local connection). The hub
+    /// only asks an address it already has saved, so a paired device can't make it call somewhere new. Root only.
+    TestProvider {
+        request_id: u64,
+        pairing_key: String,
+        provider: ProviderEditDto,
+    },
     /// The hub's sync state (P61), answered by `SyncStatus`. Open to any paired device, like
     /// reading settings.
     RequestSyncStatus {
@@ -1856,6 +1891,15 @@ pub enum ServerMessage {
         /// Who a chat may be approved as speaking as, and whether the bots are linked to them.
         #[serde(default)]
         members: Vec<BotMemberDto>,
+    },
+    /// What testing a provider's key came to (P10). `ok` only when the provider accepted it; `kind` is one of `ok`,
+    /// `unverifiable`, `rejected`, `rate_limited`, `provider_down`, `unreachable`, `unsupported`; `message` is one
+    /// sentence that never carries the key or what the provider answered.
+    ProviderTest {
+        request_id: u64,
+        ok: bool,
+        kind: String,
+        message: String,
     },
     /// A user request failed. `auth_rejected`: the pairing key was wrong, or this connection isn't
     /// the root's; nothing changed.
@@ -2364,17 +2408,27 @@ mod tests {
                     usage: Usage { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
                 }],
                 daily: vec![DailyUsageDto { date: "2026-09-25".into(), calls: 1, tokens: 10 }],
+                daily_cost: vec![DailyCostDto { date: "2026-09-25".into(), calls: 1, cost_usd: 0.5, unpriced_calls: 0 }],
                 limits_enabled: true,
                 limits: vec![limit.clone()],
                 recent: Some(RecentSpendDto {
                     window_hours: 24,
                     by_model: vec![SpendBucketDto { key: "m".into(), calls: 1, tokens: 10, cost_usd: 0.5, unpriced_calls: 0 }],
                     by_channel: Vec::new(),
+                    by_provider: vec![SpendBucketDto { key: "main".into(), calls: 1, tokens: 10, cost_usd: 0.5, unpriced_calls: 0 }],
+                    by_agent: vec![SpendBucketDto { key: "writer".into(), calls: 1, tokens: 10, cost_usd: 0.5, unpriced_calls: 0 }],
+                    by_person: Vec::new(),
                 }),
                 ledger_error: None,
             },
         };
         let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains(r#""dailyCost":[{"date":"2026-09-25","calls":1,"costUsd":0.5,"unpricedCalls":0}]"#), "{json}");
+        assert!(json.contains(r#""byProvider":[{"key":"main""#) && json.contains(r#""byAgent":[{"key":"writer""#), "{json}");
+        // A hub from before these existed sends none of them: they read as empty rather than failing.
+        let old = r#"{"windowHours":24,"byModel":[],"byChannel":[]}"#;
+        let recent: RecentSpendDto = serde_json::from_str(old).unwrap();
+        assert!(recent.by_provider.is_empty() && recent.by_agent.is_empty() && recent.by_person.is_empty());
         assert!(json.starts_with(r#"{"type":"usageReport","requestId":1,"report":{"total":{"#), "{json}");
         assert!(json.contains(r#""byDevice":[{"deviceId":"web-1","name":"Browser","conversationCount":1"#), "{json}");
         assert!(json.contains(r#""extendTokens":2"#) && json.contains(r#""limitsEnabled":true"#), "{json}");
@@ -2427,6 +2481,25 @@ mod tests {
         assert_eq!(old, ServerMessage::BotPairings { request_id: 5, pairings: Vec::new(), members: Vec::new() });
         let old: ClientMessage = serde_json::from_str(r#"{"type":"resolveBotPairing","requestId":4,"pairingKey":"k","code":"ABCD-EFGH","approve":false}"#).unwrap();
         assert_eq!(old, ClientMessage::ResolveBotPairing { request_id: 4, pairing_key: "k".into(), code: "ABCD-EFGH".into(), approve: false, member: None });
+    }
+
+    /// P10: the shapes the web sends and reads for "Test key".
+    #[test]
+    fn provider_test_messages_use_the_names_the_web_expects() {
+        let ask = ClientMessage::TestProvider {
+            request_id: 6,
+            pairing_key: "k".into(),
+            provider: ProviderEditDto { original_id: Some("main".into()), id: "main".into(), kind: "gemini".into(), base_url: String::new(), model: String::new(), api_key: SecretEdit::Keep, node: String::new() },
+        };
+        let json = serde_json::to_value(&ask).unwrap();
+        assert_eq!(json["type"], "testProvider");
+        assert_eq!((json["requestId"].clone(), json["provider"]["originalId"].clone(), json["provider"]["apiKey"].clone()), (6.into(), "main".into(), serde_json::json!({ "action": "keep" })));
+        assert_eq!(serde_json::from_value::<ClientMessage>(json).unwrap(), ask);
+
+        let answer = ServerMessage::ProviderTest { request_id: 6, ok: false, kind: "rejected".into(), message: "Gemini rejected the key.".into() };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(json, serde_json::json!({ "type": "providerTest", "requestId": 6, "ok": false, "kind": "rejected", "message": "Gemini rejected the key." }));
+        assert_eq!(serde_json::from_value::<ServerMessage>(json).unwrap(), answer);
     }
 
     #[test]

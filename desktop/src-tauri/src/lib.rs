@@ -5,6 +5,7 @@ mod git_sync_cmds;
 mod lend_cmds;
 mod node_cmds;
 mod people_cmds;
+mod provider_cmds;
 mod qr;
 mod recording;
 mod server_cmds;
@@ -912,6 +913,7 @@ pub fn run() {
             vault_cmds::delete_vault_note,
             vault_cmds::search_vault,
             ssh_cmds::test_ssh_host,
+            provider_cmds::test_provider_key,
             skills_cmds::list_skills,
             skills_cmds::save_skill,
             skills_cmds::delete_skill,

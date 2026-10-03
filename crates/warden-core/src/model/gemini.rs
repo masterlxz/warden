@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::key_check::{self, KeyCheck};
 use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage};
 #[cfg(test)]
 use super::ToolCall;
@@ -15,14 +16,22 @@ const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models"
 pub struct GeminiProvider {
     api_key: String,
     model: String,
+    /// The models root (`.../v1beta/models`): a chat appends `/{model}:streamGenerateContent`, a key check lists it.
+    models_url: String,
     client: reqwest::Client,
 }
 
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_models_url(api_key, model, API_BASE)
+    }
+
+    /// Against another address than Google's (a test's fake server): `models_url` is the models root.
+    pub fn with_models_url(api_key: impl Into<String>, model: impl Into<String>, models_url: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
+            models_url: models_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -239,6 +248,13 @@ impl ModelProvider for GeminiProvider {
         &self.model
     }
 
+    /// `GET .../v1beta/models` with the key in `x-goog-api-key`. Google answers a bad key with a 400 that names it,
+    /// not a 401: `check_models` reads that.
+    async fn check_key(&self) -> KeyCheck {
+        let request = key_check::client().get(&self.models_url).header("x-goog-api-key", &self.api_key);
+        key_check::check_models("Gemini", request, false).await
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system_instruction = None;
         let mut contents = Vec::new();
@@ -267,7 +283,7 @@ impl ModelProvider for GeminiProvider {
         };
 
         let request = GenerateRequest { contents, system_instruction, tools: gemini_tools };
-        let url = format!("{API_BASE}/{}:streamGenerateContent?alt=sse", self.model);
+        let url = format!("{}/{}:streamGenerateContent?alt=sse", self.models_url, self.model);
 
         let response = self
             .client

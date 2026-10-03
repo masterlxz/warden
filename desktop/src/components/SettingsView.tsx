@@ -215,6 +215,21 @@ function ProviderCard({
 }) {
   const isOpenAiCompatible = provider.kind === "openai_compatible";
   const isNode = provider.kind === "node";
+  /** P10 — "Test key": asks the provider for its model list with the key as typed (saved or not). */
+  const [testing, setTesting] = useState(false);
+  const [keyTest, setKeyTest] = useState<{ ok: boolean; kind: string; message: string } | null>(null);
+
+  async function testKey() {
+    setTesting(true);
+    setKeyTest(null);
+    try {
+      setKeyTest(await invoke<{ ok: boolean; kind: string; message: string }>("test_provider_key", { provider }));
+    } catch (err) {
+      setKeyTest({ ok: false, kind: "unreachable", message: String(err) });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   return (
     <div className={`provider-card${isActive ? " provider-card-active" : ""}`}>
@@ -292,6 +307,24 @@ function ProviderCard({
           value={provider.apiKey}
           onChange={(v) => onChange({ ...provider, apiKey: v })}
         />
+      )}
+
+      {!isNode && (
+        <div className="settings-field">
+          <button type="button" className="settings-browse-btn" disabled={testing} onClick={() => void testKey()}>
+            {testing ? "Testing…" : "Test key"}
+          </button>
+          <span className="settings-hint">Asks the provider for its model list: it costs no tokens and counts against no limit.</span>
+          {keyTest && (
+            <div
+              role="status"
+              className={keyTest.ok ? "settings-success-banner" : keyTest.kind === "unverifiable" || keyTest.kind === "rate_limited" ? "settings-hint" : "settings-error-banner"}
+            >
+              {keyTest.ok ? "✓ " : keyTest.kind === "unverifiable" || keyTest.kind === "rate_limited" ? "⚠ " : "✗ "}
+              {keyTest.message}
+            </div>
+          )}
+        </div>
       )}
 
       <label className="settings-field">

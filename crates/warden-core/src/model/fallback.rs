@@ -82,6 +82,12 @@ impl ModelProvider for FallbackProvider {
         self.providers[0].1.model_id()
     }
 
+    /// The first member's id: it answers unless a fallback says otherwise (`StreamEvent::ProviderFallback`
+    /// names the one that took over), which is how the spend ledger learns who served a call (P10).
+    fn provider_id(&self) -> &str {
+        &self.providers[0].0
+    }
+
     /// Passes the agent on to every provider in the chain (P93: a node's model in a combo).
     fn for_agent(&self, agent: Option<&str>) -> Option<Arc<dyn ModelProvider>> {
         let mut changed = false;

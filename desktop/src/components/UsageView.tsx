@@ -64,14 +64,101 @@ interface LimitStatus {
   extendCostUsd: number;
 }
 
+/** Mirrors `SpendBucketDto` (P10): one model, channel, provider, agent or person in the ledger. */
+interface SpendBucket {
+  key: string;
+  calls: number;
+  tokens: number;
+  costUsd: number;
+  unpricedCalls: number;
+}
+
+/** Mirrors `RecentSpendDto`: what the ledger still holds, which only reaches back `windowHours` (the longest
+ * limit). An empty `key` is a call with no provider, agent or person on record. */
+interface RecentSpend {
+  windowHours: number;
+  byModel: SpendBucket[];
+  byChannel: SpendBucket[];
+  byProvider: SpendBucket[];
+  byAgent: SpendBucket[];
+  byPerson: SpendBucket[];
+}
+
 interface SpendStatus {
   limitsEnabled: boolean;
   limits: LimitStatus[];
+  recent: RecentSpend | null;
   ledgerError: string | null;
 }
 
 function usd(value: number): string {
   return `$${value.toFixed(value < 1 ? 4 : 2)}`;
+}
+
+/** One split of the ledger's spending, with the dollars. A call to a model with no price has no dollar figure,
+ * so a row made only of those says "—" instead of a false zero. `emptyLabel` names the bucket with an empty key. */
+function SpendTable({ title, buckets, keyLabel, emptyLabel }: { title: string; buckets: SpendBucket[]; keyLabel: string; emptyLabel?: string }) {
+  if (buckets.length === 0) return null;
+  return (
+    <table className="usage-table">
+      <caption>{title}</caption>
+      <thead>
+        <tr>
+          <th>{keyLabel}</th>
+          <th>Calls</th>
+          <th>Tokens</th>
+          <th>USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        {buckets.map((b) => (
+          <tr key={b.key}>
+            <td>{b.key === "" && emptyLabel ? emptyLabel : b.key}</td>
+            <td>{b.calls.toLocaleString("en-US")}</td>
+            <td>{b.tokens.toLocaleString("en-US")}</td>
+            <td>
+              {b.calls > b.unpricedCalls ? usd(b.costUsd) : "—"}
+              {b.unpricedCalls > 0 && b.calls > b.unpricedCalls && <span className="settings-hint"> ({b.unpricedCalls} unpriced)</span>}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** What the spending ledger holds, split five ways, in dollars (P10). Reads the same status as the limits above it. */
+function RecentSpending() {
+  const [recent, setRecent] = useState<RecentSpend | null>(null);
+
+  useEffect(() => {
+    invoke<SpendStatus>("spend_status")
+      .then((status) => setRecent(status.recent))
+      .catch(() => setRecent(null));
+  }, []);
+
+  if (recent === null || recent.byModel.length === 0) return null;
+  const hours = recent.windowHours;
+  return (
+    <section className="settings-section">
+      <div className="settings-section-header">
+        <h3 className="settings-section-title">Recent spending, last {hours % 24 === 0 ? (hours === 24 ? "24 hours" : `${hours / 24} days`) : `${hours} hours`}</h3>
+      </div>
+      <p className="settings-hint">
+        From the spending ledger, which only keeps the longest limit's window, and covers every channel on this machine. Each call is priced by the
+        model that answered, and a call to a model with no price in Settings isn't in the dollar figure.
+      </p>
+      <SpendTable title="By model" buckets={recent.byModel} keyLabel="Model" />
+      <SpendTable title="By channel" buckets={recent.byChannel} keyLabel="Channel" />
+      <SpendTable title="By provider" buckets={recent.byProvider} keyLabel="Provider" emptyLabel="no provider recorded" />
+      <SpendTable title="By agent" buckets={recent.byAgent} keyLabel="Agent" emptyLabel="no agent" />
+      <SpendTable title="By person" buckets={recent.byPerson} keyLabel="Person" emptyLabel="the owner" />
+      <p className="settings-hint">
+        "By agent" is the agent the turn started with: a delegated sub-agent's calls count under the agent that delegated. "No provider recorded" is
+        calls from before the provider was kept.
+      </p>
+    </section>
+  );
 }
 
 /** Where each spending limit (P4) stands, with "Allow more" on one that's running out — the same
@@ -207,6 +294,7 @@ function UsageView() {
         <h2 className="settings-title">Usage</h2>
         <p className="settings-hint">No usage recorded yet — send a message to see stats here.</p>
         <SpendingLimits />
+        <RecentSpending />
       </div>
     );
   }
@@ -215,11 +303,12 @@ function UsageView() {
     <div className="settings-view">
       <h2 className="settings-title">Usage</h2>
       <p className="settings-hint">
-        Token usage across every conversation saved on this device. Dollar amounts show in the spending limits, for
-        models that have a price in Settings.
+        Token usage across every conversation saved on this device. Dollar amounts come from the spending ledger, for
+        models that have a price in Settings: in the limits and in the recent spending below.
       </p>
 
       <SpendingLimits />
+      <RecentSpending />
 
       <div className="usage-stat-grid">
         <StatTile label="Total tokens" value={summary.total.totalTokens} />

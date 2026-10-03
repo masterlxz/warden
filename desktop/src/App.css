@@ -1511,6 +1511,32 @@ body {
   white-space: nowrap;
 }
 
+/* What the ledger holds, in dollars (P10): a plain table per split — numbers line up, which bars wouldn't. */
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.usage-table caption {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.6em 0 0.3em;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 0.35em 0.6em;
+  text-align: right;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.usage-table th:first-child,
+.usage-table td:first-child {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 /* Spending limits on the Usage screen (P78): the meter's fill carries severity, the track is a
    lighter step of the same color. */
 .spend-limit-list {

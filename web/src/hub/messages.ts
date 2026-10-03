@@ -103,10 +103,23 @@ export interface UsageReport {
   messageCount: number;
   byDevice: { deviceId: string; name?: string; conversationCount: number; messageCount: number; usage: Usage }[];
   daily: { date: string; calls: number; tokens: number }[];
+  /** P10 — dollars per day from the ledger, which only reaches back `recent.windowHours`. Absent from an older hub. */
+  dailyCost?: { date: string; calls: number; costUsd: number; unpricedCalls: number }[];
   limitsEnabled: boolean;
   limits: LimitStatus[];
-  recent?: { windowHours: number; byModel: SpendBucket[]; byChannel: SpendBucket[] };
+  recent?: RecentSpend;
   ledgerError?: string;
+}
+
+/** Mirrors `RecentSpendDto`: what the ledger still holds. `byProvider`, `byAgent` and `byPerson` (P10) are absent
+ * from an older hub; an empty `key` is a call with none of them (the owner, or from before it was kept). */
+export interface RecentSpend {
+  windowHours: number;
+  byModel: SpendBucket[];
+  byChannel: SpendBucket[];
+  byProvider?: SpendBucket[];
+  byAgent?: SpendBucket[];
+  byPerson?: SpendBucket[];
 }
 
 /** Mirrors `SecretStatusDto` (P78): whether an API key is saved, never the key itself. `hint` is its
@@ -649,6 +662,9 @@ export type ClientMessage =
   | { type: "listBotPairings"; requestId: number }
   /** `member`: approve the chat as speaking as that member of the workspace; absent, as the owner. */
   | { type: "resolveBotPairing"; requestId: number; pairingKey: string; code: string; approve: boolean; member?: string }
+  /** P10 — checks a provider's key without spending a conversation. `provider` is the form: `keep` on its key uses the
+   * saved one (found by `originalId`), `set` is a key typed but not saved. Answered by `providerTest` or `userError`. */
+  | { type: "testProvider"; requestId: number; pairingKey: string; provider: ProviderEdit }
   /** Fase 9.1 (redefined) — an unauthenticated presence probe, answered by `discoverAck` below.
    * No `authKey`/`deviceId` on purpose: the point is finding a hub before knowing its credential. */
   | { type: "discover" }
@@ -721,6 +737,9 @@ export type ServerMessage =
   | { type: "learningSet"; requestId: number }
   /** P117 — the strangers waiting for the owner to let them talk to a bot, oldest first. */
   | { type: "botPairings"; requestId: number; pairings: BotPairing[]; members?: BotMember[] }
+  /** P10 — what testing a provider's key came to: `ok` only when the provider accepted it. `kind` is `ok`, `unverifiable`,
+   * `rejected`, `rate_limited`, `provider_down`, `unreachable` or `unsupported`; `message` carries neither the key nor what the provider said. */
+  | { type: "providerTest"; requestId: number; ok: boolean; kind: string; message: string }
   /** `recoveryCode`: this change turned encryption on for their data — shown once, they have to write it down. */
   | { type: "passwordChanged"; requestId: number; recoveryCode?: string }
   /** A recovery code, shown once: the answer to `regenerateRecoveryCode`, or (`requestId` 0) sent right after
@@ -801,6 +820,7 @@ export function decode(text: string): ServerMessage {
     case "recoveryNoticesAcked":
     case "learningSet":
     case "botPairings":
+    case "providerTest":
     case "truthIdLinked":
     case "truthIdChallenge":
       return json as ServerMessage;

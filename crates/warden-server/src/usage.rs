@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use warden_bootstrap::usage::daily_usage;
+use warden_bootstrap::usage::{daily_cost, daily_usage};
 use warden_bootstrap::{aggregate_usage, list_conversations, Conversation};
 use warden_core::spend::SpendGuard;
-use warden_server_protocol::protocol::{DailyUsageDto, DeviceUsage, LimitStatusDto, UsageReportDto};
+use warden_server_protocol::protocol::{DailyCostDto, DailyUsageDto, DeviceUsage, LimitStatusDto, UsageReportDto};
 use warden_server_protocol::ServerMessage;
 
 use crate::device_registry::PairingStore;
@@ -102,6 +102,16 @@ pub fn build_usage_report(
         .into_iter()
         .map(|d| DailyUsageDto { date: d.date, calls: d.calls, tokens: d.tokens })
         .collect();
+    // Dollars per day (P10) from what the ledger still holds: with limits off there is no guard, so no ledger.
+    let daily_cost = guard
+        .map(|g| {
+            let since = now_ms.saturating_sub(g.longest_window_hours() as i64 * 3_600_000).max(0) as u64;
+            daily_cost(&g.events_since(since), USAGE_DAYS, tz_offset_minutes, now_ms)
+                .into_iter()
+                .map(|d| DailyCostDto { date: d.date, calls: d.calls, cost_usd: d.cost_usd, unpriced_calls: d.unpriced_calls })
+                .collect()
+        })
+        .unwrap_or_default();
 
     Ok(UsageReportDto {
         total: summary.total,
@@ -109,6 +119,7 @@ pub fn build_usage_report(
         message_count: summary.message_count,
         by_device,
         daily,
+        daily_cost,
         limits_enabled: guard.is_some(),
         limits: guard.map(LimitStatusDto::all).unwrap_or_default(),
         recent: guard.map(|g| g.breakdown().into()),
@@ -253,6 +264,35 @@ mod tests {
         }
         assert!(matches!(handle_extend_limit(Some(&guard), 8, "nope"), ServerMessage::UsageError { request_id: 8, .. }));
         assert!(matches!(handle_extend_limit(None, 9, "day"), ServerMessage::UsageError { request_id: 9, .. }));
+    }
+
+    /// P10: the report also carries dollars per day, and the ledger's split by provider, agent and person.
+    #[test]
+    fn the_report_carries_dollars_per_day_and_the_split_by_provider_agent_and_person() {
+        let guard = guard(10_000_000);
+        let now = warden_core::spend::now_millis() as i64;
+        let usage = |prompt: u32| Usage { prompt_tokens: prompt, completion_tokens: 0, total_tokens: prompt };
+        guard.record_served(&SpendContext::new("server").with_agent(Some("writer".to_string())), "m", "main", &usage(1_000_000)); // $1.00
+        guard.record_served(&SpendContext::new("server").with_person("ana"), "m", "spare", &usage(500_000)); // $0.50
+        guard.record(&SpendContext::new("cli"), "unpriced", &usage(10));
+        let pairing = PairingStore::new(temp_dir("devices").join("devices.json"));
+
+        let report = build_usage_report(&temp_dir("none"), None, &pairing, Some(&guard), 0, now).unwrap();
+        let today = report.daily_cost.last().unwrap();
+        assert_eq!((today.calls, today.unpriced_calls), (3, 1));
+        assert!((today.cost_usd - 1.5).abs() < 1e-9, "{}", today.cost_usd);
+        assert_eq!(report.daily_cost.len(), USAGE_DAYS as usize);
+        assert!(report.daily_cost[..USAGE_DAYS as usize - 1].iter().all(|d| d.calls == 0), "only today has spending");
+
+        let recent = report.recent.unwrap();
+        let keys = |buckets: &[warden_server_protocol::protocol::SpendBucketDto]| buckets.iter().map(|b| b.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&recent.by_provider), ["main", "spare", ""]);
+        assert_eq!(keys(&recent.by_agent), ["writer", ""], "largest first: the writer's 1,000,000 tokens against the other calls' 500,010");
+        assert_eq!(keys(&recent.by_person), ["", "ana"], "the owner's 1,000,010 tokens against Ana's 500,000");
+
+        // With limits off there is no guard, so no ledger and no dollars.
+        let off = build_usage_report(&temp_dir("none"), None, &pairing, None, 0, now).unwrap();
+        assert!(off.daily_cost.is_empty() && off.recent.is_none());
     }
 
     #[test]

@@ -127,9 +127,9 @@ impl SpendTurn {
         self.guard.last_error()
     }
 
-    /// Books a finished model call to the ledger.
-    pub fn record(&self, model: &str, usage: &Usage) {
-        self.guard.record(&self.ctx, model, usage);
+    /// Books a finished model call to the ledger, with the provider that answered ("" when it isn't labelled).
+    pub fn record(&self, model: &str, provider: &str, usage: &Usage) {
+        self.guard.record_served(&self.ctx, model, provider, usage);
     }
 
     /// Called before every model call. Returns what to tell the model when a limit is close

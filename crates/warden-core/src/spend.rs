@@ -170,6 +170,10 @@ pub struct SpendEvent {
     /// The workspace member who spent it (P84) — absent for the owner, and in a ledger from before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<String>,
+    /// The provider that answered (P10): the `[[providers]]` id, which for a combo is the member that actually
+    /// served the call. Absent in a ledger from before it was kept, and for a call whose provider has no label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 impl SpendEvent {
@@ -446,14 +450,19 @@ impl SpendBucket {
     }
 }
 
-/// Everything the ledger still holds, split by model and by channel (P78's usage screen). Buckets
-/// are sorted by tokens, largest first.
+/// Everything the ledger still holds, split by model, channel, provider, agent and person (P78's usage screen,
+/// P10). Buckets are sorted by tokens, largest first. A call with no provider, agent or person (the owner's own,
+/// or from before it was kept) is in the bucket whose `key` is empty.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SpendBreakdown {
     /// How far back this reaches: the ledger only keeps the longest limit window.
     pub window_hours: u32,
     pub by_model: Vec<SpendBucket>,
     pub by_channel: Vec<SpendBucket>,
+    pub by_provider: Vec<SpendBucket>,
+    /// The agent the turn started with: a sub-agent's calls count under the one that delegated.
+    pub by_agent: Vec<SpendBucket>,
+    pub by_person: Vec<SpendBucket>,
 }
 
 pub struct SpendGuard {
@@ -512,8 +521,13 @@ impl SpendGuard {
         check
     }
 
-    /// Books one model call. Nothing to book for a call that reported no tokens.
+    /// Books one model call whose provider isn't labelled. Nothing to book for a call that reported no tokens.
     pub fn record(&self, ctx: &SpendContext, model: &str, usage: &Usage) {
+        self.record_served(ctx, model, "", usage);
+    }
+
+    /// Books one model call with the provider that answered (P10): the `[[providers]]` id, or "" when unknown.
+    pub fn record_served(&self, ctx: &SpendContext, model: &str, provider: &str, usage: &Usage) {
         let tokens = usage.total_tokens.max(usage.prompt_tokens + usage.completion_tokens) as u64;
         if tokens == 0 {
             return;
@@ -527,6 +541,7 @@ impl SpendGuard {
             tokens,
             cost_usd: self.prices.cost(model, usage),
             person: ctx.person.clone(),
+            provider: Some(provider.to_string()).filter(|p| !p.is_empty()),
         };
         self.note(self.store.append(&Entry::Spend(event)));
     }
@@ -550,12 +565,21 @@ impl SpendGuard {
         spent
     }
 
-    /// Every call the ledger still holds (the longest limit window), by model and by channel.
+    /// Every call the ledger holds since `since_ms` (what the retention window left), oldest first. For a
+    /// screen that groups them its own way, such as the dollars per day.
+    pub fn events_since(&self, since_ms: u64) -> Vec<SpendEvent> {
+        self.store.entries_since(since_ms).into_iter().filter_map(|entry| if let Entry::Spend(event) = entry { Some(event) } else { None }).collect()
+    }
+
+    /// Every call the ledger still holds (the longest limit window), by model, channel, provider, agent and person.
     pub fn breakdown(&self) -> SpendBreakdown {
         let window_hours = self.longest_window_hours();
         let since = (self.clock)().saturating_sub(window_hours as u64 * HOUR_MS);
         let mut by_model: Vec<SpendBucket> = Vec::new();
         let mut by_channel: Vec<SpendBucket> = Vec::new();
+        let mut by_provider: Vec<SpendBucket> = Vec::new();
+        let mut by_agent: Vec<SpendBucket> = Vec::new();
+        let mut by_person: Vec<SpendBucket> = Vec::new();
         let bucket = |buckets: &mut Vec<SpendBucket>, key: &str, event: &SpendEvent| {
             match buckets.iter_mut().find(|b| b.key == key) {
                 Some(b) => b.add(event),
@@ -570,10 +594,14 @@ impl SpendGuard {
             let Entry::Spend(event) = entry else { continue };
             bucket(&mut by_model, &event.model, &event);
             bucket(&mut by_channel, &event.channel, &event);
+            bucket(&mut by_provider, event.provider.as_deref().unwrap_or(""), &event);
+            bucket(&mut by_agent, event.agent.as_deref().unwrap_or(""), &event);
+            bucket(&mut by_person, event.person.as_deref().unwrap_or(""), &event);
         }
-        by_model.sort_by_key(|b| std::cmp::Reverse(b.tokens));
-        by_channel.sort_by_key(|b| std::cmp::Reverse(b.tokens));
-        SpendBreakdown { window_hours, by_model, by_channel }
+        for buckets in [&mut by_model, &mut by_channel, &mut by_provider, &mut by_agent, &mut by_person] {
+            buckets.sort_by_key(|b| std::cmp::Reverse(b.tokens));
+        }
+        SpendBreakdown { window_hours, by_model, by_channel, by_provider, by_agent, by_person }
     }
 
     /// What one extension of `limit_id` would add, as `(tokens, dollars)` — `0` for a ceiling the
@@ -802,6 +830,46 @@ mod tests {
         assert!(matches!(entry, Entry::Spend(SpendEvent { person: None, .. })));
     }
 
+    /// P10: a line from before the provider was kept reads, and a new line keeps it (an old reader would ignore the extra field).
+    #[test]
+    fn a_ledger_line_from_before_the_provider_still_reads_and_a_new_one_keeps_it() {
+        let line = r#"{"kind":"spend","ts":1,"channel":"cli","user":null,"agent":null,"model":"m","tokens":5,"cost_usd":null,"person":"ana"}"#;
+        assert!(matches!(serde_json::from_str::<Entry>(line).unwrap(), Entry::Spend(SpendEvent { provider: None, .. })));
+
+        let (guard, _) = guard(vec![Limit::new("day", Scope::Global, 24).with_max_tokens(10_000_000)], vec![]);
+        guard.record_served(&cli(), "m", "main", &usage(10, 0));
+        guard.record(&cli(), "m", &usage(10, 0));
+        let providers: Vec<Option<String>> = guard.events_since(0).into_iter().map(|e| e.provider).collect();
+        assert_eq!(providers, [Some("main".to_string()), None], "a call with no label is kept without one");
+        let json = serde_json::to_string(&Entry::Spend(guard.events_since(0).remove(1))).unwrap();
+        assert!(!json.contains("provider"), "no label, no field: {json}");
+    }
+
+    /// P10: the breakdown also splits by provider, by the agent the turn started with, and by person; what has none
+    /// (the owner, an old ledger line, an unlabelled provider) is in the bucket with an empty key.
+    #[test]
+    fn the_breakdown_splits_by_provider_agent_and_person() {
+        let prices = vec![Price { model: "m".into(), input_per_mtok: 1.0, output_per_mtok: 0.0 }];
+        let (guard, _) = guard(vec![Limit::new("day", Scope::Global, 24).with_max_tokens(100_000_000)], prices);
+        let writer = SpendContext::new("server").with_agent(Some("writer".to_string()));
+        let ana = SpendContext::new("server").with_person("ana");
+        guard.record_served(&writer, "m", "main", &usage(1_000_000, 0));
+        guard.record_served(&writer, "m", "spare", &usage(500_000, 0));
+        guard.record_served(&ana, "m", "main", &usage(2_000_000, 0));
+        guard.record(&cli(), "m", &usage(100, 0));
+
+        let b = guard.breakdown();
+        fn rows(buckets: &[SpendBucket]) -> Vec<(&str, u64, u64)> {
+            buckets.iter().map(|b| (b.key.as_str(), b.calls, b.tokens)).collect()
+        }
+        assert_eq!(rows(&b.by_provider), [("main", 2, 3_000_000), ("spare", 1, 500_000), ("", 1, 100)]);
+        assert_eq!(rows(&b.by_agent), [("", 2, 2_000_100), ("writer", 2, 1_500_000)]);
+        assert_eq!(rows(&b.by_person), [("ana", 1, 2_000_000), ("", 3, 1_500_100)], "largest first, the owner's own calls under the empty key");
+        let main = b.by_provider.iter().find(|p| p.key == "main").unwrap();
+        assert!((main.cost_usd - 3.0).abs() < 1e-9, "{}", main.cost_usd);
+        assert_eq!(rows(&b.by_model), [("m", 4, 3_500_100)], "the earlier split is unchanged");
+    }
+
     #[test]
     fn the_global_limit_adds_up_every_channel_and_the_worst_limit_is_reported() {
         let (guard, _) = guard(
@@ -936,7 +1004,7 @@ mod tests {
     fn opening_the_file_store_drops_entries_no_window_needs() {
         let path = temp_ledger("prune");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let old = Entry::Spend(SpendEvent { ts: 1, channel: "cli".into(), user: None, agent: None, model: "m".into(), tokens: 5, cost_usd: None, person: None });
+        let old = Entry::Spend(SpendEvent { ts: 1, channel: "cli".into(), user: None, agent: None, model: "m".into(), tokens: 5, cost_usd: None, person: None, provider: None });
         let fresh = Entry::Spend(SpendEvent { ts: now_millis(), ..match old.clone() { Entry::Spend(e) => e, _ => unreachable!() } });
         let text = format!("{}\n{}\n", serde_json::to_string(&old).unwrap(), serde_json::to_string(&fresh).unwrap());
         std::fs::write(&path, text).unwrap();

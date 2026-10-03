@@ -5,10 +5,11 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::key_check::{self, KeyCheck};
 use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Anthropic's Messages API has no concept of an open-ended response — every request must name
@@ -19,12 +20,19 @@ const MAX_TOKENS: u32 = 4096;
 pub struct AnthropicProvider {
     api_key: String,
     model: String,
+    /// The API root (`https://api.anthropic.com/v1`): a chat posts to `/messages`, a key check lists `/models`.
+    base_url: String,
     client: reqwest::Client,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self { api_key: api_key.into(), model: model.into(), client: reqwest::Client::new() }
+        Self::with_base_url(api_key, model, DEFAULT_BASE_URL)
+    }
+
+    /// Against another address than Anthropic's (a test's fake server).
+    pub fn with_base_url(api_key: impl Into<String>, model: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self { api_key: api_key.into(), model: model.into(), base_url: base_url.into().trim_end_matches('/').to_string(), client: reqwest::Client::new() }
     }
 }
 
@@ -219,6 +227,12 @@ impl ModelProvider for AnthropicProvider {
         &self.model
     }
 
+    /// `GET /v1/models` with the key in `x-api-key`, and the API version header Anthropic requires.
+    async fn check_key(&self) -> KeyCheck {
+        let request = key_check::client().get(format!("{}/models", self.base_url)).header("x-api-key", &self.api_key).header("anthropic-version", ANTHROPIC_VERSION);
+        key_check::check_models("Anthropic", request, false).await
+    }
+
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
         let mut system = None;
         let mut anthropic_messages = Vec::new();
@@ -241,7 +255,7 @@ impl ModelProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(API_URL)
+            .post(format!("{}/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&request)

@@ -54,14 +54,22 @@ function Tile({ label, value, title }: { label: string; value: string; title?: s
   );
 }
 
-/** Tokens per day: one series, so no legend — the heading names it. Each column is its own hover
- * and focus target; the table below carries the exact numbers. */
-function DailyChart({ daily }: { daily: UsageReport["daily"] }) {
-  const max = Math.max(...daily.map((d) => d.tokens), 0);
+/** One day of a daily chart: whatever it measures (tokens, dollars) is `value`. */
+interface DayRow {
+  date: string;
+  calls: number;
+  value: number;
+}
+
+/** One value per day (tokens, or dollars in P10): one series, so no legend — the heading names it. Each column
+ * is its own hover and focus target; the table below carries the exact numbers. `axis` writes the top of the
+ * scale, `describe` a day's value in full, `column` heads the table's value column. */
+function DailyChart({ rows: daily, axis, describe, column }: { rows: DayRow[]; axis: (value: number) => string; describe: (value: number) => string; column: string }) {
+  const max = Math.max(...daily.map((d) => d.value), 0);
   return (
     <figure className="usage-daily">
       <div className="usage-daily-plot">
-        <span className="usage-daily-axis">{max > 0 ? compact.format(max) : "0"}</span>
+        <span className="usage-daily-axis">{max > 0 ? axis(max) : "0"}</span>
         <div className="usage-daily-columns" role="list">
           {daily.map((d) => (
             <div
@@ -69,12 +77,12 @@ function DailyChart({ daily }: { daily: UsageReport["daily"] }) {
               role="listitem"
               tabIndex={0}
               className="usage-daily-slot"
-              aria-label={`${shortDate(d.date)}: ${full.format(d.tokens)} tokens em ${d.calls} chamadas`}
+              aria-label={`${shortDate(d.date)}: ${describe(d.value)} em ${d.calls} chamadas`}
             >
-              {d.tokens > 0 && <div className="usage-daily-bar" style={{ height: `${Math.max((d.tokens / max) * 100, 2)}%` }} />}
+              {d.value > 0 && <div className="usage-daily-bar" style={{ height: `${Math.max((d.value / max) * 100, 2)}%` }} />}
               <span className="usage-daily-tip" role="tooltip">
                 <strong>{shortDate(d.date)}</strong>
-                {full.format(d.tokens)} tokens · {d.calls} {d.calls === 1 ? "chamada" : "chamadas"}
+                {describe(d.value)} · {d.calls} {d.calls === 1 ? "chamada" : "chamadas"}
               </span>
             </div>
           ))}
@@ -91,7 +99,7 @@ function DailyChart({ daily }: { daily: UsageReport["daily"] }) {
             <tr>
               <th>Dia</th>
               <th>Chamadas</th>
-              <th>Tokens</th>
+              <th>{column}</th>
             </tr>
           </thead>
           <tbody>
@@ -102,7 +110,7 @@ function DailyChart({ daily }: { daily: UsageReport["daily"] }) {
                 <tr key={d.date}>
                   <td>{shortDate(d.date)}</td>
                   <td>{full.format(d.calls)}</td>
-                  <td>{full.format(d.tokens)}</td>
+                  <td>{describe(d.value)}</td>
                 </tr>
               ))}
           </tbody>
@@ -163,7 +171,8 @@ function LimitCard({ limit, busy, onExtend }: { limit: LimitStatus; busy: boolea
   );
 }
 
-function SpendTable({ title, buckets, keyLabel }: { title: string; buckets: SpendBucket[]; keyLabel: string }) {
+/** `emptyLabel` is what a bucket with an empty key is called: a call with no provider, agent or person on record. */
+function SpendTable({ title, buckets, keyLabel, emptyLabel }: { title: string; buckets: SpendBucket[]; keyLabel: string; emptyLabel?: string }) {
   if (buckets.length === 0) return null;
   return (
     <table className="usage-table">
@@ -179,7 +188,7 @@ function SpendTable({ title, buckets, keyLabel }: { title: string; buckets: Spen
       <tbody>
         {buckets.map((b) => (
           <tr key={b.key}>
-            <td className="usage-table-key">{b.key}</td>
+            <td className="usage-table-key">{b.key === "" && emptyLabel ? emptyLabel : b.key}</td>
             <td>{full.format(b.calls)}</td>
             <td>{full.format(b.tokens)}</td>
             <td>
@@ -253,8 +262,29 @@ export default function UsageView({ conn }: { conn: ServerConnection | null }) {
 
       <section className="usage-section">
         <h2 className="usage-heading">Tokens por dia, últimos {report.daily.length} dias</h2>
-        <DailyChart daily={report.daily} />
+        <DailyChart
+          rows={report.daily.map((d) => ({ date: d.date, calls: d.calls, value: d.tokens }))}
+          axis={(n) => compact.format(n)}
+          describe={(n) => `${full.format(n)} tokens`}
+          column="Tokens"
+        />
       </section>
+
+      {report.recent && report.dailyCost && report.dailyCost.length > 0 && (
+        <section className="usage-section">
+          <h2 className="usage-heading">Gasto por dia, últimas {windowLabel(report.recent.windowHours)}</h2>
+          <p className="skills-hint">
+            Em dólares, do registro de gasto, que só guarda a janela do limite mais longo ({windowLabel(report.recent.windowHours)}): um dia mais antigo aparece zerado
+            porque já saiu do registro, não porque nada foi gasto. Chamadas a modelos sem preço cadastrado ficam de fora do valor.
+          </p>
+          <DailyChart
+            rows={report.dailyCost.map((d) => ({ date: d.date, calls: d.calls, value: d.costUsd }))}
+            axis={usd}
+            describe={usd}
+            column="US$"
+          />
+        </section>
+      )}
 
       <section className="usage-section">
         <h2 className="usage-heading">Limites de gasto</h2>
@@ -301,6 +331,13 @@ export default function UsageView({ conn }: { conn: ServerConnection | null }) {
           <p className="skills-hint">Do registro de gasto, que só guarda a janela do limite mais longo. Inclui desktop, Telegram e os outros canais desta máquina.</p>
           <SpendTable title="Por modelo" buckets={report.recent.byModel} keyLabel="Modelo" />
           <SpendTable title="Por canal" buckets={report.recent.byChannel} keyLabel="Canal" />
+          <SpendTable title="Por provedor" buckets={report.recent.byProvider ?? []} keyLabel="Provedor" emptyLabel="sem provedor registrado" />
+          <SpendTable title="Por agente" buckets={report.recent.byAgent ?? []} keyLabel="Agente" emptyLabel="sem agente" />
+          <SpendTable title="Por pessoa" buckets={report.recent.byPerson ?? []} keyLabel="Pessoa" emptyLabel="o dono" />
+          <p className="skills-hint">
+            “Por agente” é o agente com que o turno começou: as chamadas de um sub-agente delegado contam no agente que delegou. “Sem provedor registrado”
+            são as chamadas de antes de o provedor passar a ser guardado.
+          </p>
         </section>
       )}
     </div>

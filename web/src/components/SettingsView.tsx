@@ -3,6 +3,7 @@ import { SettingsError, UserError, type LoadedSettings, type ServerConnection } 
 import ApiKeysSection from "./ApiKeysSection";
 import AdvancedSection from "./AdvancedSection";
 import MachineSection from "./MachineSection";
+import ProviderKeyTest from "./ProviderKeyTest";
 import { advancedError, machineError, machineSummary, toAdvanced, toAdvancedDraft, toMachineDraft, toMachineEdit, type AdvancedDraft, type MachineDraft } from "./machineDraft";
 import { Field, KEEP, keyed, SecretField, Section, strip, type Keyed, type SecretDraft } from "./settingsParts";
 import type {
@@ -18,6 +19,7 @@ import type {
   LimitSettings,
   MachineEdit,
   PriceSettings,
+  ProviderEdit,
   ProviderKind,
   UserInfo,
 } from "../hub/messages";
@@ -148,9 +150,14 @@ function botsError(d: Draft): string | null {
   return null;
 }
 
+/** A provider as a save sends it, which is also how "Testar chave" (P10) sends the one being tested. */
+function providerEdit(p: ProviderDraft): ProviderEdit {
+  return { originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit, node: p.kind === "node" ? p.node : "" };
+}
+
 function toUpdate(d: Draft): HubSettingsUpdate {
   return {
-    providers: d.providers.map((p) => ({ originalId: p.originalId, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey.edit, node: p.kind === "node" ? p.node : "" })),
+    providers: d.providers.map(providerEdit),
     activeProvider: d.activeProvider,
     combos: d.combos.map(strip),
     agents: d.agents.map(strip),
@@ -577,6 +584,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     onChange={(edit) => patchProvider(p.key, { apiKey: { ...p.apiKey, edit } })}
                   />
                 )}
+                {p.kind !== "node" && <ProviderKeyTest conn={conn} provider={providerEdit(p)} />}
               </div>
             </li>
           ))}

@@ -1445,6 +1445,62 @@ async fn the_owner_approves_and_denies_the_bots_pairing_requests() {
     assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
 }
 
+/// P10: the owner tests a provider's key through the hub. A key saved on the hub is tested without the client ever
+/// having it, a typed one replaces it, a wrong pairing key and a member are turned away, and what comes back is a word
+/// and a sentence that carry neither the key nor what the provider said.
+#[tokio::test]
+async fn the_owner_tests_a_providers_key_and_a_member_cannot() {
+    use std::io::{Read, Write};
+    use warden_server_protocol::protocol::ProviderEditDto;
+
+    // A provider that takes only the key `sk-good`, and echoes the key it was sent when it refuses.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
+            let (status, body) = if head.contains("bearer sk-good") { (200, "{}".to_string()) } else { (401, r#"{"error":"Incorrect API key provided: sk-bad"}"#.to_string()) };
+            let _ = write!(stream, "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+
+    let hub = spin_up().await;
+    let config_path = hub.dir.join("config.toml");
+    let mut config = warden_bootstrap::load_config_from_path(&config_path, false).unwrap();
+    config.providers.push(warden_bootstrap::ProviderConfig { id: "local".into(), kind: warden_bootstrap::Provider::OpenaiCompatible, api_key: Some("sk-good".into()), base_url: Some(url.clone()), model: Some("m".into()), node: None });
+    save_config(&config_path, &config).unwrap();
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let ask = |request_id, key: &str, secret: warden_server_protocol::protocol::SecretEdit| ClientMessage::TestProvider {
+        request_id,
+        pairing_key: key.into(),
+        provider: ProviderEditDto { original_id: Some("local".into()), id: "local".into(), kind: "openai_compatible".into(), base_url: url.clone(), model: "m".into(), api_key: secret, node: String::new() },
+    };
+    let kind_of = |reply: ServerMessage| match reply {
+        ServerMessage::ProviderTest { ok, kind, message, .. } => (ok, kind, message),
+        other => panic!("a test result, got {other:?}"),
+    };
+
+    owner.send(&ask(80, KEY, warden_server_protocol::protocol::SecretEdit::Keep)).await.unwrap();
+    let (ok, kind, _) = kind_of(reply(&mut owner).await);
+    assert_eq!((ok, kind.as_str()), (true, "ok"), "the saved key, which the client never had");
+
+    owner.send(&ask(81, KEY, warden_server_protocol::protocol::SecretEdit::Set("sk-bad".into()))).await.unwrap();
+    let (ok, kind, message) = kind_of(reply(&mut owner).await);
+    assert_eq!((ok, kind.as_str()), (false, "rejected"), "the typed key replaces the saved one");
+    assert!(!message.contains("sk-bad") && !message.contains("sk-good") && !message.contains("Incorrect"), "{message}");
+
+    owner.send(&ask(82, "wrong", warden_server_protocol::protocol::SecretEdit::Keep)).await.unwrap();
+    assert!(matches!(reply(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }), "a wrong pairing key tests nothing");
+
+    // A member never tests the hub's providers, whatever they know.
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+    ana.send(&ask(83, KEY, warden_server_protocol::protocol::SecretEdit::Keep)).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::UserError { auth_rejected: true, .. }));
+}
+
 /// What `ListBotPairings` answers: who is waiting, and who a chat may be approved as speaking as.
 async fn bot_pairings(conn: &mut ServerConnection) -> (Vec<warden_server_protocol::protocol::BotPairingDto>, Vec<warden_server_protocol::protocol::BotMemberDto>) {
     conn.send(&ClientMessage::ListBotPairings { request_id: 70 }).await.unwrap();

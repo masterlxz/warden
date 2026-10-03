@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use warden_core::memory::Vault;
 use warden_core::model::anthropic::AnthropicProvider;
 use warden_core::model::gemini::GeminiProvider;
+pub use warden_core::model::key_check::KeyCheck;
+use warden_core::model::labeled::Labeled;
 use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::{Attachment, FallbackProvider, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
@@ -1459,14 +1461,30 @@ pub fn build_model_provider(provider: &ProviderConfig, model_override: Option<St
     })
 }
 
+/// Checks a provider's key without spending a conversation (P10): builds it the way a chat would and asks it for
+/// its model list (`ModelProvider::check_key`). Never goes through an `Orchestrator`, so it books nothing in the
+/// spend ledger and counts against no limit. A model lent by a node has no key here, and one that can't even be
+/// built (no key, no address) is reported with what is missing, not as a network failure.
+pub async fn test_provider(provider: &ProviderConfig) -> KeyCheck {
+    if provider.kind == Provider::Node {
+        return KeyCheck::Unsupported("A model lent by a node has no key here: check the node in the Nodes list.".to_string());
+    }
+    match build_model_provider(provider, None) {
+        Ok(model) => model.check_key().await,
+        Err(err) => KeyCheck::Rejected(format!("{err:#}")),
+    }
+}
+
 /// The model a provider or combo id names (P90) — what every place that lets someone pick a
 /// model builds from: a provider is `build_model_provider`, a combo a `FallbackProvider` over its
 /// providers in order (P79). `model_override` (a `--model` flag) only applies to a provider. A
 /// combo member that can't be built (no key, an id that's gone) is left out with a note; a combo
 /// with one usable member is just that member.
 pub fn build_model_for(config: &FileConfig, id: &str, model_override: Option<String>) -> anyhow::Result<Arc<dyn ModelProvider>> {
+    // Every provider carries the id it was given, so the spend ledger can say which one answered (P10). A combo of
+    // several is a `FallbackProvider`, which reports its first member and names the one that took over.
     if let Some(provider) = config.providers.iter().find(|p| p.id == id) {
-        return build_model_provider(provider, model_override);
+        return Ok(Labeled::wrap(&provider.id, build_model_provider(provider, model_override)?));
     }
     let Some(combo) = config.combos.iter().find(|c| c.id == id) else {
         anyhow::bail!("model '{id}' is neither a configured provider nor a combo");
@@ -1474,7 +1492,10 @@ pub fn build_model_for(config: &FileConfig, id: &str, model_override: Option<Str
     let mut chain = combo_chain(config, combo);
     match chain.len() {
         0 => anyhow::bail!("none of combo '{id}'s providers can be used ({})", combo.providers.join(", ")),
-        1 => Ok(chain.remove(0).1),
+        1 => {
+            let (member, provider) = chain.remove(0);
+            Ok(Labeled::wrap(member, provider))
+        }
         _ => Ok(Arc::new(FallbackProvider::new(chain))),
     }
 }
@@ -1614,7 +1635,7 @@ fn resolve_model_provider(config: &FileConfig, overrides: &Overrides) -> anyhow:
     let api_key = resolve_secret(env_var.and_then(|v| std::env::var(v).ok()), api_key_from_config);
 
     let synthesized = ProviderConfig { id: id.to_string(), kind, api_key, base_url: None, model: config.model.clone(), node: None };
-    build_model_provider(&synthesized, overrides.model.clone())
+    Ok(Labeled::wrap(id, build_model_provider(&synthesized, overrides.model.clone())?))
 }
 
 /// Loads config, resolves provider/model/vault/API keys (override > config file > env >
@@ -2662,6 +2683,68 @@ oauth = true
         assert_eq!(build_model_for(&config, "lonely", None).unwrap().model_id(), "a-model");
         assert!(expect_err(build_model_for(&config, "dead", None)).contains("none of combo 'dead'"));
         assert!(expect_err(build_model_for(&config, "nope", None)).contains("neither"));
+    }
+
+    /// P10: whatever model is built reports the id the person gave it, so the spend ledger can say which provider
+    /// answered: the provider's own id, a combo's first member (the others are named by the fallback that
+    /// takes over), the one member that could be built, and the id synthesized for the old single-provider setup.
+    #[test]
+    fn a_built_model_reports_the_provider_id_the_ledger_keeps() {
+        let mut no_key = provider_entry("no-key", Provider::Openai);
+        no_key.api_key = None;
+        let config = FileConfig {
+            providers: vec![provider_entry("main", Provider::Gemini), provider_entry("spare", Provider::Anthropic), no_key],
+            combos: vec![combo("fast", &["spare", "main"]), combo("lonely", &["no-key", "spare"])],
+            ..Default::default()
+        };
+        assert_eq!(build_model_for(&config, "main", None).unwrap().provider_id(), "main");
+        assert_eq!(build_model_for(&config, "fast", None).unwrap().provider_id(), "spare", "the first member answers unless a fallback says otherwise");
+        assert_eq!(build_model_for(&config, "lonely", None).unwrap().provider_id(), "spare", "the one member that could be built, not the combo's name");
+
+        let legacy = FileConfig { provider: Some(Provider::Openai), api_keys: ApiKeys { openai: Some("k".into()), ..Default::default() }, ..Default::default() };
+        assert_eq!(resolve_model_provider(&legacy, &Overrides::default()).unwrap().provider_id(), "openai");
+    }
+
+    /// A server on a free local port that answers every request with `status` and an echoing body, from a thread of its own.
+    fn answers_with(status: u16) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let body = r#"{"error":"Incorrect API key provided: sk-secret"}"#;
+                let _ = write!(stream, "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// P10: testing a provider's key builds it the way a chat would and asks the provider; what can't be tested says why.
+    #[tokio::test]
+    async fn a_providers_key_is_tested_as_built_and_what_cannot_be_says_why() {
+        let compatible = |id: &str, base_url: Option<String>, key: Option<&str>| ProviderConfig {
+            id: id.to_string(),
+            kind: Provider::OpenaiCompatible,
+            api_key: key.map(str::to_string),
+            base_url,
+            model: Some("m".to_string()),
+            node: None,
+        };
+        assert_eq!(test_provider(&compatible("local", Some(answers_with(200)), Some("sk-secret"))).await, KeyCheck::Accepted);
+        let rejected = test_provider(&compatible("local", Some(answers_with(401)), Some("sk-secret"))).await;
+        assert_eq!(rejected.kind(), "rejected");
+        assert!(!rejected.message().contains("sk-secret") && !rejected.message().contains("Incorrect"), "{}", rejected.message());
+
+        // Not even buildable: no address to ask. That is what the person is told, not "unreachable".
+        let missing = test_provider(&compatible("local", None, None)).await;
+        assert_eq!(missing.kind(), "rejected");
+        assert!(missing.message().contains("base_url"), "{}", missing.message());
+
+        let node = ProviderConfig { id: "casa".into(), kind: Provider::Node, api_key: None, base_url: None, model: Some("ollama".into()), node: Some("node-casa".into()) };
+        assert_eq!(test_provider(&node).await.kind(), "unsupported");
     }
 
     #[test]

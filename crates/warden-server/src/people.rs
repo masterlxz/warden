@@ -175,6 +175,7 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SetUserLearningProvider { request_id, .. }
         | ClientMessage::ListBotPairings { request_id }
         | ClientMessage::ResolveBotPairing { request_id, .. }
+        | ClientMessage::TestProvider { request_id, .. }
         | ClientMessage::SetRecoveryPolicy { request_id, .. }
         | ClientMessage::RecoverMember { request_id, .. }
         | ClientMessage::RestoreUser { request_id, .. }

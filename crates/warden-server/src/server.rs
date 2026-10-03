@@ -24,6 +24,7 @@ use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, A
 
 use crate::approval::WsApprover;
 use crate::bot_admin::{handle_list_bot_pairings, handle_resolve_bot_pairing};
+use crate::provider_admin::handle_test_provider;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::truthid_login::{self, TruthIdLogins};
@@ -1108,6 +1109,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
                     tokio::spawn(async move {
                         let reply = handle_resolve_bot_pairing(settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, &code, approve, as_member.as_deref()).await;
+                        let _ = reply_tx.send(reply);
+                    });
+                }
+                Ok(ClientMessage::TestProvider { request_id, pairing_key, provider }) => {
+                    // A call to the provider can take seconds: off the reader loop, and not under the settings lock.
+                    let (settings, lock, auth_key, reply_tx) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let reply = handle_test_provider(settings.as_deref(), &lock, &auth_key, secure, request_id, &pairing_key, provider).await;
                         let _ = reply_tx.send(reply);
                     });
                 }

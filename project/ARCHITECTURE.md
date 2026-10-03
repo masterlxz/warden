@@ -3078,3 +3078,34 @@ ignora.
   0), e dirige a página num Chromium headless (`PLAYWRIGHT_CHROMIUM_EXECUTABLE`, o do Playwright ou o Chrome do sistema); captura os frames de
   WebSocket enviados, para provar o que viajou ao hub. O `harness.mjs` serve a qualquer teste futuro da web. Não roda no CI (o `build.yml` só monta o desktop).
 
+## Dólares por provedor, agente e pessoa, por dia, e "Testar chave" (P10, Sessão 124)
+
+O P10 pedia UI de consumo, custo por provedor/modelo e gestão de chaves. Boa parte já existia desde o P4; o que faltava:
+
+- **O ledger passa a guardar o provedor** (`SpendEvent.provider: Option<String>`, `#[serde(default, skip_serializing_if)]`, o molde do `person`):
+  uma linha antiga lê sem ele e um binário antigo ignora o campo novo. **Não** criei uma variante nova de `Entry`: um binário antigo descartaria a
+  linha inteira em silêncio. Quem sabe o provedor é o ponto que o escolhe: `ModelProvider::provider_id()` (padrão vazio) e o invólucro `Labeled`
+  (`warden_core::model::labeled`), aplicado em `build_model_for` (provedor, combo de um membro só, e o id sintetizado do setup antigo); o `for_agent` do
+  `Labeled` **preserva o rótulo** (sem isso, as chamadas feitas em nome de um agente o perdiam). `FallbackProvider::provider_id()` é o do primeiro membro,
+  e o orquestrador usa o `to` do `ProviderFallback` quando um reserva assume: **vale o membro que de fato respondeu**. `SpendGuard::record_served` leva o
+  provedor; `record` continuou como era (sem rótulo), para não mexer em ~40 testes.
+- **`breakdown()` agrupa também por provedor, agente e pessoa**, e `RecentSpendDto`/`UsageReportDto` ganharam os campos com `#[serde(default)]`. A chave vazia é
+  "sem provedor registrado" (linha de antes), "sem agente" ou "o dono". **"Por agente" é o agente com que o turno começou**: as chamadas de um sub-agente
+  delegado já contavam no agente raiz e nos limites dele, e mudar isso mexeria na contabilidade dos limites por agente.
+- **Dólares por dia** (`bootstrap::usage::daily_cost`, espelho do `daily_usage`, com o mesmo fuso): só alcança o que o ledger retém (a maior janela de limite, 24 h
+  no padrão); um dia mais antigo aparece zerado porque **saiu** do registro, e a tela diz isso. Sem `[[limits]]` explícito vale a rede de segurança padrão, então há ledger.
+- **Desktop**: `spend_status` devolve `recent` e a tela de Uso mostra as cinco tabelas de US$ (o desktop não tem gráfico diário e não ganhou um). **Web**: as tabelas
+  por provedor, agente e pessoa, e o gráfico "Gasto por dia"; o `DailyChart` virou genérico (tokens ou dólares). O mobile não tem tela de Uso.
+- **"Testar chave"**: `ModelProvider::check_key()` (padrão: sem chave para conferir), implementado sobre `GET /models`, que valida a chave sem gastar tokens: Gemini
+  (`x-goog-api-key`; chave inválida volta **400** com "API key not valid", não 401), OpenAI e compatíveis (`Bearer`; num compatível 404/405 é "alcançável, não dá
+  para verificar", não falha) e Anthropic (`x-api-key` + `anthropic-version`). Cliente com timeout de ~10 s e **sem seguir redirecionamento** (o pedido, chave
+  incluída, não pode ser desviado). A resposta é uma palavra e uma frase (`KeyCheck`): **nunca a chave, o corpo que o provedor devolveu nem o endereço chamado**.
+  Gemini e Anthropic ganharam `with_models_url`/`with_base_url` (a base era constante) para testar contra um servidor falso. Nunca passa por um `Orchestrator`,
+  então **não grava no ledger nem conta limite** (conferido no ponta a ponta: o arquivo do ledger sai igual ao que entrou).
+- **No hub** (`provider_admin.rs`, `ClientMessage::TestProvider` → `ProviderTest`): chave de pareamento (com a espera de 1 s se errar) → a chave **digitada** só em conexão
+  cifrada ou local → o `Keep` resolve a chave **salva** pelo `original_id`, sem nunca devolvê-la → o hub só consulta um endereço que **já está salvo** (um `base_url`
+  novo ou mudado é recusado com "salve primeiro", para um aparelho pareado não fazer o hub chamar um endereço interno que o dono nunca configurou; só `http(s)`).
+  **O `settings_lock` é segurado só na checagem da chave de pareamento, não durante a chamada de rede**, que leva segundos e travaria todo salvar. `member_refusal`
+  recusa a mensagem para membros (**um braço que falta ali deixa a mensagem passar**, por causa do `_ => return None`; um teste cai sem ele). Desktop: `test_provider_key`
+  (no molde do `test_ssh_host`, recebe o formulário com a chave digitada); web: o botão no cartão do provedor, que pede a chave de pareamento na hora e não a guarda.
+

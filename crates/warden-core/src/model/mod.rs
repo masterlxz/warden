@@ -12,6 +12,8 @@ use crate::tool::ToolSpec;
 pub mod anthropic;
 pub mod fallback;
 pub mod gemini;
+pub mod key_check;
+pub mod labeled;
 pub mod openai;
 
 pub use fallback::{FallbackProvider, ProviderFallback};
@@ -319,6 +321,20 @@ pub trait ModelProvider: Send + Sync {
     /// token limits, just not dollar ones.
     fn model_id(&self) -> &str {
         ""
+    }
+
+    /// The id the person gave this provider (a `[[providers]]` id, or a combo's), which the spend ledger keeps so
+    /// dollars can be shown per provider (P10). Empty for a provider that isn't labelled. A combo that falls back
+    /// reports the member that answered through `StreamEvent::ProviderFallback`, not this.
+    fn provider_id(&self) -> &str {
+        ""
+    }
+
+    /// Checks the key against the provider without spending a conversation (P10): a model-list request, answered
+    /// only to a key the provider accepts. A provider with no key to check (a node's model, a combo) says so, which
+    /// is the default. It never goes through an `Orchestrator`, so it books nothing in the spend ledger.
+    async fn check_key(&self) -> key_check::KeyCheck {
+        key_check::KeyCheck::Unsupported("This kind of provider has no key to check.".to_string())
     }
 
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream>;

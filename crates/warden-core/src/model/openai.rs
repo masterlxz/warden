@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::key_check::{self, KeyCheck};
 use super::{Attachment, ChatStream, Message, ModelProvider, ProviderHttpError, Role, StreamEvent, Usage, PDF_MIME_TYPE};
 use crate::tool::ToolSpec;
 
@@ -276,6 +277,17 @@ fn to_chat_message(message: Message) -> ChatMessage {
 impl ModelProvider for OpenAiProvider {
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    /// `GET {base}/models` with the key as a bearer token. A server that isn't OpenAI itself (Ollama, a gateway) may
+    /// have no model list, or need no key: that makes the key unverifiable, not wrong.
+    async fn check_key(&self) -> KeyCheck {
+        let lenient = self.base_url != DEFAULT_BASE_URL;
+        let mut request = key_check::client().get(format!("{}/models", self.base_url));
+        if !self.api_key.is_empty() {
+            request = request.bearer_auth(&self.api_key);
+        }
+        key_check::check_models(if lenient { "The server" } else { "OpenAI" }, request, lenient).await
     }
 
     async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {

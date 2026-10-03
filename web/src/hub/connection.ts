@@ -18,6 +18,7 @@ import {
   type ConversationSummary,
   type HistoryMessage,
   type HubDevice,
+  type ProviderEdit,
   type ProviderFallback,
   type SyncAction,
   type SyncStatus,
@@ -504,6 +505,7 @@ export class ServerConnection {
       case "recoveryNoticesAcked":
       case "learningSet":
       case "botPairings":
+      case "providerTest":
       case "truthIdLinked":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
@@ -864,6 +866,15 @@ export class ServerConnection {
    * bots), otherwise as the owner. Rejects with `UserError`. */
   async resolveBotPairing(pairingKey: string, code: string, approve: boolean, member?: string): Promise<BotPairingsView> {
     return this.botPairingRequest((requestId) => ({ type: "resolveBotPairing", requestId, pairingKey, code, approve, ...(member && { member }) }));
+  }
+
+  /** P10: checks a provider's key without spending a conversation (the owner's connection, with the pairing key).
+   * `provider` is the form as the screen has it; the hub only asks an address it has saved. Rejects with `UserError`
+   * (a wrong pairing key, an address to save first, a key typed over a connection that isn't encrypted). */
+  async testProvider(pairingKey: string, provider: ProviderEdit): Promise<{ ok: boolean; kind: string; message: string }> {
+    const reply = await this.request((requestId) => ({ type: "testProvider", requestId, pairingKey, provider }));
+    if (reply.type !== "providerTest") throw new Error("resposta inesperada do hub");
+    return { ok: reply.ok, kind: reply.kind, message: reply.message };
   }
 
   private async botPairingRequest(build: (requestId: number) => ClientMessage): Promise<BotPairingsView> {
