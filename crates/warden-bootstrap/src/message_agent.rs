@@ -336,9 +336,10 @@ mod tests {
     use super::*;
     use crate::{save_config, scope_to_agent, AgentConfig, AgentExtras};
 
-    /// Answers "<persona>: <message>", after `delay`; `fail` makes every call an error.
+    /// Answers "<persona>: <message>"; `fail` makes every call an error. With a `gate`, each call waits
+    /// for a permit first, so a test decides when an answer may finish instead of racing a timer.
     struct Echo {
-        delay: Duration,
+        gate: Option<Arc<tokio::sync::Semaphore>>,
         fail: bool,
         calls: AtomicUsize,
     }
@@ -347,7 +348,9 @@ mod tests {
     impl ModelProvider for Echo {
         async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(self.delay).await;
+            if let Some(gate) = &self.gate {
+                gate.acquire().await.unwrap().forget();
+            }
             if self.fail {
                 anyhow::bail!("provider down");
             }
@@ -380,7 +383,17 @@ mod tests {
         model: Arc<Echo>,
     }
 
-    fn setup(delay: Duration, fail: bool) -> Setup {
+    fn setup(fail: bool) -> Setup {
+        setup_with(None, fail)
+    }
+
+    /// The model holds every answer until `gate.add_permits(1)`.
+    fn setup_gated() -> (Setup, Arc<tokio::sync::Semaphore>) {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        (setup_with(Some(gate.clone()), false), gate)
+    }
+
+    fn setup_with(gate: Option<Arc<tokio::sync::Semaphore>>, fail: bool) -> Setup {
         let dir = std::env::temp_dir().join(format!(
             "warden-message-agent-test-{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
@@ -388,7 +401,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let config_path = dir.join("config.toml");
         save_config(&config_path, &FileConfig { agents: vec![agent("ana", true), agent("bia", false)], ..FileConfig::default() }).unwrap();
-        let model = Arc::new(Echo { delay, fail, calls: AtomicUsize::new(0) });
+        let model = Arc::new(Echo { gate, fail, calls: AtomicUsize::new(0) });
         let base = Orchestrator::new(model.clone(), Arc::new(Vault::new(dir.join("vault"))));
         Setup { conversations: dir.join("conversations"), dir, config_path, base, model }
     }
@@ -411,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_and_wait_saves_the_message_and_the_answer_in_the_pairs_conversation() {
-        let s = setup(Duration::ZERO, false);
+        let s = setup(false);
         let result = s.tool().call(json!({ "action": "send", "agent_id": "bia", "message": "hello", "wait": true })).await.unwrap();
         assert_eq!(result["status"], "answered");
         assert_eq!(result["answer"], "I am bia: Message from ana:\n\nhello");
@@ -429,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_wait_it_returns_at_once_and_read_collects_the_answer_later() {
-        let s = setup(Duration::from_millis(300), false);
+        let (s, gate) = setup_gated();
         let notified = Arc::new(Mutex::new(Vec::<String>::new()));
         let seen = notified.clone();
         let tool = s.tool().on_changed(Some(Arc::new(move |id: &str| seen.lock().unwrap().push(id.to_string()))));
@@ -444,6 +457,7 @@ mod tests {
         let busy = tool.call(json!({ "action": "send", "agent_id": "bia", "message": "more" })).await.unwrap_err();
         assert!(busy.to_string().contains("still answering"), "{busy:#}");
 
+        gate.add_permits(1);
         eventually(|| async { tool.call(json!({ "action": "read", "agent_id": "bia" })).await.unwrap()["status"] == "answered" }).await;
         let read = tool.call(json!({ "action": "read", "agent_id": "bia" })).await.unwrap();
         assert_eq!(read["status"], "answered");
@@ -454,10 +468,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_wait_that_runs_out_leaves_the_colleague_working() {
-        let s = setup(Duration::from_millis(300), false);
+        let (s, gate) = setup_gated();
         let tool = s.tool().with_wait_timeout(Duration::from_millis(20));
         let result = tool.call(json!({ "action": "send", "agent_id": "bia", "message": "hello", "wait": true })).await.unwrap();
         assert_eq!(result["status"], "still_answering");
+        gate.add_permits(1);
         eventually(|| async { s.thread().messages.len() == 2 }).await;
     }
 
@@ -477,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn bad_requests_are_refused_before_any_model_call() {
-        let s = setup(Duration::ZERO, false);
+        let s = setup(false);
         let tool = s.tool();
         for (args, expected) in [
             (json!({ "action": "send", "agent_id": "ana", "message": "hi" }), "yourself"),
@@ -497,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_answer_is_reported_and_written_in_the_conversation() {
-        let s = setup(Duration::ZERO, true);
+        let s = setup(true);
         let err = s.tool().call(json!({ "action": "send", "agent_id": "bia", "message": "hello", "wait": true })).await.unwrap_err();
         assert!(err.to_string().contains("provider down"), "{err:#}");
         let thread = s.thread();
@@ -519,7 +534,7 @@ mod tests {
 
     #[test]
     fn only_an_agent_with_the_flag_and_a_conversations_dir_gets_the_tool() {
-        let s = setup(Duration::ZERO, false);
+        let s = setup(false);
         let config = load_config_from_path(&s.config_path, true).unwrap();
         let names = |agent_id: &str, dir: Option<PathBuf>| -> Vec<String> {
             let extras = AgentExtras { conversations_dir: dir, on_conversation_changed: None };

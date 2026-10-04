@@ -27,6 +27,8 @@ type Offered = Arc<Mutex<Vec<Vec<String>>>>;
 /// "tool said: …".
 struct Scripted {
     offered: Offered,
+    /// `SLEEP`'s command creates this file first, so a test can tell the command is running.
+    started: PathBuf,
 }
 
 #[async_trait]
@@ -58,7 +60,8 @@ impl ModelProvider for Scripted {
             return call("test-node__echo_text", json!({ "text": "hi from the hub" }));
         }
         if text.contains("SLEEP") {
-            return call("node_shell", json!({ "node": NODE, "command": "sleep 30", "timeout_ms": 60000 }));
+            let command = format!("touch '{}'; sleep 30", self.started.display());
+            return call("node_shell", json!({ "node": NODE, "command": command, "timeout_ms": 60000 }));
         }
         Ok(response_stream(Response { content: "plain".into(), tool_calls: Vec::new(), usage: None }))
     }
@@ -110,7 +113,7 @@ async fn spin_up() -> Hub {
     save_config(&config_path, &FileConfig { agents: vec![agent("ops"), agent("other")], ..FileConfig::default() }).unwrap();
 
     let offered: Offered = Arc::default();
-    let orchestrator = Orchestrator::new(Arc::new(Scripted { offered: offered.clone() }), Arc::new(Vault::new(dir.join("vault"))));
+    let orchestrator = Orchestrator::new(Arc::new(Scripted { offered: offered.clone(), started: dir.join("sleep-started") }), Arc::new(Vault::new(dir.join("vault"))));
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
         .await
         .unwrap()
@@ -285,7 +288,13 @@ async fn a_node_that_drops_mid_command_fails_the_call_at_once() {
 
     let started = std::time::Instant::now();
     let turn = tokio::spawn(async move { chat(&mut web, "SLEEP", "ops", false).await });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Drop the node only once the command is really running there, however busy the machine is.
+    let started_file = hub.dir.join("sleep-started");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !started_file.exists() {
+        assert!(std::time::Instant::now() < deadline, "the command never started on the node");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     node.abort();
     let (reply, _) = tokio::time::timeout(Duration::from_secs(10), turn).await.expect("the call waited for its timeout").unwrap();
     assert!(reply.contains("disconnected in the middle of the call") && reply.contains("not retried"), "{reply}");

@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 127)
+> Última atualização: 2026-10-04 (Sessão 137)
+
+---
+
+### 2026-10-04 — Sessão 137
+
+- **Objetivo**: depois do `git pull` das Sessões 131 a 136, rodar os testes de código (sem testes manuais nem de tela, a pedido do usuário) e consertar os 3 testes instáveis que as Sessões 132 e 133 anotaram.
+- **Achado**: `cargo test` não compilava. O teste de `interactive.rs` (`CliSession { .. }`) não tinha o campo `workdir` da Sessão 135, que só tinha rodado `cargo check` (não compila os testes). Corrigido com `workdir: None` (commit `3f81b6d`).
+- **Causa da instabilidade**: os 3 testes esperavam um tempo fixo em vez do evento. `nodes::a_node_that_drops_mid_command_fails_the_call_at_once` dormia 500 ms e derrubava o nó supondo que o `sleep 30` já tinha começado; com a máquina carregada o turno ainda não tinha chegado à tool (a resposta era "no node … you can use right now"). Os dois de `message_agent` usavam um modelo falso com atraso de 300 ms e conferiam "ainda respondendo" depois dele.
+- **Feito** (só código de teste): no `tests/nodes.rs`, o `Scripted` ganhou `started` e o comando do `SLEEP` virou `touch <marcador>; sleep 30`; o teste espera o marcador (limite de 30 s) antes de derrubar o nó. No `message_agent.rs`, o `Echo` troca o `delay` por um `gate` (`tokio::sync::Semaphore`) que o teste libera com `add_permits(1)`: `setup(fail)` sem portão e `setup_gated()` com ele.
+- **Verificado**: com 16 processos `yes` ao fundo (um por núcleo), 30 rodadas de cada arquivo de teste: 0 falhas. **Mutação**: tirar a espera do marcador reproduz a falha antiga (desfeita). Suíte inteira sem o desktop: 1205 passaram, 0 falharam, 8 ignorados; `tsc --noEmit` limpo na extensão, na web e no desktop. **Não medido**: quantas falhas o código antigo teria nessa mesma carga. Não rodei os e2e da web, os testes do desktop nem o `npm run build`; nada foi visto numa tela.
+- **Aberto**: a saída do `cargo test` tem uma linha `error: io error when listing tests: ... BrokenPipe` (com código de saída 0 e nenhum teste falhando); a origem não foi investigada.
+- **Disco**: `/home` em 87%, 24 GB livres; não apaguei nada.
 
 ---
 
