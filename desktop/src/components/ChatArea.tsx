@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { open } from "@tauri-apps/plugin-dialog";
 import { nextCodeMode } from "../types";
 import type { AgentEntry, Attachment, CodeMode, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import type { LiveTurn } from "../lib/liveTurn";
@@ -32,6 +33,10 @@ interface ChatAreaProps {
   onSelectProject: (projectId: string) => void;
   /** Moves a conversation that has started into a project ("" = out of any). */
   onMoveProject: (projectId: string) => void;
+  /** The folder of this computer the conversation works in (P102), or the one a new conversation will start in; "" = none. */
+  selectedWorkdir: string;
+  /** Chooses the folder of a conversation that hasn't started ("" = none). After its first message it is fixed. */
+  onSelectWorkdir: (folder: string) => void;
   selectedAgentId: string;
   selectedProviderId: string;
   onSelectAgent: (agentId: string) => void;
@@ -111,6 +116,8 @@ function ChatArea({
   selectedProjectId,
   onSelectProject,
   onMoveProject,
+  selectedWorkdir,
+  onSelectWorkdir,
   selectedAgentId,
   selectedProviderId,
   onSelectAgent,
@@ -136,7 +143,21 @@ function ChatArea({
   // Like the agent, a conversation's project is chosen before its first message and then fixed (P103). One whose
   // project was removed since has nothing to show.
   const knownProject = projects.some((p) => p.id === selectedProjectId);
-  const showProjectPicker = projects.length > 0 || knownProject;
+  // A conversation that works in a folder can't be moved into a project (P102), so it has no project picker.
+  const showProjectPicker = (projects.length > 0 || knownProject) && !(hasMessages && selectedWorkdir);
+  // The folder (P102): picked before the first message with the system's own dialog (this is the person's computer),
+  // then only shown. Not inside a project, which has its own.
+  const folderName = selectedWorkdir.split("/").filter(Boolean).pop() ?? selectedWorkdir;
+  const showFolder = !knownProject && (hasMessages ? selectedWorkdir !== "" : true);
+
+  async function chooseFolder() {
+    try {
+      const picked = await open({ directory: true, multiple: false, defaultPath: selectedWorkdir || undefined });
+      if (typeof picked === "string") onSelectWorkdir(picked);
+    } catch (err) {
+      console.error("failed to pick a folder:", err);
+    }
+  }
 
   return (
     <div className="chat-area">
@@ -169,6 +190,29 @@ function ChatArea({
             ))}
           </select>
         )}
+        {showFolder &&
+          (hasMessages ? (
+            <span className="chat-header-label" title={selectedWorkdir}>
+              Folder: {folderName}
+            </span>
+          ) : (
+            <span className="chat-header-folder">
+              <button
+                type="button"
+                className="chat-header-select"
+                title={selectedWorkdir || "Pick a folder of this computer for the AI to work in: it reads and writes there and its shell starts there (every command asks first)"}
+                disabled={isSending}
+                onClick={() => void chooseFolder()}
+              >
+                {selectedWorkdir ? `Folder: ${folderName}` : "No folder"}
+              </button>
+              {selectedWorkdir && (
+                <button type="button" className="chat-header-select" aria-label="Clear folder" onClick={() => onSelectWorkdir("")}>
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
         {projects.some((p) => p.id === selectedProjectId && p.code) && (
           // Changeable at any moment, a task that is running included (P103 b).
           <select

@@ -335,6 +335,7 @@ model = "gemini-3.5-pro"
             invite: invite.then(|| crate::users::Invite { secret_hash: "secret".to_string(), expires_at: 9 }),
             learning_opt_out: false,
             learning_provider: None,
+            workdirs: Vec::new(),
         }
     }
 

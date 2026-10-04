@@ -59,7 +59,7 @@ pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use manage_tasks::ManageTasksTool;
 pub use message_agent::{ConversationsChanged, MessageAgentTool};
-pub use project_scope::{scope_to_project, WITHHELD_IN_A_PROJECT};
+pub use project_scope::{scope_to_project, scope_to_workdir, WITHHELD_IN_A_PROJECT};
 pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
@@ -829,6 +829,10 @@ pub struct Conversation {
     /// conversation to another project forgets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_session_id: Option<String>,
+    /// The folder of the machine this conversation works in (P102), chosen before its first message and never
+    /// changed after: `read_file`, `write_file` and the shell act there. Only a conversation in no project has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 /// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
@@ -1063,7 +1067,7 @@ pub async fn handle_turn(
     user_input: &str,
     attachments: Vec<Attachment>,
 ) -> anyhow::Result<MessageOutcome> {
-    handle_agent_turn(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, None, None).await
+    handle_agent_turn(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, None, None, None).await
 }
 
 /// The named agent a `handle_agent_turn` speaks as: its persona goes in as the system prompt, and
@@ -1081,6 +1085,10 @@ pub struct TurnAgent<'a> {
 /// `project` (P103) is the project a conversation *starts* in: it is saved on the conversation when this call creates
 /// it (an unknown project is an error, nothing is run). A conversation that already exists runs in the project it was
 /// created in, whatever is sent; one whose project was removed since runs as an ordinary conversation.
+///
+/// `workdir` (P102) is the folder of this machine a conversation in no project *starts* in, with the same rule: saved
+/// when this call creates the conversation, ignored when it already exists (it keeps its own) or when it is in a
+/// project. The caller has already checked that the person may use it.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_agent_turn(
     orchestrator: &Orchestrator,
@@ -1091,6 +1099,7 @@ pub async fn handle_agent_turn(
     attachments: Vec<Attachment>,
     agent: Option<TurnAgent<'_>>,
     project: Option<&str>,
+    workdir: Option<&str>,
 ) -> anyhow::Result<MessageOutcome> {
     let existing = load_conversation(conversations_dir, conversation_id)?;
     let existed = existing.is_some();
@@ -1100,9 +1109,17 @@ pub async fn handle_agent_turn(
         Some(conversation) => conversation.project_id.clone(),
         None => project.map(str::to_string),
     };
-    let scoped = match &project_id {
-        Some(id) => scope_to_project(orchestrator, id)?,
-        None => None,
+    // P102: the same for the working folder, which only a conversation in no project has. A folder that is gone is an
+    // error and not a silent fall back to the vault: the person chose it.
+    let workdir = match &existing {
+        Some(conversation) => conversation.workdir.clone(),
+        None => workdir.map(str::to_string),
+    }
+    .filter(|_| project_id.is_none());
+    let scoped = match (&project_id, &workdir) {
+        (Some(id), _) => scope_to_project(orchestrator, id)?,
+        (None, Some(folder)) => Some(scope_to_workdir(orchestrator, folder)?),
+        (None, None) => None,
     };
     if !existed && project.is_some() && scoped.is_none() {
         anyhow::bail!("there is no project '{}'", project.unwrap_or_default());
@@ -1119,15 +1136,15 @@ pub async fn handle_agent_turn(
         generated_files: Vec::new(),
         tools_used: Vec::new(),
     };
-    append_to_conversation(
-        conversations_dir,
-        conversation_id,
+    let options = AppendOptions {
         title_seed,
-        agent.map(|a| a.id),
-        project_id.as_deref().filter(|_| !existed),
-        !existed,
-        vec![user, assistant_message(&outcome)],
-    )?;
+        agent_id: agent.map(|a| a.id),
+        project_id: project_id.as_deref().filter(|_| !existed),
+        workdir: workdir.as_deref().filter(|_| !existed),
+        create: !existed,
+        ..Default::default()
+    };
+    append_messages(conversations_dir, conversation_id, options, vec![user, assistant_message(&outcome)])?;
     Ok(outcome)
 }
 
@@ -1159,6 +1176,9 @@ pub struct AppendOptions<'a> {
     pub project_id: Option<&'a str>,
     /// The code engine's session (P103 b): `None` leaves it as it is, like `provider_id`'s outer `None`.
     pub engine_session_id: Option<&'a str>,
+    /// The working folder of a conversation this call creates (P102): like `project_id`, an existing conversation
+    /// keeps the one it has, and a conversation in a project has none.
+    pub workdir: Option<&'a str>,
     /// Create the file when it's missing. Otherwise a missing file was deleted meanwhile and stays
     /// deleted.
     pub create: bool,
@@ -1187,6 +1207,7 @@ pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, message
                 provider_id: None,
                 project_id: options.project_id.map(str::to_string),
                 engine_session_id: None,
+                workdir: options.workdir.filter(|_| options.project_id.is_none()).map(str::to_string),
             }
         }
     };
@@ -1267,6 +1288,11 @@ pub fn set_conversation_project(dir: &Path, id: &str, project: Option<&str>) -> 
     let Some(mut conversation) = load_conversation(dir, id)? else {
         return Ok(false);
     };
+    // P102: a working folder is fixed for the life of the conversation, and a conversation is in a folder or in a
+    // project, not both. Taking it out of any project (`None`) is no change and stays allowed.
+    if conversation.workdir.is_some() && project.is_some() {
+        anyhow::bail!("a conversation that works in a folder can't be moved into a project");
+    }
     if conversation.project_id.as_deref() != project {
         // The engine's session belongs to the project it worked in: elsewhere it would be a stranger's.
         conversation.engine_session_id = None;
@@ -2289,6 +2315,7 @@ oauth = true
             provider_id: None,
             project_id: None,
             engine_session_id: None,
+            workdir: None,
         }
     }
 
@@ -2596,21 +2623,21 @@ oauth = true
         let (root, orchestrator) = project_setup("project-turn");
         let dir = root.join("conversations");
 
-        let first = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax")).await.unwrap();
+        let first = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax"), None).await.unwrap();
         assert!(first.content.starts_with(PROJECT_BRIEFING), "the first thing the model is told is the project's briefing: {}", first.content);
         assert!(first.content.contains("Answer in Portuguese.") && first.content.contains("jan.md"), "with its instructions and files: {}", first.content);
         assert!(!first.content.contains("the diary"), "and nothing of the rest of the vault: {}", first.content);
         assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().project_id.as_deref(), Some("tax"));
 
         // A client that doesn't know projects, and one naming another project, both leave it where it is.
-        let second = handle_agent_turn(&orchestrator, &dir, "c1", "", "again", Vec::new(), None, None).await.unwrap();
+        let second = handle_agent_turn(&orchestrator, &dir, "c1", "", "again", Vec::new(), None, None, None).await.unwrap();
         assert!(second.content.starts_with(PROJECT_BRIEFING), "still in the project: {}", second.content);
-        handle_agent_turn(&orchestrator, &dir, "c1", "", "once more", Vec::new(), None, Some("other")).await.unwrap();
+        handle_agent_turn(&orchestrator, &dir, "c1", "", "once more", Vec::new(), None, Some("other"), None).await.unwrap();
         let saved = load_conversation(&dir, "c1").unwrap().unwrap();
         assert_eq!((saved.project_id.as_deref(), saved.messages.len()), (Some("tax"), 6));
 
         // Outside a project the same orchestrator still sees the whole vault, and is told no briefing.
-        let plain = handle_agent_turn(&orchestrator, &dir, "c2", "hi", "diary", Vec::new(), None, None).await.unwrap();
+        let plain = handle_agent_turn(&orchestrator, &dir, "c2", "hi", "diary", Vec::new(), None, None, None).await.unwrap();
         assert!(plain.content.contains("the diary") && !plain.content.starts_with(PROJECT_BRIEFING), "{}", plain.content);
         assert_eq!(load_conversation(&dir, "c2").unwrap().unwrap().project_id, None);
         std::fs::remove_dir_all(&root).ok();
@@ -2621,23 +2648,78 @@ oauth = true
         let (root, orchestrator) = project_setup("project-unknown");
         let dir = root.join("conversations");
         for id in ["nope", "loose"] {
-            let err = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some(id)).await.unwrap_err();
+            let err = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some(id), None).await.unwrap_err();
             assert!(err.to_string().contains("there is no project"), "{id}: {err:#}");
         }
-        assert!(handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some("../x")).await.is_err());
+        assert!(handle_agent_turn(&orchestrator, &dir, "c1", "hi", "hi", Vec::new(), None, Some("../x"), None).await.is_err());
         assert_eq!(load_conversation(&dir, "c1").unwrap(), None, "nothing was run or saved");
         std::fs::remove_dir_all(&root).ok();
     }
 
     /// Removing a project only removes `PROJECT.md`: what was in it goes on as ordinary conversations.
+    /// P102: a conversation in no project starts in a folder, keeps it whatever is sent later, is told about it, and
+    /// still has the person's own vault; a project wins over a folder; a folder that is gone is an error, not a fall
+    /// back to the vault.
+    #[tokio::test]
+    async fn a_conversation_created_in_a_folder_keeps_it_and_is_told_about_it() {
+        let (root, orchestrator) = project_setup("folder-turn");
+        let dir = root.join("conversations");
+        let folder = root.join("work");
+        let other = root.join("other");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let (folder, other) = (folder.to_str().unwrap(), other.to_str().unwrap());
+
+        let first = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "plan", Vec::new(), None, None, Some(folder)).await.unwrap();
+        assert!(first.content.contains(&format!("works in the folder '{folder}'")), "the model is told the folder: {}", first.content);
+        assert!(first.content.contains("the diary"), "the person's own vault is still in its context: {}", first.content);
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().workdir.as_deref(), Some(folder));
+
+        // A later turn that names another folder (or none) doesn't move it.
+        let second = handle_agent_turn(&orchestrator, &dir, "c1", "", "again", Vec::new(), None, None, Some(other)).await.unwrap();
+        assert!(second.content.contains(&format!("works in the folder '{folder}'")), "{}", second.content);
+        handle_agent_turn(&orchestrator, &dir, "c1", "", "once more", Vec::new(), None, None, None).await.unwrap();
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().workdir.as_deref(), Some(folder));
+
+        // A conversation in a project has no folder: the project wins.
+        let in_project = handle_agent_turn(&orchestrator, &dir, "c2", "hi", "jan", Vec::new(), None, Some("tax"), Some(folder)).await.unwrap();
+        assert!(in_project.content.starts_with(PROJECT_BRIEFING) && !in_project.content.contains("works in the folder"), "{}", in_project.content);
+        assert_eq!(load_conversation(&dir, "c2").unwrap().unwrap().workdir, None);
+
+        // The folder is gone: an error, nothing run and nothing saved for a new conversation.
+        let gone = root.join("gone");
+        let err = handle_agent_turn(&orchestrator, &dir, "c3", "hi", "x", Vec::new(), None, None, Some(gone.to_str().unwrap())).await.unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
+        assert!(load_conversation(&dir, "c3").unwrap().is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_conversation_in_a_folder_cannot_be_moved_into_a_project_and_old_files_still_load() {
+        let (root, orchestrator) = project_setup("folder-move");
+        let dir = root.join("conversations");
+        let folder = root.join("work");
+        std::fs::create_dir_all(&folder).unwrap();
+        handle_agent_turn(&orchestrator, &dir, "c1", "hi", "plan", Vec::new(), None, None, Some(folder.to_str().unwrap())).await.unwrap();
+
+        assert!(set_conversation_project(&dir, "c1", Some("tax")).is_err());
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().project_id, None, "nothing changed");
+        assert!(set_conversation_project(&dir, "c1", None).unwrap(), "out of any project is no change, and fine");
+
+        let old: Conversation = serde_json::from_str(r#"{"id":"o","title":"t","messages":[],"createdAt":1,"updatedAt":1}"#).unwrap();
+        assert_eq!(old.workdir, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("workdir"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[tokio::test]
     async fn a_conversation_whose_project_was_removed_goes_on_as_an_ordinary_one() {
         let (root, orchestrator) = project_setup("project-removed");
         let dir = root.join("conversations");
-        handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax")).await.unwrap();
+        handle_agent_turn(&orchestrator, &dir, "c1", "hi", "january", Vec::new(), None, Some("tax"), None).await.unwrap();
 
         warden_core::project::ProjectStore::new(orchestrator.vault().clone()).delete("tax").unwrap();
-        let after = handle_agent_turn(&orchestrator, &dir, "c1", "", "diary", Vec::new(), None, None).await.unwrap();
+        let after = handle_agent_turn(&orchestrator, &dir, "c1", "", "diary", Vec::new(), None, None, None).await.unwrap();
         assert!(after.content.contains("the diary") && !after.content.starts_with(PROJECT_BRIEFING), "the whole vault again, no briefing: {}", after.content);
         assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().messages.len(), 4, "the conversation is intact");
         std::fs::remove_dir_all(&root).ok();

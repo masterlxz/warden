@@ -60,6 +60,9 @@ export interface Conversation {
   /** The project (P103) this conversation was started in — fixed for its life. Absent: no project, or one that
    * was removed since (the list then shows it with the others). */
   projectId?: string;
+  /** The folder of this computer (P102) the conversation works in — picked before its first message and fixed for
+   * its life. Absent: none, or the conversation is in a project (which has its own). */
+  workdir?: string;
 }
 
 /** One project (P103) — mirrors `ProjectPayload` in `src-tauri/src/projects_cmds.rs`. Its files are notes of the

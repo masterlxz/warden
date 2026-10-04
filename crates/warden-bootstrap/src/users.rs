@@ -80,6 +80,12 @@ pub struct UserConfig {
     /// to the conversation's own model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub learning_provider: Option<String>,
+    /// The folders of the hub's machine this member may pick as a conversation's working folder (P102), and anything
+    /// inside them: absolute paths, set in the config file. Empty (the default) is none — a member never gets a folder
+    /// the owner didn't name, because the folder is a place on the owner's machine. The owner has no list: every
+    /// folder is theirs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workdirs: Vec<String>,
 }
 
 /// A TruthID identity tied to a member. Saying who it is proves nothing by itself: signing in with
@@ -327,6 +333,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         invite: None,
         learning_opt_out: false,
         learning_provider: None,
+        workdirs: Vec::new(),
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);

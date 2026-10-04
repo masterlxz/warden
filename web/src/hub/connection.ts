@@ -30,6 +30,7 @@ import {
   type ServerMessage,
   type UsageReport,
   type NodeInfo,
+  type DirListing,
   type ProjectDto,
   type SkillDto,
   type SpaceInfo,
@@ -496,6 +497,7 @@ export class ServerConnection {
       case "skillOk":
       case "projectList":
       case "projectOk":
+      case "dirList":
       case "history":
       case "conversationList":
       case "conversationOk":
@@ -570,6 +572,7 @@ export class ServerConnection {
         break;
       case "skillError":
       case "projectError":
+      case "dirError":
       case "historyError":
       case "conversationError":
       case "transcriptionError":
@@ -598,7 +601,7 @@ export class ServerConnection {
     this.socket.send(encode({ type: "setCodeMode", conversationId, mode }));
   }
 
-  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string): void {
+  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string, workdir?: string): void {
     this.socket.send(
       encode({
         type: "chat",
@@ -607,8 +610,16 @@ export class ServerConnection {
         ...(attachments.length > 0 && { attachments }),
         ...(agentId && { agentId }),
         ...(projectId && { projectId }),
+        ...(workdir && { workdir }),
       }),
     );
+  }
+
+  /** P102 — the folders inside `path` on the hub's machine, to pick a working folder; no `path` starts where the person may. */
+  async listDirs(path?: string): Promise<DirListing> {
+    const reply = await this.request((requestId) => ({ type: "listDirs", requestId, ...(path ? { path } : {}) }));
+    if (reply.type !== "dirList") return { path: "", dirs: [] };
+    return { path: reply.path, parent: reply.parent, dirs: reply.dirs };
   }
 
   /** P46 — the person's answer to an `ApprovalPrompt`. */

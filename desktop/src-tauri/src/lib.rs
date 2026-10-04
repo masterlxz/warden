@@ -187,6 +187,9 @@ struct SendMessageResult {
 ///
 /// `project_id` (P103) is the project of the conversation (the one it was created in), or `null`: the turn then runs on
 /// the project's folder, with its instructions. A project that was removed since is read as no project.
+///
+/// `workdir` (P102) is the folder of this computer a conversation in no project works in (the one it was created with),
+/// or `null`: `read_file`, `write_file` and the shell act there, and the shell asks before every command.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn send_message(
@@ -200,6 +203,7 @@ async fn send_message(
     project_id: Option<String>,
     conversation_id: Option<String>,
     code_mode: Option<String>,
+    workdir: Option<String>,
 ) -> Result<SendMessageResult, String> {
     let base = { state.orchestrator.lock().unwrap().clone() }?;
     // Spends as the desktop (P4) — set before scoping, so the agents this one delegates or writes to
@@ -255,6 +259,10 @@ async fn send_message(
         if let Some(scoped) = warden_bootstrap::scope_to_project(&orchestrator, id).map_err(|e| format!("{e:#}"))? {
             orchestrator = scoped;
         }
+    } else if let Some(folder) = workdir.as_deref() {
+        // P102: a conversation in no project may work in a folder of this computer, picked before its first message.
+        // The window is the owner's, so any folder goes; one that is gone is an error, not a quiet fall back to the vault.
+        orchestrator = warden_bootstrap::scope_to_workdir(&orchestrator, folder).map_err(|e| format!("{e:#}"))?;
     }
 
     // Tools that need a human "yes" (SSH hosts with `require_approval`, `manage_agents`) ask through
@@ -780,6 +788,7 @@ fn list_conversations() -> Result<Vec<Conversation>, String> {
 /// When the messages end with the assistant's answer the turn is over, and the assistant may look for something to
 /// learn from it (P115 g, `learn_in_background`) — the desktop's counterpart to what the hub and the chat bots do
 /// after a turn.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn append_conversation_messages(
     state: State<'_, AppState>,
@@ -789,11 +798,13 @@ async fn append_conversation_messages(
     agent_id: Option<String>,
     provider_id: Option<String>,
     project_id: Option<String>,
+    workdir: Option<String>,
 ) -> Result<Conversation, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     let answered = ends_with_an_answer(&messages);
-    // `project_id` only counts when this call creates the conversation (P103): an existing one keeps its own.
-    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), create: true, ..Default::default() };
+    // `project_id` and `workdir` only count when this call creates the conversation (P103, P102): an existing one
+    // keeps its own, and a conversation in a project has no folder.
+    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), workdir: workdir.as_deref(), create: true, ..Default::default() };
     let conversation = append_messages(&dir, &conversation_id, options, messages)
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| "the conversation could not be created".to_string())?;

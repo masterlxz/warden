@@ -211,6 +211,12 @@ impl Orchestrator {
         Self { project_briefing: Some(Arc::from(briefing)), ..self.with_vault(vault) }
     }
 
+    /// Returns a copy that tells the model `briefing` right after the persona, with the vault left as it is (P102: a
+    /// conversation in a working folder keeps the person's own notes and skills).
+    pub fn with_briefing(&self, briefing: String) -> Self {
+        Self { project_briefing: Some(Arc::from(briefing)), ..self.clone() }
+    }
+
     /// Returns a copy of this orchestrator that only has the tools named in `allowed` (P46, tool
     /// isolation per agent); `None` keeps every tool. A tool outside the list is gone, not just
     /// hidden: the model can't be offered it and a call to it fails as an unknown tool. Tools that

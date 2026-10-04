@@ -1900,6 +1900,66 @@ button:focus-visible {
   gap: 0.5rem;
 }
 
+/* P102 — the folder browser: the approval card with a list in it. */
+.folder-picker-here {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.folder-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 6rem;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.folder-picker-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.folder-picker-item:hover,
+.folder-picker-item:focus-visible {
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.folder-picker-empty {
+  padding: 0.6rem 0.7rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.folder-picker-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.9rem;
+}
+
+/* The folder a conversation works in (P102), once chosen. */
+.folder-chip {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* P12 — a Warden API key just created, shown once. */
 .api-key-created {
   margin-bottom: 0.75rem;

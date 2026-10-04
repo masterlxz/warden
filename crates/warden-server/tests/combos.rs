@@ -102,7 +102,7 @@ async fn an_agent_on_a_combo_gets_the_next_provider_when_the_first_is_down() {
     tokio::spawn(server.serve());
 
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "web-1", "Browser", "test-key").await.unwrap();
-    conn.send(&ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: None })
+    conn.send(&ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: None, workdir: None })
         .await
         .unwrap();
     match conn.recv().await.unwrap() {

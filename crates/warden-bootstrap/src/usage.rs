@@ -226,6 +226,7 @@ mod tests {
             provider_id: provider_id.map(str::to_string),
             project_id: None,
             engine_session_id: None,
+            workdir: None,
         }
     }
 

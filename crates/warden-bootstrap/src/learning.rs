@@ -486,6 +486,7 @@ mod tests {
                 provider_id: None,
                 project_id: None,
                 engine_session_id: None,
+                workdir: None,
             },
         )
         .unwrap();

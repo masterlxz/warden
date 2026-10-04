@@ -65,6 +65,53 @@ pub fn scope_to_project(orchestrator: &Orchestrator, project_id: &str) -> anyhow
     Ok(Some(scoped))
 }
 
+/// What a turn in a working folder (P102) doesn't get: `ssh_exec` and `node_shell` run somewhere else, so no folder
+/// of this machine holds them. `search_history` stays (the conversation is the person's own), and the vault is not
+/// rebound — the notes and skills are still theirs.
+const WITHHELD_IN_A_FOLDER: [&str; 2] = ["ssh_exec", "node_shell"];
+
+/// Scopes `orchestrator` to the working folder `folder` of this machine for one turn (P102), for a conversation that
+/// is in no project: `read_file` and `write_file` act in the folder (and cannot leave it), and the `shell`, when this
+/// channel has one, starts there and asks before every command. Fails when the folder is not a folder (any more): a
+/// turn that was promised a folder must not run on the vault instead.
+pub fn scope_to_workdir(orchestrator: &Orchestrator, folder: &str) -> anyhow::Result<Orchestrator> {
+    warden_core::project::validate_workdir(folder)?;
+    anyhow::ensure!(std::path::Path::new(folder).is_dir(), "the working folder '{folder}' does not exist");
+    let has = |name: &str| orchestrator.tools().iter().any(|tool| tool.spec().name == name);
+    let (read, write, shell) = (has("read_file"), has("write_file"), has("shell"));
+    let allowed: Vec<String> = orchestrator
+        .tools()
+        .iter()
+        .map(|tool| tool.spec().name)
+        .filter(|name| !WITHHELD_IN_A_FOLDER.contains(&name.as_str()) && !["read_file", "write_file", "shell"].contains(&name.as_str()))
+        .collect();
+    let name = std::path::Path::new(folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| folder.to_string());
+    let mut scoped = orchestrator.with_allowed_tools(Some(&allowed));
+    if read {
+        scoped = scoped.with_tool(Arc::new(warden_core::tool::folder_tools::FolderReadTool::new(folder)));
+    }
+    if write {
+        scoped = scoped.with_tool(Arc::new(warden_core::tool::folder_tools::FolderWriteTool::new(folder)));
+    }
+    if shell {
+        let tool = warden_core::tool::shell::ShellTool::in_folder(name, std::path::PathBuf::from(folder));
+        let tool: Arc<dyn warden_core::tool::Tool> = match orchestrator.approver().and_then(|approver| warden_core::tool::Tool::with_approver(&tool, approver)) {
+            Some(asking) => asking,
+            None => Arc::new(tool),
+        };
+        scoped = scoped.with_tool(tool);
+    }
+    let mut briefing = format!("This conversation works in the folder '{folder}' on this machine. ");
+    briefing.push_str(match (read || write, shell) {
+        (true, true) => "Your read_file and write_file tools act on that folder (paths are relative to it) and cannot leave it; your shell starts in it and the person approves every command. ",
+        (true, false) => "Your read_file and write_file tools act on that folder (paths are relative to it) and cannot leave it. ",
+        (false, true) => "Your shell starts in it and the person approves every command. ",
+        (false, false) => "",
+    });
+    briefing.push_str("The person's own notes and skills are still in your context as always, but the file tools no longer reach them.");
+    Ok(scoped.with_briefing(briefing))
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -139,6 +186,56 @@ mod tests {
         vault.write("projects/loose/notes.md", "x").unwrap();
         assert!(scope_to_project(&base, "loose").unwrap().is_none(), "a folder without PROJECT.md isn't a project");
         assert!(scope_to_project(&base, "../x").is_err());
+    }
+
+    fn a_folder() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("warden-workdir-scope-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn tool<'a>(orchestrator: &'a Orchestrator, name: &str) -> &'a Arc<dyn Tool> {
+        orchestrator.tools().iter().find(|t| t.spec().name == name).unwrap_or_else(|| panic!("no {name}"))
+    }
+
+    #[tokio::test]
+    async fn a_folder_turn_holds_the_file_tools_in_the_folder_and_leaves_the_vault_alone() {
+        let (base, vault) = orchestrator("folder");
+        let folder = a_folder();
+        let scoped = scope_to_workdir(&base, folder.to_str().unwrap()).unwrap();
+
+        let kept = names(&scoped);
+        for gone in WITHHELD_IN_A_FOLDER {
+            assert!(!kept.iter().any(|n| n == gone), "{gone}: {kept:?}");
+        }
+        for stays in ["read_file", "write_file", "shell", "search_history", "web_search"] {
+            assert_eq!(kept.iter().filter(|n| *n == stays).count(), 1, "{stays} once: {kept:?}");
+        }
+        assert!(Arc::ptr_eq(scoped.vault(), &vault), "the person's notes and skills are not rebound");
+
+        tool(&scoped, "write_file").call(json!({ "path": "out/a.md", "content": "hi" })).await.unwrap();
+        assert_eq!(std::fs::read_to_string(folder.join("out/a.md")).unwrap(), "hi");
+        assert!(!vault.is_file("out/a.md"), "it went to the folder, not the vault");
+        assert_eq!(tool(&scoped, "read_file").call(json!({ "path": "out/a.md" })).await.unwrap()["content"], "hi");
+        assert!(tool(&scoped, "read_file").call(json!({ "path": "../x" })).await.is_err());
+        assert!(names(&base).iter().any(|n| n == "node_shell"), "the original keeps its tools");
+    }
+
+    #[tokio::test]
+    async fn a_folder_turn_gets_no_shell_where_the_channel_has_none() {
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-workdir-noshell-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let mut base = Orchestrator::new(Arc::new(NoModel), vault.clone());
+        base.register_tool(Arc::new(ReadFileTool::new(vault)));
+        let scoped = scope_to_workdir(&base, a_folder().to_str().unwrap()).unwrap();
+        assert_eq!(names(&scoped), ["read_file"], "a member without the shell gets file tools in the folder and nothing more");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_or_not_absolute_is_an_error() {
+        let (base, _) = orchestrator("badfolder");
+        assert!(scope_to_workdir(&base, "/no/such/folder/for/warden").is_err());
+        assert!(scope_to_workdir(&base, "relative/dir").is_err());
+        assert!(scope_to_workdir(&base, "/tmp/../etc").is_err());
     }
 
     #[test]

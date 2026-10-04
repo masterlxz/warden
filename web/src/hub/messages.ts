@@ -86,6 +86,21 @@ export interface ConversationSummary {
   agentId?: string;
   /** The project (P103) the conversation was started in — fixed for its life; absent for none (or a hub from before projects). */
   projectId?: string;
+  /** The folder of the hub's machine (P102) the conversation works in — fixed for its life; absent for none (or a hub from before folders). */
+  workdir?: string;
+}
+
+/** Mirrors `DirEntryDto` (P102): a folder in the folder browser. */
+export interface DirEntry {
+  name: string;
+  path: string;
+}
+
+/** What the folder browser shows (`dirList`): `path` is "" for a member's list of allowed folders, `parent` absent at the top. */
+export interface DirListing {
+  path: string;
+  parent?: string;
+  dirs: DirEntry[];
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
@@ -609,7 +624,9 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string; projectId?: string }
+  | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string; projectId?: string; workdir?: string }
+  /** P102 — the folders inside `path` on the hub's machine (no `path`: where the person starts); answered by `dirList`/`dirError`. */
+  | { type: "listDirs"; requestId: number; path?: string }
   /** P46 — the person's answer to an `approvalRequest`. */
   | { type: "resolveApproval"; approvalId: number; approved: boolean; always?: boolean }
   | { type: "toolCallResult"; callId: number; result: unknown }
@@ -738,6 +755,8 @@ export type ServerMessage =
   | { type: "projectList"; requestId: number; projects: ProjectDto[] }
   | { type: "projectOk"; requestId: number }
   | { type: "projectError"; requestId: number; message: string }
+  | { type: "dirList"; requestId: number; path: string; parent?: string; dirs: DirEntry[] }
+  | { type: "dirError"; requestId: number; message: string }
   | { type: "history"; requestId: number; messages: HistoryMessage[] }
   | { type: "historyError"; requestId: number; message: string }
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
@@ -842,6 +861,8 @@ export function decode(text: string): ServerMessage {
     case "projectList":
     case "projectOk":
     case "projectError":
+    case "dirList":
+    case "dirError":
     case "historyError":
     case "conversationList":
     case "conversationOk":

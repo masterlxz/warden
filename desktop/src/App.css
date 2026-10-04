@@ -325,6 +325,21 @@ body {
   border-color: var(--color-accent);
 }
 
+/* The working folder (P102): a button that opens the system's folder dialog, and a × to clear it. */
+.chat-header-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.chat-header-folder .chat-header-select {
+  padding-right: 0.9em;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* "Accept all" (P103 b) turns off the only protection the shell has, so the picker says so. */
 .chat-header-select--warn,
 .chat-header-select--warn:focus,

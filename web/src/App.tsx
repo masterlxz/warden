@@ -5,6 +5,7 @@ import ChangePasswordView from "./components/ChangePasswordView";
 import ChatView from "./components/ChatView";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
+import FolderPicker from "./components/FolderPicker";
 import ApiKeysSection from "./components/ApiKeysSection";
 import LoginView, { type LoginCredentials, type TruthIdQr } from "./components/LoginView";
 import MyAgentsView from "./components/MyAgentsView";
@@ -98,6 +99,10 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   /** The project the open conversation is in — "" for none. Chosen before its first message, fixed after. */
   const [projectId, setProjectId] = useState("");
+  /** The folder of the hub's machine the open conversation works in (P102) — "" for none. Chosen before its first
+   * message, fixed after, and never together with a project. */
+  const [workdir, setWorkdir] = useState("");
+  const [pickingFolder, setPickingFolder] = useState(false);
   /** How much each code conversation asks (P103 b). Only here, never saved: a conversation opened again asks everything. */
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
   /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
@@ -295,6 +300,7 @@ export default function App() {
       if (open) {
         setAgentId(open.agentId ?? "");
         setProjectId(open.projectId ?? "");
+        setWorkdir(open.workdir ?? "");
       }
       await loadConversation(connection, activeIdRef.current);
     },
@@ -363,6 +369,7 @@ export default function App() {
     setAgentIds([]);
     setProjects([]);
     setProjectId("");
+    setWorkdir("");
     setServerName(null);
     setUser(undefined);
     setChangingPassword(false);
@@ -393,7 +400,7 @@ export default function App() {
     if (!conversations.some((c) => c.id === id)) {
       const now = Date.now();
       setConversations((current) => [
-        { id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now, ...(agentId && { agentId }), ...(projectId && { projectId }) },
+        { id, title: titleFrom(titleSeed(message, attachments)), createdAt: now, updatedAt: now, ...(agentId && { agentId }), ...(projectId && { projectId }), ...(!projectId && workdir && { workdir }) },
         ...current,
       ]);
     }
@@ -401,7 +408,8 @@ export default function App() {
       // Said again with every task: a hub that restarted has forgotten it, and the picker must be what applies.
       if (isCodeProject) connection.setCodeMode(id, codeMode);
       // The project only counts when this turn starts the conversation: the hub keeps an existing one where it was made.
-      connection.sendChat(message, id, attachments, agentId || undefined, projectId || undefined);
+      // The folder, too: only the turn that starts the conversation can name one, and a project has its own.
+      connection.sendChat(message, id, attachments, agentId || undefined, projectId || undefined, (!projectId && workdir) || undefined);
     } catch (err) {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
@@ -445,6 +453,7 @@ export default function App() {
     // Each conversation remembers the agent it spoke with last (P46).
     setAgentId(conversationsRef.current.find((c) => c.id === id)?.agentId ?? "");
     setProjectId(conversationsRef.current.find((c) => c.id === id)?.projectId ?? "");
+    setWorkdir(conversationsRef.current.find((c) => c.id === id)?.workdir ?? "");
     const connection = connRef.current;
     if (connection) void loadConversation(connection, id);
   }
@@ -458,6 +467,7 @@ export default function App() {
     setEntries([]);
     setAgentId("");
     setProjectId("");
+    setWorkdir("");
   }
 
   function showView(next: View) {
@@ -476,6 +486,8 @@ export default function App() {
     const id = activeIdRef.current;
     if (!conversationsRef.current.some((c) => c.id === id)) {
       setProjectId(next);
+      // A project has its own folder: the two are never both.
+      if (next) setWorkdir("");
       return;
     }
     if (!connection || next === projectId) return;
@@ -700,8 +712,9 @@ export default function App() {
                     </select>
                   </label>
                 )}
-                {(projects.length > 0 || projectId !== "") && (
+                {(projects.length > 0 || projectId !== "") && !(workdir && conversations.some((c) => c.id === activeId)) && (
                   // Chosen before the conversation's first message; after it, choosing moves the conversation (P103).
+                  // Not on a conversation that works in a folder: it can't be moved into a project (P102).
                   <label className="agent-picker">
                     <span className="agent-picker-label">Projeto</span>
                     <select
@@ -718,6 +731,26 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                )}
+                {!projectId && (conversations.some((c) => c.id === activeId) ? workdir !== "" : phase.connected) && (
+                  // P102: the folder is picked before the first message and is only shown after it.
+                  <div className="agent-picker">
+                    <span className="agent-picker-label">Pasta</span>
+                    {conversations.some((c) => c.id === activeId) ? (
+                      <span className="folder-chip" title={workdir}>
+                        {workdir.split("/").filter(Boolean).pop() ?? workdir}
+                      </span>
+                    ) : (
+                      <button type="button" className="link-button folder-chip" onClick={() => setPickingFolder(true)} title={workdir || "Escolher uma pasta do computador do hub para a IA trabalhar"}>
+                        {workdir ? (workdir.split("/").filter(Boolean).pop() ?? workdir) : "Nenhuma"}
+                      </button>
+                    )}
+                    {workdir && !conversations.some((c) => c.id === activeId) && (
+                      <button type="button" className="link-button" onClick={() => setWorkdir("")} aria-label="Tirar a pasta">
+                        ×
+                      </button>
+                    )}
+                  </div>
                 )}
                 {projects.some((p) => p.id === projectId && p.code) && (
                   // Changeable at any moment, a task that is running included (P103 b).
@@ -737,6 +770,17 @@ export default function App() {
                   </label>
                 )}
               </div>
+              {pickingFolder && connRef.current && (
+                <FolderPicker
+                  listDirs={(path) => connRef.current!.listDirs(path)}
+                  initialPath={workdir || undefined}
+                  onPick={(path) => {
+                    setWorkdir(path);
+                    setPickingFolder(false);
+                  }}
+                  onCancel={() => setPickingFolder(false)}
+                />
+              )}
               <ChatView
                 entries={entries}
                 pending={activeId in pendingTurns}

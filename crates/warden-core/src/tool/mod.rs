@@ -11,6 +11,7 @@ pub mod delegate;
 pub mod delegate_to_agent;
 pub mod document;
 pub mod file_tools;
+pub mod folder_tools;
 pub mod job_tools;
 pub mod mcp;
 pub mod mcp_oauth;

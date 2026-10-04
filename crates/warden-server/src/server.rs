@@ -436,6 +436,14 @@ impl ConnectionContext {
     }
 }
 
+/// The folders of this machine the owner allowed `member` to work in (P102), or `None` for the owner, who may work
+/// in any. A member the config no longer has has none.
+fn workdir_roots(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHost>) -> Option<Vec<String>> {
+    let member = member?;
+    let config = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
+    Some(config.users.iter().find(|u| u.id == member.id).map(|u| u.workdirs.clone()).unwrap_or_default())
+}
+
 /// The vault a person's requests read and write: the owner's, or the member's with the spaces
 /// shared with them right now (P84 fatia 3).
 fn person_vault(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHost>, owner: &Orchestrator, space_vaults: &SpaceVaults) -> Arc<warden_core::memory::Vault> {
@@ -1174,10 +1182,24 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id }) => {
+                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id, workdir }) => {
                     let checked = resolve_conversation_id(conversation_id.clone())
                         .and_then(|id| validate_attachments(&attachments).map(|()| id))
-                        .and_then(|id| project_id.as_deref().map_or(Ok(()), |p| warden_core::project::validate_id(p).map_err(|e| format!("{e:#}"))).map(|()| id));
+                        .and_then(|id| project_id.as_deref().map_or(Ok(()), |p| warden_core::project::validate_id(p).map_err(|e| format!("{e:#}"))).map(|()| id))
+                        .and_then(|id| {
+                            // P102: the folder this turn will run in is the saved one of a conversation that exists, or
+                            // the one named for a new one — and a project has its own instead. Checked on every turn,
+                            // so a folder the owner took away from a member stops working in their old conversations.
+                            let saved = warden_bootstrap::load_conversation(conversation_dirs.dir_for(&id), &id).ok().flatten();
+                            let effective = match &saved {
+                                Some(conversation) => conversation.workdir.clone().filter(|_| conversation.project_id.is_none()),
+                                None => workdir.clone().filter(|_| project_id.is_none()),
+                            };
+                            match effective {
+                                Some(folder) => crate::folders::check_workdir(workdir_roots(member.as_ref(), settings.as_deref()).as_deref(), &folder).map(|()| id),
+                                None => Ok(id),
+                            }
+                        });
                     let conversation_id = match checked {
                         Ok(id) => id,
                         Err(message) => {
@@ -1269,6 +1291,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             attachments,
                             agent,
                             project_id.as_deref(),
+                            workdir.as_deref(),
                         )
                         .await
                         {
@@ -1363,6 +1386,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     if let Some(reply) = handle_project_request(&store, message) {
                         let _ = tx.send(reply);
                     }
+                }
+                Ok(ClientMessage::ListDirs { request_id, path }) => {
+                    // P102 — a directory read, answered inline. A member only sees what the owner allowed them.
+                    let roots = workdir_roots(member.as_ref(), settings.as_deref());
+                    let _ = tx.send(match crate::folders::list_dirs(roots.as_deref(), path.as_deref()) {
+                        Ok(listing) => ServerMessage::DirList { request_id, path: listing.path, parent: listing.parent, dirs: listing.dirs },
+                        Err(message) => ServerMessage::DirError { request_id, message },
+                    });
                 }
                 Ok(ClientMessage::RequestHistory { request_id, limit, conversation_id }) => {
                     // P40 — one small file read, answered inline like the skills requests. Inline

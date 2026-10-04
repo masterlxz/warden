@@ -37,7 +37,7 @@ impl MemberSpace {
     /// The same member with their vault opened again from the folder's current state — after their
     /// data key was created or opened (a connection's first vault was plain, or locked).
     pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
-        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None, learning_opt_out: false, learning_provider: None };
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None, learning_opt_out: false, learning_provider: None, workdirs: Vec::new() };
         Self::new(&user, users_dir, conversations_root)
     }
 
@@ -392,6 +392,7 @@ mod tests {
             provider_id: None,
             project_id: None,
             engine_session_id: None,
+            workdir: None,
         }
     }
 

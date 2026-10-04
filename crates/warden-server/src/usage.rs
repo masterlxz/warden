@@ -204,7 +204,7 @@ mod tests {
                 generated_files: Vec::new(), tools_used: Vec::new(),
             })
             .collect();
-        Conversation { id: id.into(), title: id.into(), messages, created_at, updated_at: created_at, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }
+        Conversation { id: id.into(), title: id.into(), messages, created_at, updated_at: created_at, agent_id: None, provider_id: None, project_id: None, engine_session_id: None, workdir: None }
     }
 
     fn guard(max_tokens: u64) -> SpendGuard {

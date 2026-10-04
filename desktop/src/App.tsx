@@ -89,10 +89,13 @@ function App() {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   // The project a *new* conversation will start in (P103); an existing one has its own, fixed at creation.
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  // The folder of this computer a *new* conversation will work in (P102); an existing one has its own. Never with a project.
+  const [selectedWorkdir, setSelectedWorkdir] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
   const currentProjectId = activeConversation ? (activeConversation.projectId ?? "") : selectedProjectId;
+  const currentWorkdir = currentProjectId ? "" : activeConversation ? (activeConversation.workdir ?? "") : selectedWorkdir;
 
   function loadProjects() {
     invoke<ProjectEntry[]>("list_projects")
@@ -193,6 +196,7 @@ function App() {
     const agentId = selectedAgentId || undefined;
     const providerId = selectedProviderId || undefined;
     const projectId = currentProjectId || undefined;
+    const workdir = currentWorkdir || undefined;
     // Shown at once; the saved copy then replaces it (P87).
     setConversations((prev) => {
       const existing = prev.find((c) => c.id === conversationId);
@@ -207,6 +211,7 @@ function App() {
             agentId,
             providerId,
             projectId,
+            workdir,
           };
       return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
@@ -224,6 +229,8 @@ function App() {
       providerId: providerId ?? null,
       // Only counts when this append creates the conversation: an existing one keeps the project it was made in.
       projectId: projectId ?? null,
+      // Same rule for the folder (P102); a conversation in a project has none.
+      workdir: workdir ?? null,
     })
       .then((onDisk) => setConversations((prev) => replaceWithSaved(prev, onDisk)))
       .catch((err) => console.error("failed to persist conversation:", err));
@@ -284,6 +291,8 @@ function App() {
         providerId: selectedProviderId && selectedProviderId !== settings.activeProvider ? selectedProviderId : null,
         // The conversation's project (P103): the turn runs on its folder, with its instructions.
         projectId: currentProjectId || null,
+        // The conversation's folder (P102): `read_file`, `write_file` and the shell act there.
+        workdir: currentWorkdir || null,
         conversationId,
         // Said with every task, so the mode the picker shows is the one that applies.
         codeMode: isCodeTurn ? codeMode : null,
@@ -341,6 +350,7 @@ function App() {
         onNewConversation={() => {
           setActiveConversationId(null);
           setSelectedProjectId("");
+          setSelectedWorkdir("");
           setView("chat");
         }}
         onOpenSettings={() => setView("settings")}
@@ -386,7 +396,13 @@ function App() {
           combos={settings.combos}
           projects={projects}
           selectedProjectId={currentProjectId}
-          onSelectProject={setSelectedProjectId}
+          onSelectProject={(id) => {
+            setSelectedProjectId(id);
+            // A project has its own folder: the two are never both (P102).
+            if (id) setSelectedWorkdir("");
+          }}
+          selectedWorkdir={currentWorkdir}
+          onSelectWorkdir={setSelectedWorkdir}
           onMoveProject={(id) => void handleMoveProject(id)}
           selectedAgentId={selectedAgentId}
           selectedProviderId={selectedProviderId}

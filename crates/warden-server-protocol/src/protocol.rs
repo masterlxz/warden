@@ -145,6 +145,18 @@ pub struct ConversationSummary {
     /// outside any project, and for a hub from before projects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// The folder of the hub's machine (P102) this conversation works in. Absent for a conversation in a project
+    /// (it has the project's), for one with no folder, and for a hub from before folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+}
+
+/// A folder in a `DirList` (P102): its name for the list and its whole path to choose or open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: String,
 }
 
 /// One line matching a `SearchVault` query (P78) — `warden_core::memory::SearchHit` on the wire.
@@ -1169,6 +1181,12 @@ pub enum ClientMessage {
         /// that already exists, which stays where it was created. A project the hub doesn't have is a `ChatError`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_id: Option<String>,
+        /// The folder of the hub's machine (P102) a conversation in no project **starts** in, with the same rule as
+        /// `project_id`: saved when this turn creates the conversation, ignored for one that exists or that is in a
+        /// project. The hub checks that the person may use it (a member only inside the folders the owner allowed
+        /// them) and answers a `ChatError` otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdir: Option<String>,
     },
     /// The person's answer to a `ServerMessage::ApprovalRequest` (P46 `manage_agents`, SSH hosts
     /// that need approval). An id with no pending request is ignored.
@@ -1269,6 +1287,14 @@ pub enum ClientMessage {
     DeleteProject {
         request_id: u64,
         id: String,
+    },
+    /// The folders inside `path` on the hub's machine (P102), to pick a conversation's working folder. Folders only,
+    /// never files. No `path` is where the person starts: the owner's home, a member's allowed folders. Answered by
+    /// `DirList` or `DirError` with the same `request_id`.
+    ListDirs {
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// Asks for this device's persisted conversation (P40) — the one `Chat` turns are appended to,
     /// keyed by `Hello.device_id`, so a client that reconnects (or was restarted) can show what was
@@ -1669,7 +1695,7 @@ pub enum ClientMessage {
 impl ClientMessage {
     /// A plain text `Chat` turn to the default conversation, with no attachments.
     pub fn chat(message: impl Into<String>) -> Self {
-        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None, project_id: None }
+        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None, project_id: None, workdir: None }
     }
 }
 
@@ -1788,6 +1814,20 @@ pub enum ServerMessage {
     ProjectList {
         request_id: u64,
         projects: Vec<ProjectDto>,
+    },
+    /// Reply to `ClientMessage::ListDirs`: the folders in `path`, and the one above it (`None` at the top of what the
+    /// person may see). `path` is empty for a member's list of allowed folders.
+    DirList {
+        request_id: u64,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+        dirs: Vec<DirEntryDto>,
+    },
+    /// A `ListDirs` failed (not a folder, outside what the person may see, unreadable).
+    DirError {
+        request_id: u64,
+        message: String,
     },
     /// Reply to a successful `SaveProject`/`DeleteProject`.
     ProjectOk {
@@ -2368,7 +2408,7 @@ mod tests {
         assert_eq!(msg, ClientMessage::chat("hi"));
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
 
-        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None };
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
@@ -2378,7 +2418,7 @@ mod tests {
     /// the web and the desktop expect, and everything from before projects (no field) still reads.
     #[test]
     fn projects_travel_with_the_names_the_clients_expect_and_old_peers_still_read() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: Some("tax".into()) };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: Some("tax".into()), workdir: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","projectId":"tax"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2406,9 +2446,40 @@ mod tests {
         assert!(serde_json::to_string(&grouped).unwrap().contains(r#""projectId":"tax""#));
     }
 
+    /// P102: a chat names the folder it starts in, the folder browser has its own messages, and everything from before
+    /// folders (no field) still reads.
+    #[test]
+    fn working_folders_travel_with_the_names_the_clients_expect_and_old_peers_still_read() {
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()) };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","workdir":"/srv/work"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
+        let old_chat = serde_json::from_str::<ClientMessage>(r#"{"type":"chat","message":"hi"}"#).unwrap();
+        assert!(matches!(old_chat, ClientMessage::Chat { workdir: None, .. }));
+
+        assert_eq!(serde_json::to_string(&ClientMessage::ListDirs { request_id: 1, path: None }).unwrap(), r#"{"type":"listDirs","requestId":1}"#);
+        let open = ClientMessage::ListDirs { request_id: 2, path: Some("/srv".into()) };
+        let json = serde_json::to_string(&open).unwrap();
+        assert_eq!(json, r#"{"type":"listDirs","requestId":2,"path":"/srv"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), open);
+
+        let list = ServerMessage::DirList { request_id: 2, path: "/srv".into(), parent: Some("/".into()), dirs: vec![DirEntryDto { name: "work".into(), path: "/srv/work".into() }] };
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(json, r#"{"type":"dirList","requestId":2,"path":"/srv","parent":"/","dirs":[{"name":"work","path":"/srv/work"}]}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), list);
+        let top = ServerMessage::DirList { request_id: 3, path: String::new(), parent: None, dirs: Vec::new() };
+        assert_eq!(serde_json::to_string(&top).unwrap(), r#"{"type":"dirList","requestId":3,"path":"","dirs":[]}"#);
+        assert_eq!(serde_json::to_string(&ServerMessage::DirError { request_id: 4, message: "m".into() }).unwrap(), r#"{"type":"dirError","requestId":4,"message":"m"}"#);
+
+        let summary = serde_json::from_str::<ConversationSummary>(r#"{"id":"c","title":"t","createdAt":1,"updatedAt":2}"#).unwrap();
+        assert_eq!(summary.workdir, None);
+        let in_folder = ConversationSummary { workdir: Some("/srv/work".into()), ..summary };
+        assert!(serde_json::to_string(&in_folder).unwrap().contains(r#""workdir":"/srv/work""#));
+    }
+
     #[test]
     fn a_chat_can_name_an_agent_and_approvals_round_trip() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None, workdir: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2456,6 +2527,7 @@ mod tests {
             attachments: vec![Attachment { mime_type: "application/pdf".into(), data: "JVBE".into() }],
             agent_id: None,
             project_id: None,
+            workdir: None,
         };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"","attachments":[{"mimeType":"application/pdf","data":"JVBE"}]}"#);
@@ -2504,7 +2576,7 @@ mod tests {
             (
                 ServerMessage::ConversationList {
                     request_id: 1,
-                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None }],
+                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None, workdir: None }],
                 },
                 r#"{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}"#,
             ),

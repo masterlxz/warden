@@ -337,7 +337,7 @@ mod tests {
 
     fn conversation(id: &str, title: &str, messages: Vec<ConversationMessage>) -> Conversation {
         let updated_at = messages.last().map(|m| m.created_at).unwrap_or(0);
-        Conversation { id: id.into(), title: title.into(), messages, created_at: 1, updated_at, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }
+        Conversation { id: id.into(), title: title.into(), messages, created_at: 1, updated_at, agent_id: None, provider_id: None, project_id: None, engine_session_id: None, workdir: None }
     }
 
     fn saved(dir: &Path) {

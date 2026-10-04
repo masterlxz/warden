@@ -217,7 +217,7 @@ async fn a_due_task_runs_as_its_agent_and_every_device_sees_its_conversation() {
     assert!(states["poem"].last_finished_at_ms.is_some() && states["poem"].last_error.is_none());
 
     // The person can go on talking in the task's conversation.
-    web.send(&ClientMessage::Chat { message: "another".into(), conversation_id: Some("task-poem".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: None })
+    web.send(&ClientMessage::Chat { message: "another".into(), conversation_id: Some("task-poem".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: None, workdir: None })
         .await
         .unwrap();
     loop {
@@ -314,7 +314,7 @@ async fn an_agent_with_the_flag_schedules_a_task_once_the_device_says_yes() {
     for approve in [false, true] {
         let hub = spin_up(false).await;
         let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
-        web.send(&ClientMessage::Chat { message: "SCHEDULE a daily haiku".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None })
+        web.send(&ClientMessage::Chat { message: "SCHEDULE a daily haiku".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None, workdir: None })
             .await
             .unwrap();
         let mut asked = Vec::new();
@@ -347,7 +347,7 @@ async fn an_agent_with_the_flag_schedules_a_task_once_the_device_says_yes() {
 
     let hub = spin_up(false).await;
     let mut web = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
-    web.send(&ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: None }).await.unwrap();
+    web.send(&ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: None, workdir: None }).await.unwrap();
     loop {
         if let Some(ServerMessage::ChatResponse { .. }) = web.recv().await.unwrap() {
             break;

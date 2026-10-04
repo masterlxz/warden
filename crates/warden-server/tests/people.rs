@@ -133,7 +133,7 @@ async fn spin_up() -> Hub {
 
     // A scheduled task's conversation: the owner's, never listed to a member.
     let tasks = TaskStore::new(dir.join("tasks"));
-    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }).unwrap();
+    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None, workdir: None }).unwrap();
 
     let offered: Offered = Arc::default();
     let vault = Arc::new(Vault::new(dir.join("vault")));
@@ -175,7 +175,7 @@ async fn reply(conn: &mut ServerConnection) -> ServerMessage {
 }
 
 async fn chat(conn: &mut ServerConnection, message: &str, conversation: &str) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: None }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: None, workdir: None }).await.unwrap();
     reply(conn).await
 }
 
@@ -319,7 +319,7 @@ async fn the_owner_creates_and_resets_members_with_a_password_shown_once() {
 }
 
 async fn chat_as(conn: &mut ServerConnection, message: &str, conversation: &str, agent: &str) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None, workdir: None }).await.unwrap();
     reply(conn).await
 }
 
@@ -696,7 +696,7 @@ async fn a_member_from_before_gets_her_data_encrypted_when_she_signs_in() {
     save_config(&config_path, &config).unwrap();
     std::fs::create_dir_all(hub.dir.join("users/ana/vault/notes")).unwrap();
     std::fs::write(hub.dir.join("users/ana/vault/notes/velha.md"), "nota antiga da ana").unwrap();
-    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }).unwrap();
+    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None, workdir: None }).unwrap();
 
     let (mut ana, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
     assert!(user.unwrap().encrypted, "the sign-in turned it on");
@@ -1727,7 +1727,7 @@ async fn project_names(conn: &mut ServerConnection) -> Vec<String> {
 }
 
 async fn chat_in(conn: &mut ServerConnection, message: &str, conversation: &str, project: Option<&str>) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: project.map(String::from) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: Some("helper".into()), project_id: project.map(String::from), workdir: None }).await.unwrap();
     reply(conn).await
 }
 
