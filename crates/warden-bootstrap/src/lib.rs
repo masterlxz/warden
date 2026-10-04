@@ -59,7 +59,7 @@ pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use manage_tasks::ManageTasksTool;
 pub use message_agent::{ConversationsChanged, MessageAgentTool};
-pub use project_scope::{scope_to_project, scope_to_workdir, WITHHELD_IN_A_PROJECT};
+pub use project_scope::{check_node_path, node_folder, node_folder_ref, scope_to_project, scope_to_workdir, WITHHELD_IN_A_PROJECT};
 pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};
 pub use usage::{aggregate_usage, UsageByKey, UsageStatsTool, UsageSummary};
@@ -1118,6 +1118,12 @@ pub async fn handle_agent_turn(
     .filter(|_| project_id.is_none());
     let scoped = match (&project_id, &workdir) {
         (Some(id), _) => scope_to_project(orchestrator, id)?,
+        // A folder on a node is set up by the hub before this call (it needs the hub's node tools); here it is only
+        // saved. A channel that has no way to do that must not run the turn as if it had no folder.
+        (None, Some(folder)) if node_folder(folder).is_some() => {
+            anyhow::ensure!(orchestrator.has_briefing(), "this conversation works in a folder on a node, which only the hub can set up");
+            None
+        }
         (None, Some(folder)) => Some(scope_to_workdir(orchestrator, folder)?),
         (None, None) => None,
     };
@@ -2691,6 +2697,23 @@ oauth = true
         let err = handle_agent_turn(&orchestrator, &dir, "c3", "hi", "x", Vec::new(), None, None, Some(gone.to_str().unwrap())).await.unwrap_err();
         assert!(err.to_string().contains("does not exist"), "{err}");
         assert!(load_conversation(&dir, "c3").unwrap().is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// P102 fatia 2: a folder on a node is set up by the hub; a channel that didn't (no briefing) refuses the turn
+    /// instead of running it as if there were no folder, and nothing is saved for it.
+    #[tokio::test]
+    async fn a_folder_on_a_node_is_only_run_by_a_caller_that_set_it_up() {
+        let (root, orchestrator) = project_setup("node-folder");
+        let dir = root.join("conversations");
+        let err = handle_agent_turn(&orchestrator, &dir, "c1", "hi", "plan", Vec::new(), None, None, Some("node:node-a-1:proj")).await.unwrap_err();
+        assert!(err.to_string().contains("only the hub can set up"), "{err}");
+        assert!(load_conversation(&dir, "c1").unwrap().is_none());
+
+        let set_up = orchestrator.with_briefing("This conversation works on a node.".to_string());
+        let reply = handle_agent_turn(&set_up, &dir, "c1", "hi", "plan", Vec::new(), None, None, Some("node:node-a-1:proj")).await.unwrap();
+        assert!(reply.content.starts_with("This conversation works on a node."), "{}", reply.content);
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().workdir.as_deref(), Some("node:node-a-1:proj"));
         std::fs::remove_dir_all(&root).ok();
     }
 

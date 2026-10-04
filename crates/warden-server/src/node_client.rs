@@ -194,6 +194,10 @@ impl LocalNode {
                 let shell = self.shell.as_ref().ok_or_else(|| anyhow::anyhow!("this node doesn't lend its shell (start it with --shell)"))?;
                 shell.call(args).await
             }
+            "list_dirs" => {
+                let vault = self.files.as_ref().ok_or_else(|| anyhow::anyhow!("this node doesn't share files (start it with --files <folder>)"))?;
+                list_dirs(vault, args.get("path").and_then(Value::as_str).unwrap_or(""))
+            }
             "read_file" | "write_file" | "list_files" => {
                 let vault = self.files.as_ref().ok_or_else(|| anyhow::anyhow!("this node doesn't share files (start it with --files <folder>)"))?;
                 let path = args.get("path").and_then(Value::as_str).unwrap_or("");
@@ -248,6 +252,39 @@ fn list_files(vault: &Vault, path: &str) -> anyhow::Result<Value> {
     let truncated = files.len() > MAX_LISTED_FILES;
     files.truncate(MAX_LISTED_FILES);
     Ok(json!({ "files": files, "truncated": truncated }))
+}
+
+/// The most folders one `list_dirs` returns.
+const MAX_LISTED_DIRS: usize = 500;
+
+/// The folders inside `path` (relative to the lent folder, empty is the folder itself), for the hub's folder picker
+/// (P102 fatia 2). Folders only — no files, links or hidden folders — and nothing outside the lent folder: the path is
+/// resolved (links followed) and must still be under it. The reply names the *resolved* path, relative, so the hub
+/// judges what was really opened and not what was asked for.
+fn list_dirs(vault: &Vault, path: &str) -> anyhow::Result<Value> {
+    let root = vault.root().canonicalize().context("the shared folder is not there")?;
+    let dir = if path.is_empty() || path == "." {
+        root.clone()
+    } else {
+        vault.path_of(path)?.canonicalize().with_context(|| format!("'{path}' is not a folder on this node"))?
+    };
+    anyhow::ensure!(dir.starts_with(&root), "'{path}' is not inside the shared folder");
+    anyhow::ensure!(dir.is_dir(), "'{path}' is not a folder");
+    let relative = |p: &Path| p.strip_prefix(&root).map(|r| r.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut dirs: Vec<(String, String)> = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        // `file_type` doesn't follow a link, so a link to a folder is not listed as one.
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .map(|name| (name.clone(), relative(&dir.join(&name))))
+        .collect();
+    dirs.sort_by_key(|(name, _)| name.to_lowercase());
+    dirs.truncate(MAX_LISTED_DIRS);
+    Ok(json!({
+        "path": relative(&dir),
+        "dirs": dirs.into_iter().map(|(name, path)| json!({ "name": name, "path": path })).collect::<Vec<_>>(),
+    }))
 }
 
 /// Who this node is to the hub, kept between runs so the pairing key is only needed once.
@@ -491,6 +528,40 @@ mod tests {
             assert!(node.run("write_file", json!({ "path": path, "content": "x" })).await.is_err(), "{path}");
         }
         assert!(node.run("list_files", json!({ "path": ".." })).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_dirs_shows_folders_only_inside_the_shared_folder() {
+        let dir = temp_dir().canonicalize().unwrap();
+        let shared = dir.join("shared");
+        for sub in ["Beta", "alpha/deep", ".hidden"] {
+            std::fs::create_dir_all(shared.join(sub)).unwrap();
+        }
+        std::fs::write(shared.join("file.txt"), "x").unwrap();
+        std::fs::create_dir_all(dir.join("outside")).unwrap();
+        let node = LocalNode::new(false, Some(shared.clone()));
+
+        // The folder itself, then one inside it: sorted without caring for case, no file, no hidden folder, paths
+        // relative to the shared folder, and the answer names the folder that was opened.
+        let top = node.run("list_dirs", json!({})).await.unwrap();
+        assert_eq!(top, json!({ "path": "", "dirs": [{ "name": "alpha", "path": "alpha" }, { "name": "Beta", "path": "Beta" }] }));
+        let inner = node.run("list_dirs", json!({ "path": "alpha" })).await.unwrap();
+        assert_eq!(inner, json!({ "path": "alpha", "dirs": [{ "name": "deep", "path": "alpha/deep" }] }));
+
+        // What leaves it, or isn't a folder, is refused — and a link is not followed out, nor listed.
+        for path in ["..", "/etc", "alpha/../../outside", "file.txt", "nope"] {
+            assert!(node.run("list_dirs", json!({ "path": path })).await.is_err(), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("outside"), shared.join("escape")).unwrap();
+            assert!(node.run("list_dirs", json!({ "path": "escape" })).await.is_err());
+            let names: Vec<String> = node.run("list_dirs", json!({})).await.unwrap()["dirs"].as_array().unwrap().iter().map(|d| d["name"].as_str().unwrap().to_string()).collect();
+            assert!(!names.contains(&"escape".to_string()), "{names:?}");
+        }
+        // A node that lends no folder has none to list.
+        assert!(LocalNode::new(true, None).run("list_dirs", json!({})).await.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -444,6 +444,14 @@ fn workdir_roots(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHos
     Some(config.users.iter().find(|u| u.id == member.id).map(|u| u.workdirs.clone()).unwrap_or_default())
 }
 
+/// The folders on nodes the owner named for `member` (P102 fatia 2), or `None` for the owner, who may use any a node
+/// lends.
+fn node_workdirs(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHost>) -> Option<Vec<warden_bootstrap::users::NodeFolder>> {
+    let member = member?;
+    let config = settings.and_then(|host| load_config_from_path(&host.config_path(), false).ok()).unwrap_or_default();
+    Some(config.users.iter().find(|u| u.id == member.id).map(|u| u.node_workdirs.clone()).unwrap_or_default())
+}
+
 /// The vault a person's requests read and write: the owner's, or the member's with the spaces
 /// shared with them right now (P84 fatia 3).
 fn person_vault(member: Option<&MemberSpace>, settings: Option<&dyn SettingsHost>, owner: &Orchestrator, space_vaults: &SpaceVaults) -> Arc<warden_core::memory::Vault> {
@@ -1183,6 +1191,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
                 Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id, workdir }) => {
+                    // The folder this turn runs in, when there is one: set while it is checked just below.
+                    let mut effective_workdir: Option<String> = None;
                     let checked = resolve_conversation_id(conversation_id.clone())
                         .and_then(|id| validate_attachments(&attachments).map(|()| id))
                         .and_then(|id| project_id.as_deref().map_or(Ok(()), |p| warden_core::project::validate_id(p).map_err(|e| format!("{e:#}"))).map(|()| id))
@@ -1195,11 +1205,21 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                                 Some(conversation) => conversation.workdir.clone().filter(|_| conversation.project_id.is_none()),
                                 None => workdir.clone().filter(|_| project_id.is_none()),
                             };
+                            effective_workdir = effective.clone();
                             match effective {
+                                // A folder on a node is asked of the node, just below (it takes the network).
+                                Some(folder) if warden_bootstrap::node_folder(&folder).is_some() => Ok(id),
                                 Some(folder) => crate::folders::check_workdir(workdir_roots(member.as_ref(), settings.as_deref()).as_deref(), &folder).map(|()| id),
                                 None => Ok(id),
                             }
                         });
+                    let checked = match (checked, effective_workdir.as_deref().and_then(warden_bootstrap::node_folder)) {
+                        (Ok(id), Some((node, path))) => {
+                            let entries = node_workdirs(member.as_ref(), settings.as_deref());
+                            crate::folders::check_node_folder(node_tools.as_ref(), entries.as_deref(), node, path).await.map(|()| id)
+                        }
+                        (checked, _) => checked,
+                    };
                     let conversation_id = match checked {
                         Ok(id) => id,
                         Err(message) => {
@@ -1234,6 +1254,16 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         // `manage_agents`, SSH hosts and spending limits that need a yes ask this device.
                         // P104: `search_history` reads the owner's conversations, the ones this hub keeps for them.
                         None => orchestrator.with_conversations_dir(&conversation_dirs.device).with_approver(Arc::new(approver.clone())),
+                    };
+                    // P102 fatia 2: a conversation that works in a folder on a node reads, writes and runs there. Set up
+                    // here because the node tools are the hub's; a member has nobody to ask, so for them a command that
+                    // needs a yes is refused.
+                    let orchestrator = match (effective_workdir.as_deref().and_then(warden_bootstrap::node_folder), &node_tools) {
+                        (Some((node, path)), Some(factory)) => {
+                            let asks: Option<Arc<dyn warden_core::tool::Approver>> = member.is_none().then(|| Arc::new(approver.clone()) as Arc<dyn warden_core::tool::Approver>);
+                            factory.scope_folder(&orchestrator, node, path, agent_id.as_deref(), asks)
+                        }
+                        _ => orchestrator,
                     };
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
@@ -1388,11 +1418,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     }
                 }
                 Ok(ClientMessage::ListDirs { request_id, path }) => {
-                    // P102 — a directory read, answered inline. A member only sees what the owner allowed them.
+                    // P102 — a directory read of this machine or of a node. A member only sees what the owner allowed them.
+                    // Spawned: a node answers over the network, and the reader must not wait for it.
                     let roots = workdir_roots(member.as_ref(), settings.as_deref());
-                    let _ = tx.send(match crate::folders::list_dirs(roots.as_deref(), path.as_deref()) {
-                        Ok(listing) => ServerMessage::DirList { request_id, path: listing.path, parent: listing.parent, dirs: listing.dirs },
-                        Err(message) => ServerMessage::DirError { request_id, message },
+                    let node_roots = node_workdirs(member.as_ref(), settings.as_deref());
+                    let (reply_tx, nodes) = (tx.clone(), node_tools.clone());
+                    tokio::spawn(async move {
+                        let reply = crate::folders::answer_list_dirs(request_id, path.as_deref(), roots.as_deref(), node_roots.as_deref(), nodes.as_ref()).await;
+                        let _ = reply_tx.send(reply);
                     });
                 }
                 Ok(ClientMessage::RequestHistory { request_id, limit, conversation_id }) => {

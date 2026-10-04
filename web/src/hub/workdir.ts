@@ -1,0 +1,43 @@
+// A conversation's working folder (P102) is one string: a path of the hub's own machine ("/srv/work"), or — fatia 2 — a
+// folder on a node, written `node:<device id>:<path>` with the path relative to the folder the node lends ("" is that
+// folder itself). Mirrors `warden_bootstrap::node_folder`.
+
+import type { NodeInfo } from "./messages";
+
+const NODE_PREFIX = "node:";
+
+/** `{ node, path }` of a folder on a node, or `null` for a folder of the hub's own machine. */
+export function parseNodeFolder(workdir: string): { node: string; path: string } | null {
+  if (!workdir.startsWith(NODE_PREFIX)) return null;
+  const rest = workdir.slice(NODE_PREFIX.length);
+  const colon = rest.indexOf(":");
+  if (colon <= 0) return null;
+  return { node: rest.slice(0, colon), path: rest.slice(colon + 1) };
+}
+
+export function nodeFolderRef(node: string, path: string): string {
+  return `${NODE_PREFIX}${node}:${path}`;
+}
+
+const lastName = (path: string): string => path.split("/").filter(Boolean).pop() ?? path;
+
+/** What the chip shows: the folder's name, and which machine when it isn't the hub. */
+export function folderLabel(workdir: string, nodes: NodeInfo[] = []): string {
+  const onNode = parseNodeFolder(workdir);
+  if (!onNode) return lastName(workdir);
+  const machine = nodes.find((n) => n.deviceId === onNode.node)?.name ?? onNode.node;
+  return `${onNode.path ? lastName(onNode.path) : "pasta compartilhada"} · ${machine}`;
+}
+
+/** The full place, for a tooltip or the browser's header. */
+export function folderPlace(workdir: string, nodes: NodeInfo[] = []): string {
+  const onNode = parseNodeFolder(workdir);
+  if (!onNode) return workdir;
+  const machine = nodes.find((n) => n.deviceId === onNode.node)?.name ?? onNode.node;
+  return `${machine}: /${onNode.path}`;
+}
+
+/** The nodes a folder can be picked on: online, approved, switched on, and sharing a folder. */
+export function nodesWithFolders(nodes: NodeInfo[]): NodeInfo[] {
+  return nodes.filter((n) => n.online && n.approved && n.enabled && n.offer?.files);
+}

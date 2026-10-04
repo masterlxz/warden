@@ -65,6 +65,30 @@ pub fn scope_to_project(orchestrator: &Orchestrator, project_id: &str) -> anyhow
     Ok(Some(scoped))
 }
 
+/// A working folder that lives on a node (P102 fatia 2) is written `node:<device id>:<path>`, the path relative to the
+/// folder the node lends (empty is that folder itself). It travels in the same `workdir` string as a folder of the hub's
+/// own machine, whose path always starts with `/` (or a drive letter), so the two can't be mixed up.
+const NODE_FOLDER_PREFIX: &str = "node:";
+
+/// `(node id, path on the node)` of a node folder reference, or `None` for a folder of this machine.
+pub fn node_folder(workdir: &str) -> Option<(&str, &str)> {
+    let (node, path) = workdir.strip_prefix(NODE_FOLDER_PREFIX)?.split_once(':')?;
+    (!node.is_empty()).then_some((node, path))
+}
+
+/// The reference to `path` on node `node`.
+pub fn node_folder_ref(node: &str, path: &str) -> String {
+    format!("{NODE_FOLDER_PREFIX}{node}:{path}")
+}
+
+/// Whether `path` is a path inside a node's lent folder: only plain names, never `..`, `.`, an absolute path or a
+/// backslash. The node checks it again; this keeps a bad reference from being saved or sent.
+pub fn check_node_path(path: &str) -> Result<(), String> {
+    use std::path::{Component, Path};
+    let plain = path.is_empty() || (path.len() <= 512 && !path.contains(['\\', '\0']) && Path::new(path).components().all(|c| matches!(c, Component::Normal(_))));
+    if plain { Ok(()) } else { Err(format!("'{path}' is not a path inside the node's folder")) }
+}
+
 /// What a turn in a working folder (P102) doesn't get: `ssh_exec` and `node_shell` run somewhere else, so no folder
 /// of this machine holds them. `search_history` stays (the conversation is the person's own), and the vault is not
 /// rebound — the notes and skills are still theirs.
@@ -228,6 +252,22 @@ mod tests {
         base.register_tool(Arc::new(ReadFileTool::new(vault)));
         let scoped = scope_to_workdir(&base, a_folder().to_str().unwrap()).unwrap();
         assert_eq!(names(&scoped), ["read_file"], "a member without the shell gets file tools in the folder and nothing more");
+    }
+
+    #[test]
+    fn a_node_folder_reference_tells_a_node_from_a_folder_of_this_machine() {
+        assert_eq!(node_folder("node:node-a-1:projects/web"), Some(("node-a-1", "projects/web")));
+        assert_eq!(node_folder("node:node-a-1:"), Some(("node-a-1", "")), "the top of what the node lends");
+        assert_eq!(node_folder(&node_folder_ref("node-a-1", "x/y")), Some(("node-a-1", "x/y")));
+        for local in ["/home/me/work", "C:\\work", "relative/dir", "node:", "node::x", "node:no-path"] {
+            assert_eq!(node_folder(local), None, "{local}");
+        }
+        for fine in ["", "a", "a/b/c", "name with spaces"] {
+            assert!(check_node_path(fine).is_ok(), "{fine}");
+        }
+        for bad in ["/etc", "../x", "a/../b", "./a", "a\\b", "a//b/.."] {
+            assert!(check_node_path(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

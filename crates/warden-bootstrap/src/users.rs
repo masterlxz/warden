@@ -86,6 +86,29 @@ pub struct UserConfig {
     /// folder is theirs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workdirs: Vec<String>,
+    /// The same for folders on nodes (P102 fatia 2): each entry is a folder inside what node `node` lends, and
+    /// anything inside it. `path` is relative to the node's lent folder (empty is all of it), never `..`. A member
+    /// gets no folder on a node the owner didn't name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_workdirs: Vec<NodeFolder>,
+}
+
+/// A folder on a node a member may work in (`[[users]] node_workdirs`).
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFolder {
+    /// The node's device id (`node-<name>-<8 hex>`).
+    pub node: String,
+    /// Relative to the folder the node lends.
+    #[serde(default)]
+    pub path: String,
+}
+
+impl NodeFolder {
+    /// Whether `path` (relative to node `node`'s lent folder) is this folder or inside it.
+    pub fn covers(&self, node: &str, path: &str) -> bool {
+        self.node == node && std::path::Path::new(path).starts_with(&self.path)
+    }
 }
 
 /// A TruthID identity tied to a member. Saying who it is proves nothing by itself: signing in with
@@ -334,6 +357,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         learning_opt_out: false,
         learning_provider: None,
         workdirs: Vec::new(),
+        node_workdirs: Vec::new(),
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -912,6 +936,27 @@ mod tests {
         assert!(text.contains("learning_provider = \"cheap\""), "{text}");
         assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users[0].learning_provider.as_deref(), Some("cheap"));
         assert_eq!(toml::from_str::<FileConfig>(&plain).unwrap().users[0].learning_provider, None, "a config from before loads");
+    }
+
+    #[test]
+    fn a_members_folders_round_trip_through_toml_stay_out_of_the_file_when_unset_and_cover_what_is_inside() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temp-pass-1").unwrap();
+        let plain = toml::to_string(&config).unwrap();
+        assert!(!plain.contains("workdirs") && !plain.contains("node_workdirs"), "{plain}");
+
+        config.users[0].workdirs = vec!["/srv/work".into()];
+        config.users[0].node_workdirs = vec![NodeFolder { node: "node-a-1".into(), path: "projects".into() }, NodeFolder { node: "node-b-2".into(), path: String::new() }];
+        let text = toml::to_string(&config).unwrap();
+        let back = toml::from_str::<FileConfig>(&text).unwrap();
+        assert_eq!(back.users[0].node_workdirs, config.users[0].node_workdirs, "{text}");
+        assert_eq!(back.users[0].workdirs, ["/srv/work"]);
+        assert_eq!(toml::from_str::<FileConfig>(&plain).unwrap().users[0].node_workdirs, Vec::<NodeFolder>::new(), "a config from before loads");
+
+        let [projects, all] = &config.users[0].node_workdirs[..] else { panic!() };
+        assert!(projects.covers("node-a-1", "projects") && projects.covers("node-a-1", "projects/web/src"));
+        assert!(!projects.covers("node-a-1", "projects-not") && !projects.covers("node-a-1", "") && !projects.covers("node-c-3", "projects"));
+        assert!(all.covers("node-b-2", "") && all.covers("node-b-2", "anything/at/all") && !all.covers("node-a-1", ""));
     }
 
     #[test]

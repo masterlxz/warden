@@ -16,6 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use warden_bootstrap::{load_config_from_path, NodeAccessConfig};
+use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::ssh::AuditLog;
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
@@ -54,6 +55,12 @@ struct Usable {
 
 impl NodeContext {
     fn usable(&self) -> Vec<Usable> {
+        self.usable_for(false)
+    }
+
+    /// `any_agent`: browsing a node's folders to pick one isn't an agent's call, so the per-agent list doesn't apply
+    /// (it does, on every call, once a turn works in the folder).
+    fn usable_for(&self, any_agent: bool) -> Vec<Usable> {
         let online = self.registry.online();
         if online.is_empty() {
             return Vec::new();
@@ -63,7 +70,7 @@ impl NodeContext {
             .into_iter()
             .filter_map(|(id, node)| {
                 let access = config.nodes.iter().find(|n| n.id == id && n.enabled)?.clone();
-                let open = access.agents.is_empty() || self.agent.as_ref().is_some_and(|a| access.agents.contains(a));
+                let open = any_agent || access.agents.is_empty() || self.agent.as_ref().is_some_and(|a| access.agents.contains(a));
                 let approved = matches!(PairingStore::new(self.devices_path.clone()).status(&id), Ok(Some(PairingStatus::Approved)));
                 (open && approved).then_some(Usable { id, node, access })
             })
@@ -81,7 +88,13 @@ impl NodeContext {
     }
 
     async fn approve(&self, node: &Usable, action: &str, detail: String) -> anyhow::Result<()> {
-        if !node.access.require_approval {
+        self.approve_when(node.access.require_approval, node, action, detail).await
+    }
+
+    /// `ask`: whether a person's yes is needed (the node's own `require_approval`, or always for a shell command in a
+    /// working folder, as in a folder of the hub's own machine).
+    async fn approve_when(&self, ask: bool, node: &Usable, action: &str, detail: String) -> anyhow::Result<()> {
+        if !ask {
             return Ok(());
         }
         let Some(approver) = &self.approver else {
@@ -190,6 +203,208 @@ impl NodeToolFactory {
     }
 }
 
+/// What a node's `list_dirs` answered (P102 fatia 2): the folder it really opened, relative to the folder it lends, and the
+/// folders in it as `(name, path)`.
+#[derive(Debug, PartialEq)]
+pub struct NodeDirs {
+    pub path: String,
+    pub dirs: Vec<(String, String)>,
+}
+
+impl NodeToolFactory {
+    /// The name a connected node goes by, for a list a person reads.
+    pub fn node_name(&self, id: &str) -> Option<String> {
+        self.ctx.registry.online().into_iter().find(|(node, _)| node == id).map(|(_, node)| node.name)
+    }
+
+    /// The folders inside `path` of what node `node` lends, from the node itself. For picking a working folder, so it
+    /// needs the node online, approved and switched on, offering files — but no agent. Logged like every node call.
+    pub async fn list_dirs(&self, node: &str, path: &str) -> anyhow::Result<NodeDirs> {
+        warden_bootstrap::check_node_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let usable = self.ctx.usable_for(true);
+        let found = usable.into_iter().find(|u| u.id == node).ok_or_else(|| anyhow::anyhow!("no node '{node}' you can use right now — it must be online, approved and switched on"))?;
+        anyhow::ensure!(found.node.offer.files, "node '{node}' doesn't share a folder, so it has none to work in");
+        let args = json!({ "path": path });
+        let result = call_node(&found, "list_dirs", args.clone(), FILE_TIMEOUT).await;
+        self.ctx.log(node, "list_dirs", &args, &result);
+        let reply = result?;
+        let dirs = reply["dirs"]
+            .as_array()
+            .map(|dirs| dirs.iter().filter_map(|d| Some((d["name"].as_str()?.to_string(), d["path"].as_str()?.to_string()))).collect())
+            .ok_or_else(|| anyhow::anyhow!("node '{node}' answered a folder list the hub can't read (an older node?)"))?;
+        let path = reply["path"].as_str().ok_or_else(|| anyhow::anyhow!("node '{node}' answered with no path"))?.to_string();
+        // Whatever the node says, it is not a path out of its folder.
+        warden_bootstrap::check_node_path(&path).map_err(|e| anyhow::anyhow!(e))?;
+        Ok(NodeDirs { path, dirs })
+    }
+
+    /// Scopes `orchestrator` to the folder `path` of what node `node` lends, for one turn of a conversation that
+    /// works there (P102 fatia 2): the same shape as `warden_bootstrap::scope_to_workdir` for a folder of this machine,
+    /// but `read_file`, `write_file` and `shell` are the node's. They go through the node tools' rules on every call
+    /// (online, approved, switched on, open to `agent`, a yes when the node asks, logged), and the shell asks before every
+    /// command whatever the node says. `approver` is who can be asked — a member has none, so for them that is a refusal.
+    /// The vault is not rebound: the notes and skills stay. `ssh_exec` and `node_shell` are withheld, as in a local folder.
+    pub fn scope_folder(&self, orchestrator: &Orchestrator, node: &str, path: &str, agent: Option<&str>, approver: Option<Arc<dyn Approver>>) -> Orchestrator {
+        let has = |name: &str| orchestrator.tools().iter().any(|tool| tool.spec().name == name);
+        let (read, write, shell) = (has("read_file"), has("write_file"), has("shell"));
+        let allowed: Vec<String> = orchestrator
+            .tools()
+            .iter()
+            .map(|tool| tool.spec().name)
+            .filter(|name| !["read_file", "write_file", "shell", "ssh_exec", "node_shell"].contains(&name.as_str()))
+            .collect();
+        let mut ctx = self.ctx.clone();
+        ctx.agent = agent.map(str::to_string);
+        ctx.approver = approver;
+        let proxy = |op| Arc::new(NodeFolderTool { ctx: ctx.clone(), node: node.to_string(), path: path.to_string(), op }) as Arc<dyn Tool>;
+        let mut scoped = orchestrator.with_allowed_tools(Some(&allowed));
+        for (wanted, op) in [(read, FolderOp::Read), (write, FolderOp::Write), (shell, FolderOp::Shell)] {
+            if wanted {
+                scoped = scoped.with_tool(proxy(op));
+            }
+        }
+        let name = self.node_name(node).unwrap_or_else(|| node.to_string());
+        let place = if path.is_empty() { "the folder it shares".to_string() } else { format!("the folder '{path}' of the folder it shares") };
+        let mut briefing = format!("This conversation works in {place}, on the other machine '{name}' (node '{node}'). ");
+        briefing.push_str(match (read || write, shell) {
+            (true, true) => "Your read_file and write_file tools act on that folder (paths are relative to it) and cannot leave it; your shell runs on that machine starting there, and the person approves every command. ",
+            (true, false) => "Your read_file and write_file tools act on that folder (paths are relative to it) and cannot leave it. ",
+            (false, true) => "Your shell runs on that machine starting there, and the person approves every command. ",
+            (false, false) => "",
+        });
+        briefing.push_str("The person's own notes and skills are still in your context as always, but the file tools no longer reach them. If the machine goes offline the tools fail until it is back.");
+        scoped.with_briefing(briefing)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FolderOp {
+    Read,
+    Write,
+    Shell,
+}
+
+/// `read_file`, `write_file` and `shell` of a conversation that works in a folder on a node: the same names and
+/// arguments the model already knows, run on the node inside that folder.
+struct NodeFolderTool {
+    ctx: NodeContext,
+    node: String,
+    /// The folder, relative to what the node lends.
+    path: String,
+    op: FolderOp,
+}
+
+/// `sub` inside the folder `folder` (both relative to the node's lent folder). `sub` can only name things inside.
+fn inside_folder(folder: &str, sub: &str) -> anyhow::Result<String> {
+    warden_bootstrap::check_node_path(sub).map_err(|e| anyhow::anyhow!("{e}: it has to stay inside the working folder"))?;
+    Ok(match (folder.is_empty(), sub.is_empty()) {
+        (_, true) => folder.to_string(),
+        (true, false) => sub.to_string(),
+        (false, false) => format!("{folder}/{sub}"),
+    })
+}
+
+impl NodeFolderTool {
+    async fn run(&self, args: &Value) -> anyhow::Result<Value> {
+        match self.op {
+            FolderOp::Read => {
+                let node = self.ctx.pick(&self.node, Need::Files)?;
+                let path = inside_folder(&self.path, str_arg(args, "path")?)?;
+                anyhow::ensure!(!path.is_empty() && path != self.path, "'path' has to name a file");
+                self.ctx.approve(&node, "read_file", format!("Read '{path}' on node '{}' ({})", node.id, node.node.name)).await?;
+                call_node(&node, "read_file", json!({ "path": path }), FILE_TIMEOUT).await
+            }
+            FolderOp::Write => {
+                let node = self.ctx.pick(&self.node, Need::Files)?;
+                let path = inside_folder(&self.path, str_arg(args, "path")?)?;
+                anyhow::ensure!(!path.is_empty() && path != self.path, "'path' has to name a file");
+                let content = str_arg(args, "content")?;
+                let detail = format!("Write '{path}' on node '{}' ({}):\n\n{}", node.id, node.node.name, preview(content));
+                self.ctx.approve(&node, "write_file", detail).await?;
+                call_node(&node, "write_file", json!({ "path": path, "content": content }), FILE_TIMEOUT).await
+            }
+            FolderOp::Shell => {
+                let node = self.ctx.pick(&self.node, Need::Shell)?;
+                anyhow::ensure!(node.node.offer.files, "node '{}' doesn't share a folder", node.id);
+                let command = str_arg(args, "command")?;
+                let cwd = inside_folder(&self.path, args.get("cwd").and_then(Value::as_str).unwrap_or(""))?;
+                let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(DEFAULT_SHELL_TIMEOUT_MS).min(MAX_SHELL_TIMEOUT_MS);
+                let place = if cwd.is_empty() { "the shared folder".to_string() } else { format!("'{cwd}'") };
+                let detail = format!("Run on node '{}' ({}) in {place}:\n\n{command}", node.id, node.node.name);
+                // Always asked, as the shell of a folder on this machine is: not only when the node asks for every call.
+                self.ctx.approve_when(true, &node, "shell", detail).await?;
+                let mut local = json!({ "command": command, "timeout_ms": timeout_ms });
+                if !cwd.is_empty() {
+                    local["cwd"] = json!(cwd);
+                }
+                call_node(&node, "shell", local, Duration::from_millis(timeout_ms) + TIMEOUT_MARGIN).await
+            }
+        }
+    }
+
+    fn rebuilt(&self, ctx: NodeContext) -> Arc<dyn Tool> {
+        Arc::new(Self { ctx, node: self.node.clone(), path: self.path.clone(), op: self.op })
+    }
+}
+
+#[async_trait]
+impl Tool for NodeFolderTool {
+    fn spec(&self) -> ToolSpec {
+        let (name, description, parameters) = match self.op {
+            FolderOp::Read => (
+                "read_file",
+                "Read a text file from the working folder by its path relative to that folder.",
+                json!({ "type": "object", "properties": { "path": { "type": "string", "description": "Path relative to the working folder, e.g. 'notes/todo.md'" } }, "required": ["path"] }),
+            ),
+            FolderOp::Write => (
+                "write_file",
+                "Write (create or overwrite) a text file in the working folder at the given path relative to that folder.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path relative to the working folder, e.g. 'notes/todo.md'" },
+                        "content": { "type": "string", "description": "Full file content to write" }
+                    },
+                    "required": ["path", "content"]
+                }),
+            ),
+            FolderOp::Shell => (
+                "shell",
+                "Run a shell command on the machine that holds the working folder, starting in it, and get its exit code, stdout and stderr. The person approves every command.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "The command line to run." },
+                        "cwd": { "type": "string", "description": "A folder inside the working folder to start in. Defaults to the working folder." },
+                        "timeout_ms": { "type": "number", "description": "Max time for the command, in milliseconds. Defaults to 30000, capped at 300000." }
+                    },
+                    "required": ["command"]
+                }),
+            ),
+        };
+        ToolSpec { name: name.to_string(), description: description.to_string(), parameters }
+    }
+
+    fn scoped_to_agent(&self, agent: Option<&str>) -> Option<Arc<dyn Tool>> {
+        let mut ctx = self.ctx.clone();
+        ctx.agent = agent.map(str::to_string);
+        Some(self.rebuilt(ctx))
+    }
+
+    fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        let mut ctx = self.ctx.clone();
+        ctx.approver = Some(approver);
+        Some(self.rebuilt(ctx))
+    }
+
+    async fn call(&self, args: Value) -> anyhow::Result<Value> {
+        let name = self.spec().name;
+        let result = self.run(&args).await;
+        self.ctx.log(&self.node, &name, &for_log(&args), &result);
+        result
+    }
+}
+
 /// `"Casa PC"` → `"casa-pc"`: what the model sees before `__` in a node's MCP tools.
 pub fn node_slug(name: &str) -> String {
     let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
@@ -211,6 +426,19 @@ fn mcp_tool_name(slug: &str, node_id: &str, tool: &str, taken: &[String]) -> Str
     }
     let tail: String = node_id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().filter(|c| c.is_ascii_alphanumeric()).collect();
     fit(&format!("{slug}-{tail}"))
+}
+
+/// Sends `local_tool(args)` to the node and waits. A node that drops mid-call fails it at once, and it is never
+/// retried: a shell command isn't safe to run twice.
+async fn call_node(node: &Usable, local_tool: &str, args: Value, timeout: Duration) -> anyhow::Result<Value> {
+    node.node.channel.call(local_tool.to_string(), args, timeout).await.map_err(|err| {
+        let text = format!("{err:#}");
+        if text.contains("connection closed") {
+            anyhow::anyhow!("node '{}' disconnected in the middle of the call; it was not retried", node.id)
+        } else {
+            anyhow::anyhow!("node '{}': {text}", node.id)
+        }
+    })
 }
 
 fn str_arg<'a>(args: &'a Value, name: &str) -> anyhow::Result<&'a str> {
@@ -293,14 +521,7 @@ impl NodeTool {
     /// Sends `local_tool(args)` to the node and waits. A node that drops mid-call fails it at once,
     /// and it is never retried: a shell command isn't safe to run twice.
     async fn run_on(&self, node: &Usable, local_tool: &str, args: Value, timeout: Duration) -> anyhow::Result<Value> {
-        node.node.channel.call(local_tool.to_string(), args, timeout).await.map_err(|err| {
-            let text = format!("{err:#}");
-            if text.contains("connection closed") {
-                anyhow::anyhow!("node '{}' disconnected in the middle of the call; it was not retried", node.id)
-            } else {
-                anyhow::anyhow!("node '{}': {text}", node.id)
-            }
-        })
+        call_node(node, local_tool, args, timeout).await
     }
 
     async fn call_op(&self, args: &Value) -> anyhow::Result<(String, Value)> {

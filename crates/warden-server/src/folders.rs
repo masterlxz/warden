@@ -10,7 +10,11 @@
 
 use std::path::{Path, PathBuf};
 
+use warden_bootstrap::users::NodeFolder;
 use warden_server_protocol::protocol::DirEntryDto;
+use warden_server_protocol::ServerMessage;
+
+use crate::node_tools::NodeToolFactory;
 
 /// The most folders one listing returns: a folder with more is cut, not paged (this is a picker, not a file manager).
 const MAX_DIRS: usize = 500;
@@ -89,6 +93,80 @@ pub fn list_dirs(roots: Option<&[String]>, path: Option<&str>) -> Result<Listing
         None => dir.parent().map(text),
     };
     read(&dir, parent)
+}
+
+/// Whether the person may work in `path` on node `node` (P102 fatia 2): the owner anywhere the node lends, a member only
+/// inside the folders of that node the owner named for them. `path` is the one the node *resolved* (`NodeDirs::path`),
+/// so a link can't lead a member out of what was named.
+pub fn check_node_workdir(entries: Option<&[NodeFolder]>, node: &str, path: &str) -> Result<(), String> {
+    match entries {
+        Some(entries) if !entries.iter().any(|e| e.covers(node, path)) => Err("that is not a folder on a node you can work in".to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// What a `ListDirs` of a node folder answers with, from what the node resolved and listed: every path becomes a node
+/// reference (`node:<id>:<path>`). A member only sees what the owner named for them, and from one of those folders the
+/// way up is the list of them (`parent` empty), as for the folders of the hub's own machine.
+pub fn node_listing(entries: Option<&[NodeFolder]>, node: &str, path: &str, dirs: Vec<(String, String)>) -> Result<Listing, String> {
+    check_node_workdir(entries, node, path)?;
+    let at_a_root = entries.is_some_and(|entries| entries.iter().any(|e| e.node == node && Path::new(&e.path) == Path::new(path)));
+    let parent = if at_a_root {
+        Some(String::new())
+    } else if path.is_empty() {
+        None
+    } else {
+        Some(warden_bootstrap::node_folder_ref(node, &Path::new(path).parent().map(text).unwrap_or_default()))
+    };
+    let dirs = dirs.into_iter().map(|(name, path)| DirEntryDto { name, path: warden_bootstrap::node_folder_ref(node, &path) }).collect();
+    Ok(Listing { path: warden_bootstrap::node_folder_ref(node, path), parent, dirs })
+}
+
+/// The folders on nodes a member starts from, next to their folders of the hub's machine. `name_of` gives a node's name
+/// when it is connected.
+pub fn member_node_start(entries: &[NodeFolder], name_of: &dyn Fn(&str) -> Option<String>) -> Vec<DirEntryDto> {
+    entries
+        .iter()
+        .map(|e| {
+            let place = Path::new(&e.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "shared folder".to_string());
+            DirEntryDto { name: format!("{} · {place}", name_of(&e.node).unwrap_or_else(|| e.node.clone())), path: warden_bootstrap::node_folder_ref(&e.node, &e.path) }
+        })
+        .collect()
+}
+
+/// Answers a `ListDirs` (P102): the folders of the hub's machine, or — when `path` is a node reference — of a node, asked
+/// of the node itself. `roots` and `node_roots` are `None` for the owner and what the owner named for a member. A member's
+/// start (no path) is their folders of both kinds.
+pub async fn answer_list_dirs(request_id: u64, path: Option<&str>, roots: Option<&[String]>, node_roots: Option<&[NodeFolder]>, nodes: Option<&NodeToolFactory>) -> ServerMessage {
+    let listing = match path.and_then(warden_bootstrap::node_folder) {
+        Some((node, on_node)) => match nodes {
+            None => Err("this hub has no nodes".to_string()),
+            Some(nodes) => match nodes.list_dirs(node, on_node).await {
+                // What the node resolved is what is judged, and what the person gets.
+                Ok(listed) => node_listing(node_roots, node, &listed.path, listed.dirs),
+                Err(err) => Err(format!("{err:#}")),
+            },
+        },
+        None => list_dirs(roots, path).map(|mut listing| {
+            if let (None | Some(""), Some(entries)) = (path, node_roots) {
+                listing.dirs.extend(member_node_start(entries, &|id| nodes.and_then(|n| n.node_name(id))));
+            }
+            listing
+        }),
+    };
+    match listing {
+        Ok(listing) => ServerMessage::DirList { request_id, path: listing.path, parent: listing.parent, dirs: listing.dirs },
+        Err(message) => ServerMessage::DirError { request_id, message },
+    }
+}
+
+/// Whether a conversation may run in the folder `path` of node `node` (P102 fatia 2), asked of the node: it has to be a
+/// folder there, inside what it lends, and — for a member — inside what the owner named. Run on every turn.
+pub async fn check_node_folder(nodes: Option<&NodeToolFactory>, entries: Option<&[NodeFolder]>, node: &str, path: &str) -> Result<(), String> {
+    warden_bootstrap::check_node_path(path)?;
+    let nodes = nodes.ok_or_else(|| "this hub has no nodes".to_string())?;
+    let listed = nodes.list_dirs(node, path).await.map_err(|e| format!("{e:#}"))?;
+    check_node_workdir(entries, node, &listed.path)
 }
 
 fn read(dir: &Path, parent: Option<String>) -> Result<Listing, String> {
@@ -183,6 +261,63 @@ mod tests {
         // A member the owner gave no folder has none to pick.
         assert!(names(&list_dirs(Some(&[]), None).unwrap()).is_empty());
         assert!(check_workdir(Some(&[]), &text(&root.join("allowed"))).is_err());
+    }
+
+    fn entry(node: &str, path: &str) -> NodeFolder {
+        NodeFolder { node: node.into(), path: path.into() }
+    }
+
+    fn pairs(names: &[&str], under: &str) -> Vec<(String, String)> {
+        names.iter().map(|n| (n.to_string(), if under.is_empty() { n.to_string() } else { format!("{under}/{n}") })).collect()
+    }
+
+    #[test]
+    fn the_owner_browses_a_nodes_folder_with_node_references_and_a_way_up() {
+        let top = node_listing(None, "node-a-1", "", pairs(&["docs", "src"], "")).unwrap();
+        assert_eq!((top.path.as_str(), top.parent.clone()), ("node:node-a-1:", None), "the top of what the node lends has no way up");
+        assert_eq!(top.dirs[0], DirEntryDto { name: "docs".into(), path: "node:node-a-1:docs".into() });
+
+        let deeper = node_listing(None, "node-a-1", "docs/old", pairs(&["x"], "docs/old")).unwrap();
+        assert_eq!(deeper.path, "node:node-a-1:docs/old");
+        assert_eq!(deeper.parent.as_deref(), Some("node:node-a-1:docs"));
+        let one_down = node_listing(None, "node-a-1", "docs", Vec::new()).unwrap();
+        assert_eq!(one_down.parent.as_deref(), Some("node:node-a-1:"), "from a folder at the top the way up is the top");
+    }
+
+    #[test]
+    fn a_member_sees_and_uses_only_the_node_folders_named_for_them() {
+        let named = [entry("node-a-1", "projects"), entry("node-b-2", "")];
+        let named = Some(&named[..]);
+
+        assert!(check_node_workdir(named, "node-a-1", "projects").is_ok());
+        assert!(check_node_workdir(named, "node-a-1", "projects/web/src").is_ok(), "inside a named folder");
+        assert!(check_node_workdir(named, "node-b-2", "anything/at/all").is_ok(), "an empty path names all the node lends");
+        for (node, path) in [("node-a-1", ""), ("node-a-1", "other"), ("node-a-1", "projects-not"), ("node-c-3", "projects")] {
+            assert!(check_node_workdir(named, node, path).is_err(), "{node}:{path}");
+        }
+        assert!(check_node_workdir(Some(&[]), "node-a-1", "projects").is_err(), "none named, none allowed");
+
+        // At a named folder the way up is the list of them; below it, the folder above.
+        let at_root = node_listing(named, "node-a-1", "projects", pairs(&["web"], "projects")).unwrap();
+        assert_eq!(at_root.parent.as_deref(), Some(""));
+        let below = node_listing(named, "node-a-1", "projects/web", Vec::new()).unwrap();
+        assert_eq!(below.parent.as_deref(), Some("node:node-a-1:projects"));
+        let all_of_b = node_listing(named, "node-b-2", "", Vec::new()).unwrap();
+        assert_eq!(all_of_b.parent.as_deref(), Some(""), "a member whose folder is the whole node can't go above it either");
+        assert!(node_listing(named, "node-a-1", "other", Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_member_starts_from_their_folders_on_nodes_by_the_nodes_name_when_it_is_connected() {
+        let named = [entry("node-a-1", "projects/web"), entry("node-b-2", "")];
+        let start = member_node_start(&named, &|id| (id == "node-a-1").then(|| "Home PC".to_string()));
+        assert_eq!(
+            start,
+            vec![
+                DirEntryDto { name: "Home PC · web".into(), path: "node:node-a-1:projects/web".into() },
+                DirEntryDto { name: "node-b-2 · shared folder".into(), path: "node:node-b-2:".into() },
+            ]
+        );
     }
 
     #[cfg(unix)]

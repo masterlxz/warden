@@ -217,6 +217,12 @@ impl Orchestrator {
         Self { project_briefing: Some(Arc::from(briefing)), ..self.clone() }
     }
 
+    /// Whether this turn was told a briefing (a project's, or a working folder's): how a caller that must not run
+    /// without one (P102, a folder on a node) can tell the setup was done.
+    pub fn has_briefing(&self) -> bool {
+        self.project_briefing.is_some()
+    }
+
     /// Returns a copy of this orchestrator that only has the tools named in `allowed` (P46, tool
     /// isolation per agent); `None` keeps every tool. A tool outside the list is gone, not just
     /// hidden: the model can't be offered it and a call to it fails as an unknown tool. Tools that

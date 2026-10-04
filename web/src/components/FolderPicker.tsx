@@ -1,18 +1,22 @@
 import { useEffect, useState } from "react";
-import type { DirListing } from "../hub/messages";
+import type { DirListing, NodeInfo } from "../hub/messages";
+import { folderPlace, nodeFolderRef, parseNodeFolder } from "../hub/workdir";
 
 interface Props {
-  /** The hub's folders inside a path (P102); no path starts where the person may. */
+  /** The folders inside a path (P102): of the hub's machine, or of a node when the path is `node:<id>:<path>`. No path
+   * starts where the person may. */
   listDirs: (path?: string) => Promise<DirListing>;
+  /** The machines other than the hub a folder can be picked on (fatia 2): only the owner has any to choose from. */
+  nodes?: NodeInfo[];
   /** Where the browser opens: the conversation's current choice, or the start. */
   initialPath?: string;
   onPick: (path: string) => void;
   onCancel: () => void;
 }
 
-/** Browses the folders of the hub's machine, to choose the folder a conversation works in (P102). The hub lists folders
- * only; a member sees just the ones the owner allowed them, so at the top their list has no path to pick. */
-export default function FolderPicker({ listDirs, initialPath, onPick, onCancel }: Props) {
+/** Browses the folders of the hub's machine, or of a node, to choose the folder a conversation works in (P102). The hub
+ * lists folders only; a member sees just the ones the owner allowed them, so at the top their list has no path to pick. */
+export default function FolderPicker({ listDirs, nodes = [], initialPath, onPick, onCancel }: Props) {
   const [listing, setListing] = useState<DirListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,6 +45,8 @@ export default function FolderPicker({ listDirs, initialPath, onPick, onCancel }
   }, []);
 
   const here = listing?.path ?? "";
+  // Which machine the list is of: the hub, or the node the path names.
+  const machine = parseNodeFolder(here)?.node ?? "";
   return (
     <div className="approval-backdrop" role="dialog" aria-modal="true" aria-labelledby="folder-picker-title">
       <div className="approval-card folder-picker">
@@ -48,10 +54,27 @@ export default function FolderPicker({ listDirs, initialPath, onPick, onCancel }
           Escolher a pasta de trabalho
         </h2>
         <p className="approval-more">
-          A IA lê e escreve nessa pasta do computador do hub, e o shell começa nela (cada comando pede o seu sim). Vale para a conversa toda e não muda depois.
+          A IA lê e escreve nessa pasta, e o shell começa nela (cada comando pede o seu sim). Vale para a conversa toda e não muda depois.
         </p>
+        {nodes.length > 0 && (
+          <label className="agent-picker folder-picker-machine">
+            <span className="agent-picker-label">Máquina</span>
+            <select
+              value={machine}
+              disabled={loading}
+              onChange={(e) => open(e.target.value ? nodeFolderRef(e.target.value, "") : undefined)}
+            >
+              <option value="">Hub</option>
+              {nodes.map((n) => (
+                <option key={n.deviceId} value={n.deviceId}>
+                  {n.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="folder-picker-here" title={here}>
-          {here || "Suas pastas"}
+          {here ? folderPlace(here, nodes) : "Suas pastas"}
         </div>
         {error && (
           <p className="folder-picker-error" role="alert">

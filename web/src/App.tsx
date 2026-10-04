@@ -23,7 +23,8 @@ import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type Approv
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
-import type { Attachment, CodeMode, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
+import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
+import { folderLabel, folderPlace, nodesWithFolders, parseNodeFolder } from "./hub/workdir";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
 const HISTORY_LIMIT = 200;
@@ -103,6 +104,8 @@ export default function App() {
    * message, fixed after, and never together with a project. */
   const [workdir, setWorkdir] = useState("");
   const [pickingFolder, setPickingFolder] = useState(false);
+  /** The nodes (P93), for the folder picker and for naming a folder on one. Only the owner can list them. */
+  const [knownNodes, setKnownNodes] = useState<NodeInfo[]>([]);
   /** How much each code conversation asks (P103 b). Only here, never saved: a conversation opened again asks everything. */
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
   /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
@@ -415,6 +418,27 @@ export default function App() {
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
     }
   }
+
+  /** Opens the folder browser (P102). The owner also gets the nodes to pick a folder on; a member's hub list already has
+   * the node folders named for them, and they can't list nodes. */
+  async function openFolderPicker() {
+    const connection = connRef.current;
+    if (connection && !user) {
+      try {
+        setKnownNodes(await connection.listNodes());
+      } catch {
+        // No nodes to offer: the hub's own folders are still there.
+      }
+    }
+    setPickingFolder(true);
+  }
+
+  // A folder on a node is named by the node's name: asked once the owner opens a conversation that has one.
+  useEffect(() => {
+    const connection = connRef.current;
+    if (!connection || user || knownNodes.length > 0 || !parseNodeFolder(workdir)) return;
+    connection.listNodes().then(setKnownNodes).catch(() => {});
+  }, [workdir, user, knownNodes.length]);
 
   /** The picker's choice, at once — a task that is running included, which is the point of changing it mid-way. */
   function handleCodeMode(mode: CodeMode) {
@@ -737,12 +761,12 @@ export default function App() {
                   <div className="agent-picker">
                     <span className="agent-picker-label">Pasta</span>
                     {conversations.some((c) => c.id === activeId) ? (
-                      <span className="folder-chip" title={workdir}>
-                        {workdir.split("/").filter(Boolean).pop() ?? workdir}
+                      <span className="folder-chip" title={folderPlace(workdir, knownNodes)}>
+                        {folderLabel(workdir, knownNodes)}
                       </span>
                     ) : (
-                      <button type="button" className="link-button folder-chip" onClick={() => setPickingFolder(true)} title={workdir || "Escolher uma pasta do computador do hub para a IA trabalhar"}>
-                        {workdir ? (workdir.split("/").filter(Boolean).pop() ?? workdir) : "Nenhuma"}
+                      <button type="button" className="link-button folder-chip" onClick={() => void openFolderPicker()} title={workdir ? folderPlace(workdir, knownNodes) : "Escolher uma pasta do hub ou de um nó para a IA trabalhar"}>
+                        {workdir ? folderLabel(workdir, knownNodes) : "Nenhuma"}
                       </button>
                     )}
                     {workdir && !conversations.some((c) => c.id === activeId) && (
@@ -773,6 +797,7 @@ export default function App() {
               {pickingFolder && connRef.current && (
                 <FolderPicker
                   listDirs={(path) => connRef.current!.listDirs(path)}
+                  nodes={nodesWithFolders(knownNodes)}
                   initialPath={workdir || undefined}
                   onPick={(path) => {
                     setWorkdir(path);
