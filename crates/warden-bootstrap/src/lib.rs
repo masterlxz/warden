@@ -48,6 +48,7 @@ pub mod recovery;
 pub mod node_model;
 pub mod message_agent;
 pub mod project_scope;
+pub mod saved_hubs;
 pub mod settings;
 pub mod skill_gen;
 pub mod spend;

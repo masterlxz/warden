@@ -286,6 +286,15 @@ export interface DiscoveredHub {
   secureUrl: string | null;
 }
 
+/** Mirrors `hub_cmds::HubPayload` (P102) — a hub this computer is a client of: a name and the address of the web
+ * interface it serves, and whether its window is open now. */
+export interface SavedHub {
+  id: string;
+  name: string;
+  url: string;
+  open: boolean;
+}
+
 /** Mirrors `warden_bootstrap::EmbeddedServerConfig` (via
  * `server_cmds::EmbeddedServerConfigPayload`, Fase 9.1 follow-up "virar o hub desta rede") — the
  * persisted port/auth key/name for the desktop's own embedded `warden-server`. `enabled` isn't

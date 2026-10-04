@@ -23,6 +23,8 @@ tokio = { workspace = true, features = ["time"] }
 toml.workspace = true
 # P82: saving `config.toml` without dropping the user's comments (`config_file.rs`).
 toml_edit.workspace = true
+# P102: the address of a saved hub (`saved_hubs.rs`) — already in the tree through the WebSocket stack.
+url = "2"
 # P84 fatia 4: wipes a member's key from memory when it's no longer in use.
 zeroize = "1"
 # P84 fatia 4 parte B: the owner's recovery key is a secp256k1 pair (`recovery.rs`), sealed to with the

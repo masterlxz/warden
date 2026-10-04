@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ApiKeyField } from "./SettingsView";
+import HubsSection from "./HubsSection";
 import type { DiscoveredHub, EmbeddedServerConfig, EmbeddedServerStatus, HubPairingConfig, PairedDevice } from "../types";
 
 const STOPPED_STATUS: EmbeddedServerStatus = { running: false, boundAddr: null, serverName: null, secure: false, secureUrl: null, webUrl: null };
@@ -1376,6 +1377,8 @@ function WorkspaceView() {
       </p>
 
       <EmbeddedServerSection />
+
+      <HubsSection />
 
       <HubPairingQrSection />
 

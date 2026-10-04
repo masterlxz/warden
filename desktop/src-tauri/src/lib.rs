@@ -3,6 +3,7 @@ mod bot_cmds;
 mod approval;
 mod code_cmds;
 mod git_sync_cmds;
+mod hub_cmds;
 mod lend_cmds;
 mod node_cmds;
 mod people_cmds;
@@ -1059,6 +1060,11 @@ pub fn run() {
             workspace_cmds::save_hub_pairing_config,
             workspace_cmds::hub_pairing_qr_svg,
             workspace_cmds::discover_hubs,
+            hub_cmds::list_hubs,
+            hub_cmds::save_hub,
+            hub_cmds::ensure_hub,
+            hub_cmds::remove_hub,
+            hub_cmds::open_hub_window,
             server_cmds::get_embedded_server_config,
             server_cmds::generate_embedded_server_auth_key,
             server_cmds::save_embedded_server_config,
