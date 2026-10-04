@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 141)
+> Última atualização: 2026-10-04 (Sessão 142)
+
+---
+
+### 2026-10-04 — Sessão 142
+
+- **Objetivo**: terminar o webhook de entrada (P105): a assinatura HMAC e as telas na web e no desktop. Plano aprovado, em **três commits**: (1) o backend, o HMAC e o protocolo; (2) a tela da web; (3) a tela do desktop e o hub embutido. **Esta entrada cobre o primeiro**; as outras duas partes acrescentam seus itens aqui. Sem teste prático nem de tela, a pedido do usuário.
+- **Decisões do usuário** (no plano): GitHub e Stripe agora, Slack depois; um modo por webhook (token ou HMAC); segredo em texto puro no arquivo `0600`; a web e o desktop ganham a tela.
+- **Feito (commit 1)**: `auth = "token" | "hmac"` no `[[webhooks]]` (`WebhookAuth`; só o `hmac` é gravado); credenciais com `kind` e segredo `whsec_…` em texto puro (`webhook_tokens.rs`, com `rename`); a verificação GitHub (`X-Hub-Signature-256`) e Stripe (`Stripe-Signature`, janela de 5 min) em `webhook_signature.rs`, com o crate `hmac` 0.12; a rota lê o corpo antes da prova só para um webhook com segredo; o tipo da credencial tem de bater com o `auth` do config; entregas repetidas (`X-GitHub-Delivery`, `Idempotency-Key`) rodam uma vez; o protocolo (`WebhookDto`, `WebhookInfoDto`, `ListWebhooks`, `SaveWebhook`, `SetWebhookEnabled`, `DeleteWebhook`, `CreateWebhookCredential`, `RevokeWebhookCredential` e as respostas `WebhookList`, `WebhookCreated`, `WebhookError`) e o `webhook_admin.rs` no molde do `task_admin.rs`; um membro é recusado; o CLI ganhou `--auth hmac` e o `token` cria o que o webhook pede. Regras e limites em `ARCHITECTURE.md`, "Assinatura HMAC e administração pelos clientes".
+- **Testes**: vetores de assinatura gerados com o `hmac` do **Python** (mais o exemplo da documentação do GitHub), para não conferir o crate contra ele mesmo; 5 unitários da assinatura, 6 das credenciais, 2 do bootstrap, 1 de JSON do protocolo; no hub, `tests/webhooks.rs` foi de 9 para **20** casos (assinaturas, entrega repetida, tipo da credencial, e a administração inteira pelo protocolo). **Mutações**, cada uma derruba o teste certo (todas desfeitas): aceitar qualquer assinatura, ignorar a janela do Stripe, ignorar a entrega repetida, ignorar o tipo da credencial, não conferir a chave de pareamento, manter a credencial ao mudar o modo, não levar a credencial na renomeação, não revogar ao apagar. Também o CLI inteiro no modo HMAC contra um config temporário.
+- **Verificado**: suíte inteira com o desktop (`cargo test --workspace --no-fail-fast`): **1247 passaram, 0 falharam, 8 ignorados** (22 a mais que na Sessão 141); clippy do workspace sem aviso novo (só o antigo do `learning_eval.rs`).
+- **Limites (documentados)**: o segredo fica em texto puro (quem ler o `webhook_tokens.json` consegue assinar chamadas); o tempo de resposta de um id com segredo difere do de um desconhecido pela leitura do corpo; a memória de entregas é do processo.
+- **Fica**: o Slack; as telas (commits 2 e 3); ligar o `.with_webhooks` no hub embutido do desktop.
 
 ---
 

@@ -54,6 +54,7 @@ use crate::tls::HubTls;
 use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyChange};
 use crate::api_keys::ApiKeyStore;
 use crate::openai_api::{self, ApiContext};
+use crate::webhook_admin::{handle_list_webhooks, handle_webhook_change, WebhookAccess, WebhookChange};
 use crate::webhooks::{self, WebhookContext, WebhookRunner};
 use crate::web_ui::{self, Rewind, WebAssets};
 use warden_server_protocol::protocol::ChatEventDto;
@@ -637,6 +638,24 @@ fn spawn_task_change(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+fn spawn_webhook_change(
+    webhooks: &Option<WebhookContext>,
+    settings: &Option<Arc<dyn SettingsHost>>,
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    auth_key: &Arc<str>,
+    tx: &mpsc::UnboundedSender<ServerMessage>,
+    request_id: u64,
+    pairing_key: String,
+    change: WebhookChange,
+) {
+    let (webhooks, settings, lock, auth_key, reply_tx) = (webhooks.clone(), settings.clone(), lock.clone(), auth_key.clone(), tx.clone());
+    tokio::spawn(async move {
+        let access = WebhookAccess { webhooks: webhooks.as_ref(), settings: settings.as_deref(), lock: &lock, auth_key: &auth_key };
+        let _ = reply_tx.send(handle_webhook_change(&access, request_id, &pairing_key, change).await);
+    });
+}
+
 /// Stops a task when the server that spawned it stops serving.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
@@ -774,7 +793,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         settings_lock,
         sync,
         api_keys,
-        webhooks: _,
+        webhooks,
         tasks,
         changes,
         nodes,
@@ -1606,6 +1625,24 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::RunTask { request_id, pairing_key, id }) => {
                     spawn_task_change(&tasks, &settings, &shared_orchestrator, &settings_lock, &auth_key, &tx, request_id, pairing_key, TaskChange::Run { id });
+                }
+                Ok(ClientMessage::ListWebhooks { request_id }) => {
+                    let _ = tx.send(handle_list_webhooks(webhooks.as_ref(), settings.as_deref(), request_id));
+                }
+                Ok(ClientMessage::SaveWebhook { request_id, pairing_key, original_id, webhook }) => {
+                    spawn_webhook_change(&webhooks, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, WebhookChange::Save { original_id, webhook });
+                }
+                Ok(ClientMessage::SetWebhookEnabled { request_id, pairing_key, id, enabled }) => {
+                    spawn_webhook_change(&webhooks, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, WebhookChange::SetEnabled { id, enabled });
+                }
+                Ok(ClientMessage::DeleteWebhook { request_id, pairing_key, id }) => {
+                    spawn_webhook_change(&webhooks, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, WebhookChange::Delete { id });
+                }
+                Ok(ClientMessage::CreateWebhookCredential { request_id, pairing_key, id }) => {
+                    spawn_webhook_change(&webhooks, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, WebhookChange::CreateCredential { id });
+                }
+                Ok(ClientMessage::RevokeWebhookCredential { request_id, pairing_key, id }) => {
+                    spawn_webhook_change(&webhooks, &settings, &settings_lock, &auth_key, &tx, request_id, pairing_key, WebhookChange::RevokeCredential { id });
                 }
                 Ok(ClientMessage::RequestSyncStatus { request_id }) => {
                     // Computes the pending diff over the whole vault: off the reader loop.

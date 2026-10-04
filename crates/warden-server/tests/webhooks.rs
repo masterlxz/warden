@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use warden_bootstrap::tasks::TaskStore;
-use warden_bootstrap::webhooks::WebhookConfig;
+use warden_bootstrap::webhooks::{WebhookAuth, WebhookConfig};
 use warden_bootstrap::{load_conversation, save_config, AgentConfig, ChatRole, FileConfig};
 use warden_core::memory::Vault;
 use warden_core::model::{ChatStream, Message, ModelProvider, Role, StreamEvent, Usage};
@@ -78,7 +78,7 @@ fn agent(id: &str, persona: &str) -> AgentConfig {
 }
 
 fn hook(id: &str, agent: Option<&str>, prompt: &str) -> WebhookConfig {
-    WebhookConfig { id: id.into(), agent: agent.map(str::to_string), prompt: prompt.into(), enabled: true }
+    WebhookConfig { id: id.into(), agent: agent.map(str::to_string), prompt: prompt.into(), enabled: true, auth: WebhookAuth::Token }
 }
 
 struct Hub {
@@ -396,4 +396,416 @@ async fn a_hub_without_webhooks_answers_404_and_never_the_web_page() {
     assert_eq!(status, 404, "{body}");
     assert!(!body.contains("<p>web</p>"), "the web page's fallback must not answer a webhook call");
     assert_eq!(http(hub.addr, "GET", "/", None, None).await.0, 200, "the page itself is still served");
+}
+
+// ---- administration from a client (the screens) ----
+
+async fn owner(hub: &Hub) -> ServerConnection {
+    ServerConnection::connect(&format!("ws://{}", hub.addr), "web-1", "Browser", KEY).await.unwrap()
+}
+
+/// Sends `message` and returns the first webhook reply (the hub may also send other things in between).
+async fn ask(conn: &mut ServerConnection, message: ClientMessage) -> ServerMessage {
+    conn.send(&message).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match conn.recv().await.unwrap().expect("connection closed") {
+                reply @ (ServerMessage::WebhookList { .. } | ServerMessage::WebhookCreated { .. } | ServerMessage::WebhookError { .. }) => return reply,
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("no webhook reply within 10 s")
+}
+
+fn dto(id: &str, auth: &str) -> warden_server_protocol::protocol::WebhookDto {
+    warden_server_protocol::protocol::WebhookDto { id: id.into(), agent_id: Some("poet".into()), prompt: "Why did the build fail?".into(), enabled: true, auth: auth.into() }
+}
+
+fn save(original: Option<&str>, webhook: warden_server_protocol::protocol::WebhookDto) -> ClientMessage {
+    ClientMessage::SaveWebhook { request_id: 1, pairing_key: KEY.into(), original_id: original.map(str::to_string), webhook }
+}
+
+fn list_of(reply: ServerMessage) -> Vec<warden_server_protocol::protocol::WebhookInfoDto> {
+    match reply {
+        ServerMessage::WebhookList { webhooks, .. } => webhooks,
+        other => panic!("expected WebhookList, got {other:?}"),
+    }
+}
+
+fn change(message: fn(u64, String, String) -> ClientMessage, id: &str) -> ClientMessage {
+    message(1, KEY.to_string(), id.to_string())
+}
+
+#[tokio::test]
+async fn a_screen_lists_makes_and_uses_a_webhook_end_to_end() {
+    let hub = hub().await;
+    hub.set_webhooks(Vec::new());
+    let mut me = owner(&hub).await;
+
+    // Empty at first, and the hub says it takes calls.
+    match ask(&mut me, ClientMessage::ListWebhooks { request_id: 1 }).await {
+        ServerMessage::WebhookList { webhooks, serves_here, .. } => assert_eq!((webhooks.len(), serves_here), (0, true)),
+        other => panic!("{other:?}"),
+    }
+
+    // A webhook made on the screen: no credential yet, so it takes no calls.
+    let listed = list_of(ask(&mut me, save(None, dto("build", "token"))).await);
+    assert_eq!((listed[0].id.as_str(), listed[0].auth.as_str(), listed[0].credential.as_deref(), listed[0].conversation.as_str()), ("build", "token", None, "task-hook-build"));
+    assert_eq!(hub.post("build", Some("whk_nothing"), "x").await.0, 401);
+
+    // The credential comes once, with the list that shows it.
+    let (id, credential, kind, listed) = match ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "build")).await {
+        ServerMessage::WebhookCreated { id, credential, kind, webhooks, .. } => (id, credential, kind, webhooks),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((id.as_str(), kind.as_str()), ("build", "token"));
+    assert!(credential.starts_with("whk_"));
+    assert_eq!((listed[0].credential.as_deref(), listed[0].shown.as_deref()), (Some("token"), Some(&credential[..10])));
+    let again = list_of(ask(&mut me, ClientMessage::ListWebhooks { request_id: 2 }).await);
+    assert!(!format!("{again:?}").contains(&credential), "a later list never carries the credential");
+
+    // It works as a call, and making another one replaces it at once.
+    assert_eq!(hub.post("build", Some(&credential), "x").await.0, 202);
+    hub.conversation_with("task-hook-build", 2).await;
+    let ServerMessage::WebhookCreated { credential: second, .. } = ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "build")).await else { panic!() };
+    assert_ne!(second, credential);
+    assert_eq!(hub.post("build", Some(&credential), "x").await.0, 401, "the rotated credential is dead at once");
+}
+
+#[tokio::test]
+async fn a_signing_secret_is_made_for_an_hmac_webhook_and_a_change_of_mode_takes_it_away() {
+    let hub = hub().await;
+    hub.set_webhooks(Vec::new());
+    let mut me = owner(&hub).await;
+    list_of(ask(&mut me, save(None, dto("gh", "hmac"))).await);
+
+    let ServerMessage::WebhookCreated { credential: secret, kind, webhooks, .. } = ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "gh")).await else { panic!() };
+    assert!(secret.starts_with("whsec_") && kind == "hmac" && webhooks[0].credential.as_deref() == Some("hmac"));
+    let body = r#"{"ref":"main"}"#;
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body)], body).await.0, 202);
+    hub.conversation_with("task-hook-gh", 2).await;
+
+    // Switched to tokens on the screen: the secret was the wrong kind, so it is gone, and the list says so.
+    let listed = list_of(ask(&mut me, save(Some("gh"), dto("gh", "token"))).await);
+    assert_eq!((listed[0].auth.as_str(), listed[0].credential.as_deref()), ("token", None));
+    assert_eq!(hub.tokens.kind_of("gh").unwrap(), None);
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body)], body).await.0, 401, "a signature no longer opens it");
+    let ServerMessage::WebhookCreated { credential: token, kind, .. } = ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "gh")).await else { panic!() };
+    assert!(token.starts_with("whk_") && kind == "token", "a new credential is of the kind the webhook now wants");
+
+    // Saving without changing the mode keeps the credential.
+    list_of(ask(&mut me, save(Some("gh"), warden_server_protocol::protocol::WebhookDto { prompt: "a new prompt".into(), ..dto("gh", "token") })).await);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while hub.post("gh", Some(&token), "x").await.0 != 202 {
+        assert!(Instant::now() < deadline, "the token stopped working after an edit that didn't touch the mode");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_rename_keeps_the_credential_and_pause_delete_and_revoke_take_effect_on_the_next_call() {
+    let hub = hub().await;
+    hub.set_webhooks(Vec::new());
+    let mut me = owner(&hub).await;
+    list_of(ask(&mut me, save(None, dto("build", "token"))).await);
+    let ServerMessage::WebhookCreated { credential, .. } = ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "build")).await else { panic!() };
+
+    // Renamed: the credential moves with the name.
+    let listed = list_of(ask(&mut me, save(Some("build"), dto("ci", "token"))).await);
+    assert_eq!((listed[0].id.as_str(), listed[0].credential.as_deref()), ("ci", Some("token")));
+    assert_eq!(hub.post("build", Some(&credential), "x").await.0, 401, "the old name is gone");
+    assert_eq!(hub.post("ci", Some(&credential), "x").await.0, 202);
+    hub.conversation_with("task-hook-ci", 2).await;
+    wait_until_ci_is_free(&hub, &credential).await;
+
+    // Paused: refused, with the right token. Resumed: works.
+    let listed = list_of(ask(&mut me, ClientMessage::SetWebhookEnabled { request_id: 1, pairing_key: KEY.into(), id: "ci".into(), enabled: false }).await);
+    assert!(!listed[0].enabled);
+    assert_eq!(hub.post("ci", Some(&credential), "x").await.0, 403);
+    list_of(ask(&mut me, ClientMessage::SetWebhookEnabled { request_id: 1, pairing_key: KEY.into(), id: "ci".into(), enabled: true }).await);
+
+    // Revoked: the webhook stays, without a credential; a second revoke says there is none.
+    let listed = list_of(ask(&mut me, change(|r, k, id| ClientMessage::RevokeWebhookCredential { request_id: r, pairing_key: k, id }, "ci")).await);
+    assert_eq!((listed.len(), listed[0].credential.as_deref()), (1, None));
+    assert_eq!(hub.post("ci", Some(&credential), "x").await.0, 401);
+    assert!(matches!(ask(&mut me, change(|r, k, id| ClientMessage::RevokeWebhookCredential { request_id: r, pairing_key: k, id }, "ci")).await, ServerMessage::WebhookError { auth_rejected: false, .. }));
+
+    // Deleted: the config entry and the credential are both gone.
+    let ServerMessage::WebhookCreated { .. } = ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "ci")).await else { panic!() };
+    assert!(hub.tokens.kind_of("ci").unwrap().is_some());
+    let listed = list_of(ask(&mut me, change(|r, k, id| ClientMessage::DeleteWebhook { request_id: r, pairing_key: k, id }, "ci")).await);
+    assert!(listed.is_empty());
+    assert_eq!(hub.tokens.kind_of("ci").unwrap(), None, "a removed webhook leaves no credential behind");
+}
+
+/// Waits until `ci` takes a call again (the running mark is dropped just after the conversation is saved).
+async fn wait_until_ci_is_free(hub: &Hub, token: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if hub.post("ci", Some(token), "probe").await.0 == 202 {
+            hub.conversation_with("task-hook-ci", 4).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            return;
+        }
+        assert!(Instant::now() < deadline, "the webhook never took a call again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_pairing_key_guards_every_change_and_a_refused_one_changes_nothing() {
+    let hub = hub().await;
+    let mut me = owner(&hub).await;
+    let wrong = "not-the-pairing-key-0123456789-0123456789".to_string();
+    let attempts = [
+        ClientMessage::SaveWebhook { request_id: 1, pairing_key: wrong.clone(), original_id: None, webhook: dto("evil", "token") },
+        ClientMessage::SetWebhookEnabled { request_id: 2, pairing_key: wrong.clone(), id: "build".into(), enabled: false },
+        ClientMessage::DeleteWebhook { request_id: 3, pairing_key: wrong.clone(), id: "build".into() },
+        ClientMessage::CreateWebhookCredential { request_id: 4, pairing_key: wrong.clone(), id: "build".into() },
+        ClientMessage::RevokeWebhookCredential { request_id: 5, pairing_key: wrong.clone(), id: "build".into() },
+    ];
+    for attempt in attempts {
+        let started = Instant::now();
+        match ask(&mut me, attempt).await {
+            ServerMessage::WebhookError { auth_rejected: true, .. } => {}
+            other => panic!("expected a rejected key, got {other:?}"),
+        }
+        assert!(started.elapsed() >= Duration::from_millis(900), "a wrong key waits before it is told so");
+    }
+    // Nothing changed: the webhook is still there and enabled, and no credential was made.
+    let listed = list_of(ask(&mut me, ClientMessage::ListWebhooks { request_id: 9 }).await);
+    assert_eq!((listed.len(), listed[0].id.as_str(), listed[0].enabled, listed[0].credential.clone()), (1, "build", true, None));
+    assert_eq!(hub.tokens.kind_of("build").unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_bad_form_is_refused_with_a_reason_and_a_member_never_gets_to_the_webhooks() {
+    let hub = hub().await;
+    let mut me = owner(&hub).await;
+    for (bad, why) in [
+        (dto("bad id", "token"), "invalid webhook id"),
+        (dto("ok", "basic"), "unknown webhook auth"),
+        (warden_server_protocol::protocol::WebhookDto { agent_id: Some("ghost".into()), ..dto("ok", "token") }, "doesn't exist"),
+        (warden_server_protocol::protocol::WebhookDto { prompt: "  ".into(), ..dto("ok", "token") }, "empty prompt"),
+        (dto("build", "token"), "already a webhook"),
+    ] {
+        match ask(&mut me, save(None, bad)).await {
+            ServerMessage::WebhookError { message, auth_rejected: false, .. } => assert!(message.contains(why), "{message}"),
+            other => panic!("expected a refusal about '{why}', got {other:?}"),
+        }
+    }
+    assert_eq!(list_of(ask(&mut me, ClientMessage::ListWebhooks { request_id: 1 }).await).len(), 1, "none of them was saved");
+    match ask(&mut me, change(|r, k, id| ClientMessage::CreateWebhookCredential { request_id: r, pairing_key: k, id }, "ghost")).await {
+        ServerMessage::WebhookError { message, .. } => assert!(message.contains("no webhook named 'ghost'"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+
+    // A member is turned away from every webhook request, before anything is read.
+    for message in [
+        ClientMessage::ListWebhooks { request_id: 1 },
+        ClientMessage::SaveWebhook { request_id: 2, pairing_key: String::new(), original_id: None, webhook: dto("m", "token") },
+        ClientMessage::SetWebhookEnabled { request_id: 3, pairing_key: String::new(), id: "build".into(), enabled: false },
+        ClientMessage::DeleteWebhook { request_id: 4, pairing_key: String::new(), id: "build".into() },
+        ClientMessage::CreateWebhookCredential { request_id: 5, pairing_key: String::new(), id: "build".into() },
+        ClientMessage::RevokeWebhookCredential { request_id: 6, pairing_key: String::new(), id: "build".into() },
+    ] {
+        assert!(matches!(warden_server::people::member_refusal(&message), Some(ServerMessage::WebhookError { auth_rejected: true, .. })), "{message:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_hub_without_webhooks_tells_the_screen_so() {
+    let hub = hub_with(Vec::new(), false).await;
+    let mut me = owner(&hub).await;
+    match ask(&mut me, ClientMessage::ListWebhooks { request_id: 1 }).await {
+        ServerMessage::WebhookError { message, .. } => assert!(message.contains("doesn't offer webhooks"), "{message}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(ask(&mut me, save(None, dto("x", "token"))).await, ServerMessage::WebhookError { .. }));
+}
+
+// ---- signed calls (HMAC) ----
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+/// HMAC-SHA256 of `payload` with `secret`, in hex.
+fn sign(secret: &str, payload: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(payload);
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn github_signature(secret: &str, body: &str) -> (&'static str, String) {
+    ("X-Hub-Signature-256", format!("sha256={}", sign(secret, body.as_bytes())))
+}
+
+fn stripe_signature(secret: &str, body: &str, at: i64) -> (&'static str, String) {
+    ("Stripe-Signature", format!("t={at},v1={}", sign(secret, format!("{at}.{body}").as_bytes())))
+}
+
+/// A `POST /hooks/<id>` with any number of headers. The request is built here and now, so the future it returns borrows
+/// nothing and several can be awaited together.
+fn post_with(hub: &Hub, id: &str, headers: &[(&str, String)], body: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = (u16, String)>>> {
+    let mut request = format!("POST /hooks/{id} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n", hub.addr, body.len());
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+    let addr = hub.addr;
+    Box::pin(async move { raw_request(addr, request.as_bytes()).await })
+}
+
+fn signed_hook(id: &str) -> WebhookConfig {
+    WebhookConfig { auth: WebhookAuth::Hmac, ..hook(id, Some("poet"), "Why did the build fail?") }
+}
+
+#[tokio::test]
+async fn a_github_signed_call_runs_the_agent_and_a_bearer_token_does_not_open_it() {
+    let hub = hub().await;
+    hub.set_webhooks(vec![signed_hook("gh")]);
+    let secret = hub.tokens.create_secret("gh").unwrap().token;
+    let body = r#"{"ref":"refs/heads/main","after":"abc123"}"#;
+
+    let (status, answer) = post_with(&hub, "gh", &[github_signature(&secret, body), ("X-GitHub-Delivery", "delivery-1".into())], body).await;
+    assert_eq!(status, 202, "{answer}");
+    assert_eq!(json(&answer)["status"], "started");
+    let saved = hub.conversation_with("task-hook-gh", 2).await;
+    assert!(saved.messages[0].content.contains("abc123"), "the body reached the model as data: {}", saved.messages[0].content);
+    assert_eq!(saved.messages[1].content, "haiku!");
+    assert!(hub.tokens.list().unwrap()[0].last_used_at_ms.is_some(), "the use is noted");
+
+    // The secret is not a bearer token: a service that sends it that way is not let in.
+    assert_eq!(hub.post("gh", Some(&secret), body).await.0, 401);
+}
+
+#[tokio::test]
+async fn a_stripe_signed_call_runs_and_a_stale_or_moved_timestamp_is_refused() {
+    let hub = hub().await;
+    hub.set_webhooks(vec![signed_hook("pay")]);
+    let secret = hub.tokens.create_secret("pay").unwrap().token;
+    let body = r#"{"type":"invoice.paid"}"#;
+
+    let (status, answer) = post_with(&hub, "pay", &[stripe_signature(&secret, body, now_secs())], body).await;
+    assert_eq!(status, 202, "{answer}");
+    hub.conversation_with("task-hook-pay", 2).await;
+
+    // A call signed ten minutes ago is a replay; so is a fresh timestamp pasted over an old signature.
+    let old = stripe_signature(&secret, body, now_secs() - 600);
+    let moved = ("Stripe-Signature", format!("t={},v1={}", now_secs(), old.1.rsplit("v1=").next().unwrap()));
+    let (a, b) = tokio::join!(post_with(&hub, "pay", &[old], body), post_with(&hub, "pay", &[moved], body));
+    assert_eq!((a.0, b.0), (401, 401));
+    assert_eq!(hub.inputs.lock().unwrap().len(), 1, "only the good call reached the model");
+}
+
+#[tokio::test]
+async fn every_way_of_a_bad_signature_gets_the_same_401_as_an_unknown_webhook_and_runs_nothing() {
+    let hub = hub().await;
+    hub.set_webhooks(vec![signed_hook("gh")]);
+    let secret = hub.tokens.create_secret("gh").unwrap().token;
+    let body = r#"{"a":1}"#;
+
+    let started = Instant::now();
+    let (wrong_secret, tampered, unsigned, malformed, another_hook, unknown, both_bad) = tokio::join!(
+        post_with(&hub, "gh", &[github_signature("another secret", body)], body),
+        post_with(&hub, "gh", &[github_signature(&secret, body)], r#"{"a":2}"#),
+        post_with(&hub, "gh", &[], body),
+        post_with(&hub, "gh", &[("X-Hub-Signature-256", "sha256=not-hex".to_string())], body),
+        post_with(&hub, "gh", &[("X-Hub-Signature-256", format!("sha1={}", sign(&secret, body.as_bytes())))], body),
+        post_with(&hub, "ghost", &[github_signature(&secret, body)], body),
+        // A good Stripe signature does not rescue a bad GitHub one.
+        post_with(&hub, "gh", &[("X-Hub-Signature-256", "sha256=00".to_string()), stripe_signature(&secret, body, now_secs())], body),
+    );
+    for (status, answer) in [&wrong_secret, &tampered, &unsigned, &malformed, &another_hook, &unknown, &both_bad] {
+        assert_eq!(*status, 401, "{answer}");
+    }
+    assert!(started.elapsed() >= Duration::from_millis(900), "a bad signature waits before it is told so");
+    let first = &wrong_secret.1;
+    assert!([&tampered, &unsigned, &malformed, &another_hook, &unknown, &both_bad].iter().all(|r| &r.1 == first), "the answer doesn't say which part was wrong");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(hub.inputs.lock().unwrap().is_empty(), "the model was never called");
+    assert!(hub.conversation("task-hook-gh").is_none(), "nothing was saved");
+}
+
+#[tokio::test]
+async fn a_repeated_delivery_runs_once_and_a_forged_one_cannot_use_up_an_id() {
+    let hub = hub().await;
+    hub.set_webhooks(vec![signed_hook("gh")]);
+    let secret = hub.tokens.create_secret("gh").unwrap().token;
+    let body = r#"{"n":1}"#;
+    let delivery = |id: &str| ("X-GitHub-Delivery", id.to_string());
+
+    // Someone without the secret tries an id first: refused, and the id is not spent.
+    let forged = post_with(&hub, "gh", &[("X-Hub-Signature-256", "sha256=00".to_string()), delivery("d-1")], body).await;
+    assert_eq!(forged.0, 401);
+
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body), delivery("d-1")], body).await.0, 202);
+    hub.conversation_with("task-hook-gh", 2).await;
+    wait_until_free(&hub, &secret).await;
+
+    // GitHub sends the same delivery again: acknowledged, not run. (`wait_until_free` made a call of its own, so what
+    // counts is what was there just before the repeat.)
+    let (messages, runs) = (hub.conversation("task-hook-gh").unwrap().messages.len(), hub.inputs.lock().unwrap().len());
+    let (status, answer) = post_with(&hub, "gh", &[github_signature(&secret, body), delivery("d-1")], body).await;
+    assert_eq!((status, json(&answer)["status"].as_str()), (202, Some("duplicate")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.conversation("task-hook-gh").unwrap().messages.len(), messages, "the repeat added nothing");
+    assert_eq!(hub.inputs.lock().unwrap().len(), runs, "and the model wasn't called");
+
+    // A new id runs, and so does a call that has no id at all (each adds two messages; the probe in between adds two).
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body), delivery("d-2")], body).await.0, 202);
+    hub.conversation_with("task-hook-gh", messages + 2).await;
+    wait_until_free(&hub, &secret).await;
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body)], body).await.0, 202);
+    hub.conversation_with("task-hook-gh", messages + 6).await;
+}
+
+/// Waits until the webhook takes a call again (the running mark is dropped just after the conversation is saved), using a
+/// delivery id nobody else uses so the call itself is never a duplicate. It leaves that call's run to finish.
+async fn wait_until_free(hub: &Hub, secret: &str) {
+    let before = hub.conversation("task-hook-gh").map_or(0, |c| c.messages.len());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let probe = format!("probe-{}", now_secs() * 1000 + Instant::now().elapsed().as_nanos() as i64);
+        let (status, _) = post_with(hub, "gh", &[github_signature(secret, "p"), ("X-GitHub-Delivery", probe)], "p").await;
+        if status == 202 {
+            hub.conversation_with("task-hook-gh", before + 2).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            return;
+        }
+        assert!(Instant::now() < deadline, "the webhook never took a call again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_credential_has_to_be_of_the_kind_the_webhook_wants() {
+    let hub = hub().await;
+    let body = "x";
+
+    // A webhook that wants a signature, with a token made for it: the token proves nothing.
+    hub.set_webhooks(vec![signed_hook("gh")]);
+    let token = hub.tokens.create("gh").unwrap().token;
+    assert_eq!(hub.post("gh", Some(&token), body).await.0, 401);
+    // A secret then makes it work.
+    let secret = hub.tokens.create_secret("gh").unwrap().token;
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body)], body).await.0, 202);
+    hub.conversation_with("task-hook-gh", 2).await;
+
+    // The other way: a webhook switched to tokens still holds a secret, and a correctly signed call is refused.
+    hub.set_webhooks(vec![hook("gh", Some("poet"), "Why did the build fail?")]);
+    assert_eq!(post_with(&hub, "gh", &[github_signature(&secret, body)], body).await.0, 401);
+    assert_eq!(hub.post("gh", Some(&secret), body).await.0, 401);
+    let token = hub.tokens.create("gh").unwrap().token;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while hub.post("gh", Some(&token), body).await.0 != 202 {
+        assert!(Instant::now() < deadline, "the new token never worked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

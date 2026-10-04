@@ -6,7 +6,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, PAIRING_PORTS, PAIRING_TIMEOUT};
 use warden_bootstrap::tasks::{check_tasks, next_run, run_task, task_status, TaskStore, Zone};
-use warden_bootstrap::webhooks::{upsert_webhook, WebhookConfig};
+use warden_bootstrap::webhooks::{upsert_webhook, WebhookAuth, WebhookConfig};
 use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
@@ -351,7 +351,7 @@ struct WebhooksArgs {
 enum WebhooksCommand {
     /// Every webhook: whether it's on, its agent and whether it has a token.
     List,
-    /// Adds a webhook. It takes no calls until it has a token (`webhooks token <id>`).
+    /// Adds a webhook. It takes no calls until it has a credential (`webhooks token <id>`).
     Add {
         /// 1-54 letters, digits, '-' or '_'. It is the end of the URL: /hooks/<id>.
         id: String,
@@ -361,6 +361,10 @@ enum WebhooksCommand {
         /// The agent that runs it (none: no persona). Give it few tools: the body of a call comes from outside.
         #[arg(long)]
         agent: Option<String>,
+        /// How the caller proves itself: `token` (a bearer token, the default) or `hmac` (a signature of the body, made with
+        /// a secret the service is given: GitHub's X-Hub-Signature-256 or Stripe's Stripe-Signature).
+        #[arg(long, default_value = "token")]
+        auth: String,
     },
     /// Refuses calls to a webhook until `resume`.
     Pause { id: String },
@@ -368,9 +372,10 @@ enum WebhooksCommand {
     Resume { id: String },
     /// Removes a webhook and its token. Its conversation stays, for whoever wants to read it.
     Remove { id: String },
-    /// A new token for a webhook — printed once, never stored. It replaces the old one, which stops working at once.
+    /// A new credential for a webhook — a token, or a signing secret for an `--auth hmac` one — printed once. It replaces
+    /// the old one, which stops working at once.
     Token { id: String },
-    /// Takes a webhook's token away: calls get 401 from the next one on, and the webhook stays.
+    /// Takes a webhook's credential away: calls get 401 from the next one on, and the webhook stays.
     Revoke { id: String },
 }
 
@@ -1052,18 +1057,20 @@ fn run_webhooks_command(args: WebhooksArgs) -> anyhow::Result<()> {
             for hook in &config.webhooks {
                 let on = if hook.enabled { "on" } else { "paused" };
                 let agent = hook.agent.as_deref().unwrap_or("(no agent)");
-                let token = match with_token.iter().find(|t| t.webhook == hook.id) {
-                    Some(t) => format!("token {}… created {}{}", t.shown, t.created_at_ms, t.last_used_at_ms.map_or(", never used".to_string(), |ms| format!(", last used {ms}"))),
-                    None => "no token (takes no calls)".to_string(),
+                let credential = match with_token.iter().find(|t| t.webhook == hook.id) {
+                    Some(t) if t.kind != hook.auth => format!("a {} but the webhook wants {} — `warden-server webhooks token {}` makes the right one", t.kind.as_str(), hook.auth.as_str(), hook.id),
+                    Some(t) => format!("{} {}… created {}{}", t.kind.as_str(), t.shown, t.created_at_ms, t.last_used_at_ms.map_or(", never used".to_string(), |ms| format!(", last used {ms}"))),
+                    None => "no credential (takes no calls)".to_string(),
                 };
-                println!("{}\t{on}\t{agent}\t/hooks/{}\t{token}", hook.id, hook.id);
+                println!("{}\t{on}\t{agent}\t{}\t/hooks/{}\t{credential}", hook.id, hook.auth.as_str(), hook.id);
             }
         }
-        WebhooksCommand::Add { id, prompt, agent } => {
+        WebhooksCommand::Add { id, prompt, agent, auth } => {
             anyhow::ensure!(!config.webhooks.iter().any(|h| h.id == id), "there's already a webhook named '{id}'");
-            upsert_webhook(&mut config, WebhookConfig { id: id.clone(), agent, prompt, enabled: true })?;
+            let auth = WebhookAuth::parse(&auth)?;
+            upsert_webhook(&mut config, WebhookConfig { id: id.clone(), agent, prompt, enabled: true, auth })?;
             save_config(&config_path, &config)?;
-            println!("webhook '{id}' added — it takes no calls until it has a token: `warden-server webhooks token {id}`");
+            println!("webhook '{id}' added ({}) — it takes no calls until it has a credential: `warden-server webhooks token {id}`", auth.as_str());
         }
         WebhooksCommand::Pause { id } => {
             let i = position(&config, &id)?;
@@ -1086,18 +1093,30 @@ fn run_webhooks_command(args: WebhooksArgs) -> anyhow::Result<()> {
         }
         WebhooksCommand::Token { id } => {
             let i = position(&config, &id)?;
-            let created = tokens.create(&id)?;
+            // A token or a signing secret, whichever the webhook was made for.
+            let auth = config.webhooks[i].auth;
+            let created = tokens.create_credential(&id, auth)?;
             println!("{}", created.token);
-            eprintln!("token for webhook '{id}' created — copy it now, it isn't shown again; any earlier token for it stopped working");
-            eprintln!("call it with: curl -X POST -H 'Authorization: Bearer <token>' --data-binary @body.json http(s)://<this hub>:<port>/hooks/{id}");
-            eprintln!("(a service that can't set that header can send the token as X-Warden-Token instead)");
+            match auth {
+                WebhookAuth::Token => {
+                    eprintln!("token for webhook '{id}' created — copy it now, it isn't shown again; any earlier credential for it stopped working");
+                    eprintln!("call it with: curl -X POST -H 'Authorization: Bearer <token>' --data-binary @body.json http(s)://<this hub>:<port>/hooks/{id}");
+                    eprintln!("(a service that can't set that header can send the token as X-Warden-Token instead)");
+                }
+                WebhookAuth::Hmac => {
+                    eprintln!("signing secret for webhook '{id}' created — copy it now, it isn't shown again; any earlier credential for it stopped working");
+                    eprintln!("give it to the service that calls http(s)://<this hub>:<port>/hooks/{id} (GitHub: the webhook's \"Secret\"; Stripe: the endpoint's signing secret)");
+                    eprintln!("it is signed with HMAC-SHA256 in X-Hub-Signature-256 (GitHub, Gitea, Forgejo) or Stripe-Signature; a bearer token is not accepted");
+                    eprintln!("note: unlike a token, the secret is kept in the clear in webhook_tokens.json (mode 0600): checking a signature means making one");
+                }
+            }
             if !config.webhooks[i].enabled {
                 eprintln!("note: the webhook is paused — `warden-server webhooks resume {id}` to take calls");
             }
         }
         WebhooksCommand::Revoke { id } => {
-            anyhow::ensure!(tokens.revoke(&id)?, "webhook '{id}' has no token");
-            println!("the token of webhook '{id}' is revoked — calls get 401 from the next one on");
+            anyhow::ensure!(tokens.revoke(&id)?, "webhook '{id}' has no credential");
+            println!("the credential of webhook '{id}' is revoked — calls get 401 from the next one on");
         }
     }
     Ok(())

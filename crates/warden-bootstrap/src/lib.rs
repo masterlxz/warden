@@ -2249,7 +2249,7 @@ oauth = true
                 timezone: Some("America/Sao_Paulo".to_string()),
                 enabled: false,
             }],
-            webhooks: vec![webhooks::WebhookConfig { id: "build".to_string(), agent: Some("helper".to_string()), prompt: "why did it fail?".to_string(), enabled: false }],
+            webhooks: vec![webhooks::WebhookConfig { id: "build".to_string(), agent: Some("helper".to_string()), prompt: "why did it fail?".to_string(), enabled: false, auth: webhooks::WebhookAuth::Hmac }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
             removed_users: Vec::new(),

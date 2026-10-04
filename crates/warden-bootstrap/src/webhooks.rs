@@ -27,6 +27,40 @@ pub const CONVERSATION_PREFIX: &str = "task-hook-";
 /// How much of a request body the model sees. The rest is cut, and the text says so.
 pub const MAX_PAYLOAD_CHARS: usize = 32 * 1024;
 
+/// How a webhook's caller proves itself: a bearer token, or a signature of the body made with a shared secret (the way
+/// GitHub, Gitea or Stripe sign what they send, for services that can't be given a header of our choosing).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookAuth {
+    /// `Authorization: Bearer whk_…` (or `X-Warden-Token`).
+    #[default]
+    Token,
+    /// `X-Hub-Signature-256` (GitHub) or `Stripe-Signature`: an HMAC-SHA256 of the body with the webhook's secret.
+    Hmac,
+}
+
+impl WebhookAuth {
+    pub fn is_token(&self) -> bool {
+        *self == Self::Token
+    }
+
+    /// The word the config, the protocol and the CLI use.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Token => "token",
+            Self::Hmac => "hmac",
+        }
+    }
+
+    pub fn parse(text: &str) -> anyhow::Result<Self> {
+        match text.trim() {
+            "" | "token" => Ok(Self::Token),
+            "hmac" => Ok(Self::Hmac),
+            other => anyhow::bail!("unknown webhook auth '{other}' — use 'token' or 'hmac'"),
+        }
+    }
+}
+
 /// One `[[webhooks]]` entry.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +75,9 @@ pub struct WebhookConfig {
     /// `false` pauses it: a call with the right token is refused.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// How the caller proves itself. Absent (and every webhook from before this existed) is a token.
+    #[serde(default, skip_serializing_if = "WebhookAuth::is_token")]
+    pub auth: WebhookAuth,
 }
 
 fn default_enabled() -> bool {
@@ -90,6 +127,45 @@ pub fn upsert_webhook(config: &mut FileConfig, hook: WebhookConfig) -> anyhow::R
     }
     check_webhooks(&webhooks, &config.agents, &config.tasks)?;
     config.webhooks = webhooks;
+    Ok(())
+}
+
+/// Trims what a form leaves loose: the id, and an agent that is blank (no agent).
+fn normalized(mut hook: WebhookConfig) -> WebhookConfig {
+    hook.id = hook.id.trim().to_string();
+    hook.agent = hook.agent.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+    hook
+}
+
+/// Adds `hook`, or puts it in place of `original_id` (a rename when the ids differ), and checks the whole list — what a
+/// screen's form does. `config` is left as it was on an error.
+pub fn save_webhook(config: &mut FileConfig, original_id: Option<&str>, hook: WebhookConfig) -> anyhow::Result<()> {
+    let hook = normalized(hook);
+    let mut webhooks = config.webhooks.clone();
+    match original_id {
+        Some(original) => {
+            let i = webhooks.iter().position(|h| h.id == original).ok_or_else(|| anyhow::anyhow!("no webhook named '{original}'"))?;
+            webhooks[i] = hook;
+        }
+        None => {
+            anyhow::ensure!(!webhooks.iter().any(|h| h.id == hook.id), "there's already a webhook named '{}'", hook.id);
+            webhooks.push(hook);
+        }
+    }
+    check_webhooks(&webhooks, &config.agents, &config.tasks)?;
+    config.webhooks = webhooks;
+    Ok(())
+}
+
+pub fn remove_webhook(config: &mut FileConfig, id: &str) -> anyhow::Result<()> {
+    let i = config.webhooks.iter().position(|h| h.id == id).ok_or_else(|| anyhow::anyhow!("no webhook named '{id}'"))?;
+    config.webhooks.remove(i);
+    Ok(())
+}
+
+pub fn set_webhook_enabled(config: &mut FileConfig, id: &str, enabled: bool) -> anyhow::Result<()> {
+    let hook = config.webhooks.iter_mut().find(|h| h.id == id).ok_or_else(|| anyhow::anyhow!("no webhook named '{id}'"))?;
+    hook.enabled = enabled;
     Ok(())
 }
 
@@ -167,7 +243,7 @@ mod tests {
     }
 
     fn hook(id: &str) -> WebhookConfig {
-        WebhookConfig { id: id.into(), agent: None, prompt: "why did it fail?".into(), enabled: true }
+        WebhookConfig { id: id.into(), agent: None, prompt: "why did it fail?".into(), enabled: true, auth: WebhookAuth::Token }
     }
 
     fn agent(id: &str, owner: Option<&str>) -> AgentConfig {
@@ -220,6 +296,46 @@ mod tests {
         // Renaming a task onto the clash is refused too.
         assert!(crate::tasks::upsert_task(&mut config, Some("build"), task("hook-build")).is_err());
         assert_eq!(config.tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["hook-other", "build"]);
+    }
+
+    #[test]
+    fn a_form_saves_renames_pauses_and_removes_and_a_refusal_changes_nothing() {
+        let mut config = FileConfig { agents: vec![agent("ana", None)], ..FileConfig::default() };
+        // A form leaves loose ends: spaces around the id, an agent that is blank.
+        save_webhook(&mut config, None, WebhookConfig { id: " build ".into(), agent: Some("  ".into()), ..hook("x") }).unwrap();
+        assert_eq!((config.webhooks[0].id.as_str(), config.webhooks[0].agent.as_deref()), ("build", None));
+        assert!(save_webhook(&mut config, None, hook("build")).is_err(), "the same id again");
+        save_webhook(&mut config, None, WebhookConfig { auth: WebhookAuth::Hmac, ..hook("deploy") }).unwrap();
+        assert_eq!(config.webhooks[1].auth, WebhookAuth::Hmac);
+
+        assert!(save_webhook(&mut config, Some("deploy"), hook("build")).is_err(), "a rename onto an existing id");
+        assert!(save_webhook(&mut config, Some("ghost"), hook("x")).is_err());
+        assert!(save_webhook(&mut config, None, WebhookConfig { agent: Some("bia".into()), ..hook("third") }).is_err(), "no such agent");
+        assert_eq!(config.webhooks.len(), 2, "a refused change leaves the list alone");
+
+        save_webhook(&mut config, Some("build"), WebhookConfig { agent: Some("ana".into()), ..hook("ci") }).unwrap();
+        assert_eq!(config.webhooks.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), ["ci", "deploy"]);
+        set_webhook_enabled(&mut config, "ci", false).unwrap();
+        assert!(!config.webhooks[0].enabled);
+        remove_webhook(&mut config, "deploy").unwrap();
+        assert_eq!(config.webhooks.len(), 1);
+        assert!(remove_webhook(&mut config, "deploy").is_err() && set_webhook_enabled(&mut config, "deploy", true).is_err());
+    }
+
+    #[test]
+    fn the_auth_word_is_token_or_hmac_and_nothing_else() {
+        assert_eq!(WebhookAuth::parse("hmac").unwrap(), WebhookAuth::Hmac);
+        assert_eq!(WebhookAuth::parse(" token ").unwrap(), WebhookAuth::Token);
+        assert_eq!(WebhookAuth::parse("").unwrap(), WebhookAuth::Token, "blank is the default");
+        assert!(WebhookAuth::parse("HMAC").is_err() && WebhookAuth::parse("basic").is_err());
+        assert_eq!((WebhookAuth::Token.as_str(), WebhookAuth::Hmac.as_str()), ("token", "hmac"));
+        // A token is the default, so it is not written; an hmac one is.
+        let text = toml::to_string(&FileConfig { webhooks: vec![hook("a"), WebhookConfig { auth: WebhookAuth::Hmac, ..hook("b") }], ..FileConfig::default() }).unwrap();
+        assert_eq!(text.matches("auth = ").count(), 1, "{text}");
+        assert!(text.contains("auth = \"hmac\""), "{text}");
+        let back: FileConfig = toml::from_str("[[webhooks]]\nid = \"old\"\nprompt = \"p\"").unwrap();
+        assert_eq!(back.webhooks[0].auth, WebhookAuth::Token, "a webhook from before the field is a token");
+        assert!(toml::from_str::<FileConfig>("[[webhooks]]\nid = \"a\"\nprompt = \"p\"\nauth = \"basic\"").is_err());
     }
 
     #[test]

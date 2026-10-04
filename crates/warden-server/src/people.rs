@@ -163,6 +163,12 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SetTaskEnabled { request_id, .. }
         | ClientMessage::DeleteTask { request_id, .. }
         | ClientMessage::RunTask { request_id, .. } => ServerMessage::TaskError { request_id: *request_id, message: message_text, auth_rejected: true },
+        ClientMessage::ListWebhooks { request_id }
+        | ClientMessage::SaveWebhook { request_id, .. }
+        | ClientMessage::SetWebhookEnabled { request_id, .. }
+        | ClientMessage::DeleteWebhook { request_id, .. }
+        | ClientMessage::CreateWebhookCredential { request_id, .. }
+        | ClientMessage::RevokeWebhookCredential { request_id, .. } => ServerMessage::WebhookError { request_id: *request_id, message: message_text, auth_rejected: true },
         ClientMessage::RequestSyncStatus { request_id } | ClientMessage::SyncAction { request_id, .. } => {
             ServerMessage::SyncError { request_id: *request_id, message: message_text, auth_rejected: true }
         }

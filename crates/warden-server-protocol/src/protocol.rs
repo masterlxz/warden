@@ -450,6 +450,53 @@ pub struct TaskDto {
     pub enabled: bool,
 }
 
+/// One incoming webhook (P105), as `[[webhooks]]` keeps it. The credential isn't part of it: it lives in its own file and
+/// is made by `CreateWebhookCredential`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDto {
+    pub id: String,
+    /// The agent that runs it; absent runs with no persona.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub prompt: String,
+    pub enabled: bool,
+    /// How the caller proves itself: `"token"` (a bearer token) or `"hmac"` (a signature of the body, GitHub or Stripe
+    /// style). Absent is a token.
+    #[serde(default = "default_webhook_auth")]
+    pub auth: String,
+}
+
+fn default_webhook_auth() -> String {
+    "token".to_string()
+}
+
+/// A webhook and what the hub knows about its credential, for the list on the screens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookInfoDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub prompt: String,
+    pub enabled: bool,
+    /// What the webhook wants: `"token"` or `"hmac"`.
+    pub auth: String,
+    /// What it has: `"token"`, `"hmac"` or absent (no credential, so it takes no calls). A webhook whose credential is
+    /// of the other kind than `auth` takes no calls either, until a new one is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    /// The first characters of the credential, for recognizing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at_ms: Option<i64>,
+    /// The id of its conversation, `task-hook-<id>`, which every device lists.
+    pub conversation: String,
+}
+
 /// A folder of the owner's vault shared with members (P84 fatia 3). A member sees it at
 /// `compartilhado/<id>/` in their own vault.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1499,6 +1546,46 @@ pub enum ClientMessage {
         pairing_key: String,
         id: String,
     },
+    /// Incoming webhooks (P105), answered by `WebhookList`. Owner only. Open to any paired device; every change below asks
+    /// for the pairing key again and is answered by the updated `WebhookList` (or `WebhookCreated`).
+    ListWebhooks {
+        request_id: u64,
+    },
+    /// Creates a webhook, or replaces `original_id` with it (a rename when the ids differ). A change of `auth` takes the
+    /// credential away (it was of the other kind): make a new one.
+    SaveWebhook {
+        request_id: u64,
+        pairing_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_id: Option<String>,
+        webhook: WebhookDto,
+    },
+    /// Pauses or resumes a webhook.
+    SetWebhookEnabled {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        enabled: bool,
+    },
+    /// Removes a webhook and its credential. Its conversation stays.
+    DeleteWebhook {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// Makes a new credential for a webhook — a token, or a signing secret when it wants `hmac` — replacing the old one.
+    /// Answered by `WebhookCreated`, the only time the credential is shown.
+    CreateWebhookCredential {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
+    /// Takes a webhook's credential away; its calls get 401 from the next one on.
+    RevokeWebhookCredential {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+    },
     /// P84: the member on this connection picks their own password, answered by `PasswordChanged`
     /// or `UserError`. The only request a member on a provisional password may make.
     ChangePassword {
@@ -2020,6 +2107,30 @@ pub enum ServerMessage {
     },
     /// A task request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     TaskError {
+        request_id: u64,
+        message: String,
+        #[serde(default)]
+        auth_rejected: bool,
+    },
+    /// Reply to every webhook request but a new credential (P105), in the config's order. `serves_here`: this hub takes
+    /// the calls (`/hooks/<id>`); without it the list is only a config.
+    WebhookList {
+        request_id: u64,
+        webhooks: Vec<WebhookInfoDto>,
+        serves_here: bool,
+    },
+    /// Reply to `CreateWebhookCredential`: `credential` is the token or signing secret, shown once and never sent again
+    /// (a token isn't even kept in the clear on the hub). `kind` is `"token"` or `"hmac"`.
+    WebhookCreated {
+        request_id: u64,
+        id: String,
+        credential: String,
+        kind: String,
+        webhooks: Vec<WebhookInfoDto>,
+        serves_here: bool,
+    },
+    /// A webhook request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
+    WebhookError {
         request_id: u64,
         message: String,
         #[serde(default)]
@@ -2939,6 +3050,64 @@ mod tests {
             serde_json::to_value(&created).unwrap(),
             serde_json::json!({ "type": "apiKeyCreated", "requestId": 2, "key": "wdn_x", "keys": [{ "id": "abc", "name": "n8n", "shown": "wdn_12345678", "createdAtMs": 5 }] })
         );
+    }
+
+    #[test]
+    fn webhook_messages_use_the_web_shapes() {
+        // A webhook sent without `auth` is a token, so a client that doesn't know the field still works.
+        let save: ClientMessage = serde_json::from_str(r#"{"type":"saveWebhook","requestId":1,"pairingKey":"k","webhook":{"id":"build","prompt":"why?","enabled":true}}"#).unwrap();
+        assert_eq!(
+            save,
+            ClientMessage::SaveWebhook {
+                request_id: 1,
+                pairing_key: "k".into(),
+                original_id: None,
+                webhook: WebhookDto { id: "build".into(), agent_id: None, prompt: "why?".into(), enabled: true, auth: "token".into() },
+            }
+        );
+        let signed: ClientMessage = serde_json::from_str(
+            r#"{"type":"saveWebhook","requestId":2,"pairingKey":"k","originalId":"old","webhook":{"id":"gh","agentId":"ops","prompt":"p","enabled":false,"auth":"hmac"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(signed, ClientMessage::SaveWebhook { original_id: Some(ref o), webhook: WebhookDto { agent_id: Some(ref a), enabled: false, ref auth, .. }, .. } if o == "old" && a == "ops" && auth == "hmac"));
+        let create: ClientMessage = serde_json::from_str(r#"{"type":"createWebhookCredential","requestId":3,"pairingKey":"k","id":"gh"}"#).unwrap();
+        assert_eq!(create, ClientMessage::CreateWebhookCredential { request_id: 3, pairing_key: "k".into(), id: "gh".into() });
+        let list: ClientMessage = serde_json::from_str(r#"{"type":"listWebhooks","requestId":4}"#).unwrap();
+        assert_eq!(list, ClientMessage::ListWebhooks { request_id: 4 });
+        for (json, check) in [
+            (r#"{"type":"setWebhookEnabled","requestId":5,"pairingKey":"k","id":"gh","enabled":false}"#, "setWebhookEnabled"),
+            (r#"{"type":"deleteWebhook","requestId":6,"pairingKey":"k","id":"gh"}"#, "deleteWebhook"),
+            (r#"{"type":"revokeWebhookCredential","requestId":7,"pairingKey":"k","id":"gh"}"#, "revokeWebhookCredential"),
+        ] {
+            let parsed: ClientMessage = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_value(&parsed).unwrap()["type"], check);
+        }
+
+        let info = WebhookInfoDto {
+            id: "gh".into(),
+            agent_id: None,
+            prompt: "p".into(),
+            enabled: true,
+            auth: "hmac".into(),
+            credential: Some("hmac".into()),
+            shown: Some("whsec_1234".into()),
+            created_at_ms: Some(5),
+            last_used_at_ms: None,
+            conversation: "task-hook-gh".into(),
+        };
+        let created = ServerMessage::WebhookCreated { request_id: 3, id: "gh".into(), credential: "whsec_secret".into(), kind: "hmac".into(), webhooks: vec![info.clone()], serves_here: true };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "webhookCreated", "requestId": 3, "id": "gh", "credential": "whsec_secret", "kind": "hmac", "servesHere": true,
+                "webhooks": [{ "id": "gh", "prompt": "p", "enabled": true, "auth": "hmac", "credential": "hmac", "shown": "whsec_1234", "createdAtMs": 5, "conversation": "task-hook-gh" }]
+            })
+        );
+        let listed = ServerMessage::WebhookList { request_id: 4, webhooks: vec![info], serves_here: false };
+        let back: ServerMessage = serde_json::from_str(&serde_json::to_string(&listed).unwrap()).unwrap();
+        assert_eq!(back, listed);
+        let error: ServerMessage = serde_json::from_str(r#"{"type":"webhookError","requestId":1,"message":"nope"}"#).unwrap();
+        assert_eq!(error, ServerMessage::WebhookError { request_id: 1, message: "nope".into(), auth_rejected: false });
     }
 
     #[test]
