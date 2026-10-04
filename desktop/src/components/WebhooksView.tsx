@@ -221,8 +221,8 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
             </p>
           ) : (
             <p className="settings-hint">
-              Paste it as the <em>Secret</em> of the webhook on GitHub (content type application/json) with the address <code>{addressOf(created.id)}</code>, or as the
-              endpoint's signing secret on Stripe. A plain token doesn't open this webhook. This computer keeps the secret in the clear, in{" "}
+              Paste it as the <em>Secret</em> of the webhook on GitHub (content type application/json) with the address <code>{addressOf(created.id)}</code>, as the
+              endpoint's signing secret on Stripe, or as the app's Signing Secret on Slack. A plain token doesn't open this webhook. This computer keeps the secret in the clear, in{" "}
               <code>webhook_tokens.json</code> (mode 0600): checking a signature means making one.
             </p>
           )}
@@ -276,12 +276,12 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
             <span className="settings-label">How the service identifies itself</span>
             <select className="settings-select" value={editor.webhook.auth} onChange={(e) => updateHook({ auth: e.currentTarget.value as WebhookAuth })}>
               <option value="token">Token (Authorization: Bearer)</option>
-              <option value="hmac">HMAC signature (GitHub, Gitea, Stripe)</option>
+              <option value="hmac">HMAC signature (GitHub, Gitea, Stripe, Slack)</option>
             </select>
             <span className="settings-hint">
               {editor.webhook.auth === "token"
                 ? "The service sends the token in Authorization: Bearer (or X-Warden-Token). Only a hash of it is kept."
-                : "For services that sign what they send: X-Hub-Signature-256 (GitHub, Gitea, Forgejo) or Stripe-Signature. The secret is kept in the clear (file mode 0600): checking a signature means making one."}
+                : "For services that sign what they send: X-Hub-Signature-256 (GitHub, Gitea, Forgejo) , Stripe-Signature or X-Slack-Signature. The secret is kept in the clear (file mode 0600): checking a signature means making one."}
             </span>
           </label>
           {dropsCredential && <p className="settings-hint">Changing the type deletes the current credential: the webhook takes no calls until you make a new one.</p>}

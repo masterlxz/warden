@@ -243,12 +243,12 @@ export default function WebhooksView({ conn, onOpenConversation }: { conn: Serve
           Como o serviço se identifica
           <select value={editor.webhook.auth} onChange={(e) => updateHook({ auth: e.target.value as WebhookAuth })}>
             <option value="token">Token (Authorization: Bearer)</option>
-            <option value="hmac">Assinatura HMAC (GitHub, Gitea, Stripe)</option>
+            <option value="hmac">Assinatura HMAC (GitHub, Gitea, Stripe, Slack)</option>
           </select>
           <span className="skills-hint">
             {editor.webhook.auth === "token"
               ? "O serviço manda o token em Authorization: Bearer (ou X-Warden-Token). O hub guarda só um hash dele."
-              : "Para serviços que assinam o que enviam: X-Hub-Signature-256 (GitHub, Gitea, Forgejo) ou Stripe-Signature. O hub guarda o segredo em texto puro (arquivo 0600): conferir uma assinatura exige refazê-la."}
+              : "Para serviços que assinam o que enviam: X-Hub-Signature-256 (GitHub, Gitea, Forgejo) , Stripe-Signature ou X-Slack-Signature. O hub guarda o segredo em texto puro (arquivo 0600): conferir uma assinatura exige refazê-la."}
           </span>
         </label>
         {dropsCredential && <p className="skills-hint">Mudar o tipo apaga a credencial atual: o webhook para de receber chamadas até você gerar uma nova.</p>}
@@ -312,8 +312,8 @@ export default function WebhooksView({ conn, onOpenConversation }: { conn: Serve
             </p>
           ) : (
             <p className="skills-hint">
-              Cole como o <em>Secret</em> do webhook no GitHub (Content type: application/json), com o endereço <code>{hookUrl(created.id)}</code>, ou como o segredo
-              de assinatura do endpoint no Stripe. Um token comum não abre este webhook. O hub guarda o segredo em texto puro, no arquivo <code>webhook_tokens.json</code>{" "}
+              Cole como o <em>Secret</em> do webhook no GitHub (Content type: application/json), com o endereço <code>{hookUrl(created.id)}</code>, como o segredo
+              de assinatura do endpoint no Stripe, ou como o Signing Secret do app no Slack. Um token comum não abre este webhook. O hub guarda o segredo em texto puro, no arquivo <code>webhook_tokens.json</code>{" "}
               (modo 0600).
             </p>
           )}

@@ -9,7 +9,10 @@
 //!   part of what is signed, so a call older (or newer) than `STRIPE_TOLERANCE_SECS` is refused, which is what stops a
 //!   replay. Several `v1` are what a service sends while it rotates its secret: any one that matches is enough.
 //!
-//! If both headers are there, GitHub's decides — a legitimate service sends one. Every comparison is constant-time
+//! - **Slack**: `X-Slack-Signature: v0=<hex>` plus `X-Slack-Request-Timestamp: <unix seconds>`, the HMAC of
+//!   `"v0:<t>:<raw body>"`. Like Stripe's, the time is signed and the same window applies.
+//!
+//! If several are there, the first of GitHub, Stripe, Slack decides — a legitimate service sends one. Every comparison is constant-time
 //! (`Mac::verify_slice`), and a header that isn't well formed is simply "not signed": the caller gets the same `401` as
 //! for a wrong signature.
 
@@ -21,14 +24,44 @@ type HmacSha256 = Hmac<Sha256>;
 /// How far from now a Stripe-style timestamp may be, in either direction: Stripe's own default.
 pub const STRIPE_TOLERANCE_SECS: i64 = 300;
 
-/// Whether the call is signed with `secret`. `github` and `stripe` are the values of `X-Hub-Signature-256` and
-/// `Stripe-Signature`, when the request has them.
-pub fn verify(secret: &str, github: Option<&str>, stripe: Option<&str>, body: &[u8], now_secs: i64) -> bool {
-    match (github, stripe) {
-        (Some(value), _) => verify_github(secret, body, value),
-        (None, Some(value)) => verify_stripe(secret, body, value, now_secs),
-        (None, None) => false,
+/// The signature headers a request has, if any: `X-Hub-Signature-256`, `Stripe-Signature`, `X-Slack-Signature` and
+/// `X-Slack-Request-Timestamp`.
+#[derive(Default, Clone, Copy)]
+pub struct SignatureHeaders<'a> {
+    pub github: Option<&'a str>,
+    pub stripe: Option<&'a str>,
+    pub slack: Option<&'a str>,
+    pub slack_timestamp: Option<&'a str>,
+}
+
+/// Whether the call is signed with `secret`.
+pub fn verify(secret: &str, headers: SignatureHeaders<'_>, body: &[u8], now_secs: i64) -> bool {
+    if let Some(value) = headers.github {
+        verify_github(secret, body, value)
+    } else if let Some(value) = headers.stripe {
+        verify_stripe(secret, body, value, now_secs)
+    } else if let Some(value) = headers.slack {
+        headers.slack_timestamp.is_some_and(|timestamp| verify_slack(secret, body, value, timestamp, now_secs))
+    } else {
+        false
     }
+}
+
+/// `v0=<64 hex>` over `"v0:<timestamp>:<body>"`, within `STRIPE_TOLERANCE_SECS` of `now_secs` (Slack's own window).
+pub fn verify_slack(secret: &str, body: &[u8], header: &str, timestamp: &str, now_secs: i64) -> bool {
+    let Ok(sent_at) = timestamp.trim().parse::<i64>() else {
+        return false;
+    };
+    let Some(expected) = header.trim().strip_prefix("v0=").and_then(decode_hex) else {
+        return false;
+    };
+    if now_secs.abs_diff(sent_at) > STRIPE_TOLERANCE_SECS as u64 {
+        return false;
+    }
+    let mut mac = mac_for(secret);
+    mac.update(format!("v0:{sent_at}:").as_bytes());
+    mac.update(body);
+    mac.verify_slice(&expected).is_ok()
 }
 
 fn mac_for(secret: &str) -> HmacSha256 {
@@ -100,6 +133,7 @@ mod tests {
     const SECRET: &str = "whsec_test_secret";
     const GITHUB_SIGNATURE: &str = "7525e0cfa078cd877bd24fa9303a00c7d7eeb870e18d6a4d07341086519c530d";
     const STRIPE_SIGNATURE: &str = "2bfcbed227da70146bc82772c6b55fcd185879e5e9a65dd17a68caa252f87d0e";
+    const SLACK_SIGNATURE: &str = "1840d7c7c2bfff1d2fa702afbf2423fbc977c0fd3e2eb549d187586ad94d45c7";
     const STRIPE_TIME: i64 = 1_700_000_000;
 
     #[test]
@@ -157,10 +191,38 @@ mod tests {
     fn verify_uses_the_header_the_request_has_and_github_decides_when_both_are_there() {
         let github = format!("sha256={GITHUB_SIGNATURE}");
         let stripe = format!("t={STRIPE_TIME},v1={STRIPE_SIGNATURE}");
-        assert!(verify(SECRET, Some(&github), None, BODY, STRIPE_TIME));
-        assert!(verify(SECRET, None, Some(&stripe), BODY, STRIPE_TIME));
-        assert!(!verify(SECRET, None, None, BODY, STRIPE_TIME), "no signature at all");
+        let slack = format!("v0={SLACK_SIGNATURE}");
+        let slack_time = STRIPE_TIME.to_string();
+        let on = |headers| verify(SECRET, headers, BODY, STRIPE_TIME);
+        assert!(on(SignatureHeaders { github: Some(&github), ..Default::default() }));
+        assert!(on(SignatureHeaders { stripe: Some(&stripe), ..Default::default() }));
+        assert!(on(SignatureHeaders { slack: Some(&slack), slack_timestamp: Some(&slack_time), ..Default::default() }));
+        assert!(!on(SignatureHeaders::default()), "no signature at all");
+        assert!(!on(SignatureHeaders { slack: Some(&slack), ..Default::default() }), "Slack's time header is part of the proof");
         // A good Stripe signature does not rescue a bad GitHub one: the first header decides.
-        assert!(!verify(SECRET, Some("sha256=00"), Some(&stripe), BODY, STRIPE_TIME));
+        assert!(!on(SignatureHeaders { github: Some("sha256=00"), stripe: Some(&stripe), ..Default::default() }));
+    }
+
+    #[test]
+    fn slack_signs_the_version_the_time_and_the_body() {
+        // The example in Slack's own documentation.
+        let doc_body = b"token=xyzz0WbapA4vBCDEFasx0q6G&team_id=T1DC2JH3J&team_domain=testteamnow&channel_id=G8PSS9T3V&channel_name=foobar&user_id=U2CERLKJA&user_name=roadrunner&command=%2Fwebhook-collect&text=&response_url=https%3A%2F%2Fhooks.slack.com%2Fcommands%2FT1DC2JH3J%2F397700885554%2F96rGlfmibIGlgcZRskXaIFfN&trigger_id=398738663015.47445629121.803a0bc887a14d10d2c447fce8b6703c";
+        let doc = "v0=a2114d57b48eac39b9ad189dd8316235a7b4a8d21a10bd27519666489c69b503";
+        assert!(verify_slack("8f742231b10e8888abcd99yyyzzz85a5", doc_body, doc, "1531420618", 1_531_420_618));
+
+        let header = format!("v0={SLACK_SIGNATURE}");
+        let time = STRIPE_TIME.to_string();
+        assert!(verify_slack(SECRET, BODY, &header, &time, STRIPE_TIME));
+        assert!(verify_slack(SECRET, BODY, &header, &time, STRIPE_TIME + STRIPE_TOLERANCE_SECS), "right at the edge of the window");
+        assert!(!verify_slack(SECRET, BODY, &header, &time, STRIPE_TIME + STRIPE_TOLERANCE_SECS + 1), "too old: a replay");
+        assert!(!verify_slack(SECRET, BODY, &header, &time, STRIPE_TIME - STRIPE_TOLERANCE_SECS - 1), "from the future");
+        assert!(!verify_slack("another secret", BODY, &header, &time, STRIPE_TIME));
+        assert!(!verify_slack(SECRET, b"{}", &header, &time, STRIPE_TIME), "a body changed on the way");
+        let moved = (STRIPE_TIME + 100).to_string();
+        assert!(!verify_slack(SECRET, BODY, &header, &moved, STRIPE_TIME + 100), "the time is signed");
+        for bad in ["", "v0=", "v0=zz", SLACK_SIGNATURE, &format!("v1={SLACK_SIGNATURE}")] {
+            assert!(!verify_slack(SECRET, BODY, bad, &time, STRIPE_TIME), "'{bad}'");
+        }
+        assert!(!verify_slack(SECRET, BODY, &header, "abc", STRIPE_TIME));
     }
 }

@@ -165,7 +165,15 @@ async fn route<S: AsyncRead + Unpin>(stream: &mut S, head: &RequestHead, ctx: &W
             // A signature is made over the body, so for these the body has to come first (the same size cap and timeout).
             let received = read_body(stream, head).await?;
             let secret = tokens.secret_of(id).map_err(store_error)?;
-            let good = secret.is_some_and(|secret| webhook_signature::verify(&secret, head.header("x-hub-signature-256"), head.header("stripe-signature"), &received, now_millis() / 1000));
+            let good = secret.is_some_and(|secret| {
+                let headers = webhook_signature::SignatureHeaders {
+                    github: head.header("x-hub-signature-256"),
+                    stripe: head.header("stripe-signature"),
+                    slack: head.header("x-slack-signature"),
+                    slack_timestamp: head.header("x-slack-request-timestamp"),
+                };
+                webhook_signature::verify(&secret, headers, &received, now_millis() / 1000)
+            });
             if good {
                 tokens.note_signature_used(id).map_err(store_error)?;
             }

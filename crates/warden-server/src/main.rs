@@ -362,7 +362,7 @@ enum WebhooksCommand {
         #[arg(long)]
         agent: Option<String>,
         /// How the caller proves itself: `token` (a bearer token, the default) or `hmac` (a signature of the body, made with
-        /// a secret the service is given: GitHub's X-Hub-Signature-256 or Stripe's Stripe-Signature).
+        /// a secret the service is given: GitHub's X-Hub-Signature-256, Stripe's Stripe-Signature or Slack's X-Slack-Signature).
         #[arg(long, default_value = "token")]
         auth: String,
     },
@@ -1105,8 +1105,8 @@ fn run_webhooks_command(args: WebhooksArgs) -> anyhow::Result<()> {
                 }
                 WebhookAuth::Hmac => {
                     eprintln!("signing secret for webhook '{id}' created — copy it now, it isn't shown again; any earlier credential for it stopped working");
-                    eprintln!("give it to the service that calls http(s)://<this hub>:<port>/hooks/{id} (GitHub: the webhook's \"Secret\"; Stripe: the endpoint's signing secret)");
-                    eprintln!("it is signed with HMAC-SHA256 in X-Hub-Signature-256 (GitHub, Gitea, Forgejo) or Stripe-Signature; a bearer token is not accepted");
+                    eprintln!("give it to the service that calls http(s)://<this hub>:<port>/hooks/{id} (GitHub: the webhook's \"Secret\"; Stripe: the endpoint's signing secret; Slack: the app's signing secret)");
+                    eprintln!("it is signed with HMAC-SHA256 in X-Hub-Signature-256 (GitHub, Gitea, Forgejo), Stripe-Signature or X-Slack-Signature; a bearer token is not accepted");
                     eprintln!("note: unlike a token, the secret is kept in the clear in webhook_tokens.json (mode 0600): checking a signature means making one");
                 }
             }

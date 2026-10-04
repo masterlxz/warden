@@ -35,7 +35,7 @@ pub enum WebhookAuth {
     /// `Authorization: Bearer whk_…` (or `X-Warden-Token`).
     #[default]
     Token,
-    /// `X-Hub-Signature-256` (GitHub) or `Stripe-Signature`: an HMAC-SHA256 of the body with the webhook's secret.
+    /// `X-Hub-Signature-256` (GitHub), `Stripe-Signature` or `X-Slack-Signature`: an HMAC-SHA256 of the body with the webhook's secret.
     Hmac,
 }
 

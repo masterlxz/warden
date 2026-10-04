@@ -703,6 +703,29 @@ async fn a_stripe_signed_call_runs_and_a_stale_or_moved_timestamp_is_refused() {
     assert_eq!(hub.inputs.lock().unwrap().len(), 1, "only the good call reached the model");
 }
 
+fn slack_signature(secret: &str, body: &str, at: i64) -> [(&'static str, String); 2] {
+    [("X-Slack-Signature", format!("v0={}", sign(secret, format!("v0:{at}:{body}").as_bytes()))), ("X-Slack-Request-Timestamp", at.to_string())]
+}
+
+#[tokio::test]
+async fn a_slack_signed_call_runs_and_a_stale_or_moved_timestamp_or_a_missing_time_is_refused() {
+    let hub = hub().await;
+    hub.set_webhooks(vec![signed_hook("slack")]);
+    let secret = hub.tokens.create_secret("slack").unwrap().token;
+    let body = "command=%2Fdeploy&text=prod";
+
+    let (status, answer) = post_with(&hub, "slack", &slack_signature(&secret, body, now_secs()), body).await;
+    assert_eq!(status, 202, "{answer}");
+    hub.conversation_with("task-hook-slack", 2).await;
+
+    let old = slack_signature(&secret, body, now_secs() - 600);
+    let moved = [old[0].clone(), ("X-Slack-Request-Timestamp", now_secs().to_string())];
+    let no_time = [slack_signature(&secret, body, now_secs())[0].clone()];
+    let (a, b, c) = tokio::join!(post_with(&hub, "slack", &old, body), post_with(&hub, "slack", &moved, body), post_with(&hub, "slack", &no_time, body));
+    assert_eq!((a.0, b.0, c.0), (401, 401, 401));
+    assert_eq!(hub.inputs.lock().unwrap().len(), 1, "only the good call reached the model");
+}
+
 #[tokio::test]
 async fn every_way_of_a_bad_signature_gets_the_same_401_as_an_unknown_webhook_and_runs_nothing() {
     let hub = hub().await;
