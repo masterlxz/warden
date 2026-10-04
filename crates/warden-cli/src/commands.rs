@@ -8,6 +8,12 @@ pub enum Command {
     Exit,
     Help,
     Usage,
+    /// `/folder` — the folder this session works in, if one was picked (P102).
+    FolderShow,
+    /// `/folder <path>` — works in that folder of this computer: set before the first message, never after.
+    FolderSet(String),
+    /// `/folder off` — no folder.
+    FolderOff,
     /// `/limits` — where every spending limit stands (P4).
     Limits,
     /// `/extend <id>` — lets a limit go one step further for the rest of its window.
@@ -95,6 +101,10 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("exit", []) | ("quit", []) => Command::Exit,
         ("help", []) => Command::Help,
         ("usage", []) => Command::Usage,
+        ("folder", []) => Command::FolderShow,
+        ("folder", ["off"]) => Command::FolderOff,
+        // The path is the rest of the line, so a folder with spaces in its name works.
+        ("folder", path) => Command::FolderSet(path.join(" ")),
         ("limits", []) => Command::Limits,
         ("limits", ["add"]) => Command::LimitsAdd,
         ("limits", ["edit", id]) => Command::LimitsEdit(id.to_string()),

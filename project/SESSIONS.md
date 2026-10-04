@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-04 — Sessão 135
+
+- **Objetivo**: o seletor de pasta de trabalho no CLI (o celular e a extensão ficam). Sem rodar nem escrever testes, e com cuidado com o disco (`/home` em 86%, 26 GB livres; só `cargo check`, que não cresceu o `target`).
+- **Feito**: `/folder [caminho|off]` (`commands.rs`: `FolderShow`/`FolderSet`/`FolderOff`; `interactive.rs`: `CliSession.workdir`, `cmd_folder`, o `scope_to_workdir` a cada turno, a linha do `/help`). Só antes da primeira mensagem; o caminho vira absoluto e precisa ser uma pasta que existe.
+- **Verificado**: só `cargo check -p warden-cli`, sem aviso. **Nenhum teste rodado nem escrito**, e o comando nunca foi usado num terminal.
+
+---
+
 ### 2026-10-04 — Sessão 134
 
 - **Objetivo**: a tela do dono para liberar pastas de trabalho a cada membro (`workdirs` e `node_workdirs`), que só existiam no `config.toml`. **A pedido do usuário: só implementação, sem rodar nem escrever testes.**

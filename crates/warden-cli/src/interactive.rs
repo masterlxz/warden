@@ -995,6 +995,9 @@ struct CliSession {
     /// orchestrator checks each turn, so what these commands show is what a turn will hit. `None`
     /// when no limit is in force.
     spend_guard: Option<Arc<SpendGuard>>,
+    /// The folder of this computer the session works in (P102), picked with `/folder` before the first message: the
+    /// file tools and the shell act there, and the shell asks before every command. Never changed after the first turn.
+    workdir: Option<String>,
 }
 
 /// Uses `warden_bootstrap::resolve_vault_path` (P61) — needed here because `Orchestrator` doesn't
@@ -1168,6 +1171,7 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/exit, /quit — sair",
         "/help — esta lista",
         "/usage — tokens e $ gastos nesta sessão do terminal ($ só com [[prices]] cadastrado)",
+        "/folder [caminho|off] — pasta de trabalho da sessão (antes da primeira mensagem): arquivos e shell agem só ali",
         "/limits — situação de cada limite de gasto (tokens e $ por janela de tempo)",
         "/limits add — cadastrar um limite de gasto novo",
         "/limits edit <id> — editar um limite",
@@ -2817,11 +2821,47 @@ async fn cmd_sync_git_pull(terminal: &mut CliTerminal, session: &CliSession) -> 
     render_message_card(terminal, "sync", accent_style(), lines)
 }
 
+/// `/folder` (P102): shows the session's working folder (`None`), picks one (`Some(path)`) or clears it (`Some("")`).
+/// A relative path is read from where the terminal was opened. It has to be a folder that exists, and it can only be
+/// chosen or changed before the first message — the same rule as the desktop and the web, so a conversation never moves
+/// to another folder halfway.
+async fn cmd_folder(terminal: &mut CliTerminal, session: &mut CliSession, change: Option<String>) -> anyhow::Result<()> {
+    let say = |terminal: &mut CliTerminal, style: Style, text: String| render_message_card(terminal, "pasta", style, vec![(text, Style::default())]);
+    let Some(path) = change else {
+        let text = match &session.workdir {
+            Some(folder) => format!("trabalhando em {folder} (o shell começa lá e pede o seu sim a cada comando)"),
+            None => "sem pasta de trabalho — /folder <caminho> escolhe uma, antes da primeira mensagem".to_string(),
+        };
+        return say(terminal, accent_style(), text);
+    };
+    if session.turn_count > 0 {
+        return say(terminal, error_style(), "a pasta é escolhida antes da primeira mensagem e não muda depois — abra outra sessão para trabalhar em outra".to_string());
+    }
+    if path.is_empty() {
+        session.workdir = None;
+        return say(terminal, accent_style(), "sem pasta de trabalho".to_string());
+    }
+    let resolved = match std::fs::canonicalize(&path) {
+        Ok(resolved) if resolved.is_dir() => resolved,
+        Ok(_) => return say(terminal, error_style(), format!("'{path}' não é uma pasta")),
+        Err(_) => return say(terminal, error_style(), format!("'{path}' não existe")),
+    };
+    let folder = resolved.to_string_lossy().into_owned();
+    if let Err(err) = warden_core::project::validate_workdir(&folder) {
+        return say(terminal, error_style(), format!("{err:#}"));
+    }
+    session.workdir = Some(folder.clone());
+    say(terminal, accent_style(), format!("trabalhando em {folder}: as ferramentas de arquivo agem só ali e o shell começa lá, pedindo o seu sim a cada comando"))
+}
+
 async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &mut CliSession) -> anyhow::Result<()> {
     match command {
         Command::Exit => unreachable!("Command::Exit is handled by the caller before dispatch"),
         Command::Help => cmd_help(terminal).await,
         Command::Usage => cmd_usage(terminal, session).await,
+        Command::FolderShow => cmd_folder(terminal, session, None).await,
+        Command::FolderSet(path) => cmd_folder(terminal, session, Some(path)).await,
+        Command::FolderOff => cmd_folder(terminal, session, Some(String::new())).await,
         Command::Limits => cmd_limits(terminal, session).await,
         Command::LimitsAdd => wizard_limits_add(terminal, session).await,
         Command::LimitsEdit(id) => wizard_limits_edit(terminal, session, id).await,
@@ -2902,6 +2942,7 @@ pub async fn run(
         started_at: now_millis(),
         tool_names: orchestrator.tools().iter().map(|t| t.spec().name).collect(),
         spend_guard: orchestrator.spend_guard().cloned(),
+        workdir: None,
     };
 
     loop {
@@ -2952,6 +2993,19 @@ pub async fn run(
                 render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
                 continue;
             }
+        };
+
+        // P102: a session in a folder runs every turn there; a folder that is gone stops the turn instead of quietly
+        // falling back to the vault.
+        let scoped = match &session.workdir {
+            Some(folder) => match warden_bootstrap::scope_to_workdir(&scoped, folder) {
+                Ok(in_folder) => in_folder,
+                Err(err) => {
+                    render_message_card(&mut terminal, "erro", error_style(), vec![(format!("{err:#}"), Style::default())])?;
+                    continue;
+                }
+            },
+            None => scoped,
         };
 
         match run_turn(&scoped, &history, trimmed, &mut terminal, model_override, system_prompt.as_deref()).await {
