@@ -13,6 +13,7 @@ import SyncView from "./components/SyncView";
 import TasksView from "./components/TasksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
+import { applyEvent, type ChatEventDto, type LiveTurn } from "./lib/liveTurn";
 import type { Attachment, ChatMessage, Conversation, ProjectEntry, ProviderFallback, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -76,6 +77,8 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // What a code engine has done so far in the task each conversation is running (P103 b), until the turn ends.
+  const [liveTurns, setLiveTurns] = useState<Record<string, LiveTurn>>({});
   const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
@@ -116,6 +119,16 @@ function App() {
           setConversations((prev) => replaceWithSaved(prev, changed));
         })
         .catch((err) => console.error("failed to reload a conversation:", err));
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // The backend tells what the code engine does as it does it (P103 b).
+  useEffect(() => {
+    const unlisten = listen<{ conversationId: string; event: ChatEventDto }>("chat-event", ({ payload }) => {
+      setLiveTurns((prev) => ({ ...prev, [payload.conversationId]: applyEvent(prev[payload.conversationId], payload.event) }));
     });
     return () => {
       void unlisten.then((fn) => fn());
@@ -172,7 +185,8 @@ function App() {
     }
   }
 
-  function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string) {
+  /** `persist` false only shows the message: a code project's turn saves the whole exchange itself (P103 b). */
+  function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string, persist = true) {
     const agentId = selectedAgentId || undefined;
     const providerId = selectedProviderId || undefined;
     const projectId = currentProjectId || undefined;
@@ -193,6 +207,8 @@ function App() {
           };
       return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
+
+    if (!persist) return;
 
     // Appended on disk rather than saving the whole conversation held here: another writer (an agent
     // answering a note in this conversation, the CLI) may have added to it meanwhile (P87).
@@ -225,7 +241,10 @@ function App() {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
 
-    appendMessage(conversationId, userMessage, content || "Image");
+    // A code project's turn saves the exchange itself, with the engine's session; saving the message here first would
+    // leave it twice in the file.
+    const isCodeTurn = projects.some((p) => p.id === currentProjectId && p.code);
+    appendMessage(conversationId, userMessage, content || "Image", !isCodeTurn);
     if (activeConversationId === null) setActiveConversationId(conversationId);
 
     setSendError(null);
@@ -237,6 +256,7 @@ function App() {
         attachments?: Attachment[];
         generatedFiles?: string[];
         fallbacks?: ProviderFallback[];
+        alreadySaved?: boolean;
       }>("send_message", {
         history,
         content,
@@ -247,7 +267,14 @@ function App() {
         providerId: selectedProviderId && selectedProviderId !== settings.activeProvider ? selectedProviderId : null,
         // The conversation's project (P103): the turn runs on its folder, with its instructions.
         projectId: currentProjectId || null,
+        conversationId,
       });
+      if (reply.alreadySaved) {
+        // The backend wrote both messages: take the saved copy instead of appending.
+        const saved = (await invoke<Conversation[]>("list_conversations")).find((c) => c.id === conversationId);
+        if (saved) setConversations((prev) => replaceWithSaved(prev, saved));
+        return;
+      }
       appendMessage(conversationId, {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -266,6 +293,7 @@ function App() {
       setSendError(String(err));
     } finally {
       setIsSending(false);
+      setLiveTurns(({ [conversationId]: _done, ...rest }) => rest);
       // A turn can add agents (an agent with "can create and edit other agents"), so the selector in
       // the chat header would otherwise stay stale until the next visit to Settings. Kept as the same
       // object when nothing changed: the effect above re-selects agent/model whenever `settings` changes.
@@ -273,6 +301,12 @@ function App() {
         .then((next) => setSettings((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next)))
         .catch((err) => console.error("failed to refresh settings:", err));
     }
+  }
+
+  /** The Stop button: the turn ends on its own, with what the engine had by then or an error to show. */
+  function handleCancel() {
+    if (activeConversationId === null) return;
+    invoke("cancel_turn", { conversationId: activeConversationId }).catch((err) => setSendError(String(err)));
   }
 
   return (
@@ -323,6 +357,8 @@ function App() {
           activeConversation={activeConversation}
           onSendMessage={handleSendMessage}
           isSending={isSending}
+          live={activeConversationId === null ? undefined : liveTurns[activeConversationId]}
+          onCancel={handleCancel}
           sendError={sendError}
           agents={settings.agents}
           providers={settings.providers}

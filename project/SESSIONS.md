@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-03 — Sessão 128
+
+- **Objetivo**: o item (1) do P103: o desktop rodar o modo código. Em Plan mode; caminho escolhido: **em processo**, sem WebSocket e sem exigir o hub embutido.
+- **Feito**: `desktop/src-tauri/src/code_cmds.rs` (`CodeState`/`Runtime` criado no primeiro turno, `run_turn` com `CodeTurn`, comando `cancel_turn`); `send_message` ganhou `conversation_id`, o desvio no lugar da recusa e `already_saved` no resultado; frontend: `lib/liveTurn.ts`
+  (portado da web), `LiveBubble` com **Stop** no `ChatArea`, `chat-event` e `liveTurns` no `App.tsx`, e o CSS `live-*`. Para não gravar duas vezes, o frontend só mostra a mensagem do usuário num turno de código e recarrega a cópia salva ao fim.
+- **Verificado**: `cargo clippy` do desktop e `tsc` limpos. **Não verificado**: nada rodou numa janela, nem com o opencode, nem com modelo real; sem testes automatizados novos (o `CodeTurn` já tem os dele). Se o turno falha, a mensagem do usuário fica só na tela (o `CodeTurn` não grava nada).
+- **Erro meu**: usei `cat >>` no Bash para anexar o CSS (contra a preferência de ver o diff em `Edit`/`Write`); o conteúdo está no `git diff`.
+
+---
+
 ### 2026-10-03 — Sessão 127
 
 - **Objetivo**: o modo código do P103 (b), em Plan mode: uma conversa de um projeto de código é uma sessão do **opencode** (P89) na pasta do projeto, com os eventos ao vivo no chat. O usuário decidiu: **projetos primeiro, o modo geral depois**;

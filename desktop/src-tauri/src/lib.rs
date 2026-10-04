@@ -1,6 +1,7 @@
 mod api_key_cmds;
 mod bot_cmds;
 mod approval;
+mod code_cmds;
 mod git_sync_cmds;
 mod lend_cmds;
 mod node_cmds;
@@ -60,6 +61,8 @@ struct AppState {
     embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
     /// Actions waiting for the user's yes/no (P47 SSH, P46 `manage_agents`) — see `approval::TauriApprover`.
     approvals: Arc<approval::ApprovalBroker>,
+    /// P103 b — the opencode that runs a code project's conversations, started with the first one. See `code_cmds.rs`.
+    code: code_cmds::CodeState,
     /// P61/P71 — the automatic vault sync: looped by `sync_cmds::spawn_auto_sync` and handed to the
     /// embedded hub, which answers the web's Sync screen with it, so the two never sync at once.
     sync_runner: Arc<warden_bootstrap::auto_sync::SyncRunner>,
@@ -171,6 +174,9 @@ struct SendMessageResult {
     /// The turn's provider failed and a reserve answered (P79) — the chat shows a discreet line
     /// above the answer. Not saved with the conversation.
     fallbacks: Vec<warden_server_protocol::protocol::ProviderFallbackDto>,
+    /// The exchange is already in the conversation on disk (a code project's task saves its own, P103 b), so the
+    /// window must not append it again — only reload it.
+    already_saved: bool,
 }
 
 /// `agent_id`/`provider_id` are the per-conversation selectors (closes P3) — the frontend sends
@@ -192,10 +198,12 @@ async fn send_message(
     agent_id: Option<String>,
     provider_id: Option<String>,
     project_id: Option<String>,
+    conversation_id: Option<String>,
 ) -> Result<SendMessageResult, String> {
+    let base = { state.orchestrator.lock().unwrap().clone() }?;
     // Spends as the desktop (P4) — set before scoping, so the agents this one delegates or writes to
     // spend the same way.
-    let mut orchestrator = { state.orchestrator.lock().unwrap().clone() }?.with_spend_context(SpendContext::new("desktop"));
+    let mut orchestrator = base.clone().with_spend_context(SpendContext::new("desktop"));
     let history: Vec<Message> = history.into_iter().map(Into::into).collect();
     let attachments: Vec<Attachment> = attachments.into_iter().map(Into::into).collect();
 
@@ -227,10 +235,19 @@ async fn send_message(
 
     // After the agent and the model: the project narrows what the turn can reach, whoever is speaking.
     if let Some(id) = project_id.as_deref() {
-        // P103 b: a code project's conversations are tasks for the opencode, which only the hub runs. Saying so beats
-        // running the ordinary turn with a shell, which is not what the person asked the project for.
-        if warden_core::project::ProjectStore::new(orchestrator.vault().clone()).get(id).is_ok_and(|p| p.code) {
-            return Err("This is a code project: its conversations run on the opencode through the hub, which this window's own chat doesn't use yet. Open it from the web UI (turn on the embedded hub in Settings).".to_string());
+        // P103 b: a code project's conversations are tasks for the opencode, run here as the hub runs them for the web.
+        // Running the ordinary turn with a shell instead is not what the person asked the project for.
+        let projects = warden_core::project::ProjectStore::new(orchestrator.vault().clone());
+        if let Some(conversation_id) = conversation_id.as_deref() {
+            let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+            let code = warden_bootstrap::code_turn::code_project(&projects, &dir, conversation_id, Some(id)).map_err(|e| format!("{e:#}"))?;
+            if let Some(project) = code {
+                let content = code_cmds::run_turn(app, &state, &base, project, conversation_id, &content, attachments).await?;
+                return Ok(SendMessageResult { content, usage: None, attachments: Vec::new(), generated_files: Vec::new(), fallbacks: Vec::new(), already_saved: true });
+            }
+        }
+        if projects.get(id).is_ok_and(|p| p.code) {
+            return Err("This code project has no working folder: set one in its settings.".to_string());
         }
         if let Some(scoped) = warden_bootstrap::scope_to_project(&orchestrator, id).map_err(|e| format!("{e:#}"))? {
             orchestrator = scoped;
@@ -248,6 +265,7 @@ async fn send_message(
         attachments: outcome.attachments.into_iter().map(Into::into).collect(),
         generated_files: outcome.generated_files,
         fallbacks: outcome.fallbacks.into_iter().map(Into::into).collect(),
+        already_saved: false,
     })
 }
 
@@ -892,6 +910,7 @@ pub fn run() {
         generated_files_root,
         embedded_server: Mutex::new(None),
         approvals: Arc::new(approval::ApprovalBroker::default()),
+        code: code_cmds::CodeState::default(),
         sync_runner: sync_runner.clone(),
         lending: Mutex::new(None),
     };
@@ -930,6 +949,7 @@ pub fn run() {
             send_message,
             list_tool_names,
             approval::resolve_approval,
+            code_cmds::cancel_turn,
             open_generated_file,
             read_attachment,
             transcribe_audio,

@@ -1,13 +1,20 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { AgentEntry, Attachment, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
+import type { LiveTurn } from "../lib/liveTurn";
 import { LogoMark } from "./Icons";
-import MessageBubble from "./MessageBubble";
+import MessageBubble, { MarkdownLink } from "./MessageBubble";
 import MessageInput from "./MessageInput";
 
 interface ChatAreaProps {
   activeConversation: Conversation | undefined;
   onSendMessage: (content: string, attachments: Attachment[]) => void;
   isSending: boolean;
+  /** What the code engine is doing in the turn being sent (P103 b); none until it says something. */
+  live?: LiveTurn;
+  /** Stops that task. */
+  onCancel: () => void;
   sendError: string | null;
   agents: AgentEntry[];
   providers: ProviderEntry[];
@@ -48,10 +55,48 @@ function ThinkingIndicator() {
   );
 }
 
+const TOOL_MARK = { running: "…", completed: "✓", failed: "✗" } as const;
+
+/** The task a code engine is running: its words and its tools in the order they happened, and the way to stop it. */
+function LiveBubble({ live, onCancel }: { live: LiveTurn; onCancel: () => void }) {
+  return (
+    <div className="message-row message-row--assistant">
+      <div className="message-avatar">
+        <LogoMark size={18} />
+      </div>
+      <div className="message-assistant-body bubble--live" aria-label="In progress" aria-live="polite">
+        {live.items.map((item, i) =>
+          item.kind === "text" ? (
+            <div key={i} className="message-bubble-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+                {item.text}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <p key={i} className={`live-tool live-tool--${item.status}`}>
+              <span className="live-tool-mark" aria-hidden="true">
+                {TOOL_MARK[item.status]}
+              </span>
+              <span className="live-tool-name">{item.tool}</span>
+              <span className="live-tool-title">{item.title}</span>
+            </p>
+          ),
+        )}
+        {live.notice && <p className="live-notice">{live.notice}</p>}
+        <button type="button" className="live-stop" onClick={onCancel}>
+          Stop
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ChatArea({
   activeConversation,
   onSendMessage,
   isSending,
+  live,
+  onCancel,
   sendError,
   agents,
   providers,
@@ -72,7 +117,7 @@ function ChatArea({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [activeConversation?.messages.length, isSending]);
+  }, [activeConversation?.messages.length, isSending, live]);
 
   // Another conversation, another question.
   useEffect(() => setPendingMove(null), [activeConversation?.id]);
@@ -199,7 +244,8 @@ function ChatArea({
             {activeConversation!.messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
-            {isSending && <ThinkingIndicator />}
+            {isSending && live && <LiveBubble live={live} onCancel={onCancel} />}
+            {isSending && !live && <ThinkingIndicator />}
             <div ref={bottomRef} />
           </div>
         )}
