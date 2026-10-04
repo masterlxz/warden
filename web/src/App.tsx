@@ -369,10 +369,10 @@ export default function App() {
     setPhase({ kind: "login" });
   }
 
-  function handleApproval(approvalId: number, approved: boolean) {
+  function handleApproval(approvalId: number, approved: boolean, always = false) {
     setApprovals((queue) => queue.filter((p) => p.approvalId !== approvalId));
     try {
-      connRef.current?.resolveApproval(approvalId, approved);
+      connRef.current?.resolveApproval(approvalId, approved, always);
     } catch {
       // The connection is gone; the hub already counts an unanswered request as a no.
     }

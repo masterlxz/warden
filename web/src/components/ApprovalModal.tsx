@@ -3,7 +3,7 @@ import type { ApprovalPrompt } from "../hub/connection";
 interface Props {
   /** Oldest first; the first one is shown. */
   queue: ApprovalPrompt[];
-  onAnswer: (approvalId: number, approved: boolean) => void;
+  onAnswer: (approvalId: number, approved: boolean, always?: boolean) => void;
 }
 
 const VERB: Record<string, string> = {
@@ -41,6 +41,13 @@ export default function ApprovalModal({ queue, onAnswer }: Props) {
             {spendPause ? "Liberar mais" : "Aprovar"}
           </button>
         </div>
+        {current.always && (
+          <div className="approval-actions">
+            <button type="button" className="link-button" onClick={() => onAnswer(current.approvalId, true, true)} title="Até o hub ser reiniciado">
+              Sempre permitir nesta conversa: {current.always}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

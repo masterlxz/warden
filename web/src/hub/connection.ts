@@ -194,6 +194,8 @@ export interface ApprovalPrompt {
   target: string;
   action: string;
   detail: string;
+  /** What "Sempre permitir" would cover (e.g. `git status *`), when this ask can be answered that way (P103 b). */
+  always?: string;
 }
 
 /** `prompt` opens an approval; `cancelled` closes one the hub stopped waiting for. */
@@ -475,8 +477,8 @@ export class ServerConnection {
         for (const listener of this.chatEventListeners) listener(message.event, message.conversationId);
         break;
       case "approvalRequest": {
-        const { approvalId, target, action, detail } = message;
-        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail } });
+        const { approvalId, target, action, detail, always } = message;
+        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail, always } });
         break;
       }
       case "approvalCancelled":
@@ -604,8 +606,8 @@ export class ServerConnection {
   }
 
   /** P46 — the person's answer to an `ApprovalPrompt`. */
-  resolveApproval(approvalId: number, approved: boolean): void {
-    this.socket.send(encode({ type: "resolveApproval", approvalId, approved }));
+  resolveApproval(approvalId: number, approved: boolean, always = false): void {
+    this.socket.send(encode({ type: "resolveApproval", approvalId, approved, ...(always ? { always } : {}) }));
   }
 
   /** P78 — the hub's transcription of a voice recording. Whisper can take a while on a long clip,

@@ -127,13 +127,13 @@ async fn a_code_projects_conversation_runs_on_the_engine_with_events_an_approval
     }
     // …the engine wants a yes for it, and the person's answer is what it gets…
     let approval_id = match next(&mut me).await {
-        ServerMessage::ApprovalRequest { approval_id, target, action, detail } => {
+        ServerMessage::ApprovalRequest { approval_id, target, action, detail, .. } => {
             assert_eq!((target.as_str(), action.as_str(), detail.as_str()), ("Repo", "bash", "cargo test"));
             approval_id
         }
         other => panic!("{other:?}"),
     };
-    me.send(&ClientMessage::ResolveApproval { approval_id, approved: true }).await.unwrap();
+    me.send(&ClientMessage::ResolveApproval { approval_id, approved: true, always: false }).await.unwrap();
     assert!(matches!(next(&mut me).await, ServerMessage::ChatEvent { event: ChatEventDto::Tool { status: ToolStatusDto::Completed, .. }, .. }));
     assert!(matches!(next(&mut me).await, ServerMessage::ChatEvent { event: ChatEventDto::Text { text }, .. } if text == "done"));
     // …and the turn ends the usual way.
@@ -153,7 +153,7 @@ async fn a_code_projects_conversation_runs_on_the_engine_with_events_an_approval
     say(&mut me, "now run it", None).await;
     loop {
         match next(&mut me).await {
-            ServerMessage::ApprovalRequest { approval_id, .. } => me.send(&ClientMessage::ResolveApproval { approval_id, approved: false }).await.unwrap(),
+            ServerMessage::ApprovalRequest { approval_id, .. } => me.send(&ClientMessage::ResolveApproval { approval_id, approved: false, always: false }).await.unwrap(),
             ServerMessage::ChatResponse { .. } => break,
             _ => {}
         }
@@ -294,12 +294,12 @@ mod real {
         let mut asked = false;
         loop {
             match wait(&mut me).await {
-                ServerMessage::ApprovalRequest { approval_id, target, action, detail } => {
+                ServerMessage::ApprovalRequest { approval_id, target, action, detail, .. } => {
                     asked = true;
                     assert_eq!((target.as_str(), action.as_str()), ("Repo", "bash"));
                     assert!(detail.contains("made-by-the-engine"), "{detail}");
                     assert!(!repo.join("out.txt").exists(), "nothing ran before the yes");
-                    me.send(&ClientMessage::ResolveApproval { approval_id, approved: true }).await.unwrap();
+                    me.send(&ClientMessage::ResolveApproval { approval_id, approved: true, always: false }).await.unwrap();
                 }
                 ServerMessage::ChatResponse { content, .. } => {
                     assert!(content.contains("the file is there"), "{content}");

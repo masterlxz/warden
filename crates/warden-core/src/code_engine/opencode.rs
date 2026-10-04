@@ -7,8 +7,9 @@
 //! Every route takes `?directory=`, which picks the project the engine works in; the server is also started in that
 //! folder, so a request that forgot it would still land in the right place.
 
+use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
@@ -17,9 +18,9 @@ use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Value};
 
-use super::tracker::{Signal, Tracker};
+use super::tracker::{PermissionAsk, Signal, Tracker};
 use super::{CodeEngine, CodeEvent, TurnOutcome, TurnRequest};
-use crate::tool::{ApprovalRequest, Approver};
+use crate::tool::{Answer, ApprovalRequest, Approver};
 
 /// How long one permission ask waits for the person; no answer counts as no (like the project shell and the SSH hosts).
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -154,11 +155,55 @@ impl Client {
 
 pub struct OpencodeEngine {
     launcher: Arc<dyn Launcher>,
+    /// The "always" answers, by session (a session is a conversation): `(permission, pattern)` pairs that are a yes
+    /// without asking. Only in memory — a restart forgets them — and ours rather than the engine's own, so they can be
+    /// seen and dropped from here.
+    always: Mutex<HashMap<String, Vec<(String, String)>>>,
 }
 
 impl OpencodeEngine {
     pub fn new(launcher: Arc<dyn Launcher>) -> Self {
-        Self { launcher }
+        Self { launcher, always: Mutex::default() }
+    }
+
+    /// Whether the person already said "always" to what this ask would do: the same kind of action, and every thing it
+    /// touches matched by something they allowed.
+    fn is_allowed(&self, session: &str, ask: &PermissionAsk) -> bool {
+        let always = self.always.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(allowed) = always.get(session) else { return false };
+        !ask.patterns.is_empty() && ask.patterns.iter().all(|touched| allowed.iter().any(|(permission, pattern)| *permission == ask.permission && matches_pattern(pattern, touched)))
+    }
+
+    fn remember(&self, session: &str, ask: &PermissionAsk) {
+        let mut always = self.always.lock().unwrap_or_else(|e| e.into_inner());
+        let allowed = always.entry(session.to_string()).or_default();
+        for pattern in &ask.always {
+            let entry = (ask.permission.clone(), pattern.clone());
+            if !allowed.contains(&entry) {
+                allowed.push(entry);
+            }
+        }
+    }
+}
+
+/// The engine's own pattern language: `*` is any run of characters, and a final ` *` also matches the bare command
+/// (`git status *` allows `git status` and `git status -s`, not `git statusx`).
+fn matches_pattern(pattern: &str, text: &str) -> bool {
+    fn glob(pattern: &[char], text: &[char]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some(('*', rest)) => (0..=text.len()).any(|skip| glob(rest, &text[skip..])),
+            Some((c, rest)) => text.first() == Some(c) && glob(rest, &text[1..]),
+        }
+    }
+    let text: Vec<char> = text.chars().collect();
+    let full: Vec<char> = pattern.chars().collect();
+    if glob(&full, &text) {
+        return true;
+    }
+    match pattern.strip_suffix(" *") {
+        Some(bare) => glob(&bare.chars().collect::<Vec<_>>(), &text),
+        None => false,
     }
 }
 
@@ -188,12 +233,21 @@ impl CodeEngine for OpencodeEngine {
                 match signal {
                     Signal::Event(event) => on_event(event),
                     Signal::Ask(ask) => {
-                        let allowed = match &approver {
-                            Some(approver) => {
-                                let ask = ApprovalRequest { target: request.target.clone(), action: ask.permission.clone(), detail: ask.patterns.join(", ") };
-                                tokio::time::timeout(APPROVAL_TIMEOUT, approver.approve(ask)).await.unwrap_or(false)
+                        let allowed = if self.is_allowed(&session, &ask) {
+                            true
+                        } else {
+                            match &approver {
+                                Some(approver) => {
+                                    let request = ApprovalRequest { target: request.target.clone(), action: ask.permission.clone(), detail: ask.patterns.join(", ") };
+                                    let covers = Some(ask.always.join(", ")).filter(|c| !c.is_empty());
+                                    let answer = tokio::time::timeout(APPROVAL_TIMEOUT, approver.ask(request, covers.as_deref())).await.unwrap_or(Answer::Reject);
+                                    if answer == Answer::Always {
+                                        self.remember(&session, &ask);
+                                    }
+                                    answer != Answer::Reject
+                                }
+                                None => false,
                             }
-                            None => false,
                         };
                         client.answer(&ask.id, allowed).await?;
                     }
@@ -427,6 +481,91 @@ mod tests {
             let reply: Value = serde_json::from_str(&fake.calls("POST", "/permission/per_1/reply")[0]).unwrap();
             assert_eq!(reply["reply"], if yes { "once" } else { "reject" });
         }
+    }
+
+    fn ask_always(id: &str, permission: &str, command: &str, always: &str) -> Step {
+        event("permission.asked", json!({"id": id, "sessionID": S, "permission": permission, "patterns": [command], "metadata": {}, "always": [always]}))
+    }
+
+    /// Answers "always" to the first ask and records what it was asked and what it was offered.
+    struct Forever {
+        asked: Mutex<Vec<(ApprovalRequest, Option<String>)>>,
+        answer: Answer,
+    }
+    #[async_trait]
+    impl Approver for Forever {
+        async fn approve(&self, _request: ApprovalRequest) -> bool {
+            unreachable!("the code engine asks with `ask`")
+        }
+        async fn ask(&self, request: ApprovalRequest, always: Option<&str>) -> Answer {
+            self.asked.lock().unwrap().push((request, always.map(str::to_string)));
+            self.answer
+        }
+    }
+
+    #[tokio::test]
+    async fn an_always_answer_is_remembered_for_the_same_kind_of_ask_and_nothing_else() {
+        let steps = vec![
+            assistant(),
+            ask_always("per_1", "bash", "git status -s", "git status *"),
+            Step::WaitForAnswer,
+            ask_always("per_2", "bash", "git status", "git status *"),
+            Step::WaitForAnswer,
+            ask_always("per_3", "bash", "git push", "git push *"),
+            Step::WaitForAnswer,
+            ask_always("per_4", "edit", "git status -s", "*"),
+            Step::WaitForAnswer,
+            idle(),
+        ];
+        let fake = serve(steps, vec![]).await;
+        let engine = OpencodeEngine::new(fake.launcher(None));
+        let person = Arc::new(Forever { asked: Mutex::default(), answer: Answer::Always });
+        run(&engine, request(None), Some(person.clone())).await.0.unwrap();
+
+        let asked = person.asked.lock().unwrap();
+        let details: Vec<&str> = asked.iter().map(|(r, _)| r.detail.as_str()).collect();
+        assert_eq!(details, ["git status -s", "git push", "git status -s"], "`git status` was covered, the push and the other kind of action were not");
+        assert_eq!(asked[0].1.as_deref(), Some("git status *"), "the person is told what \"always\" would cover");
+        for id in ["per_1", "per_2", "per_3", "per_4"] {
+            let reply: Value = serde_json::from_str(&fake.calls("POST", &format!("/permission/{id}/reply"))[0]).unwrap();
+            assert_eq!(reply["reply"], "once", "{id}: the engine is always told yes once; the remembering is ours");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plain_yes_or_no_is_not_remembered() {
+        for answer in [Answer::Once, Answer::Reject] {
+            let steps = vec![assistant(), ask_always("per_1", "bash", "ls", "ls *"), Step::WaitForAnswer, ask_always("per_2", "bash", "ls", "ls *"), Step::WaitForAnswer, idle()];
+            let fake = serve(steps, vec![]).await;
+            let engine = OpencodeEngine::new(fake.launcher(None));
+            let person = Arc::new(Forever { asked: Mutex::default(), answer });
+            run(&engine, request(None), Some(person.clone())).await.0.unwrap();
+            assert_eq!(person.asked.lock().unwrap().len(), 2, "{answer:?} asks again");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_always_without_a_suggestion_from_the_engine_is_not_offered_or_remembered() {
+        let steps = vec![assistant(), ask("per_1", "ls"), Step::WaitForAnswer, ask("per_2", "ls"), Step::WaitForAnswer, idle()];
+        let fake = serve(steps, vec![]).await;
+        let engine = OpencodeEngine::new(fake.launcher(None));
+        let person = Arc::new(Forever { asked: Mutex::default(), answer: Answer::Always });
+        run(&engine, request(None), Some(person.clone())).await.0.unwrap();
+        let asked = person.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].1, None, "nothing to offer");
+    }
+
+    #[test]
+    fn the_engines_patterns_match_the_way_it_writes_them() {
+        assert!(matches_pattern("git status *", "git status -s"));
+        assert!(matches_pattern("git status *", "git status"), "a final ` *` also allows the bare command");
+        assert!(!matches_pattern("git status *", "git statusx"));
+        assert!(!matches_pattern("git status *", "rm -rf x"));
+        assert!(matches_pattern("*", "anything at all"));
+        assert!(matches_pattern("src/*.rs", "src/main.rs"));
+        assert!(!matches_pattern("src/*.rs", "src/main.py"));
+        assert!(matches_pattern("ls", "ls") && !matches_pattern("ls", "ls -la"), "no star, exact");
     }
 
     #[tokio::test]

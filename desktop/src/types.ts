@@ -192,6 +192,8 @@ export interface ApprovalRequest {
   /** `exec` | `upload` | `download` | `create_agent` | `update_agent` | `delete_agent` | `extend_limit` (a spending limit paused the turn, P4). */
   action: string;
   detail: string;
+  /** What "Always allow" would cover (e.g. `git status *`), when this ask can be answered that way (P103 b). */
+  always?: string | null;
 }
 
 /** Mirrors `warden_bootstrap::GitSyncConfig` (P63/P71 v2) — a self-hosted/remote git repo as an

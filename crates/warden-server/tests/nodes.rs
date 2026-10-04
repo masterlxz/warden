@@ -205,7 +205,7 @@ async fn chat(conn: &mut ServerConnection, message: &str, agent: &str, approve: 
         match conn.recv().await.unwrap().expect("connection closed") {
             ServerMessage::ApprovalRequest { approval_id, .. } => {
                 asked += 1;
-                conn.send(&ClientMessage::ResolveApproval { approval_id, approved: approve }).await.unwrap();
+                conn.send(&ClientMessage::ResolveApproval { approval_id, approved: approve, always: false }).await.unwrap();
             }
             ServerMessage::ChatResponse { content, .. } => return (content, asked),
             ServerMessage::ChatError { message, .. } => return (format!("error: {message}"), asked),

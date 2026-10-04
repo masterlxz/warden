@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-03 — Sessão 129
+
+- **Objetivo**: o item (3) do P103: "sempre permitir" nas permissões do modo código. Em Plan mode; o usuário escolheu: **por conversa, em memória**, com o **padrão que o opencode sugere** (`always` do pedido).
+- **Feito**: `Answer` e `Approver::ask` (padrão = `approve`) em `warden-core`; `PermissionAsk.always` no `Tracker`; no `OpencodeEngine`, a memória por sessão e o casamento de padrões (`matches_pattern`); protocolo (`ApprovalRequest.always`, `ResolveApproval.always`, os dois opcionais); `WsApprover` (`resolve_always`, `ask`); desktop (`ApprovalBroker`/`TauriApprover`, `resolve_approval` com `always`); botão "Sempre permitir nesta conversa" nos dois modais (web e desktop).
+- **Achado no caminho**: o commit da Sessão 128 deixou o **teste** do desktop sem compilar (faltava o campo `code` no `AppState` de `server_cmds.rs`); eu só tinha rodado `cargo check`/`clippy` sem `--tests`. Corrigido aqui.
+- **Verificado**: 1134 testes passando no workspace sem o desktop + 35 do desktop, 0 falhando, 8 ignorados; testes novos (a memória só cobre a mesma ação e os mesmos padrões; sim/não simples não guardam; sem sugestão do motor não se oferece; o casamento de padrões; `WsApprover` e o broker do desktop; o JSON dos campos novos e sem eles); `tsc` da web e do desktop limpos. **Instabilidade vista, não explicada**: numa rodada, 4 testes do `warden-bootstrap` (`message_agent`, `users`) falharam e não repetiram em duas rodadas seguintes.
+- **Não verificado**: nenhuma tela; o opencode real (se o `always` dele tem a forma esperada, e se um comando composto chega como vários pedidos).
+
+---
+
 ### 2026-10-03 — Sessão 128
 
 - **Objetivo**: o item (1) do P103: o desktop rodar o modo código. Em Plan mode; caminho escolhido: **em processo**, sem WebSocket e sem exigir o hub embutido.

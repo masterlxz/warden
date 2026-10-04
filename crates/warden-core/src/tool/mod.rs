@@ -124,6 +124,26 @@ pub struct ApprovalRequest {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn approve(&self, request: ApprovalRequest) -> bool;
+
+    /// Like `approve`, but the person may also say "always" (P103 b: the code engine's asks). `always` says what that
+    /// would cover, and is `None` when it can't be offered. An approver that has no "always" to give just answers
+    /// `approve`, which is what this does.
+    async fn ask(&self, request: ApprovalRequest, _always: Option<&str>) -> Answer {
+        if self.approve(request).await {
+            Answer::Once
+        } else {
+            Answer::Reject
+        }
+    }
+}
+
+/// What the person answered to an ask that could be remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Once,
+    /// Yes, and the same kind of ask is a yes from now on (as far as the asker remembers).
+    Always,
+    Reject,
 }
 
 /// A source of tools that isn't known until runtime — unlike `Tool`, which is a single

@@ -1292,8 +1292,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         }
                     });
                 }
-                Ok(ClientMessage::ResolveApproval { approval_id, approved }) => {
-                    approver.resolve(approval_id, approved);
+                Ok(ClientMessage::ResolveApproval { approval_id, approved, always }) => {
+                    approver.resolve_always(approval_id, approved, always);
                 }
                 // P103 b: stops a code task. Never for a member: the tasks are the owner's, and a conversation id is
                 // all it takes to name one.

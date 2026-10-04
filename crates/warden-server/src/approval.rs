@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
-use warden_core::tool::{ApprovalRequest, Approver};
+use warden_core::tool::{Answer, ApprovalRequest, Approver};
 use warden_server_protocol::ServerMessage;
 
 /// Same deadline the tools themselves use (`manage_agents`' `APPROVAL_TIMEOUT`): past it the tool has
@@ -21,7 +21,7 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Clone)]
 pub struct WsApprover {
     tx: mpsc::UnboundedSender<ServerMessage>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Answer>>>>,
     next_id: Arc<AtomicU64>,
     timeout: Duration,
 }
@@ -40,8 +40,39 @@ impl WsApprover {
     /// The person's answer to `approval_id`. An id nobody is waiting on (answered, expired, or made
     /// up) is ignored.
     pub fn resolve(&self, approval_id: u64, approved: bool) {
-        if let Some(answer) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id) {
-            let _ = answer.send(approved);
+        self.resolve_always(approval_id, approved, false);
+    }
+
+    /// Same, for an ask that offered "always" (P103 b). `always` counts only with a yes.
+    pub fn resolve_always(&self, approval_id: u64, approved: bool, always: bool) {
+        let answer = match (approved, always) {
+            (false, _) => Answer::Reject,
+            (true, false) => Answer::Once,
+            (true, true) => Answer::Always,
+        };
+        if let Some(waiting) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id) {
+            let _ = waiting.send(answer);
+        }
+    }
+
+    async fn ask_device(&self, request: ApprovalRequest, always: Option<String>) -> Answer {
+        let approval_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (answer_tx, answer_rx) = oneshot::channel();
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(approval_id, answer_tx);
+        let ask = ServerMessage::ApprovalRequest { approval_id, target: request.target, action: request.action, detail: request.detail, always };
+        if self.tx.send(ask).is_err() {
+            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
+            return Answer::Reject;
+        }
+        match tokio::time::timeout(self.timeout, answer_rx).await {
+            Ok(Ok(answer)) => answer,
+            // The connection closed: nobody can answer any more.
+            Ok(Err(_)) => Answer::Reject,
+            Err(_) => {
+                self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
+                let _ = self.tx.send(ServerMessage::ApprovalCancelled { approval_id });
+                Answer::Reject
+            }
         }
     }
 
@@ -55,24 +86,11 @@ impl WsApprover {
 #[async_trait]
 impl Approver for WsApprover {
     async fn approve(&self, request: ApprovalRequest) -> bool {
-        let approval_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (answer_tx, answer_rx) = oneshot::channel();
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(approval_id, answer_tx);
-        let ask = ServerMessage::ApprovalRequest { approval_id, target: request.target, action: request.action, detail: request.detail };
-        if self.tx.send(ask).is_err() {
-            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
-            return false;
-        }
-        match tokio::time::timeout(self.timeout, answer_rx).await {
-            Ok(Ok(approved)) => approved,
-            // The connection closed: nobody can answer any more.
-            Ok(Err(_)) => false,
-            Err(_) => {
-                self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
-                let _ = self.tx.send(ServerMessage::ApprovalCancelled { approval_id });
-                false
-            }
-        }
+        self.ask_device(request, None).await != Answer::Reject
+    }
+
+    async fn ask(&self, request: ApprovalRequest, always: Option<&str>) -> Answer {
+        self.ask_device(request, always.map(str::to_string)).await
     }
 }
 
@@ -105,8 +123,24 @@ mod tests {
             let asked = client.await.unwrap();
             assert_eq!(
                 asked,
-                ServerMessage::ApprovalRequest { approval_id: 0, target: "poet".into(), action: "create_agent".into(), detail: "New agent 'poet'".into() }
+                ServerMessage::ApprovalRequest { approval_id: 0, target: "poet".into(), action: "create_agent".into(), detail: "New agent 'poet'".into(), always: None }
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ask_that_can_be_always_says_what_it_would_cover_and_the_answer_comes_back_as_given() {
+        for (approved, always, expected) in [(true, true, Answer::Always), (true, false, Answer::Once), (false, true, Answer::Reject), (false, false, Answer::Reject)] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let approver = WsApprover::new(tx);
+            let device = approver.clone();
+            tokio::spawn(async move {
+                let msg = rx.recv().await.unwrap();
+                let ServerMessage::ApprovalRequest { approval_id, always: covers, .. } = msg else { panic!("unexpected {msg:?}") };
+                assert_eq!(covers.as_deref(), Some("git status *"));
+                device.resolve_always(approval_id, approved, always);
+            });
+            assert_eq!(approver.ask(request(), Some("git status *")).await, expected, "approved={approved} always={always}");
         }
     }
 

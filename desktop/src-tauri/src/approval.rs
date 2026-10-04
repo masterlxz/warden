@@ -10,22 +10,28 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::oneshot;
-use warden_core::tool::{ApprovalRequest, Approver};
+use warden_core::tool::{Answer, ApprovalRequest, Approver};
 
 /// Requests waiting on the user's answer, keyed by the id the frontend sends back through
 /// `resolve_approval`. One broker for the whole app (`AppState`), shared by every turn.
 #[derive(Default)]
 pub struct ApprovalBroker {
     next_id: AtomicU64,
-    pending: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
 }
 
 impl ApprovalBroker {
     /// Answers request `id`. `false` when nothing is waiting on it any more (already answered, or
-    /// the tool gave up first) — the frontend just closes its modal either way.
-    pub fn resolve(&self, id: u64, approved: bool) -> bool {
+    /// the tool gave up first) — the frontend just closes its modal either way. `always` counts
+    /// only with a yes, and only on an ask that offered it (P103 b).
+    pub fn resolve(&self, id: u64, approved: bool, always: bool) -> bool {
+        let answer = match (approved, always) {
+            (false, _) => Answer::Reject,
+            (true, false) => Answer::Once,
+            (true, true) => Answer::Always,
+        };
         match self.pending.lock().unwrap().remove(&id) {
-            Some(reply) => reply.send(approved).is_ok(),
+            Some(reply) => reply.send(answer).is_ok(),
             None => false,
         }
     }
@@ -39,6 +45,8 @@ pub struct ApprovalPayload {
     pub target: String,
     pub action: String,
     pub detail: String,
+    /// What an "always" answer would cover (P103 b), when the ask can be answered that way; the modal then offers it.
+    pub always: Option<String>,
 }
 
 /// Asks through the desktop window: emits `approval-request`, then waits for
@@ -66,21 +74,25 @@ impl Drop for PendingGuard {
 #[async_trait::async_trait]
 impl Approver for TauriApprover {
     async fn approve(&self, request: ApprovalRequest) -> bool {
+        self.ask(request, None).await != Answer::Reject
+    }
+
+    async fn ask(&self, request: ApprovalRequest, always: Option<&str>) -> Answer {
         let id = self.broker.next_id.fetch_add(1, Ordering::Relaxed);
         let (reply, answer) = oneshot::channel();
         self.broker.pending.lock().unwrap().insert(id, reply);
         let _guard = PendingGuard { app: self.app.clone(), broker: self.broker.clone(), id };
-        let payload = ApprovalPayload { id, target: request.target, action: request.action, detail: request.detail };
+        let payload = ApprovalPayload { id, target: request.target, action: request.action, detail: request.detail, always: always.map(str::to_string) };
         if self.app.emit("approval-request", payload).is_err() {
-            return false;
+            return Answer::Reject;
         }
-        answer.await.unwrap_or(false)
+        answer.await.unwrap_or(Answer::Reject)
     }
 }
 
 #[tauri::command]
-pub fn resolve_approval(state: State<'_, crate::AppState>, id: u64, approved: bool) -> bool {
-    state.approvals.resolve(id, approved)
+pub fn resolve_approval(state: State<'_, crate::AppState>, id: u64, approved: bool, always: Option<bool>) -> bool {
+    state.approvals.resolve(id, approved, always.unwrap_or(false))
 }
 
 
@@ -94,10 +106,21 @@ mod tests {
         let (reply, mut answer) = oneshot::channel();
         broker.pending.lock().unwrap().insert(7, reply);
 
-        assert!(broker.resolve(7, true));
-        assert_eq!(answer.try_recv(), Ok(true));
+        assert!(broker.resolve(7, true, false));
+        assert_eq!(answer.try_recv(), Ok(Answer::Once));
         // A second answer, or one for a request that never existed, finds nobody waiting.
-        assert!(!broker.resolve(7, false));
-        assert!(!broker.resolve(99, true));
+        assert!(!broker.resolve(7, false, false));
+        assert!(!broker.resolve(99, true, false));
+    }
+
+    #[test]
+    fn always_counts_only_with_a_yes() {
+        for (approved, always, expected) in [(true, true, Answer::Always), (false, true, Answer::Reject), (false, false, Answer::Reject)] {
+            let broker = ApprovalBroker::default();
+            let (reply, mut answer) = oneshot::channel();
+            broker.pending.lock().unwrap().insert(1, reply);
+            assert!(broker.resolve(1, approved, always));
+            assert_eq!(answer.try_recv(), Ok(expected), "approved={approved} always={always}");
+        }
     }
 }

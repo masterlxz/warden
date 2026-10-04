@@ -37,10 +37,10 @@ function ApprovalModal() {
   const current = queue[0];
   if (!current) return null;
 
-  async function answer(approved: boolean) {
+  async function answer(approved: boolean, always = false) {
     setQueue((q) => q.filter((r) => r.id !== current.id));
     try {
-      await invoke("resolve_approval", { id: current.id, approved });
+      await invoke("resolve_approval", { id: current.id, approved, always });
     } catch {
       // Nothing to do: the request is already gone from the queue, and an unanswered one is refused.
     }
@@ -77,6 +77,13 @@ function ApprovalModal() {
             {spendPause ? "Allow more" : "Approve"}
           </button>
         </div>
+        {current.always && (
+          <div className="approval-actions">
+            <button type="button" className="settings-browse-btn" onClick={() => answer(true, true)} title="Until the app is restarted">
+              Always allow in this conversation: {current.always}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

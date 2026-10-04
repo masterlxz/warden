@@ -320,9 +320,9 @@ async fn an_agent_with_the_flag_schedules_a_task_once_the_device_says_yes() {
         let mut asked = Vec::new();
         let reply = loop {
             match web.recv().await.unwrap().expect("connection closed") {
-                ServerMessage::ApprovalRequest { approval_id, target, action, detail } => {
+                ServerMessage::ApprovalRequest { approval_id, target, action, detail, .. } => {
                     asked.push((target, action, detail));
-                    web.send(&ClientMessage::ResolveApproval { approval_id, approved: approve }).await.unwrap();
+                    web.send(&ClientMessage::ResolveApproval { approval_id, approved: approve, always: false }).await.unwrap();
                 }
                 msg @ (ServerMessage::ChatResponse { .. } | ServerMessage::ChatError { .. }) => break msg,
                 _ => continue,

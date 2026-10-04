@@ -600,7 +600,7 @@ export type ClientMessage =
    * omitted, the turn goes to the device's default conversation. */
   | { type: "chat"; message: string; conversationId?: string; attachments?: Attachment[]; agentId?: string; projectId?: string }
   /** P46 — the person's answer to an `approvalRequest`. */
-  | { type: "resolveApproval"; approvalId: number; approved: boolean }
+  | { type: "resolveApproval"; approvalId: number; approved: boolean; always?: boolean }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -784,7 +784,7 @@ export type ServerMessage =
   | { type: "spaceList"; requestId: number; spaces: SpaceInfo[] }
   | { type: "userError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
-  | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string }
+  | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string; always?: string }
   /** The hub stopped waiting (deadline): close the prompt. */
   | { type: "approvalCancelled"; approvalId: number }
   /** An agent left a message for another, or answered one, in one of this browser's conversations. */

@@ -25,6 +25,8 @@ pub struct PermissionAsk {
     pub permission: String,
     /// What it would touch: commands, paths, globs.
     pub patterns: Vec<String>,
+    /// What the engine itself suggests as "yes, and the same from now on" (`git status *`). Empty when it offers none.
+    pub always: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,8 +142,8 @@ impl Tracker {
             "permission.asked" => {
                 if self.in_family(props["sessionID"].as_str()) {
                     if let (Some(id), Some(permission)) = (props["id"].as_str(), props["permission"].as_str()) {
-                        let patterns = props["patterns"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                        out.push(Signal::Ask(PermissionAsk { id: id.to_string(), permission: permission.to_string(), patterns }));
+                        let strings = |key: &str| props[key].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                        out.push(Signal::Ask(PermissionAsk { id: id.to_string(), permission: permission.to_string(), patterns: strings("patterns"), always: strings("always") }));
                     }
                 }
             }
@@ -292,8 +294,8 @@ mod tests {
     #[test]
     fn a_permission_ask_of_the_task_or_of_its_children_is_put_to_the_person_and_a_strangers_is_not() {
         let mut t = Tracker::new(S);
-        let ask = |session: &str, id: &str| json!({"type": "permission.asked", "properties": {"id": id, "sessionID": session, "permission": "bash", "patterns": ["rm -rf build"], "metadata": {}, "always": []}});
-        assert_eq!(t.feed(&ask(S, "per_1")), [Signal::Ask(PermissionAsk { id: "per_1".into(), permission: "bash".into(), patterns: vec!["rm -rf build".into()] })]);
+        let ask = |session: &str, id: &str| json!({"type": "permission.asked", "properties": {"id": id, "sessionID": session, "permission": "bash", "patterns": ["rm -rf build"], "metadata": {}, "always": ["rm *"]}});
+        assert_eq!(t.feed(&ask(S, "per_1")), [Signal::Ask(PermissionAsk { id: "per_1".into(), permission: "bash".into(), patterns: vec!["rm -rf build".into()], always: vec!["rm *".into()] })]);
         assert!(t.feed(&ask("ses_child", "per_2")).is_empty(), "not ours yet");
         t.feed(&json!({"type": "session.created", "properties": {"info": {"id": "ses_child", "parentID": S}}}));
         assert_eq!(t.feed(&ask("ses_child", "per_3")).len(), 1, "a sub-agent's ask is ours");

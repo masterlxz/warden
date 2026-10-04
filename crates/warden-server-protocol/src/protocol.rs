@@ -1175,6 +1175,10 @@ pub enum ClientMessage {
     ResolveApproval {
         approval_id: u64,
         approved: bool,
+        /// "Yes, and the same kind of ask from now on" (P103 b) — only meaningful on an approval that offered it
+        /// (`ApprovalRequest.always`), and then `approved` is true too.
+        #[serde(default)]
+        always: bool,
     },
     /// Stops the task a code project's conversation is running (P103 b). The work done so far is kept, and the turn
     /// ends with the usual `ChatResponse`. Harmless for a conversation that isn't running one.
@@ -2072,6 +2076,10 @@ pub enum ServerMessage {
         target: String,
         action: String,
         detail: String,
+        /// What an "always" answer would cover (P103 b: `git status *`), when this ask can be answered that way. The
+        /// client then offers a button for it and answers with `ResolveApproval.always`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        always: Option<String>,
     },
     /// The hub stopped waiting for `approval_id` (deadline reached): the client should close it.
     ApprovalCancelled {
@@ -2398,13 +2406,21 @@ mod tests {
         assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
 
-        let ask = ServerMessage::ApprovalRequest { approval_id: 3, target: "poet".into(), action: "create_agent".into(), detail: "d".into() };
+        let ask = ServerMessage::ApprovalRequest { approval_id: 3, target: "poet".into(), action: "create_agent".into(), detail: "d".into(), always: None };
         let json = serde_json::to_string(&ask).unwrap();
         assert_eq!(json, r#"{"type":"approvalRequest","approvalId":3,"target":"poet","action":"create_agent","detail":"d"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), ask);
 
         let answer = serde_json::from_str::<ClientMessage>(r#"{"type":"resolveApproval","approvalId":3,"approved":true}"#).unwrap();
-        assert_eq!(answer, ClientMessage::ResolveApproval { approval_id: 3, approved: true });
+        assert_eq!(answer, ClientMessage::ResolveApproval { approval_id: 3, approved: true, always: false });
+
+        // P103 b: an ask that can be "always" says what that covers, and the answer can take it.
+        let offered = ServerMessage::ApprovalRequest { approval_id: 4, target: "repo".into(), action: "bash".into(), detail: "git status -s".into(), always: Some("git status *".into()) };
+        let json = serde_json::to_string(&offered).unwrap();
+        assert_eq!(json, r#"{"type":"approvalRequest","approvalId":4,"target":"repo","action":"bash","detail":"git status -s","always":"git status *"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), offered);
+        let always = serde_json::from_str::<ClientMessage>(r#"{"type":"resolveApproval","approvalId":4,"approved":true,"always":true}"#).unwrap();
+        assert_eq!(always, ClientMessage::ResolveApproval { approval_id: 4, approved: true, always: true });
         let cancelled = serde_json::to_string(&ServerMessage::ApprovalCancelled { approval_id: 3 }).unwrap();
         assert_eq!(cancelled, r#"{"type":"approvalCancelled","approvalId":3}"#);
         let changed = serde_json::to_string(&ServerMessage::ConversationsChanged { conversation_id: "c".into() }).unwrap();

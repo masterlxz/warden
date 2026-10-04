@@ -130,7 +130,7 @@ async fn finish_turn(conn: &mut ServerConnection, approve: bool) -> (ServerMessa
         match msg {
             ServerMessage::ChatResponse { .. } | ServerMessage::ChatError { .. } => return (msg, others),
             ServerMessage::ApprovalRequest { approval_id, .. } => {
-                conn.send(&ClientMessage::ResolveApproval { approval_id, approved: approve }).await.unwrap();
+                conn.send(&ClientMessage::ResolveApproval { approval_id, approved: approve, always: false }).await.unwrap();
                 others.push(msg);
             }
             other => others.push(other),
