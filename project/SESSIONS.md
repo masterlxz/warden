@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-04 — Sessão 134
+
+- **Objetivo**: a tela do dono para liberar pastas de trabalho a cada membro (`workdirs` e `node_workdirs`), que só existiam no `config.toml`. **A pedido do usuário: só implementação, sem rodar nem escrever testes.**
+- **Feito**: `set_user_workdirs` (valida, tira repetidos, recusa a mudança toda se uma entrada for ruim), `UserChange::SetWorkdirs`, `ClientMessage::SetUserWorkdirs` (`member_refusal` já a recusa para membro), `UserInfoDto.workdirs`/`node_workdirs` e `NodeFolderDto`, o comando `set_person_workdirs` do desktop, e na web `setUserWorkdirs`, os tipos e o botão "Pastas de trabalho" em Pessoas (duas caixas de texto, uma pasta por linha).
+- **Verificado**: só que compila: `tsc` da web e `cargo check` do servidor, do `bootstrap` e do desktop, sem aviso. **Nenhum teste foi rodado nem escrito**: nem o `set_user_workdirs`, nem o formato JSON do protocolo novo, nem o fluxo na tela. Nada foi visto numa tela.
+
+---
+
 ### 2026-10-04 — Sessão 133
 
 - **Objetivo**: o P102, fatia 2: a pasta de uma conversa pode estar num **nó**. Decisões do usuário: a raiz permitida é a pasta que o nó empresta; membros já entram (lista de pastas por nó). O usuário também pediu para **vigiar o disco** (`/home` estava em 96%, 7,9 GB livres): apaguei só `target/debug/incremental` (19 GB, cache que o cargo recria; o `deps` de 31 GB ficou) e `/home` foi para 86%; terminei em 87% (25 GB livres).

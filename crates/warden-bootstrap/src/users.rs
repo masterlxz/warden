@@ -769,6 +769,34 @@ pub fn set_user_tools(config: &mut FileConfig, id: &str, tools: Option<Vec<Strin
     Ok(())
 }
 
+/// The owner sets the folders a member may pick as a conversation's working folder (P102): `workdirs` of the hub's own
+/// machine (absolute paths) and `node_workdirs` on nodes (relative to what each node lends). Empty lists take them all
+/// away. A bad entry refuses the whole change, so what is saved is what was shown.
+pub fn set_user_workdirs(config: &mut FileConfig, id: &str, workdirs: Vec<String>, node_workdirs: Vec<NodeFolder>) -> anyhow::Result<()> {
+    let mut local: Vec<String> = Vec::new();
+    for path in workdirs.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        warden_core::project::validate_workdir(&path)?;
+        if !local.contains(&path) {
+            local.push(path);
+        }
+    }
+    let mut nodes: Vec<NodeFolder> = Vec::new();
+    for folder in node_workdirs {
+        let node = folder.node.trim().to_string();
+        anyhow::ensure!(!node.is_empty() && !node.contains(':'), "a node folder needs the node's id (no ':')");
+        let path = folder.path.trim().trim_matches('/').to_string();
+        crate::check_node_path(&path).map_err(|e| anyhow::anyhow!(e))?;
+        let entry = NodeFolder { node, path };
+        if !nodes.contains(&entry) {
+            nodes.push(entry);
+        }
+    }
+    let user = find_mut(config, id)?;
+    user.workdirs = local;
+    user.node_workdirs = nodes;
+    Ok(())
+}
+
 /// The owner picks the model the assistant's learning uses for a member (`None`, or blank: back to the
 /// workspace's `[learning] provider`). It has to be a provider or a combo the hub has.
 pub fn set_user_learning_provider(config: &mut FileConfig, id: &str, provider: Option<String>) -> anyhow::Result<()> {

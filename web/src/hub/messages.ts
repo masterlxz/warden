@@ -422,6 +422,12 @@ export interface HubDevice {
 }
 
 /** Mirrors `UserInfoDto` (P84): a member of the workspace, never the password or its hash. */
+/** Mirrors `NodeFolderDto` (P102 fatia 2): a folder on a node a member may work in; `path` is relative to the folder the node lends. */
+export interface NodeFolder {
+  node: string;
+  path: string;
+}
+
 export interface UserInfo {
   /** The username. */
   id: string;
@@ -431,6 +437,10 @@ export interface UserInfo {
   mustChangePassword: boolean;
   /** P84 fatia 2 — the tools the owner set for them; absent/null is the safe default. */
   tools?: string[] | null;
+  /** P102 — the folders of the hub's machine they may pick as a working folder (absolute paths); absent: none. */
+  workdirs?: string[];
+  /** P102 fatia 2 — the same on nodes; absent: none. */
+  nodeWorkdirs?: NodeFolder[];
   /** Their own agents' names. */
   agents: string[];
   /** P84 fatia 4 — their data is encrypted on the hub with a key only they (or their recovery code) can open. */
@@ -711,6 +721,8 @@ export type ClientMessage =
   | { type: "redeemInvite"; requestId: number; code: string; username: string }
   /** P84 fatia 2 — the owner sets a member's tools (`null`: the safe default). */
   | { type: "setUserTools"; requestId: number; pairingKey: string; id: string; tools: string[] | null }
+  /** P102 — the folders a member may pick as a working folder; empty lists take them all away. Answered by `userList`. */
+  | { type: "setUserWorkdirs"; requestId: number; pairingKey: string; id: string; workdirs: string[]; nodeWorkdirs: NodeFolder[] }
   | { type: "setUserLearningProvider"; requestId: number; pairingKey: string; id: string; provider: string | null }
   /** A member's own agents, answered by `settings` (their view) or `settingsError`. */
   | { type: "saveOwnAgent"; requestId: number; originalId?: string; agent: AgentSettings }

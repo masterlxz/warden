@@ -6,11 +6,11 @@
 //! No pairing key is asked: this is the owner's own machine, like the rest of its settings.
 
 use serde::Serialize;
-use warden_bootstrap::users::{add_user, create_invite, unlink_truthid, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, SpaceConfig};
+use warden_bootstrap::users::{add_user, create_invite, unlink_truthid, generate_temp_password, remove_space, remove_user, rename_user, reset_password, save_space, set_user_tools, set_user_workdirs, NodeFolder, SpaceConfig};
 use warden_bootstrap::{load_config_from_path, save_config};
 use warden_server::people::user_info;
 use warden_server::PairingStore;
-use warden_server_protocol::protocol::{SpaceDto, UserInfoDto};
+use warden_server_protocol::protocol::{NodeFolderDto, SpaceDto, UserInfoDto};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +61,13 @@ pub fn rename_person(id: String, name: String) -> Result<PeoplePayload, String> 
 #[tauri::command]
 pub fn set_person_tools(id: String, tools: Option<Vec<String>>) -> Result<PeoplePayload, String> {
     change(|config| set_user_tools(config, &id, tools).map(|()| None))
+}
+
+/// P102: the folders a member may pick as a working folder, on this machine and on nodes. Empty lists take them all away.
+#[tauri::command]
+pub fn set_person_workdirs(id: String, workdirs: Vec<String>, node_workdirs: Vec<NodeFolderDto>) -> Result<PeoplePayload, String> {
+    let node_workdirs = node_workdirs.into_iter().map(|f| NodeFolder { node: f.node, path: f.path }).collect();
+    change(|config| set_user_workdirs(config, &id, workdirs, node_workdirs).map(|()| None))
 }
 
 /// P84 fatia 5: an invite for a member to link their TruthID, handed back once (7 days, single use).

@@ -30,6 +30,7 @@ import {
   type ServerMessage,
   type UsageReport,
   type NodeInfo,
+  type NodeFolder,
   type DirListing,
   type ProjectDto,
   type SkillDto,
@@ -887,6 +888,12 @@ export class ServerConnection {
   /** P84 fatia 2: the tools a member may use (`null`: the safe default). Rejects with `UserError`. */
   async setUserTools(pairingKey: string, id: string, tools: string[] | null): Promise<UserList> {
     return this.userRequest((requestId) => ({ type: "setUserTools", requestId, pairingKey, id, tools }));
+  }
+
+  /** P102: the folders a member may pick as a working folder — of the hub's machine and on nodes. Rejects with `UserError`
+   * for a path that isn't valid. */
+  async setUserWorkdirs(pairingKey: string, id: string, workdirs: string[], nodeWorkdirs: NodeFolder[]): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "setUserWorkdirs", requestId, pairingKey, id, workdirs, nodeWorkdirs }));
   }
 
   /** P115: the model the assistant's learning uses for a member (`null`: the workspace's). */

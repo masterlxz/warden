@@ -1026,6 +1026,7 @@ pub fn run() {
             people_cmds::invite_person,
             people_cmds::unlink_person_truthid,
             people_cmds::set_person_tools,
+            people_cmds::set_person_workdirs,
             people_cmds::remove_person,
             people_cmds::list_shared_spaces,
             people_cmds::save_shared_space,

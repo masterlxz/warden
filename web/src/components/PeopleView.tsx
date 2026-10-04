@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserError, type ServerConnection } from "../hub/connection";
-import type { RemovedUser, UserInfo } from "../hub/messages";
+import type { NodeFolder, RemovedUser, UserInfo } from "../hub/messages";
 import RecoveryPolicySection from "./RecoveryPolicySection";
 import SharedSpacesSection from "./SharedSpacesSection";
 
@@ -19,7 +19,29 @@ type Asking =
   /** `null`: back to the safe default. */
   | { kind: "tools"; user: UserInfo; tools: string[] | null }
   /** P115: `""` is the workspace's own model. */
-  | { kind: "learning"; user: UserInfo; provider: string };
+  | { kind: "learning"; user: UserInfo; provider: string }
+  /** P102: the folders they may work in, one per line — of the hub's machine, and on nodes as `<node id>:<path>`. */
+  | { kind: "folders"; user: UserInfo; workdirs: string; nodeWorkdirs: string };
+
+/** `node-id:path` lines → the entries; a line with no `:` is a mistake the hub would also refuse. */
+function parseNodeLines(text: string): NodeFolder[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const colon = line.indexOf(":");
+      return colon < 0 ? { node: line, path: "" } : { node: line.slice(0, colon).trim(), path: line.slice(colon + 1).trim() };
+    });
+}
+
+const lines = (text: string): string[] => text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** Which folders a person may pick, in a few words. */
+function foldersLabel(user: UserInfo): string {
+  const count = (user.workdirs?.length ?? 0) + (user.nodeWorkdirs?.length ?? 0);
+  return count === 0 ? "sem pastas de trabalho" : `${count} pasta${count === 1 ? "" : "s"} de trabalho liberada${count === 1 ? "" : "s"}`;
+}
 
 /** Mirrors `warden_bootstrap::users::default_member_tool`: what a member has when you never chose. */
 function safeByDefault(tool: string): boolean {
@@ -116,6 +138,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                 ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
                 : asking.kind === "learning"
                   ? await conn.setUserLearningProvider(pairingKey, asking.user.id, asking.provider || null)
+                : asking.kind === "folders"
+                  ? await conn.setUserWorkdirs(pairingKey, asking.user.id, lines(asking.workdirs), parseNodeLines(asking.nodeWorkdirs))
                 : asking.kind === "restore"
                   ? await conn.restoreUser(pairingKey, asking.user.id)
                   : asking.kind === "invite"
@@ -249,6 +273,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   <code>{user.id}</code> · {toolsLabel(user)}
                   {user.agents.length > 0 && ` · agentes próprios: ${user.agents.join(", ")}`}
                   {` · ${dataLabel(user)}`}
+                  {` · ${foldersLabel(user)}`}
                   {user.learningProvider ? ` · aprendizado com: ${user.learningProvider}` : ""}
                   {user.truthid ? ` · TruthID: @${user.truthid}` : user.inviteOpen ? " · convite de TruthID aberto" : ""}
                 </p>
@@ -288,6 +313,40 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                       <span className="field-hint">Um agente nunca passa disso, nem do que o próprio agente pode.</span>
                     </fieldset>,
                   )}
+                {mine?.kind === "folders" &&
+                  keyForm(
+                    "Salvar pastas",
+                    false,
+                    <>
+                      <label className="settings-field">
+                        Pastas do computador do hub que {user.name} pode escolher
+                        <textarea
+                          rows={3}
+                          value={mine.workdirs}
+                          onChange={(e) => setAsking({ ...mine, workdirs: e.target.value })}
+                          placeholder="/srv/trabalho"
+                          autoFocus
+                        />
+                        <span className="field-hint">Uma por linha, caminho absoluto. Vale a pasta e tudo dentro dela. Vazio: nenhuma.</span>
+                      </label>
+                      <label className="settings-field">
+                        Pastas de nós
+                        <textarea
+                          rows={3}
+                          value={mine.nodeWorkdirs}
+                          onChange={(e) => setAsking({ ...mine, nodeWorkdirs: e.target.value })}
+                          placeholder="node-casa-1a2b3c4d:projetos"
+                        />
+                        <span className="field-hint">
+                          Uma por linha, no formato <code>id-do-nó:pasta</code>, com a pasta relativa ao que o nó empresta (só o id, sem a pasta, libera tudo o que ele empresta). O id aparece
+                          em Aparelhos, nos nós.
+                        </span>
+                      </label>
+                      <span className="field-hint">
+                        {user.name} escolhe a pasta antes da primeira mensagem de uma conversa. Com elas a IA lê e escreve só ali; o terminal só se você liberar a ferramenta shell.
+                      </span>
+                    </>,
+                  )}
                 {mine?.kind === "learning" &&
                   keyForm(
                     "Salvar modelo",
@@ -325,6 +384,21 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "tools", user, tools: user.tools ?? null })}>
                       Ferramentas
+                    </button>
+                    <button
+                      type="button"
+                      className="link-button"
+                      disabled={!conn || asking !== null}
+                      onClick={() =>
+                        setAsking({
+                          kind: "folders",
+                          user,
+                          workdirs: (user.workdirs ?? []).join("\n"),
+                          nodeWorkdirs: (user.nodeWorkdirs ?? []).map((f) => `${f.node}:${f.path}`).join("\n"),
+                        })
+                      }
+                    >
+                      Pastas de trabalho
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "learning", user, provider: user.learningProvider ?? "" })}>
                       Modelo do aprendizado

@@ -113,6 +113,8 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: Re
         locked: false,
         truthid: user.truthid.as_ref().map(|link| link.username.clone()).unwrap_or_default(),
         invite_open: user.invite.as_ref().is_some_and(|invite| invite.expires_at > unix_now()),
+        workdirs: user.workdirs.clone(),
+        node_workdirs: user.node_workdirs.iter().map(|f| warden_server_protocol::protocol::NodeFolderDto { node: f.node.clone(), path: f.path.clone() }).collect(),
     }
 }
 
@@ -173,6 +175,7 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::RemoveUser { request_id, .. }
         | ClientMessage::SetUserTools { request_id, .. }
         | ClientMessage::SetUserLearningProvider { request_id, .. }
+        | ClientMessage::SetUserWorkdirs { request_id, .. }
         | ClientMessage::ListBotPairings { request_id }
         | ClientMessage::ResolveBotPairing { request_id, .. }
         | ClientMessage::TestProvider { request_id, .. }

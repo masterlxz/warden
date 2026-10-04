@@ -525,6 +525,21 @@ pub struct UserInfoDto {
     /// An invite to link a TruthID is open (made by the owner, not used or expired yet).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invite_open: bool,
+    /// P102: the folders of the hub's machine the owner allowed them to work in (absolute paths).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workdirs: Vec<String>,
+    /// P102 fatia 2: the same on nodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_workdirs: Vec<NodeFolderDto>,
+}
+
+/// A folder on a node a member may work in (P102 fatia 2): `path` is relative to the folder the node lends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeFolderDto {
+    pub node: String,
+    #[serde(default)]
+    pub path: String,
 }
 
 /// A member the owner removed whose encrypted data is still on disk, with the key that opens it (P84 fatia 4).
@@ -1601,6 +1616,17 @@ pub enum ClientMessage {
         id: String,
         #[serde(default)]
         tools: Option<Vec<String>>,
+    },
+    /// P102: the folders a member may pick as a working folder, on the hub's machine and on nodes; empty lists take them
+    /// all away. Answered by `UserList`, or `UserError` for a path that isn't valid.
+    SetUserWorkdirs {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        #[serde(default)]
+        workdirs: Vec<String>,
+        #[serde(default)]
+        node_workdirs: Vec<NodeFolderDto>,
     },
     /// P115: the model the assistant's learning uses for a member, a provider or combo id (`None`: the
     /// workspace's `[learning] provider`). Answered by `UserList`.
