@@ -559,6 +559,31 @@ export interface TaskInfo extends Task {
   scheduleError?: string;
 }
 
+/** How a webhook's caller proves itself: a bearer token, or an HMAC signature of the body (GitHub, Stripe style). */
+export type WebhookAuth = "token" | "hmac";
+
+/** Mirrors `WebhookDto` (P105): one incoming webhook, as `[[webhooks]]` keeps it. */
+export interface Webhook {
+  id: string;
+  /** The agent that runs it; absent runs with no persona. */
+  agentId?: string;
+  prompt: string;
+  enabled: boolean;
+  auth: WebhookAuth;
+}
+
+/** Mirrors `WebhookInfoDto`: a webhook and what the hub knows about its credential. */
+export interface WebhookInfo extends Webhook {
+  /** What it has: absent means no credential, so it takes no calls. Of the other kind than `auth`, it takes none either. */
+  credential?: WebhookAuth;
+  /** The first characters of the credential, for recognizing it. */
+  shown?: string;
+  createdAtMs?: number;
+  lastUsedAtMs?: number;
+  /** The id of its conversation, `task-hook-<id>`. */
+  conversation: string;
+}
+
 /** Mirrors `HubSettingsUpdate`: replaces the editable part, the rest of the file is kept. */
 export interface HubSettingsUpdate {
   providers: ProviderEdit[];
@@ -693,6 +718,13 @@ export type ClientMessage =
   | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
   | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }
   | { type: "runTask"; requestId: number; pairingKey: string; id: string }
+  /** P105 — incoming webhooks (owner only); every change repeats the pairing key. */
+  | { type: "listWebhooks"; requestId: number }
+  | { type: "saveWebhook"; requestId: number; pairingKey: string; originalId?: string; webhook: Webhook }
+  | { type: "setWebhookEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
+  | { type: "deleteWebhook"; requestId: number; pairingKey: string; id: string }
+  | { type: "createWebhookCredential"; requestId: number; pairingKey: string; id: string }
+  | { type: "revokeWebhookCredential"; requestId: number; pairingKey: string; id: string }
   | { type: "setDeviceStatus"; requestId: number; pairingKey: string; deviceId: string; action: "approve" | "revoke" }
   /** P61 — the hub's vault sync; an action repeats the pairing key. */
   | { type: "requestSyncStatus"; requestId: number }
@@ -800,6 +832,11 @@ export type ServerMessage =
   /** `runsHere`: this hub runs the tasks on schedule. */
   | { type: "taskList"; requestId: number; tasks: TaskInfo[]; runsHere: boolean }
   | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
+  /** `servesHere`: this hub takes the calls (`/hooks/<id>`). */
+  | { type: "webhookList"; requestId: number; webhooks: WebhookInfo[]; servesHere: boolean }
+  /** `credential` is the token or signing secret, shown once and never sent again. */
+  | { type: "webhookCreated"; requestId: number; id: string; credential: string; kind: WebhookAuth; webhooks: WebhookInfo[]; servesHere: boolean }
+  | { type: "webhookError"; requestId: number; message: string; authRejected: boolean }
   | { type: "syncStatus"; requestId: number; status: SyncStatus; pairingCode?: string }
   | { type: "syncError"; requestId: number; message: string; authRejected: boolean }
   /** P84 — `tempPassword`: the provisional password of the member just created or reset, shown once. */
@@ -932,6 +969,18 @@ export function decode(text: string): ServerMessage {
     case "taskList": {
       const raw = json as { requestId: number; tasks: Array<Omit<TaskInfo, "running"> & { running?: boolean }>; runsHere: boolean };
       return { type: "taskList", requestId: raw.requestId, tasks: raw.tasks.map((t) => ({ ...t, running: t.running ?? false })), runsHere: raw.runsHere };
+    }
+    case "webhookList": {
+      const raw = json as { requestId: number; webhooks: WebhookInfo[]; servesHere?: boolean };
+      return { type: "webhookList", requestId: raw.requestId, webhooks: raw.webhooks, servesHere: raw.servesHere ?? false };
+    }
+    case "webhookCreated": {
+      const raw = json as { requestId: number; id: string; credential: string; kind: WebhookAuth; webhooks: WebhookInfo[]; servesHere?: boolean };
+      return { type: "webhookCreated", requestId: raw.requestId, id: raw.id, credential: raw.credential, kind: raw.kind, webhooks: raw.webhooks, servesHere: raw.servesHere ?? false };
+    }
+    case "webhookError": {
+      const raw = json as { requestId: number; message: string; authRejected?: boolean };
+      return { type: "webhookError", requestId: raw.requestId, message: raw.message, authRejected: raw.authRejected ?? false };
     }
     case "nodeList": {
       const raw = json as { requestId: number; nodes: Array<Omit<NodeInfo, "agents" | "requireApproval"> & { agents?: string[]; requireApproval?: boolean }> };

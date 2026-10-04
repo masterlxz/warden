@@ -37,6 +37,9 @@ import {
   type SpaceInfo,
   type Task,
   type TaskInfo,
+  type Webhook,
+  type WebhookAuth,
+  type WebhookInfo,
   type RemovedUser,
   type UserInfo,
   type VaultSearchHit,
@@ -58,6 +61,19 @@ export interface UserList {
 export interface TaskList {
   tasks: TaskInfo[];
   runsHere: boolean;
+}
+
+/** The hub's incoming webhooks (P105), and whether it takes their calls. */
+export interface WebhookList {
+  webhooks: WebhookInfo[];
+  servesHere: boolean;
+}
+
+/** A webhook's new credential (a token, or a signing secret for an `hmac` one): the only time it exists outside the hub. */
+export interface WebhookCreated extends WebhookList {
+  id: string;
+  credential: string;
+  kind: WebhookAuth;
 }
 
 export type ConnectionStatus =
@@ -113,6 +129,16 @@ export class NodeError extends Error {
 
 /** A scheduled-task request the hub refused (P92). `authRejected`: the pairing key was wrong. */
 export class TaskError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** A webhook request the hub refused (P105). `authRejected`: the pairing key was wrong, or a member asked. */
+export class WebhookError extends Error {
   constructor(
     message: string,
     public readonly authRejected: boolean,
@@ -517,6 +543,8 @@ export class ServerConnection {
       case "apiKeyCreated":
       case "syncStatus":
       case "taskList":
+      case "webhookList":
+      case "webhookCreated":
       case "nodeList":
       case "userList":
       case "spaceList":
@@ -548,6 +576,9 @@ export class ServerConnection {
         break;
       case "taskError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new TaskError(message.message, message.authRejected)));
+        break;
+      case "webhookError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new WebhookError(message.message, message.authRejected)));
         break;
       case "apiKeyError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new ApiKeyError(message.message, message.authRejected)));
@@ -819,6 +850,44 @@ export class ServerConnection {
     const reply = await this.request(build);
     if (reply.type !== "taskList") throw new Error("resposta inesperada do hub");
     return { tasks: reply.tasks, runsHere: reply.runsHere };
+  }
+
+  /** Incoming webhooks (P105), in the config's order, and whether this hub takes their calls. Owner only. */
+  async listWebhooks(): Promise<WebhookList> {
+    return this.webhookRequest((requestId) => ({ type: "listWebhooks", requestId }));
+  }
+
+  /** Creates a webhook, or replaces `originalId` with it (a rename keeps its credential; a change of `auth` drops it).
+   * Every change rejects with `WebhookError`. */
+  async saveWebhook(pairingKey: string, webhook: Webhook, originalId?: string): Promise<WebhookList> {
+    return this.webhookRequest((requestId) => ({ type: "saveWebhook", requestId, pairingKey, webhook, ...(originalId && { originalId }) }));
+  }
+
+  async setWebhookEnabled(pairingKey: string, id: string, enabled: boolean): Promise<WebhookList> {
+    return this.webhookRequest((requestId) => ({ type: "setWebhookEnabled", requestId, pairingKey, id, enabled }));
+  }
+
+  async deleteWebhook(pairingKey: string, id: string): Promise<WebhookList> {
+    return this.webhookRequest((requestId) => ({ type: "deleteWebhook", requestId, pairingKey, id }));
+  }
+
+  /** A new credential for a webhook — a token, or a signing secret when it wants `hmac` — replacing the old one. It comes
+   * back once, here. */
+  async createWebhookCredential(pairingKey: string, id: string): Promise<WebhookCreated> {
+    const reply = await this.request((requestId) => ({ type: "createWebhookCredential", requestId, pairingKey, id }));
+    if (reply.type !== "webhookCreated") throw new Error("resposta inesperada do hub");
+    return { id: reply.id, credential: reply.credential, kind: reply.kind, webhooks: reply.webhooks, servesHere: reply.servesHere };
+  }
+
+  /** Takes a webhook's credential away; its calls get 401 from the next one on. */
+  async revokeWebhookCredential(pairingKey: string, id: string): Promise<WebhookList> {
+    return this.webhookRequest((requestId) => ({ type: "revokeWebhookCredential", requestId, pairingKey, id }));
+  }
+
+  private async webhookRequest(build: (requestId: number) => ClientMessage): Promise<WebhookList> {
+    const reply = await this.request(build);
+    if (reply.type !== "webhookList") throw new Error("resposta inesperada do hub");
+    return { webhooks: reply.webhooks, servesHere: reply.servesHere };
   }
 
   /** P84: the member on this connection picks their own password; rejects with `UserError`

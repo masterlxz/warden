@@ -17,6 +17,7 @@ import SettingsView from "./components/SettingsView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
 import TasksView from "./components/TasksView";
+import WebhooksView from "./components/WebhooksView";
 import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
@@ -39,7 +40,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
+type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -654,6 +655,9 @@ export default function App() {
               <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
                 Tarefas
               </button>
+              <button type="button" className={view === "webhooks" ? "tab tab--active" : "tab"} onClick={() => setView("webhooks")}>
+                Webhooks
+              </button>
               <button type="button" className={view === "devices" ? "tab tab--active" : "tab"} onClick={() => setView("devices")}>
                 Aparelhos
               </button>
@@ -831,6 +835,8 @@ export default function App() {
           <ProjectsView conn={conn} onChanged={setProjects} />
         ) : view === "tasks" ? (
           <TasksView conn={conn} onOpenConversation={openConversation} />
+        ) : view === "webhooks" ? (
+          <WebhooksView conn={conn} onOpenConversation={openConversation} />
         ) : view === "devices" ? (
           <DevicesView conn={conn} />
         ) : view === "people" ? (
