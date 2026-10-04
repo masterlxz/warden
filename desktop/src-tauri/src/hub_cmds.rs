@@ -59,9 +59,24 @@ pub fn ensure_hub(app: AppHandle, name: String, url: String) -> Result<HubPayloa
 }
 
 #[tauri::command]
-pub fn remove_hub(app: AppHandle, id: String) -> Result<(), String> {
+pub fn remove_hub(app: AppHandle, state: tauri::State<'_, crate::AppState>, id: String) -> Result<(), String> {
     saved_hubs::remove(&hubs_path()?, &id).map_err(|e| format!("{e:#}"))?;
     close_window(&app, &id);
+    // P102: a hub taken off the list is not the one in use any more, and what this computer kept of it goes too.
+    let session = {
+        let mut remote = state.remote.lock().unwrap_or_else(|e| e.into_inner());
+        if remote.as_ref().is_some_and(|s| s.hub_id == id) {
+            remote.take()
+        } else {
+            None
+        }
+    };
+    if let Some(session) = session {
+        session.handle.stop();
+    }
+    if let Some(config) = warden_bootstrap::default_config_path() {
+        let _ = warden_server::remote_client::RemoteIdentities::beside(&config).forget(&id);
+    }
     Ok(())
 }
 

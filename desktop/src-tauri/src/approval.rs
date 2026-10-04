@@ -21,6 +21,12 @@ pub struct ApprovalBroker {
 }
 
 impl ApprovalBroker {
+    /// A fresh id in the same space the frontend answers with, for an approval that comes from a hub (P102): its own ids
+    /// are per connection and would collide with these.
+    pub fn allocate(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
     /// Answers request `id`. `false` when nothing is waiting on it any more (already answered, or
     /// the tool gave up first) — the frontend just closes its modal either way. `always` counts
     /// only with a yes, and only on an ask that offered it (P103 b).
@@ -92,7 +98,17 @@ impl Approver for TauriApprover {
 
 #[tauri::command]
 pub fn resolve_approval(state: State<'_, crate::AppState>, id: u64, approved: bool, always: Option<bool>) -> bool {
-    state.approvals.resolve(id, approved, always.unwrap_or(false))
+    let always = always.unwrap_or(false);
+    // An approval a hub asked for (P102) is answered to that hub, under the hub's id.
+    let remote = state.remote.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| {
+        let hub_id = s.approvals.lock().unwrap_or_else(|e| e.into_inner()).take(id)?;
+        Some((s.handle.clone(), hub_id))
+    });
+    if let Some((handle, approval_id)) = remote {
+        handle.send(warden_server::ClientMessage::ResolveApproval { approval_id, approved, always: approved && always });
+        return true;
+    }
+    state.approvals.resolve(id, approved, always)
 }
 
 

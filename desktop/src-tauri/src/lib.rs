@@ -10,6 +10,7 @@ mod people_cmds;
 mod projects_cmds;
 mod provider_cmds;
 mod qr;
+mod remote_cmds;
 mod recording;
 mod server_cmds;
 mod skills_cmds;
@@ -70,6 +71,9 @@ struct AppState {
     sync_runner: Arc<warden_bootstrap::auto_sync::SyncRunner>,
     /// P97 — this computer lent to a hub as a node, while on. See `lend_cmds.rs`.
     lending: Mutex<Option<lend_cmds::LendHandle>>,
+    /// P102 — the hub whose engine the native screens are using instead of this computer's, while one is picked. See
+    /// `remote_cmds.rs`.
+    remote: Mutex<Option<remote_cmds::RemoteSession>>,
 }
 
 /// Mirrors the frontend's `ChatRole`/`ChatMessage` (`desktop/src/types.ts`) — only the two
@@ -931,6 +935,7 @@ pub fn run() {
         code: code_cmds::CodeState::default(),
         sync_runner: sync_runner.clone(),
         lending: Mutex::new(None),
+        remote: Mutex::new(None),
     };
 
     // Fase 9.1 follow-up ("virar o hub desta rede") — a previously-enabled embedded server comes
@@ -1065,6 +1070,12 @@ pub fn run() {
             hub_cmds::ensure_hub,
             hub_cmds::remove_hub,
             hub_cmds::open_hub_window,
+            remote_cmds::remote_connect,
+            remote_cmds::remote_disconnect,
+            remote_cmds::remote_status,
+            remote_cmds::remote_request,
+            remote_cmds::remote_chat,
+            remote_cmds::remote_send,
             server_cmds::get_embedded_server_config,
             server_cmds::generate_embedded_server_auth_key,
             server_cmds::save_embedded_server_config,

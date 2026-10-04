@@ -42,3 +42,7 @@ warden-server = { path = "../../crates/warden-server" }
 # `LimitStatusDto` (P78): the Usage screen shows spending limits in the same shape the web UI gets.
 warden-server-protocol = { path = "../../crates/warden-server-protocol" }
 warden-sync = { path = "../../crates/warden-sync" }
+
+[dev-dependencies]
+# P102: `tauri::test::mock_app` — events emitted through a real `AppHandle`, without a window (`remote_cmds.rs` tests).
+tauri = { version = "2", features = ["test"] }

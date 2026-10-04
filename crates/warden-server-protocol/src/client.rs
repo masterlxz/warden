@@ -160,6 +160,32 @@ impl ServerConnection {
         Self::hello(url, hello, tls).await
     }
 
+    /// P102: reconnects with the device token a previous pairing issued — no key, no password — and says who
+    /// the hub took this device to be (`None`: the owner). A client that signs in as a member and later comes
+    /// back with the token needs this to know whose data it is looking at, which `handshake` drops. Can't show a
+    /// recovery code, so it never makes the hub create a member's data key.
+    pub async fn handshake_with_token(
+        url: &str,
+        device_id: &str,
+        device_name: &str,
+        device_token: &str,
+        tls: Arc<ClientConfig>,
+    ) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
+        let hello = ClientMessage::Hello {
+            device_id: device_id.to_string(),
+            device_name: device_name.to_string(),
+            auth_key: String::new(),
+            device_token: Some(device_token.to_string()),
+            tools: Vec::new(),
+            node: None,
+            username: None,
+            password: None,
+            recovery_codes: false,
+            truthid_login: false,
+        };
+        Self::hello(url, hello, tls).await
+    }
+
     async fn hello(url: &str, hello: ClientMessage, tls: Arc<ClientConfig>) -> anyhow::Result<(Self, Option<String>, Option<UserInfoDto>)> {
         let (ws, _response) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(Connector::Rustls(tls)))
             .await

@@ -40,6 +40,7 @@ pub mod member_backup;
 pub mod node_client;
 pub mod node_tools;
 pub mod nodes;
+pub mod remote_client;
 pub mod remote_tool;
 pub mod scheduler;
 pub mod server;
