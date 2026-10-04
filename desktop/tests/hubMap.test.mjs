@@ -1,0 +1,140 @@
+// P102 phase 2 — the pure half of using a hub from the native screens (`src/lib/hubMap.ts`). Run with `npm test`
+// (Node strips the types, so the same file the app builds is the one under test).
+
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import {
+  HubTurnError,
+  agentFromHub,
+  chatMessage,
+  conversationFromSummary,
+  decorateLastAnswer,
+  expectReply,
+  mergeConversations,
+  messagesFromHistory,
+  projectFromHub,
+  turnFromReply,
+} from "../src/lib/hubMap.ts";
+
+const summary = (id, updatedAt, extra = {}) => ({ id, title: `title ${id}`, createdAt: 1, updatedAt, ...extra });
+const message = (id, role = "user") => ({ id, role, content: id, createdAt: 1 });
+
+describe("the conversation list", () => {
+  test("a summary becomes a conversation with only the fields the hub gave", () => {
+    assert.deepEqual(conversationFromSummary(summary("c1", 5)), { id: "c1", title: "title c1", messages: [], createdAt: 1, updatedAt: 5 });
+    const full = conversationFromSummary(summary("c2", 6, { agentId: "poet", projectId: "tax", workdir: "/srv/work" }));
+    assert.equal(full.agentId, "poet");
+    assert.equal(full.projectId, "tax");
+    assert.equal(full.workdir, "/srv/work");
+    for (const key of ["agentId", "projectId", "workdir"]) assert.equal(key in conversationFromSummary(summary("c3", 1, { [key]: "" })), false, `an empty ${key} is not carried`);
+  });
+
+  test("a refreshed list keeps the messages already loaded, is newest first, and drops what the hub no longer lists", () => {
+    const loaded = { ...conversationFromSummary(summary("a", 1)), messages: [message("a:0")] };
+    const gone = conversationFromSummary(summary("deleted", 9));
+    const merged = mergeConversations([loaded, gone], [summary("b", 3), summary("a", 7, { title: "renamed" })]);
+    assert.deepEqual(merged.map((c) => c.id), ["a", "b"], "newest first, and the deleted one is gone");
+    assert.equal(merged[0].title, "renamed", "the hub's copy wins");
+    assert.deepEqual(merged[0].messages.map((m) => m.id), ["a:0"], "but what was loaded stays");
+    assert.deepEqual(merged[1].messages, []);
+  });
+
+  test("a conversation this screen just started stays on top until the hub lists it", () => {
+    const fresh = { ...conversationFromSummary(summary("new", 100)), messages: [message("m")] };
+    const merged = mergeConversations([fresh], [summary("old", 5)], new Set(["new"]));
+    assert.deepEqual(merged.map((c) => c.id), ["new", "old"]);
+    const listedNow = mergeConversations([fresh], [summary("old", 5), summary("new", 120)], new Set(["new"]));
+    assert.deepEqual(listedNow.map((c) => c.id), ["new", "old"]);
+    assert.equal(listedNow.filter((c) => c.id === "new").length, 1, "never twice");
+    assert.deepEqual(mergeConversations([fresh], [summary("old", 5)]).map((c) => c.id), ["old"], "not asked to keep it, so it goes");
+  });
+});
+
+describe("a conversation's history", () => {
+  test("messages get an id from the conversation and the position, the same on every load", () => {
+    const history = [
+      { role: "user", content: "hi", createdAt: 10 },
+      { role: "assistant", content: "hello", createdAt: 11, attachments: [{ mimeType: "image/png", data: "AAAA" }] },
+      { role: "user", content: "and?", createdAt: 12, attachments: [] },
+    ];
+    const first = messagesFromHistory("c1", history);
+    assert.deepEqual(first.map((m) => m.id), ["c1:0", "c1:1", "c1:2"]);
+    assert.deepEqual(messagesFromHistory("c1", history), first);
+    assert.deepEqual(first[1].attachments, [{ mimeType: "image/png", data: "AAAA" }]);
+    assert.equal("attachments" in first[0], false);
+    assert.equal("attachments" in first[2], false, "an empty list is left out");
+    assert.deepEqual(messagesFromHistory("c1", []), []);
+  });
+
+  test("a turn's tokens and reserve notice go on the last answer, and only on an answer", () => {
+    const extras = { usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 }, fallbacks: [{ from: "a", to: "b", model: "m", reason: "down" }] };
+    const done = decorateLastAnswer([message("c:0"), message("c:1", "assistant")], extras);
+    assert.deepEqual(done[1].usage, extras.usage);
+    assert.deepEqual(done[1].fallbacks, extras.fallbacks);
+    assert.equal("usage" in done[0], false);
+    const ends = [message("c:0"), message("c:1", "assistant"), message("c:2")];
+    assert.equal(decorateLastAnswer(ends, extras), ends, "the last message is the user's: nothing to decorate");
+    assert.deepEqual(decorateLastAnswer([], extras), []);
+    const plain = [message("c:0", "assistant")];
+    assert.equal(decorateLastAnswer(plain, {}), plain);
+  });
+});
+
+describe("a turn's reply", () => {
+  test("an answer, without the fields the hub left empty", () => {
+    assert.deepEqual(turnFromReply({ type: "chatResponse", content: "ahoy", usage: null, attachments: [], fallbacks: [] }), { content: "ahoy" });
+    const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+    const fallbacks = [{ from: "a", to: "b", model: "m", reason: "r" }];
+    assert.deepEqual(turnFromReply({ type: "chatResponse", content: "x", usage, fallbacks }), { content: "x", usage, fallbacks });
+  });
+
+  test("an error is thrown with the hub's words and the limit it stopped on", () => {
+    assert.throws(() => turnFromReply({ type: "chatError", message: "mock failure" }), (e) => e instanceof HubTurnError && e.message === "mock failure" && e.spendLimitId === undefined);
+    assert.throws(() => turnFromReply({ type: "chatError", message: "limit", spendLimitId: "day" }), (e) => e instanceof HubTurnError && e.spendLimitId === "day");
+    assert.throws(() => turnFromReply({ type: "conversationList" }), /something else/);
+    assert.throws(() => turnFromReply(null), /something else/);
+  });
+
+  test("a refusal reply is an error and any other kind is refused", () => {
+    const list = { type: "conversationList", requestId: 1, conversations: [] };
+    assert.equal(expectReply(list, "conversationList"), list);
+    assert.throws(() => expectReply({ type: "conversationError", requestId: 1, message: "no such conversation" }, "conversationOk"), /no such conversation/);
+    assert.throws(() => expectReply({ type: "projectError", message: "id taken" }, "projectList"), /id taken/);
+    assert.throws(() => expectReply({ type: "pong" }, "projectList"), /something else/);
+    assert.throws(() => expectReply(undefined, "projectList"), /something else/);
+  });
+});
+
+describe("agents and projects", () => {
+  test("an agent keeps what the picker reads, with the opt-ins defaulting to off", () => {
+    const agent = agentFromHub({ id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, allowedTools: null });
+    assert.deepEqual(agent, { id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, canMessageAgents: false, canManageTasks: false, allowedTools: null });
+    assert.deepEqual(agentFromHub({ id: "a", persona: "", providerId: "p", canDelegateToAgents: false, canManageAgents: false, allowedTools: ["shell"], sharedWith: ["ana"] }).sharedWith, ["ana"]);
+  });
+
+  test("a project is read as is, and is not a code project unless the hub says so", () => {
+    assert.deepEqual(projectFromHub({ id: "tax", name: "Tax", description: "d", instructions: "i" }), { id: "tax", name: "Tax", description: "d", instructions: "i", code: false });
+    const code = projectFromHub({ id: "app", name: "App", description: "", instructions: "", workdir: "/srv/app", code: true });
+    assert.equal(code.code, true);
+    assert.equal(code.workdir, "/srv/app");
+  });
+});
+
+describe("the chat message", () => {
+  const base = { content: "hello", attachments: [], conversationId: "c1", agentId: "", projectId: "", workdir: "", creating: false };
+
+  test("carries the conversation and the text, and no model or history", () => {
+    assert.deepEqual(chatMessage(base), { type: "chat", message: "hello", conversationId: "c1", attachments: [] });
+    assert.deepEqual(chatMessage({ ...base, agentId: "poet" }).agentId, "poet");
+  });
+
+  test("a project or a folder travels only with the message that creates the conversation, and never both", () => {
+    assert.equal("projectId" in chatMessage({ ...base, projectId: "tax" }), false, "an existing conversation keeps its own");
+    assert.equal("workdir" in chatMessage({ ...base, workdir: "/srv" }), false);
+    assert.equal(chatMessage({ ...base, creating: true, projectId: "tax" }).projectId, "tax");
+    assert.equal(chatMessage({ ...base, creating: true, workdir: "/srv/work" }).workdir, "/srv/work");
+    const both = chatMessage({ ...base, creating: true, projectId: "tax", workdir: "/srv/work" });
+    assert.equal(both.projectId, "tax");
+    assert.equal("workdir" in both, false, "a project has its own folder");
+  });
+});

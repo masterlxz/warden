@@ -20,6 +20,8 @@ interface SidebarProps {
   view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Which machine the screens use (P102): this computer or a hub. Shown under the brand, not in the collapsed bar. */
+  machine?: React.ReactNode;
 }
 
 function Sidebar({
@@ -40,6 +42,7 @@ function Sidebar({
   view,
   collapsed,
   onToggleCollapsed,
+  machine,
 }: SidebarProps) {
   // A conversation whose project no longer exists (removed since) is listed with the others, as an ordinary one.
   const projectIds = new Set(projects.map((p) => p.id));
@@ -81,6 +84,7 @@ function Sidebar({
             <ChevronIcon size={14} />
           </button>
         </div>
+        {!collapsed && machine}
         <button type="button" className="new-conversation-btn" onClick={onNewConversation} title="New chat">
           <PlusIcon size={16} />
           {!collapsed && "New chat"}

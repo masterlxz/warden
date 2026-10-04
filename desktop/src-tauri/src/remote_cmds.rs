@@ -258,6 +258,96 @@ mod tests {
         }
     }
 
+    /// The contract with `desktop/src/lib/hubMap.ts`: the real messages of the hub, serialized as `remote_request` and
+    /// `remote_chat` hand them to the screens, carry the type names and fields the mappers read — and the messages the
+    /// screens send parse as the hub's own. (The screens' checks use a mock hub written by hand; this ties it to the types.)
+    #[test]
+    fn the_hub_messages_have_the_names_the_screens_read_and_send() {
+        use warden_server::ServerMessage;
+        use warden_server_protocol::protocol::{AgentSettingsDto, ConversationSummary, HistoryMessage, HistoryRole, ProjectDto, ProviderFallbackDto};
+
+        let value = |m: ServerMessage| serde_json::to_value(m).unwrap();
+        let keys = |v: &Value| -> Vec<String> {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+
+        let list = value(ServerMessage::ConversationList {
+            request_id: 1,
+            conversations: vec![ConversationSummary { id: "c1".into(), title: "T".into(), created_at: 1, updated_at: 2, agent_id: Some("poet".into()), project_id: None, workdir: None }],
+        });
+        assert_eq!(list["type"], "conversationList");
+        assert_eq!(keys(&list["conversations"][0]), ["agentId", "createdAt", "id", "title", "updatedAt"], "empty optionals are left out: the mapper copes with their absence");
+
+        let history = value(ServerMessage::History { request_id: 1, messages: vec![HistoryMessage { role: HistoryRole::Assistant, content: "hi".into(), created_at: 3, attachments: Vec::new() }] });
+        assert_eq!(history["type"], "history");
+        assert_eq!((history["messages"][0]["role"].as_str(), history["messages"][0]["content"].as_str(), history["messages"][0]["createdAt"].as_i64()), (Some("assistant"), Some("hi"), Some(3)));
+
+        let projects = value(ServerMessage::ProjectList { request_id: 1, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None, code: false }] });
+        assert_eq!(projects["type"], "projectList");
+        assert_eq!(keys(&projects["projects"][0]), ["description", "id", "instructions", "name"], "workdir and code come only when set");
+
+        let answer = value(ServerMessage::ChatResponse {
+            content: "ahoy".into(),
+            usage: None,
+            attachments: Vec::new(),
+            conversation_id: Some("c1".into()),
+            fallbacks: vec![ProviderFallbackDto { from: "a".into(), to: "b".into(), model: "m".into(), reason: "down".into() }],
+        });
+        assert_eq!(answer["type"], "chatResponse");
+        assert_eq!((answer["content"].as_str(), answer["conversationId"].as_str(), answer["usage"].is_null()), (Some("ahoy"), Some("c1"), true), "usage is null, not absent");
+        assert_eq!(keys(&answer["fallbacks"][0]), ["from", "model", "reason", "to"]);
+        let failed = value(ServerMessage::ChatError { message: "boom".into(), conversation_id: Some("c1".into()), spend_limit_id: Some("day".into()) });
+        assert_eq!((failed["type"].as_str(), failed["message"].as_str(), failed["spendLimitId"].as_str()), (Some("chatError"), Some("boom"), Some("day")));
+
+        let agent = serde_json::to_value(AgentSettingsDto {
+            original_id: None,
+            id: "poet".into(),
+            persona: "You write.".into(),
+            provider_id: String::new(),
+            can_delegate_to_agents: false,
+            can_manage_agents: false,
+            can_message_agents: false,
+            can_manage_tasks: false,
+            allowed_tools: None,
+            shared_with: Vec::new(),
+            owner: None,
+        })
+        .unwrap();
+        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "sharedWith"] {
+            assert!(agent.get(field).is_some(), "the agent has no '{field}': {agent}");
+        }
+        assert!(agent["allowedTools"].is_null(), "null, as the mapper's `string[] | null` says");
+
+        // What the screens send, parsed as the hub's own messages.
+        let sends = [
+            (json!({ "type": "listProjects" }), ClientMessage::ListProjects { request_id: 5 }),
+            (json!({ "type": "requestSettings" }), ClientMessage::RequestSettings { request_id: 5 }),
+            (json!({ "type": "requestHistory", "conversationId": "c1" }), ClientMessage::RequestHistory { request_id: 5, limit: None, conversation_id: Some("c1".into()) }),
+            (json!({ "type": "moveConversation", "conversationId": "c1", "projectId": "tax" }), ClientMessage::MoveConversation { request_id: 5, conversation_id: "c1".into(), project_id: Some("tax".into()) }),
+            (json!({ "type": "moveConversation", "conversationId": "c1" }), ClientMessage::MoveConversation { request_id: 5, conversation_id: "c1".into(), project_id: None }),
+        ];
+        for (sent, wanted) in sends {
+            assert_eq!(message_with_request_id(sent.clone(), 5).unwrap(), wanted, "{sent}");
+        }
+        let no_reply = [
+            (json!({ "type": "setCodeMode", "conversationId": "c1", "mode": "plan" }), ClientMessage::SetCodeMode { conversation_id: "c1".into(), mode: "plan".into() }),
+            (json!({ "type": "cancelTurn", "conversationId": "c1" }), ClientMessage::CancelTurn { conversation_id: "c1".into() }),
+            (
+                json!({ "type": "chat", "message": "hello", "conversationId": "c1", "attachments": [], "agentId": "poet", "projectId": "tax" }),
+                ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: Some("tax".into()), workdir: None },
+            ),
+            (
+                json!({ "type": "chat", "message": "hi", "conversationId": "c2", "attachments": [], "workdir": "/srv/work" }),
+                ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()) },
+            ),
+        ];
+        for (sent, wanted) in no_reply {
+            assert_eq!(serde_json::from_value::<ClientMessage>(sent.clone()).unwrap(), wanted, "{sent}");
+        }
+    }
+
     #[test]
     fn credentials_are_read_the_way_the_screen_sends_them() {
         let key: CredentialPayload = serde_json::from_value(json!({ "kind": "key", "key": "k" })).unwrap();

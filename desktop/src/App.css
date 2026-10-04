@@ -168,6 +168,64 @@ body {
   justify-content: center;
 }
 
+/* Which machine the screens use (P102): this computer, or a hub. */
+.hub-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0 0 0.6rem;
+}
+
+.hub-switcher-label {
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.hub-switcher-select {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.45em 0.6em;
+  font-size: 0.88em;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+}
+
+.hub-switcher-status {
+  margin: 0;
+  font-size: 0.78em;
+  line-height: 1.35;
+  color: var(--color-text-muted);
+}
+
+.hub-switcher-status--ok {
+  color: var(--color-accent-dark);
+}
+
+.hub-switcher-status--bad {
+  color: var(--color-danger);
+}
+
+.hub-switcher-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent-dark);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.hub-connect-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9em;
+}
+
 .conversation-list-scroll {
   flex: 1;
   overflow-y: auto;

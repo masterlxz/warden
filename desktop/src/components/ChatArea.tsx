@@ -42,6 +42,9 @@ interface ChatAreaProps {
   onSelectAgent: (agentId: string) => void;
   onSelectProvider: (providerId: string) => void;
   onOpenSettings: () => void;
+  /** The conversation runs on a hub (P102), not on this computer: a folder of this computer means nothing there, and the
+   * hub picks the model from the agent (a turn can't name one). */
+  remote?: boolean;
 }
 
 function personaPreview(persona: string): string {
@@ -123,6 +126,7 @@ function ChatArea({
   onSelectAgent,
   onSelectProvider,
   onOpenSettings,
+  remote = false,
 }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   // A project picked for a conversation that has started waits for a yes: moving it changes what the AI can reach.
@@ -148,7 +152,7 @@ function ChatArea({
   // The folder (P102): picked before the first message with the system's own dialog (this is the person's computer),
   // then only shown. Not inside a project, which has its own.
   const folderName = selectedWorkdir.split("/").filter(Boolean).pop() ?? selectedWorkdir;
-  const showFolder = !knownProject && (hasMessages ? selectedWorkdir !== "" : true);
+  const showFolder = !remote && !knownProject && (hasMessages ? selectedWorkdir !== "" : true);
 
   async function chooseFolder() {
     try {
@@ -228,23 +232,25 @@ function ChatArea({
             <option value="plan">Plan (changes nothing)</option>
           </select>
         )}
-        <select
-          className="chat-header-select"
-          aria-label="Model"
-          value={selectedProviderId}
-          onChange={(e) => onSelectProvider(e.currentTarget.value)}
-        >
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.id}
-            </option>
-          ))}
-          {combos.map((c) => (
-            <option key={c.id} value={c.id} title={c.providers.join(" → ")}>
-              {c.id} (combo)
-            </option>
-          ))}
-        </select>
+        {!remote && (
+          <select
+            className="chat-header-select"
+            aria-label="Model"
+            value={selectedProviderId}
+            onChange={(e) => onSelectProvider(e.currentTarget.value)}
+          >
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.id}
+              </option>
+            ))}
+            {combos.map((c) => (
+              <option key={c.id} value={c.id} title={c.providers.join(" → ")}>
+                {c.id} (combo)
+              </option>
+            ))}
+          </select>
+        )}
       </div>
       {pendingMove !== null && (
         <div className="chat-move-banner" role="alert">

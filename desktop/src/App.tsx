@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import ChatArea from "./components/ChatArea";
+import HubConnectDialog from "./components/HubConnectDialog";
+import HubSwitcher from "./components/HubSwitcher";
 import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
@@ -15,7 +17,24 @@ import WebhooksView from "./components/WebhooksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
 import { applyEvent, type ChatEventDto, type LiveTurn } from "./lib/liveTurn";
-import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, Settings, Usage } from "./types";
+import {
+  HubTurnError,
+  hubAgents,
+  hubChat,
+  hubConnect,
+  hubDisconnect,
+  hubHistory,
+  hubListConversations,
+  hubListProjects,
+  hubMoveConversation,
+  hubSend,
+  needsSignIn,
+  type HubCredential,
+  type RemoteState,
+  type RemoteStatePayload,
+} from "./lib/hub";
+import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
+import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -93,32 +112,100 @@ function App() {
   // The folder of this computer a *new* conversation will work in (P102); an existing one has its own. Never with a project.
   const [selectedWorkdir, setSelectedWorkdir] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+  // P102 phase 2: the machine the screens use. `null` is this computer; otherwise a saved hub, whose conversations,
+  // projects and agents these screens show and whose engine answers (the connection itself lives in Rust).
+  const [hubs, setHubs] = useState<SavedHub[]>([]);
+  const [activeHubId, setActiveHubId] = useState<string | null>(null);
+  const [hubStates, setHubStates] = useState<Record<string, RemoteState>>({});
+  const [connectingTo, setConnectingTo] = useState<SavedHub | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const remote = activeHubId !== null;
+  const remoteReady = activeHubId !== null && hubStates[activeHubId]?.state === "connected";
+  // What the listeners (set up once) need to know about the machine in use.
+  const activeHubRef = useRef<string | null>(null);
+  activeHubRef.current = activeHubId;
+  const activeConversationRef = useRef<string | null>(null);
+  activeConversationRef.current = activeConversationId;
+  // Conversations started on this screen that the hub's list doesn't have yet: kept on top until it does.
+  const startedHere = useRef(new Set<string>());
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
   const currentProjectId = activeConversation ? (activeConversation.projectId ?? "") : selectedProjectId;
   const currentWorkdir = currentProjectId ? "" : activeConversation ? (activeConversation.workdir ?? "") : selectedWorkdir;
 
   function loadProjects() {
-    invoke<ProjectEntry[]>("list_projects")
-      .then(setProjects)
-      .catch((err) => console.error("failed to load projects:", err));
+    const load = activeHubRef.current === null ? invoke<ProjectEntry[]>("list_projects") : hubListProjects();
+    load.then(setProjects).catch((err) => console.error("failed to load projects:", err));
   }
 
+  /** What the chat header's pickers offer, from the machine in use. A hub has no per-turn model (the agent decides), so
+   * only its agents come. */
+  function loadSettings(): Promise<void> {
+    const load =
+      activeHubRef.current === null
+        ? invoke<Settings>("get_settings")
+        : hubAgents().then((agents): Settings => ({ ...emptySettings, agents }));
+    return load.then(setSettings).catch((err) => console.error("failed to load settings:", err));
+  }
+
+  /** The conversation list of the machine in use. On a hub it has no messages: they come when one is opened. */
+  function loadConversations(): Promise<void> {
+    if (activeHubRef.current === null) {
+      return invoke<Conversation[]>("list_conversations")
+        .then(setConversations)
+        .catch((err) => console.error("failed to load conversation history:", err));
+    }
+    return hubListConversations()
+      .then((summaries) => setConversations((prev) => mergeConversations(prev, summaries, startedHere.current)))
+      .catch((err) => console.error("failed to load the hub's conversations:", err));
+  }
+
+  /** A hub conversation's messages, from its history. */
+  function loadHistory(conversationId: string) {
+    hubHistory(conversationId)
+      .then((messages) => setConversations((prev) => prev.map((c) => (c.id === conversationId ? { ...c, messages } : c))))
+      .catch((err) => console.error("failed to load the conversation:", err));
+  }
+
+  // The list of the machine in use, loaded on start and again when the machine changes or a hub comes (back) up.
   useEffect(() => {
-    invoke<Conversation[]>("list_conversations")
-      .then(setConversations)
-      .catch((err) => console.error("failed to load conversation history:", err));
+    if (remote && !remoteReady) return;
+    loadConversations();
+  }, [activeHubId, remoteReady]);
+
+  // The saved hubs, for the machine picker: read again on coming back from the Workspace screen, where they are edited.
+  useEffect(() => {
+    if (view !== "chat") return;
+    invoke<SavedHub[]>("list_hubs")
+      .then(setHubs)
+      .catch((err) => console.error("failed to load the saved hubs:", err));
+  }, [view]);
+
+  // What the connection to each hub says about itself (connecting, connected as whom, retrying, stopped).
+  useEffect(() => {
+    const unlisten = listen<RemoteStatePayload>("remote-hub-state", ({ payload }) => {
+      setHubStates((prev) => ({ ...prev, [payload.hubId]: payload.state }));
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, []);
 
   // A project made, edited or removed in its screen shows up in the sidebar and the picker on coming back.
   useEffect(() => {
-    if (view === "chat") loadProjects();
-  }, [view]);
+    if (view === "chat" && (!remote || remoteReady)) loadProjects();
+  }, [view, activeHubId, remoteReady]);
 
   // An agent left a message for another, or answered one (P46 `message_agent`): the backend wrote
   // that conversation to disk, so take the saved copy of it — only it, the rest stays as is here.
   useEffect(() => {
     const unlisten = listen<string>("conversations-changed", (event) => {
+      if (activeHubRef.current !== null) {
+        // On a hub: the list again, and the open conversation's messages if it is the one that changed.
+        loadConversations();
+        if (event.payload === activeConversationRef.current) loadHistory(event.payload);
+        return;
+      }
       invoke<Conversation[]>("list_conversations")
         .then((saved) => {
           const changed = saved.find((c) => c.id === event.payload);
@@ -146,11 +233,9 @@ function App() {
   // whenever the user comes back from there so the chat header's selectors stay in sync without
   // needing an app restart.
   useEffect(() => {
-    if (view !== "chat") return;
-    invoke<Settings>("get_settings")
-      .then(setSettings)
-      .catch((err) => console.error("failed to load settings:", err));
-  }, [view]);
+    if (view !== "chat" || (remote && !remoteReady)) return;
+    void loadSettings();
+  }, [view, activeHubId, remoteReady]);
 
   // Restores the agent/model this conversation was last using (P3) whenever it's switched, or
   // falls back to defaults if that id no longer matches anything configured (deleted since).
@@ -166,6 +251,15 @@ function App() {
   async function handleMoveProject(projectId: string) {
     if (activeConversationId === null) return;
     setSendError(null);
+    if (remote) {
+      try {
+        await hubMoveConversation(activeConversationId, projectId);
+        loadConversations();
+      } catch (err) {
+        setSendError(String(err));
+      }
+      return;
+    }
     try {
       const saved = await invoke<Conversation>("move_conversation", { conversationId: activeConversationId, projectId: projectId || null });
       setConversations((prev) => replaceWithSaved(prev, saved));
@@ -243,11 +337,119 @@ function App() {
   function handleCodeMode(mode: CodeMode) {
     setCodeModes((prev) => ({ ...prev, [activeConversationId ?? "new"]: mode }));
     if (activeConversationId !== null) {
-      invoke("set_code_mode", { conversationId: activeConversationId, mode }).catch((err) => setSendError(String(err)));
+      const sent = remote ? hubSend({ type: "setCodeMode", conversationId: activeConversationId, mode }) : invoke("set_code_mode", { conversationId: activeConversationId, mode });
+      sent.catch((err) => setSendError(String(err)));
+    }
+  }
+
+  /** Leaves what the previous machine showed, so nothing of it lingers under the new one's name. */
+  function resetForMachine() {
+    setActiveConversationId(null);
+    setConversations([]);
+    setProjects([]);
+    setSettings(emptySettings);
+    setSelectedProjectId("");
+    setSelectedWorkdir("");
+    setSendError(null);
+    setLiveTurns({});
+    startedHere.current.clear();
+  }
+
+  /** The machine picker: this computer, or a saved hub (asks how to sign in when there is no token for it yet). */
+  async function handlePickMachine(hubId: string | null) {
+    if (hubId === activeHubId) return;
+    setSendError(null);
+    setSwitching(true);
+    try {
+      if (hubId === null) {
+        await hubDisconnect();
+        resetForMachine();
+        setActiveHubId(null);
+        return;
+      }
+      try {
+        await hubConnect(hubId);
+        resetForMachine();
+        setActiveHubId(hubId);
+      } catch (err) {
+        if (needsSignIn(err)) setConnectingTo(hubs.find((h) => h.id === hubId) ?? null);
+        else setSendError(String(err));
+      }
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  /** The sign-in dialog's submit: rejects with the reason, which the dialog shows. */
+  async function handleSignIn(credential: HubCredential) {
+    if (!connectingTo) return;
+    const hubId = connectingTo.id;
+    await hubConnect(hubId, credential);
+    setConnectingTo(null);
+    resetForMachine();
+    setActiveHubId(hubId);
+  }
+
+  /** Opens a conversation. On a hub its messages are read again from there: another device may have added to them. */
+  function selectConversation(id: string) {
+    setActiveConversationId(id);
+    setView("chat");
+    if (remote) loadHistory(id);
+  }
+
+  /** A turn on a hub (P102): it keeps the conversation, so nothing is saved from here and its copy replaces what is shown. */
+  async function handleSendRemote(content: string, attachments: Attachment[]) {
+    if (!remoteReady) {
+      setSendError("Not connected to the hub right now.");
+      return;
+    }
+    const conversationId = activeConversationId ?? crypto.randomUUID();
+    // Only the message that creates the conversation carries its project or folder.
+    const creating = activeConversation === undefined;
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      createdAt: Date.now(),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    const isCodeTurn = projects.some((p) => p.id === currentProjectId && p.code);
+    appendMessage(conversationId, userMessage, content || "Image", false);
+    if (creating) startedHere.current.add(conversationId);
+    if (activeConversationId === null) {
+      setCodeModes(({ new: _started, ...rest }) => ({ ...rest, [conversationId]: codeMode }));
+      setActiveConversationId(conversationId);
+    }
+
+    setSendError(null);
+    setIsSending(true);
+    try {
+      // The hub forgets a conversation's mode when it restarts, so it is said with every code task.
+      if (isCodeTurn) await hubSend({ type: "setCodeMode", conversationId, mode: codeMode });
+      const reply = await hubChat({
+        content,
+        attachments,
+        conversationId,
+        agentId: selectedAgentId,
+        projectId: currentProjectId,
+        workdir: currentWorkdir,
+        creating,
+      });
+      const messages = decorateLastAnswer(await hubHistory(conversationId), reply);
+      setConversations((prev) => prev.map((c) => (c.id === conversationId ? { ...c, messages } : c)));
+    } catch (err) {
+      setSendError(err instanceof HubTurnError ? err.message : String(err));
+    } finally {
+      setIsSending(false);
+      setLiveTurns(({ [conversationId]: _done, ...rest }) => rest);
+      // The hub's title and order for it; once it lists the conversation it no longer needs to be kept here.
+      void loadConversations().finally(() => startedHere.current.delete(conversationId));
+      void loadSettings();
     }
   }
 
   async function handleSendMessage(content: string, attachments: Attachment[] = []) {
+    if (remote) return handleSendRemote(content, attachments);
     const conversationId = activeConversationId ?? crypto.randomUUID();
     const history = (activeConversation?.messages ?? []).map(({ role, content, attachments }) => ({
       role,
@@ -335,7 +537,9 @@ function App() {
   /** The Stop button: the turn ends on its own, with what the engine had by then or an error to show. */
   function handleCancel() {
     if (activeConversationId === null) return;
-    invoke("cancel_turn", { conversationId: activeConversationId }).catch((err) => setSendError(String(err)));
+    // A hub can only stop a code project's task; an ordinary turn there runs to its answer.
+    const sent = remote ? hubSend({ type: "cancelTurn", conversationId: activeConversationId }) : invoke("cancel_turn", { conversationId: activeConversationId });
+    sent.catch((err) => setSendError(String(err)));
   }
 
   return (
@@ -344,10 +548,7 @@ function App() {
         conversations={conversations}
         projects={projects}
         activeConversationId={activeConversationId}
-        onSelectConversation={(id) => {
-          setActiveConversationId(id);
-          setView("chat");
-        }}
+        onSelectConversation={selectConversation}
         onNewConversation={() => {
           setActiveConversationId(null);
           setSelectedProjectId("");
@@ -366,6 +567,16 @@ function App() {
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
+        machine={
+          <HubSwitcher
+            hubs={hubs}
+            activeHubId={activeHubId}
+            state={activeHubId ? hubStates[activeHubId] : undefined}
+            busy={switching}
+            onPick={(id) => void handlePickMachine(id)}
+            onSignIn={setConnectingTo}
+          />
+        }
       />
       {view === "settings" ? (
         <SettingsView />
@@ -413,8 +624,10 @@ function App() {
           onSelectAgent={handleSelectAgent}
           onSelectProvider={setSelectedProviderId}
           onOpenSettings={() => setView("settings")}
+          remote={remote}
         />
       )}
+      {connectingTo && <HubConnectDialog hub={connectingTo} onSubmit={handleSignIn} onCancel={() => setConnectingTo(null)} />}
       <ApprovalModal />
     </div>
   );
