@@ -76,20 +76,17 @@ async fn mcp_stdio_test_helper() -> anyhow::Result<()> {
     }
     let server: RunningService<RoleServer, EchoServer> = EchoServer.serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
-    Ok(())
+    std::process::exit(0);
 }
 
-// Note on stderr noise: this test reliably prints `error: io error when listing tests: ...
-// Broken pipe` to stderr (inherited from the parent, since `TokioChildProcess` only pipes
-// stdin/stdout — stderr defaults to `Stdio::inherit()`). Investigated — it's the *child*
-// process's own libtest harness trying to print its one-test summary to its stdout (piped back
-// to us as the MCP transport) right as `McpToolProvider`'s `Drop` kills the child once the
-// parent test below is done with it; the write loses the race against the kill. It doesn't
-// affect the JSON-RPC exchange (already complete by then) or the test's pass/fail result —
-// confirmed consistently green across repeated runs — so it's left as a cosmetic quirk of
-// embedding a full test binary as a fake server rather than something worth adding a graceful
-// shutdown API to `McpToolProvider` for (nothing else in the codebase has a shutdown lifecycle
-// to hang that off yet).
+// Note on stderr noise: without the `exit(0)` in the helper above, this test printed `error: io
+// error when listing tests: ... Broken pipe` to stderr on every run (the child's stderr is
+// inherited, since `TokioChildProcess` only pipes stdin/stdout). Cause: once the parent test is
+// done and the transport closes, the child's `waiting()` returns and its own libtest harness
+// prints the one-test summary to its stdout — the pipe back to us, already closed — and that
+// write fails (50 runs out of 50, so not a race). The JSON-RPC exchange was long finished and
+// the result never changed. The helper now exits right after `waiting()`, before libtest gets
+// to write anything (0 runs out of 50 print the error).
 
 #[tokio::test]
 async fn connects_lists_and_calls_tools_on_a_real_stdio_mcp_server() {

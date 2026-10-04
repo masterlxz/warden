@@ -2,7 +2,16 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 138)
+> Última atualização: 2026-10-04 (Sessão 139)
+
+---
+
+### 2026-10-04 — Sessão 139
+
+- **Objetivo**: investigar a linha `error: io error when listing tests: ... BrokenPipe` que a saída do `cargo test` mostra (Sessão 137).
+- **Achado**: vem do teste `mcp_stdio` (`warden-core/tests/mcp_stdio.rs`), que relança o próprio binário de teste como servidor MCP. Quando o teste pai termina e fecha o canal, o `waiting()` do filho volta e o libtest do filho imprime o resumo no stdout, que é o pipe já fechado; o stderr do filho é herdado, então a mensagem aparece. Só barulho: o resultado e o protocolo não mudam. **O comentário antigo do teste estava errado**: dizia que era uma corrida contra o kill, mas o erro saía em 50 de 50 execuções.
+- **Feito**: o `mcp_stdio_test_helper` sai com `std::process::exit(0)` logo depois do `waiting()`, antes do libtest escrever, e o comentário agora descreve a causa de verdade.
+- **Verificado**: 50 execuções do binário antes (erro em 50) e depois (erro em 0); o teste continua passando (2 passam). `strace` não existe nesta máquina, então a confirmação foi pelo efeito da correção, não por rastreio das chamadas.
 
 ---
 
