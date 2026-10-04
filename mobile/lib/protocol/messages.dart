@@ -157,13 +157,16 @@ final class GoodbyeMessage extends ClientMessage {
 /// A chat turn (Fase 7.3) — answered by the `Orchestrator` `warden-server` hosts, appended to one of
 /// this device's conversations. [conversationId] picks which (P78): an id the hub has never seen
 /// starts a new one; null is the device's default conversation. [agentId] (P46/P87) speaks as that
-/// configured agent: its persona, skills and tools.
+/// configured agent: its persona, skills and tools. [workdir] (P102) is the folder of the hub's machine
+/// the new conversation works in — only read when the conversation is created, so it travels with its
+/// first message.
 final class ChatMessage extends ClientMessage {
-  const ChatMessage(this.message, {this.conversationId, this.agentId});
+  const ChatMessage(this.message, {this.conversationId, this.agentId, this.workdir});
 
   final String message;
   final String? conversationId;
   final String? agentId;
+  final String? workdir;
 
   @override
   Map<String, dynamic> toJson() => {
@@ -171,7 +174,21 @@ final class ChatMessage extends ClientMessage {
         'message': message,
         if (conversationId != null) 'conversationId': conversationId,
         if (agentId != null) 'agentId': agentId,
+        if (workdir != null) 'workdir': workdir,
       };
+}
+
+/// P102 — asks for the folders inside [path] on the hub's machine; no path starts where the person may
+/// (a member sees only the folders the owner allowed). Answered by [DirListMessage] or [DirErrorMessage]
+/// with the same `requestId`.
+final class ListDirsMessage extends ClientMessage {
+  const ListDirsMessage(this.requestId, {this.path});
+
+  final int requestId;
+  final String? path;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'listDirs', 'requestId': requestId, if (path != null) 'path': path};
 }
 
 /// Asks for the hub's settings (P78) — here only for the configured agents' ids (P87), the same
@@ -276,7 +293,7 @@ final class DeleteConversationMessage extends ClientMessage {
 /// One of this device's conversations in a [ConversationListMessage] (P78). Mirrors
 /// `warden_server_protocol::protocol::ConversationSummary`.
 class ConversationSummary {
-  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt, this.agentId});
+  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt, this.agentId, this.workdir});
 
   final String id;
   final String title;
@@ -286,6 +303,9 @@ class ConversationSummary {
   /// The agent this conversation last spoke with (P46/P87), restored when it's opened.
   final String? agentId;
 
+  /// The folder of the hub's machine this conversation works in (P102), fixed when it began.
+  final String? workdir;
+
   static ConversationSummary fromJson(dynamic json) {
     final map = json as Map<String, dynamic>;
     return ConversationSummary(
@@ -294,7 +314,21 @@ class ConversationSummary {
       createdAt: map['createdAt'] as int,
       updatedAt: map['updatedAt'] as int,
       agentId: map['agentId'] as String?,
+      workdir: map['workdir'] as String?,
     );
+  }
+}
+
+/// One folder in a [DirListMessage] (P102): its name and the path to open or pick.
+class DirEntry {
+  const DirEntry({required this.name, required this.path});
+
+  final String name;
+  final String path;
+
+  static DirEntry fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return DirEntry(name: map['name'] as String, path: map['path'] as String);
   }
 }
 
@@ -395,6 +429,13 @@ sealed class ServerMessage {
           json['requestId'] as int,
           (json['conversations'] as List<dynamic>).map(ConversationSummary.fromJson).toList(),
         ),
+      'dirList' => DirListMessage(
+          json['requestId'] as int,
+          path: json['path'] as String,
+          parent: json['parent'] as String?,
+          dirs: (json['dirs'] as List<dynamic>).map(DirEntry.fromJson).toList(),
+        ),
+      'dirError' => DirErrorMessage(json['requestId'] as int, json['message'] as String),
       'conversationOk' => ConversationOkMessage(json['requestId'] as int),
       'conversationError' => ConversationErrorMessage(json['requestId'] as int, json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
@@ -669,6 +710,25 @@ final class ConversationListMessage extends ServerMessage {
 
   final int requestId;
   final List<ConversationSummary> conversations;
+}
+
+/// Reply to [ListDirsMessage] (P102): the folders in [path] (empty for a member's list of allowed folders), and the
+/// one above it ([parent] is null at the top of what the person may see).
+final class DirListMessage extends ServerMessage {
+  const DirListMessage(this.requestId, {required this.path, this.parent, required this.dirs});
+
+  final int requestId;
+  final String path;
+  final String? parent;
+  final List<DirEntry> dirs;
+}
+
+/// A [ListDirsMessage] failed (P102): not a folder, outside what the person may see, unreadable.
+final class DirErrorMessage extends ServerMessage {
+  const DirErrorMessage(this.requestId, this.message);
+
+  final int requestId;
+  final String message;
 }
 
 /// Reply to a successful rename/delete (P78).

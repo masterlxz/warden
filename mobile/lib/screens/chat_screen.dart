@@ -16,6 +16,7 @@ import '../services/sync_auto_pull.dart';
 import '../services/vault_paths.dart';
 import '../src/rust/api/sync.dart' as sync_bridge;
 import 'attachment_kind.dart';
+import 'folder_picker.dart';
 
 /// Fase 7.3: the real chat UI, built on top of the connection 7.2 proved works. The transcript is
 /// kept in memory by the [ChatTranscript] the caller passes in (P41: it outlives this screen, so
@@ -309,6 +310,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       body: Column(
         children: [
           if (_status is! Connected) _DisconnectedBanner(status: _status),
+          // P102 — the folder this conversation works in, picked before its first message.
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) => _FolderBar(transcript: widget.transcript, connected: _status is Connected),
+          ),
           Expanded(
             child: ListenableBuilder(
               listenable: widget.transcript,
@@ -338,6 +344,67 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// P102 — the working folder of the open conversation: a button to pick one while the conversation is new (and the
+/// hub is reachable), a plain label once it has begun. Hidden for an old conversation that has no folder.
+class _FolderBar extends StatelessWidget {
+  const _FolderBar({required this.transcript, required this.connected});
+
+  final ChatTranscript transcript;
+  final bool connected;
+
+  Future<void> _pick(BuildContext context) async {
+    final picked = await showFolderPicker(context, listDirs: transcript.listDirs, initialPath: transcript.workdir);
+    if (picked != null) transcript.selectWorkdir(picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final folder = transcript.workdir;
+    if (transcript.canPickFolder) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ActionChip(
+                key: const Key('folder-button'),
+                avatar: const Icon(Icons.folder_special_outlined, size: 18),
+                label: Text(folder == null ? 'Working folder: none' : folderName(folder)),
+                tooltip: folder ?? 'Pick a folder of the hub for the AI to work in',
+                onPressed: connected ? () => _pick(context) : null,
+              ),
+              if (folder != null)
+                IconButton(
+                  key: const Key('folder-clear'),
+                  onPressed: () => transcript.selectWorkdir(null),
+                  icon: const Icon(Icons.close, size: 18),
+                  tooltip: 'Remove the folder',
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (folder == null) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Tooltip(
+          message: folder,
+          child: Chip(
+            key: const Key('folder-chip'),
+            avatar: const Icon(Icons.folder_special_outlined, size: 18),
+            label: Text(folderName(folder)),
+          ),
+        ),
       ),
     );
   }

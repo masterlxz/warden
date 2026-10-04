@@ -475,6 +475,41 @@ void main() {
     expect(await fromClient.next as String, '{"type":"chat","message":"hi","conversationId":"c1"}');
   });
 
+  test('the folder list is asked for and answered by request id, and a refusal becomes an exception (P102)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final top = conn.listDirs();
+    expect(await fromClient.next as String, '{"type":"listDirs","requestId":1}');
+    controller.local.sink.add('{"type":"dirList","requestId":1,"path":"","dirs":[{"name":"work","path":"/srv/work"}]}');
+    final listing = await top;
+    expect(listing.path, isEmpty);
+    expect(listing.dirs.single.path, '/srv/work');
+
+    final inside = conn.listDirs('/srv/work');
+    expect(await fromClient.next as String, '{"type":"listDirs","requestId":2,"path":"/srv/work"}');
+    controller.local.sink.add('{"type":"dirList","requestId":2,"path":"/srv/work","parent":"","dirs":[]}');
+    expect((await inside).parent, '');
+
+    final refused = conn.listDirs('/etc');
+    expect(await fromClient.next as String, '{"type":"listDirs","requestId":3,"path":"/etc"}');
+    controller.local.sink.add('{"type":"dirError","requestId":3,"message":"that folder is not one of yours"}');
+    await expectLater(refused, throwsA(isA<ConversationException>().having((e) => e.message, 'message', contains('not one of yours'))));
+
+    conn.sendChat('hi', conversationId: 'c1', workdir: '/srv/work');
+    expect(await fromClient.next as String, '{"type":"chat","message":"hi","conversationId":"c1","workdir":"/srv/work"}');
+  });
+
   test('a device token issued in HelloAck is exposed to the caller (P36)', () async {
     final controller = StreamChannelController<dynamic>();
     final fromClient = StreamQueue<dynamic>(controller.local.stream);

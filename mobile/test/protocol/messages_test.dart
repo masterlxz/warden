@@ -200,6 +200,44 @@ void main() {
     });
   });
 
+  group('P102 working folder messages', () {
+    // The literals are the ones `warden-server-protocol`'s own serialization test asserts.
+    test('the client messages are the ones the hub expects', () {
+      expect(const ListDirsMessage(1).encode(), '{"type":"listDirs","requestId":1}');
+      expect(const ListDirsMessage(2, path: '/srv').encode(), '{"type":"listDirs","requestId":2,"path":"/srv"}');
+      expect(const ChatMessage('hi', conversationId: 'c1', workdir: '/srv/work').toJson(),
+          {'type': 'chat', 'message': 'hi', 'conversationId': 'c1', 'workdir': '/srv/work'});
+      expect(const ChatMessage('hi').toJson().containsKey('workdir'), isFalse, reason: 'no folder, nothing on the wire');
+    });
+
+    test('the folder list, its top, and its error', () {
+      final list = ServerMessage.decode('{"type":"dirList","requestId":2,"path":"/srv","parent":"/","dirs":[{"name":"work","path":"/srv/work"}]}')
+          as DirListMessage;
+      expect(list.requestId, 2);
+      expect(list.path, '/srv');
+      expect(list.parent, '/');
+      expect(list.dirs.single.name, 'work');
+      expect(list.dirs.single.path, '/srv/work');
+
+      final top = ServerMessage.decode('{"type":"dirList","requestId":3,"path":"","dirs":[]}') as DirListMessage;
+      expect(top.path, isEmpty);
+      expect(top.parent, isNull, reason: 'the top of what the person may see has no parent');
+      expect(top.dirs, isEmpty);
+
+      final error = ServerMessage.decode('{"type":"dirError","requestId":4,"message":"m"}') as DirErrorMessage;
+      expect(error.requestId, 4);
+      expect(error.message, 'm');
+    });
+
+    test('a conversation summary carries its folder when it has one', () {
+      final list = ServerMessage.decode(
+          '{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"T","createdAt":1,"updatedAt":2,"workdir":"/srv/work"},{"id":"c2","title":"U","createdAt":1,"updatedAt":2}]}')
+          as ConversationListMessage;
+      expect(list.conversations.first.workdir, '/srv/work');
+      expect(list.conversations.last.workdir, isNull);
+    });
+  });
+
   group('P84 recovery and TruthID messages', () {
     test('the client messages are the ones the hub expects', () {
       expect(const ChangePasswordMessage(1, 'old', 'new').encode(), '{"type":"changePassword","requestId":1,"oldPassword":"old","newPassword":"new"}');

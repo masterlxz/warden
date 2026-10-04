@@ -19,10 +19,23 @@ class FakeBackend implements ConversationBackend {
   final sentAgents = <String?>[];
   var agentIds = <String>[];
 
+  /// The folder each sent turn carried, in order (P102).
+  final sentWorkdirs = <String?>[];
+
+  /// The paths the picker asked to list, in order (P102).
+  final listedDirs = <String?>[];
+
   @override
-  void sendChat(String message, {String? conversationId, String? agentId}) {
+  void sendChat(String message, {String? conversationId, String? agentId, String? workdir}) {
     sent.add((message, conversationId));
     sentAgents.add(agentId);
+    sentWorkdirs.add(workdir);
+  }
+
+  @override
+  Future<DirListMessage> listDirs([String? path]) async {
+    listedDirs.add(path);
+    return DirListMessage(1, path: path ?? '', dirs: const []);
   }
 
   @override
@@ -128,6 +141,74 @@ void main() {
     transcript.send('new one');
     expect(backend.sentAgents.last, 'poet');
     expect(transcript.conversations.first.agentId, 'poet');
+  });
+
+  test('a folder is picked before the first message, travels with it only, and is fixed afterwards (P102)', () async {
+    final transcript = make();
+    await settle();
+
+    expect(transcript.canPickFolder, isTrue);
+    expect(transcript.workdir, isNull);
+    transcript.selectWorkdir('/srv/work/alpha');
+    expect(transcript.workdir, '/srv/work/alpha');
+
+    transcript.send('organize this');
+    expect(backend.sentWorkdirs.last, '/srv/work/alpha', reason: 'the first message carries it');
+    expect(transcript.conversations.first.workdir, '/srv/work/alpha');
+    expect(transcript.canPickFolder, isFalse, reason: 'the conversation has begun');
+    transcript.selectWorkdir('/elsewhere');
+    transcript.selectWorkdir(null);
+    expect(transcript.workdir, '/srv/work/alpha', reason: 'neither changed nor cleared after the first message');
+
+    replies.add(const ChatResponseMessage('done', null));
+    await settle();
+    backend.conversations = [ConversationSummary(id: transcript.activeConversationId, title: 't', createdAt: 0, updatedAt: 1, workdir: '/srv/work/alpha')];
+    await transcript.refreshConversations();
+    transcript.send('and now?');
+    expect(backend.sentWorkdirs.last, isNull, reason: 'only the message that creates the conversation carries the folder');
+  });
+
+  test('no folder travels when none was picked, and clearing one before the first message removes it (P102)', () async {
+    final transcript = make();
+    await settle();
+
+    transcript.selectWorkdir('/srv/work');
+    transcript.selectWorkdir(null);
+    expect(transcript.workdir, isNull);
+    transcript.send('hi');
+    expect(backend.sentWorkdirs.last, isNull);
+  });
+
+  test('each conversation shows its own folder, and a new one starts with none (P102)', () async {
+    backend.conversations = [
+      ConversationSummary(id: 'c1', title: 'in a folder', createdAt: 0, updatedAt: 2, workdir: '/srv/work'),
+      summary('c2'),
+    ];
+    final transcript = make(last: 'c1');
+    await settle();
+
+    expect(transcript.workdir, '/srv/work', reason: 'restored from the conversation');
+    expect(transcript.canPickFolder, isFalse);
+
+    transcript.open('c2');
+    expect(transcript.workdir, isNull, reason: 'c2 has no folder');
+    expect(transcript.canPickFolder, isFalse, reason: 'c2 already exists on the hub');
+
+    transcript.selectWorkdir('/not-allowed-here');
+    expect(transcript.workdir, isNull);
+
+    transcript.open('c1');
+    transcript.startNew();
+    expect(transcript.workdir, isNull, reason: 'a folder is never carried over to a new conversation');
+    expect(transcript.canPickFolder, isTrue);
+  });
+
+  test('the picker lists through the backend (P102)', () async {
+    final transcript = make();
+    await settle();
+    await transcript.listDirs();
+    await transcript.listDirs('/srv/work');
+    expect(backend.listedDirs, [null, '/srv/work']);
   });
 
   test('a changed conversation reloads the list and the open transcript (P87)', () async {

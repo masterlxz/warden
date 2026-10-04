@@ -18,8 +18,9 @@ class ChatEntry {
 /// What [ChatTranscript] needs from the hub — `ServerConnection` in the app, a fake in tests, so
 /// the transcript can be tested without a WebSocket.
 abstract interface class ConversationBackend {
-  void sendChat(String message, {String? conversationId, String? agentId});
+  void sendChat(String message, {String? conversationId, String? agentId, String? workdir});
   Future<List<String>> listAgentIds();
+  Future<DirListMessage> listDirs([String? path]);
   Future<List<HistoryEntry>> fetchHistory({int? limit, String? conversationId});
   Future<List<ConversationSummary>> listConversations();
   Future<void> renameConversation(String conversationId, String title);
@@ -69,6 +70,10 @@ class ChatTranscript extends ChangeNotifier {
   /// conversation restores the agent it last spoke with; a new one keeps the last choice.
   var _agentIds = <String>[];
   String? _agentId;
+
+  /// P102 — the folder of the hub's machine the open conversation works in. Picked before the first
+  /// message of a new conversation and fixed after it, so opening a conversation shows the one it has.
+  String? _workdir;
   String? _conversationsError;
   bool _disposed = false;
 
@@ -86,6 +91,11 @@ class ChatTranscript extends ChangeNotifier {
 
   List<String> get agentIds => List.unmodifiable(_agentIds);
   String? get selectedAgentId => _agentId;
+  String? get workdir => _workdir;
+
+  /// A folder can be chosen only for a conversation the hub doesn't have yet and that has no message — the
+  /// same rule as the web, the desktop and the CLI, so a conversation never moves folder halfway.
+  bool get canPickFolder => !_conversations.any((c) => c.id == _activeId) && _entries.isEmpty;
 
   bool get waitingForReply => _pending.containsKey(_activeId);
   bool isAnswering(String conversationId) => _pending.containsKey(conversationId);
@@ -103,6 +113,8 @@ class ChatTranscript extends ChangeNotifier {
       _activeId = list.isEmpty ? _newConversationId() : list.first.id;
     }
     _restoreAgent(_activeId);
+    // A folder picked while the list was loading stays; only a conversation the hub has brings its own.
+    if (_conversations.any((c) => c.id == _activeId)) _restoreWorkdir(_activeId);
     notifyListeners();
     onConversationOpened?.call(_activeId);
     await _loadHistory(_activeId);
@@ -126,6 +138,28 @@ class ChatTranscript extends ChangeNotifier {
     if (agentId == _agentId) return;
     _agentId = agentId;
     notifyListeners();
+  }
+
+  /// The folders inside [path] on the hub's machine, for the picker (no path: where the person may start).
+  Future<DirListMessage> listDirs([String? path]) => backend.listDirs(path);
+
+  /// Work in [path] from the first message on (null: no folder). Ignored once the conversation has begun.
+  void selectWorkdir(String? path) {
+    if (!canPickFolder || path == _workdir) return;
+    _workdir = path;
+    notifyListeners();
+  }
+
+  /// The folder [conversationId] works in, when the hub has it; a conversation the hub doesn't have yet starts
+  /// with none (unlike the agent, a folder is never carried over from the last one).
+  void _restoreWorkdir(String conversationId) {
+    _workdir = null;
+    for (final c in _conversations) {
+      if (c.id == conversationId) {
+        _workdir = c.workdir;
+        return;
+      }
+    }
   }
 
   /// The agent [conversationId] last spoke with, when the hub has it; otherwise the choice stays.
@@ -187,6 +221,7 @@ class ChatTranscript extends ChangeNotifier {
     _activeId = conversationId;
     _entries.clear();
     _restoreAgent(conversationId);
+    _restoreWorkdir(conversationId);
     notifyListeners();
     onConversationOpened?.call(conversationId);
     unawaited(_loadHistory(conversationId));
@@ -244,15 +279,18 @@ class ChatTranscript extends ChangeNotifier {
     final id = _activeId;
     _entries.add(ChatEntry(EntryRole.user, trimmed));
     _pending[id] = trimmed;
+    // The folder only counts when the conversation is created, which is this message.
+    String? creatingIn;
     if (!_conversations.any((c) => c.id == id)) {
+      creatingIn = _workdir;
       final now = DateTime.now().millisecondsSinceEpoch;
       _conversations = [
-        ConversationSummary(id: id, title: titleFrom(trimmed), createdAt: now, updatedAt: now, agentId: _agentId),
+        ConversationSummary(id: id, title: titleFrom(trimmed), createdAt: now, updatedAt: now, agentId: _agentId, workdir: creatingIn),
         ..._conversations,
       ];
     }
     notifyListeners();
-    backend.sendChat(trimmed, conversationId: id, agentId: _agentId);
+    backend.sendChat(trimmed, conversationId: id, agentId: _agentId, workdir: creatingIn);
     return true;
   }
 

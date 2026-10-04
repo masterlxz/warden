@@ -321,6 +321,8 @@ class ServerConnection implements ConversationBackend {
               HistoryErrorMessage() ||
               ConversationListMessage() ||
               ConversationOkMessage() ||
+              DirListMessage() ||
+              DirErrorMessage() ||
               SettingsMessage() ||
               SettingsErrorMessage() ||
               ApprovalRequestMessage() ||
@@ -394,8 +396,10 @@ class ServerConnection implements ConversationBackend {
         _pendingHistory.remove(requestId)?.complete(messages);
       case HistoryErrorMessage(:final requestId, :final message):
         _pendingHistory.remove(requestId)?.completeError(HistoryException(message));
-      case ConversationListMessage(:final requestId) || ConversationOkMessage(:final requestId):
+      case ConversationListMessage(:final requestId) || ConversationOkMessage(:final requestId) || DirListMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
+      case DirErrorMessage(:final requestId, :final message):
+        _pendingConversation.remove(requestId)?.completeError(ConversationException(message));
       case ConversationErrorMessage(:final requestId, :final message):
         _pendingConversation.remove(requestId)?.completeError(ConversationException(message));
       case AuthErrorMessage(:final reason):
@@ -424,8 +428,17 @@ class ServerConnection implements ConversationBackend {
   /// arrives asynchronously on [chatStream] as either a [ChatResponseMessage] or a
   /// [ChatErrorMessage], tagged with the same conversation id.
   @override
-  void sendChat(String message, {String? conversationId, String? agentId}) {
-    _channel.sink.add(ChatMessage(message, conversationId: conversationId, agentId: agentId).encode());
+  void sendChat(String message, {String? conversationId, String? agentId, String? workdir}) {
+    _channel.sink.add(ChatMessage(message, conversationId: conversationId, agentId: agentId, workdir: workdir).encode());
+  }
+
+  /// P102 — the folders inside [path] on the hub's machine (no path: where the person may start). Throws a
+  /// [ConversationException] when the hub refuses (outside what the person may see, not a folder, unreadable).
+  @override
+  Future<DirListMessage> listDirs([String? path]) async {
+    final reply = await _conversationRequest((requestId) => ListDirsMessage(requestId, path: path));
+    if (reply is DirListMessage) return reply;
+    throw ConversationException('Unexpected reply to the folder list: $reply');
   }
 
   /// P87 — the configured agents' ids, from the hub's settings (the web's selector reads the same).
