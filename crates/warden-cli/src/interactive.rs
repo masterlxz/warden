@@ -3067,6 +3067,7 @@ mod tests {
             started_at: 0,
             tool_names: Vec::new(),
             spend_guard: None,
+            workdir: None,
         };
         let tools = |agent: &str| -> Vec<String> {
             resolve_turn_context(&session(agent), &orchestrator).unwrap().orchestrator.tools().iter().map(|t| t.spec().name).collect()
