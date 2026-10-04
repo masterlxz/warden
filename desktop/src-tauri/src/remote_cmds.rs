@@ -128,8 +128,7 @@ pub(crate) fn message_with_request_id(mut value: Value, id: u64) -> Result<Clien
 }
 
 fn identities() -> Result<RemoteIdentities, String> {
-    let config = warden_bootstrap::default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
-    Ok(RemoteIdentities::beside(&config))
+    Ok(RemoteIdentities::beside(&crate::config_paths::config_file()?))
 }
 
 /// How the first sign-in to a hub is made. Not kept: only the token the hub issues is.
@@ -151,8 +150,8 @@ pub struct RemoteStatusPayload {
 /// owner, a username and password a member); without one it uses the token from the last sign-in, and says so when there
 /// is none. Returns at once: the state follows as `remote-hub-state`.
 #[tauri::command]
-pub async fn remote_connect(app: AppHandle, state: State<'_, AppState>, hub_id: String, credential: Option<CredentialPayload>) -> Result<(), String> {
-    let hubs_path = saved_hubs::default_saved_hubs_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+pub async fn remote_connect<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, AppState>, hub_id: String, credential: Option<CredentialPayload>) -> Result<(), String> {
+    let hubs_path = crate::config_paths::saved_hubs_file()?;
     let hub = saved_hubs::find(&hubs_path, &hub_id).map_err(|e| format!("{e:#}"))?.ok_or_else(|| format!("there is no saved hub '{hub_id}' (it may have been removed)"))?;
     let url = ws_url_for(&hub.url)?;
     let identities = identities()?;

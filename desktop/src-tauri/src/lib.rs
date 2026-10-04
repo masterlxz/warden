@@ -2,6 +2,7 @@ mod api_key_cmds;
 mod bot_cmds;
 mod approval;
 mod code_cmds;
+mod config_paths;
 mod git_sync_cmds;
 mod hub_cmds;
 mod lend_cmds;
@@ -11,6 +12,8 @@ mod projects_cmds;
 mod provider_cmds;
 mod qr;
 mod remote_cmds;
+#[cfg(test)]
+mod remote_ipc_test;
 mod recording;
 mod server_cmds;
 mod skills_cmds;
