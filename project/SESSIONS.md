@@ -2,7 +2,16 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 139)
+> Última atualização: 2026-10-04 (Sessão 140)
+
+---
+
+### 2026-10-04 — Sessão 140
+
+- **Objetivo**: investigar o segfault do `rust-lld` que apareceu uma vez ao linkar o binário `warden-server` na suíte (Sessão 138). Sem mudança de código.
+- **Achado**: o `coredumpctl` tem **49 crashes desde 2026-09-10**, e não só do linker: `rustc` (28), `rust-lld` (7), `ld.lld` (3), **`java` (6), `node`, `brave` e `isoimagewriter`**; 40 SIGSEGV, 7 SIGABRT e 1 SIGILL (instrução inválida num binário intacto). O de hoje foi SEGV com `si_code: SI_KERNEL`. A máquina é um i7-10700K (turbo até 5,1 GHz) com 31 GB de RAM sem ECC; `intel-ucode 20260925-1`; 34 °C ociosa; o kernel não registrou erro de memória nem de hardware neste boot. O `target/` é um symlink para `/mnt/hd1tb` (ext4).
+- **Reprodução**: 40 relinks seguidos do `warden-server` (15 sem carga e 25 com os 16 núcleos ocupados): 0 falhas e nenhum core dump novo. Um bug determinístico do `lld` teria caído de novo.
+- **Conclusão**: suspeita de **instabilidade de hardware** (RAM, perfil XMP/overclock ou tensão da CPU), porque o crash é raro, aleatório e atinge programas sem relação. **Não provado**: não há `strace`, `memtester` nem `stress-ng` aqui, e o `memtest86+` exige reiniciar. Quando o `rust-lld` ou o `rustc` cair, rodar de novo; para resolver, `memtest86+` por algumas horas, testar sem o XMP e conferir o BIOS.
 
 ---
 
