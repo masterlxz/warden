@@ -384,6 +384,61 @@ body {
 }
 
 /* The working folder (P102): a button that opens the system's folder dialog, and a × to clear it. */
+/* The folder browser of a hub (P102): where the title and the list of folders sit inside the modal card. */
+.folder-picker {
+  gap: 0.6rem;
+}
+
+.folder-picker-here {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.folder-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 6rem;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.folder-picker-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-picker-item:hover,
+.folder-picker-item:focus-visible {
+  background: var(--color-surface-alt);
+  outline: none;
+}
+
+.folder-picker-empty {
+  padding: 0.6rem 0.7rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+.folder-picker-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.9rem;
+}
+
 .chat-header-folder {
   display: inline-flex;
   align-items: center;

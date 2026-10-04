@@ -5,6 +5,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { nextCodeMode } from "../types";
 import type { AgentEntry, Attachment, CodeMode, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import type { LiveTurn } from "../lib/liveTurn";
+import { folderLabel, folderPlace, nodesWithFolders, type DirListing, type NodeInfo } from "../lib/workdir";
+import FolderPicker from "./FolderPicker";
 import { LogoMark } from "./Icons";
 import MessageBubble, { MarkdownLink } from "./MessageBubble";
 import MessageInput from "./MessageInput";
@@ -42,9 +44,12 @@ interface ChatAreaProps {
   onSelectAgent: (agentId: string) => void;
   onSelectProvider: (providerId: string) => void;
   onOpenSettings: () => void;
-  /** The conversation runs on a hub (P102), not on this computer: a folder of this computer means nothing there, and the
-   * hub picks the model from the agent (a turn can't name one). */
+  /** The conversation runs on a hub (P102), not on this computer: the hub picks the model from the agent (a turn can't
+   * name one), and its folders are browsed on the hub instead of with this computer's dialog. */
   remote?: boolean;
+  /** What browsing a hub's folders needs (only with `remote`): the listing, the nodes known (to name them), and a call
+   * made before the browser opens that reads the nodes (the owner's; a member has none to read). */
+  hubFolders?: { listDirs: (path?: string) => Promise<DirListing>; nodes: NodeInfo[]; prepare: () => Promise<void> };
 }
 
 function personaPreview(persona: string): string {
@@ -127,7 +132,10 @@ function ChatArea({
   onSelectProvider,
   onOpenSettings,
   remote = false,
+  hubFolders,
 }: ChatAreaProps) {
+  // The hub's folder browser (P102), open while the person chooses.
+  const [browsingHub, setBrowsingHub] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   // A project picked for a conversation that has started waits for a yes: moving it changes what the AI can reach.
   const [pendingMove, setPendingMove] = useState<string | null>(null);
@@ -149,12 +157,20 @@ function ChatArea({
   const knownProject = projects.some((p) => p.id === selectedProjectId);
   // A conversation that works in a folder can't be moved into a project (P102), so it has no project picker.
   const showProjectPicker = (projects.length > 0 || knownProject) && !(hasMessages && selectedWorkdir);
-  // The folder (P102): picked before the first message with the system's own dialog (this is the person's computer),
-  // then only shown. Not inside a project, which has its own.
-  const folderName = selectedWorkdir.split("/").filter(Boolean).pop() ?? selectedWorkdir;
-  const showFolder = !remote && !knownProject && (hasMessages ? selectedWorkdir !== "" : true);
+  // The folder (P102): picked before the first message — with the system's own dialog on this computer, in the hub's
+  // folder browser on a hub — then only shown. Not inside a project, which has its own.
+  const hubNodes = hubFolders?.nodes ?? [];
+  const folderName = remote ? folderLabel(selectedWorkdir, hubNodes) : (selectedWorkdir.split("/").filter(Boolean).pop() ?? selectedWorkdir);
+  const folderTitle = remote ? folderPlace(selectedWorkdir, hubNodes) : selectedWorkdir;
+  const showFolder = !knownProject && (hasMessages ? selectedWorkdir !== "" : true) && (!remote || hubFolders !== undefined);
 
   async function chooseFolder() {
+    if (remote && hubFolders) {
+      // The nodes are read first so the browser can offer them (the owner's; a member's call is a no-op).
+      await hubFolders.prepare();
+      setBrowsingHub(true);
+      return;
+    }
     try {
       const picked = await open({ directory: true, multiple: false, defaultPath: selectedWorkdir || undefined });
       if (typeof picked === "string") onSelectWorkdir(picked);
@@ -165,6 +181,18 @@ function ChatArea({
 
   return (
     <div className="chat-area">
+      {browsingHub && hubFolders && (
+        <FolderPicker
+          listDirs={hubFolders.listDirs}
+          nodes={nodesWithFolders(hubNodes)}
+          initialPath={selectedWorkdir || undefined}
+          onPick={(path) => {
+            onSelectWorkdir(path);
+            setBrowsingHub(false);
+          }}
+          onCancel={() => setBrowsingHub(false)}
+        />
+      )}
       <div className="chat-header">
         {needsAgentPick ? (
           <span className="chat-header-label chat-header-label--muted">Pick an agent to start</span>
@@ -196,7 +224,7 @@ function ChatArea({
         )}
         {showFolder &&
           (hasMessages ? (
-            <span className="chat-header-label" title={selectedWorkdir}>
+            <span className="chat-header-label" title={folderTitle}>
               Folder: {folderName}
             </span>
           ) : (
@@ -204,7 +232,12 @@ function ChatArea({
               <button
                 type="button"
                 className="chat-header-select"
-                title={selectedWorkdir || "Pick a folder of this computer for the AI to work in: it reads and writes there and its shell starts there (every command asks first)"}
+                title={
+                  folderTitle ||
+                  (remote
+                    ? "Pick a folder of the hub, or of one of its nodes, for the AI to work in: it reads and writes there and its shell starts there (every command asks first)"
+                    : "Pick a folder of this computer for the AI to work in: it reads and writes there and its shell starts there (every command asks first)")
+                }
                 disabled={isSending}
                 onClick={() => void chooseFolder()}
               >

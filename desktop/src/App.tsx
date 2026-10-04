@@ -25,6 +25,8 @@ import {
   hubDisconnect,
   hubHistory,
   hubListConversations,
+  hubListDirs,
+  hubListNodes,
   hubListProjects,
   hubMoveConversation,
   hubSend,
@@ -34,6 +36,7 @@ import {
   type RemoteStatePayload,
 } from "./lib/hub";
 import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
+import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -121,6 +124,10 @@ function App() {
   const [switching, setSwitching] = useState(false);
   const remote = activeHubId !== null;
   const remoteReady = activeHubId !== null && hubStates[activeHubId]?.state === "connected";
+  // The hub's nodes (P102), to pick a folder on one: only the owner can list them, a member has none to read.
+  const [knownNodes, setKnownNodes] = useState<NodeInfo[]>([]);
+  const hubState = activeHubId ? hubStates[activeHubId] : undefined;
+  const isHubOwner = hubState?.state === "connected" && hubState.user === null;
   // What the listeners (set up once) need to know about the machine in use.
   const activeHubRef = useRef<string | null>(null);
   activeHubRef.current = activeHubId;
@@ -159,6 +166,22 @@ function App() {
       .then((summaries) => setConversations((prev) => mergeConversations(prev, summaries, startedHere.current)))
       .catch((err) => console.error("failed to load the hub's conversations:", err));
   }
+
+  /** The hub's nodes, for the folder browser and for naming a folder that is on one. A hub with none, or a member (who can't
+   * ask), leaves it empty: the hub's own folders are still there. */
+  async function loadNodes() {
+    if (!isHubOwner) return;
+    try {
+      setKnownNodes(await hubListNodes());
+    } catch {
+      // No nodes to offer.
+    }
+  }
+
+  // A folder on a node is named by the node's name: read once the owner opens a conversation that has one.
+  useEffect(() => {
+    if (isHubOwner && knownNodes.length === 0 && parseNodeFolder(currentWorkdir)) void loadNodes();
+  }, [currentWorkdir, activeHubId, isHubOwner]);
 
   /** A hub conversation's messages, from its history. */
   function loadHistory(conversationId: string) {
@@ -352,6 +375,7 @@ function App() {
     setSelectedWorkdir("");
     setSendError(null);
     setLiveTurns({});
+    setKnownNodes([]);
     startedHere.current.clear();
   }
 
@@ -625,6 +649,7 @@ function App() {
           onSelectProvider={setSelectedProviderId}
           onOpenSettings={() => setView("settings")}
           remote={remote}
+          hubFolders={remote ? { listDirs: hubListDirs, nodes: knownNodes, prepare: loadNodes } : undefined}
         />
       )}
       {connectingTo && <HubConnectDialog hub={connectingTo} onSubmit={handleSignIn} onCancel={() => setConnectingTo(null)} />}

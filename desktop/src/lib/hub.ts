@@ -19,6 +19,8 @@ import {
   type TurnExtras,
 } from "./hubMap";
 
+import type { DirListing, NodeInfo } from "./workdir";
+
 export { HubTurnError } from "./hubMap";
 export type { RemoteState, RemoteStatePayload, HubUser } from "./hubMap";
 
@@ -68,6 +70,21 @@ export async function hubListProjects(): Promise<ProjectEntry[]> {
 export async function hubAgents(): Promise<AgentEntry[]> {
   const reply = await ask<{ type: string; settings: { agents: HubAgent[] } }>({ type: "requestSettings" }, "settings");
   return reply.settings.agents.map(agentFromHub);
+}
+
+/** The folders inside `path` on the hub's machine, or on a node for a `node:<id>:<path>`; no path starts where the person
+ * may (a member sees only the folders the owner allowed). Rejects with the hub's reason (outside what they may see, not a
+ * folder, unreadable, a node that is away). */
+export async function hubListDirs(path?: string): Promise<DirListing> {
+  const reply = await ask<{ type: string } & DirListing>({ type: "listDirs", ...(path ? { path } : {}) }, "dirList");
+  return { path: reply.path, ...(reply.parent !== undefined ? { parent: reply.parent } : {}), dirs: reply.dirs };
+}
+
+/** The nodes of the hub, to pick a folder on one. Only the owner may ask: a member's hub list already names the node
+ * folders the owner gave them. */
+export async function hubListNodes(): Promise<NodeInfo[]> {
+  const reply = await ask<{ type: string; nodes: NodeInfo[] }>({ type: "listNodes" }, "nodeList");
+  return reply.nodes;
 }
 
 export async function hubMoveConversation(conversationId: string, projectId: string): Promise<void> {
