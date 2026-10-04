@@ -21,6 +21,7 @@ import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
+import { nextCodeMode } from "./hub/messages";
 import type { Attachment, CodeMode, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
@@ -745,6 +746,11 @@ export default function App() {
                 onSend={handleSend}
                 onTranscribe={handleTranscribe}
                 onExtendLimit={handleExtendLimit}
+                onCycleMode={
+                  projects.some((p) => p.id === projectId && p.code)
+                    ? () => handleCodeMode(nextCodeMode(codeModes[activeId] ?? "manual"))
+                    : undefined
+                }
               />
             </div>
           </div>

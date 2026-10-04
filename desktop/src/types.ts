@@ -189,6 +189,13 @@ export interface SshHostEntry {
  * change at all, only a plan. Changeable at any moment, a running task included. */
 export type CodeMode = "manual" | "acceptEdits" | "acceptAll" | "plan";
 
+/** What Shift+Tab goes to next: Manual → Accept edits → Plan → Manual. "Accept all" is only ever picked on purpose. */
+export function nextCodeMode(mode: CodeMode): CodeMode {
+  if (mode === "manual") return "acceptEdits";
+  if (mode === "acceptEdits") return "plan";
+  return "manual";
+}
+
 export interface ApprovalRequest {
   id: number;
   /** The SSH server id or the agent id the action is about. */

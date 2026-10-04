@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-04 — Sessão 131
+
+- **Objetivo**: as fatias pequenas que a Sessão 130 deixou no P103: o teste do membro no `SetCodeMode` e o atalho Shift+Tab.
+- **Feito**: teste `a_member_can_neither_change_the_mode_nor_stop_a_task_that_is_not_theirs` (`tests/code_mode.rs`): Ana, já com a senha própria, manda `SetCodeMode` e `CancelTurn` para a conversa do dono; o modo fica e a tarefa segue; o dono ainda consegue parar (prova que o silêncio é a guarda). **Mutação**: trocar `member.is_none()` por `true` no `SetCodeMode` derrubou o teste (desfeita). Shift+Tab na caixa de mensagem, na web e no desktop (`nextCodeMode`): Manual → Aceitar edições → Plano → Manual; só aparece em conversa de projeto de código. **"Aceitar tudo" fica fora do ciclo de propósito** (só por escolha no seletor).
+- **Verificado**: `cargo test -p warden-server --test code_mode` (5 passam, 1 ignorado) e `tsc` da web e do desktop limpos. **Não verificado**: o atalho numa tela. **No desktop** a caixa fica desabilitada enquanto a tarefa roda (`isSending`), então ali o atalho não funciona no meio da tarefa (o seletor continua funcionando).
+
+---
+
 ### 2026-10-03 — Sessão 130
 
 - **Objetivo**: o seletor de modo da conversa de código, como no Claude Code e no opencode, trocável **no meio da tarefa** (pedido do usuário). Em Plan mode. Decisões do usuário: quatro modos (Manual, Aceitar edições, Aceitar tudo, Plano); ao reabrir a conversa volta a Manual; Plano imposto pelo Warden.

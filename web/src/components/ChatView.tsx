@@ -21,6 +21,8 @@ interface Props {
   onTranscribe: (audio: Attachment) => Promise<string>;
   /** Lets a spending limit the turn stopped on go one step further (P4/P78). */
   onExtendLimit: (limitId: string) => Promise<void>;
+  /** Shift+Tab in the box, as in Claude Code: the next mode of a code conversation. Absent when there is no mode to change. */
+  onCycleMode?: () => void;
 }
 
 /** Under an error from a spending limit: allow more, then say to send again — never resends by itself. */
@@ -121,7 +123,7 @@ function LiveBubble({ live, onCancel }: { live: LiveTurn; onCancel: () => void }
   );
 }
 
-export default function ChatView({ entries, pending, live, onCancel, disabled, onSend, onTranscribe, onExtendLimit }: Props) {
+export default function ChatView({ entries, pending, live, onCancel, disabled, onSend, onTranscribe, onExtendLimit, onCycleMode }: Props) {
   const [draft, setDraft] = useState("");
   const [attached, setAttached] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -320,6 +322,9 @@ export default function ChatView({ entries, pending, live, onCancel, disabled, o
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit();
+              } else if (e.key === "Tab" && e.shiftKey && onCycleMode) {
+                e.preventDefault();
+                onCycleMode();
               }
             }}
             placeholder={voice.kind === "recording" ? "Gravando… toque em ■ para parar" : "Mensagem (Shift+Enter quebra a linha)"}

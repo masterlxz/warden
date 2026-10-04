@@ -256,6 +256,67 @@ async fn a_hub_without_an_engine_says_so_and_a_shell_only_project_keeps_the_ordi
     assert!(engine.asked.lock().unwrap().is_empty());
 }
 
+struct MemberHost {
+    path: std::path::PathBuf,
+}
+
+#[async_trait]
+impl warden_server::SettingsHost for MemberHost {
+    fn config_path(&self) -> std::path::PathBuf {
+        self.path.clone()
+    }
+
+    async fn build(&self) -> anyhow::Result<Orchestrator> {
+        anyhow::bail!("not used by this test")
+    }
+}
+
+#[tokio::test]
+async fn a_member_can_neither_change_the_mode_nor_stop_a_task_that_is_not_theirs() {
+    std::env::set_var(warden_core::memory::embed::OFF_SWITCH, "1");
+    let dir = std::env::temp_dir().join(format!("warden-server-code-member-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.toml");
+    let mut config = warden_bootstrap::FileConfig::default();
+    warden_bootstrap::users::add_user(&mut config, "ana", "Ana", "provisional-1").unwrap();
+    warden_bootstrap::save_config(&config_path, &config).unwrap();
+
+    let engine = engine();
+    let orchestrator = Orchestrator::new(Arc::new(Plain), Arc::new(Vault::new(dir.join("vault"))));
+    let server = Server::bind("127.0.0.1:0".parse().unwrap(), KEY, "Test Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
+        .await
+        .unwrap()
+        .with_users_dir(dir.join("users"))
+        .with_settings(Arc::new(MemberHost { path: config_path }))
+        .with_code_engine(engine.clone());
+    let addr = server.local_addr().unwrap();
+    tokio::spawn(server.serve());
+    let hub = Hub { url: format!("ws://{addr}") };
+
+    let mut me = owner(&hub).await;
+    save_project(&mut me, "repo", Some("/home/me/repo"), true).await;
+    say(&mut me, "HANG", Some("repo")).await;
+    assert!(matches!(next(&mut me).await, ServerMessage::ChatEvent { .. }), "the task is running");
+    let mode = engine.modes.lock().unwrap()[0].clone();
+    assert_eq!(*mode.borrow(), CodeMode::Manual);
+
+    // Ana, past her provisional password, names the owner's conversation: she may not loosen it nor stop it.
+    let (mut ana, _, _) = ServerConnection::handshake_as_member(&hub.url, "ana-phone", "Ana's phone", "ana", "provisional-1", None, warden_server_protocol::tls::default_client_config()).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 1, old_password: "provisional-1".into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(next(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+    ana.send(&ClientMessage::SetCodeMode { conversation_id: "c1".into(), mode: "acceptAll".into() }).await.unwrap();
+    ana.send(&ClientMessage::CancelTurn { conversation_id: "c1".into() }).await.unwrap();
+    ana.send(&ClientMessage::Ping { nonce: 1 }).await.unwrap();
+    assert!(matches!(ana.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 1 })), "messages are handled in order");
+    assert_eq!(*mode.borrow(), CodeMode::Manual, "the mode stayed");
+    assert!(engine.aborted.lock().unwrap().is_empty(), "the task kept running");
+
+    // The owner still can, so the silence above was the guard and not a broken path.
+    me.send(&ClientMessage::CancelTurn { conversation_id: "c1".into() }).await.unwrap();
+    assert!(matches!(next(&mut me).await, ServerMessage::ChatResponse { .. }));
+    assert_eq!(engine.aborted.lock().unwrap().len(), 1);
+}
+
 /// The whole chain with the opencode itself (`cargo test -p warden-server --test code_mode real_ -- --ignored`): a real
 /// hub, the opencode started in a real folder with the hub's model as its provider, and a scripted model behind the hub
 /// (so it costs nothing). A plain question comes back as the answer; a command goes through the person's approval and

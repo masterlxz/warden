@@ -9,9 +9,11 @@ interface MessageInputProps {
   /** Bumped by the parent whenever the active conversation changes, so the composer refocuses. */
   focusKey?: string | null;
   disabled?: boolean;
+  /** Shift+Tab in the box, as in Claude Code: the next mode of a code conversation. Absent when there is no mode to change. */
+  onCycleMode?: () => void;
 }
 
-function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
+function MessageInput({ onSend, focusKey, disabled, onCycleMode }: MessageInputProps) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -135,6 +137,9 @@ function MessageInput({ onSend, focusKey, disabled }: MessageInputProps) {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               submit();
+            } else if (e.key === "Tab" && e.shiftKey && onCycleMode) {
+              e.preventDefault();
+              onCycleMode();
             }
           }}
           disabled={disabled || isTranscribing}

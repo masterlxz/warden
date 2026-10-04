@@ -30,6 +30,13 @@ export interface ToolSpec {
  * freely / nothing / no change at all, only a plan. */
 export type CodeMode = "manual" | "acceptEdits" | "acceptAll" | "plan";
 
+/** What Shift+Tab goes to next: Manual → Accept edits → Plan → Manual. "Accept all" is only ever picked on purpose. */
+export function nextCodeMode(mode: CodeMode): CodeMode {
+  if (mode === "manual") return "acceptEdits";
+  if (mode === "acceptEdits") return "plan";
+  return "manual";
+}
+
 /** Mirrors `ChatEventDto` (P103 b): what a code engine does while a code project's task runs. The task's end is still
  * `chatResponse`/`chatError`. */
 export type ChatEventDto =

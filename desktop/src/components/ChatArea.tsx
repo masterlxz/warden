@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { nextCodeMode } from "../types";
 import type { AgentEntry, Attachment, CodeMode, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import type { LiveTurn } from "../lib/liveTurn";
 import { LogoMark } from "./Icons";
@@ -279,6 +280,7 @@ function ChatArea({
         onSend={onSendMessage}
         focusKey={activeConversation?.id ?? null}
         disabled={isSending || needsAgentPick}
+        onCycleMode={projects.some((p) => p.id === selectedProjectId && p.code) ? () => onCodeMode(nextCodeMode(codeMode)) : undefined}
       />
     </div>
   );
