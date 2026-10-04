@@ -1,5 +1,5 @@
 import type { Conversation, ProjectEntry } from "../types";
-import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -15,8 +15,9 @@ interface SidebarProps {
   onOpenSkills: () => void;
   onOpenProjects: () => void;
   onOpenTasks: () => void;
+  onOpenWebhooks: () => void;
   onOpenWorkspace: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace";
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace";
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
@@ -34,6 +35,7 @@ function Sidebar({
   onOpenSkills,
   onOpenProjects,
   onOpenTasks,
+  onOpenWebhooks,
   onOpenWorkspace,
   view,
   collapsed,
@@ -160,6 +162,15 @@ function Sidebar({
         >
           <ClockIcon size={17} />
           {!collapsed && "Tasks"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "webhooks" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenWebhooks}
+          title="Webhooks"
+        >
+          <WebhookIcon size={17} />
+          {!collapsed && "Webhooks"}
         </button>
         <button
           type="button"

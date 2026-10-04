@@ -11,6 +11,7 @@ import ProjectsView from "./components/ProjectsView";
 import ApprovalModal from "./components/ApprovalModal";
 import SyncView from "./components/SyncView";
 import TasksView from "./components/TasksView";
+import WebhooksView from "./components/WebhooksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
 import { applyEvent, type ChatEventDto, type LiveTurn } from "./lib/liveTurn";
@@ -82,7 +83,7 @@ function App() {
   // How much each code conversation asks (P103 b), by conversation id — "new" for one that hasn't started. Only here,
   // never saved: a conversation opened again asks everything.
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -360,6 +361,7 @@ function App() {
         onOpenSkills={() => setView("skills")}
         onOpenProjects={() => setView("projects")}
         onOpenTasks={() => setView("tasks")}
+        onOpenWebhooks={() => setView("webhooks")}
         onOpenWorkspace={() => setView("workspace")}
         view={view}
         collapsed={sidebarCollapsed}
@@ -379,6 +381,8 @@ function App() {
         <ProjectsView onChanged={loadProjects} />
       ) : view === "tasks" ? (
         <TasksView agents={settings.agents} />
+      ) : view === "webhooks" ? (
+        <WebhooksView agents={settings.agents} />
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : (

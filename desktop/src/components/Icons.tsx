@@ -107,6 +107,20 @@ export function ClockIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+/** A hook: something outside calls in. */
+export function WebhookIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M9 7a3.5 3.5 0 1 1 5.6 2.8" />
+      <path d="M12.4 10.5 8 18" />
+      <circle cx="7" cy="19" r="2" />
+      <path d="M13.5 17.5h6" />
+      <circle cx="19" cy="17.5" r="2" />
+      <path d="M7 14.2a3.5 3.5 0 0 1 5-1.5" />
+    </svg>
+  );
+}
+
 export function DevicesIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">

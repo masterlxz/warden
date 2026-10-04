@@ -22,7 +22,7 @@ fn webhook_error(request_id: u64, message: String, auth_rejected: bool) -> Serve
 }
 
 /// The config's webhooks with what the hub knows about each one's credential.
-pub(crate) fn infos(config: &FileConfig, store: &WebhookTokenStore) -> anyhow::Result<Vec<WebhookInfoDto>> {
+pub fn infos(config: &FileConfig, store: &WebhookTokenStore) -> anyhow::Result<Vec<WebhookInfoDto>> {
     let credentials = store.list()?;
     Ok(config
         .webhooks
@@ -73,7 +73,7 @@ pub(crate) fn handle_list_webhooks(webhooks: Option<&WebhookContext>, settings: 
 }
 
 /// What `SaveWebhook`/`SetWebhookEnabled`/`DeleteWebhook`/`CreateWebhookCredential`/`RevokeWebhookCredential` asks for.
-pub(crate) enum WebhookChange {
+pub enum WebhookChange {
     Save { original_id: Option<String>, webhook: WebhookDto },
     SetEnabled { id: String, enabled: bool },
     Delete { id: String },
@@ -90,10 +90,55 @@ pub(crate) struct WebhookAccess<'a> {
 }
 
 /// A credential just made: the webhook, the credential itself and what kind it is.
-struct Created {
-    id: String,
-    credential: String,
-    kind: WebhookAuth,
+pub struct Created {
+    pub id: String,
+    pub credential: String,
+    pub kind: WebhookAuth,
+}
+
+/// Applies `change` to the config at `config_path` and to the credentials in `tokens`, with no key asked and no lock held:
+/// the hub's handler does both first, and the desktop (the owner's own machine) needs neither. `Some` for a credential
+/// just made, which is the only time it exists.
+///
+/// The credential follows the name when a webhook is renamed, a webhook that now wants the other kind of credential loses
+/// the one it had (it would prove nothing), and a removed webhook leaves none behind.
+pub fn apply_webhook_change(config_path: &std::path::Path, tokens: &WebhookTokenStore, change: WebhookChange) -> anyhow::Result<Option<Created>> {
+    let mut config = load_config_from_path(config_path, false)?;
+    match change {
+        WebhookChange::Save { original_id, webhook } => {
+            let hook = config_of(webhook)?;
+            let new_id = hook.id.trim().to_string();
+            let before = original_id.as_deref().and_then(|original| config.webhooks.iter().find(|h| h.id == original)).cloned();
+            let new_auth = hook.auth;
+            save_webhook(&mut config, original_id.as_deref(), hook)?;
+            save_config(config_path, &config)?;
+            if let Some(original) = original_id.as_deref().filter(|original| *original != new_id) {
+                tokens.rename(original, &new_id)?;
+            }
+            if before.is_some_and(|before| before.auth != new_auth) {
+                tokens.revoke(&new_id)?;
+            }
+        }
+        WebhookChange::SetEnabled { id, enabled } => {
+            set_webhook_enabled(&mut config, &id, enabled)?;
+            save_config(config_path, &config)?;
+        }
+        WebhookChange::Delete { id } => {
+            remove_webhook(&mut config, &id)?;
+            save_config(config_path, &config)?;
+            tokens.revoke(&id)?;
+        }
+        WebhookChange::CreateCredential { id } => {
+            let auth = config.webhooks.iter().find(|h| h.id == id).map(|h| h.auth).ok_or_else(|| anyhow::anyhow!("no webhook named '{id}'"))?;
+            let created = tokens.create_credential(&id, auth)?;
+            return Ok(Some(Created { id, credential: created.token, kind: auth }));
+        }
+        WebhookChange::RevokeCredential { id } => {
+            anyhow::ensure!(config.webhooks.iter().any(|h| h.id == id), "no webhook named '{id}'");
+            anyhow::ensure!(tokens.revoke(&id)?, "webhook '{id}' has no credential");
+        }
+    }
+    Ok(None)
 }
 
 /// Answers a webhook change with the updated `WebhookList`, or `WebhookCreated` for a new credential.
@@ -109,45 +154,7 @@ pub(crate) async fn handle_webhook_change(access: &WebhookAccess<'_>, request_id
     }
     let config_path = settings.config_path();
     let tokens = store_of(ctx);
-    let result = (|| -> anyhow::Result<Option<Created>> {
-        let mut config = load_config_from_path(&config_path, false)?;
-        match change {
-            WebhookChange::Save { original_id, webhook } => {
-                let hook = config_of(webhook)?;
-                let new_id = hook.id.trim().to_string();
-                let before = original_id.as_deref().and_then(|original| config.webhooks.iter().find(|h| h.id == original)).cloned();
-                let new_auth = hook.auth;
-                save_webhook(&mut config, original_id.as_deref(), hook)?;
-                save_config(&config_path, &config)?;
-                // The credential follows the name, and a webhook that now wants the other kind has the wrong one: it goes.
-                if let Some(original) = original_id.as_deref().filter(|original| *original != new_id) {
-                    tokens.rename(original, &new_id)?;
-                }
-                if before.is_some_and(|before| before.auth != new_auth) {
-                    tokens.revoke(&new_id)?;
-                }
-            }
-            WebhookChange::SetEnabled { id, enabled } => {
-                set_webhook_enabled(&mut config, &id, enabled)?;
-                save_config(&config_path, &config)?;
-            }
-            WebhookChange::Delete { id } => {
-                remove_webhook(&mut config, &id)?;
-                save_config(&config_path, &config)?;
-                tokens.revoke(&id)?;
-            }
-            WebhookChange::CreateCredential { id } => {
-                let auth = config.webhooks.iter().find(|h| h.id == id).map(|h| h.auth).ok_or_else(|| anyhow::anyhow!("no webhook named '{id}'"))?;
-                let created = tokens.create_credential(&id, auth)?;
-                return Ok(Some(Created { id, credential: created.token, kind: auth }));
-            }
-            WebhookChange::RevokeCredential { id } => {
-                anyhow::ensure!(config.webhooks.iter().any(|h| h.id == id), "no webhook named '{id}'");
-                anyhow::ensure!(tokens.revoke(&id)?, "webhook '{id}' has no credential");
-            }
-        }
-        Ok(None)
-    })();
+    let result = apply_webhook_change(&config_path, &tokens, change);
     let reply = result.and_then(|created| {
         let config = load_config_from_path(&config_path, false)?;
         let webhooks = infos(&config, &tokens)?;
@@ -158,4 +165,71 @@ pub(crate) async fn handle_webhook_change(access: &WebhookAccess<'_>, request_id
         })
     });
     reply.unwrap_or_else(|err| webhook_error(request_id, format!("{err:#}"), false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use warden_bootstrap::FileConfig;
+
+    fn setup(name: &str) -> (std::path::PathBuf, WebhookTokenStore) {
+        let dir = std::env::temp_dir().join(format!("warden-webhook-admin-{name}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.toml");
+        save_config(&config, &FileConfig::default()).unwrap();
+        (config, WebhookTokenStore::new(dir.join("webhook_tokens.json")))
+    }
+
+    fn dto(id: &str, auth: &str) -> WebhookDto {
+        WebhookDto { id: id.into(), agent_id: None, prompt: "p".into(), enabled: true, auth: auth.into() }
+    }
+
+    /// What the desktop calls, with no hub, no key and no lock: the same rules as the hub's handler.
+    #[test]
+    fn a_change_applied_directly_keeps_the_rules_the_hub_keeps() {
+        let (config, tokens) = setup("direct");
+        let apply = |change| apply_webhook_change(&config, &tokens, change);
+        assert!(apply(WebhookChange::Save { original_id: None, webhook: dto(" build ", "token") }).unwrap().is_none());
+        let token = apply(WebhookChange::CreateCredential { id: "build".into() }).unwrap().expect("a credential is made");
+        assert_eq!((token.id.as_str(), token.kind), ("build", WebhookAuth::Token));
+        assert!(token.credential.starts_with("whk_") && tokens.authenticate("build", &token.credential).unwrap());
+
+        // A rename takes the credential along; editing without touching the mode keeps it.
+        apply(WebhookChange::Save { original_id: Some("build".into()), webhook: dto("ci", "token") }).unwrap();
+        assert!(tokens.authenticate("ci", &token.credential).unwrap() && !tokens.authenticate("build", &token.credential).unwrap());
+        // A change of mode drops it: it would prove nothing for the new kind.
+        apply(WebhookChange::Save { original_id: Some("ci".into()), webhook: dto("ci", "hmac") }).unwrap();
+        assert_eq!(tokens.kind_of("ci").unwrap(), None);
+        let secret = apply(WebhookChange::CreateCredential { id: "ci".into() }).unwrap().unwrap();
+        assert!(secret.credential.starts_with("whsec_") && secret.kind == WebhookAuth::Hmac);
+        assert_eq!(tokens.secret_of("ci").unwrap().as_deref(), Some(secret.credential.as_str()));
+
+        // Pause, revoke (a second one says there is none), and delete leaves no credential behind.
+        apply(WebhookChange::SetEnabled { id: "ci".into(), enabled: false }).unwrap();
+        assert!(!load_config_from_path(&config, false).unwrap().webhooks[0].enabled);
+        apply(WebhookChange::RevokeCredential { id: "ci".into() }).unwrap();
+        assert!(apply(WebhookChange::RevokeCredential { id: "ci".into() }).is_err());
+        apply(WebhookChange::CreateCredential { id: "ci".into() }).unwrap();
+        apply(WebhookChange::Delete { id: "ci".into() }).unwrap();
+        assert_eq!((load_config_from_path(&config, false).unwrap().webhooks.len(), tokens.kind_of("ci").unwrap()), (0, None));
+
+        // Refusals change nothing.
+        assert!(apply(WebhookChange::Save { original_id: None, webhook: dto("bad id", "token") }).is_err());
+        assert!(apply(WebhookChange::Save { original_id: None, webhook: dto("ok", "basic") }).is_err());
+        assert!(apply(WebhookChange::CreateCredential { id: "ghost".into() }).is_err());
+        assert!(load_config_from_path(&config, false).unwrap().webhooks.is_empty());
+    }
+
+    #[test]
+    fn the_list_says_what_each_webhook_wants_and_what_it_has() {
+        let (config_path, tokens) = setup("infos");
+        apply_webhook_change(&config_path, &tokens, WebhookChange::Save { original_id: None, webhook: dto("a", "hmac") }).unwrap();
+        apply_webhook_change(&config_path, &tokens, WebhookChange::Save { original_id: None, webhook: dto("b", "token") }).unwrap();
+        // `a` wants a signature but holds a token (a mismatch the screen has to show); `b` has nothing.
+        tokens.create("a").unwrap();
+        let listed = infos(&load_config_from_path(&config_path, false).unwrap(), &tokens).unwrap();
+        assert_eq!((listed[0].auth.as_str(), listed[0].credential.as_deref(), listed[0].conversation.as_str()), ("hmac", Some("token"), "task-hook-a"));
+        assert_eq!((listed[1].auth.as_str(), listed[1].credential.as_deref(), listed[1].shown.clone()), ("token", None, None));
+        assert!(listed[0].shown.as_deref().is_some_and(|s| s.starts_with("whk_")) && listed[0].created_at_ms.is_some());
+    }
 }

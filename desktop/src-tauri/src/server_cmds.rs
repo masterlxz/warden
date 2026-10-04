@@ -202,6 +202,21 @@ impl EmbeddedServerStatusPayload {
     }
 }
 
+impl EmbeddedServerHandle {
+    /// Where a caller from another machine would reach this hub, as `http(s)://host:port` — the address a webhook is
+    /// called at (P105). `None` for TLS with no known host name, where no address can be built.
+    pub(crate) fn base_url(&self) -> Option<String> {
+        if self.tls_without_host {
+            return None;
+        }
+        Some(match &self.secure_url {
+            Some(url) => url.replacen("wss://", "https://", 1),
+            None if self.bound_addr.ip().is_unspecified() => format!("http://localhost:{}", self.bound_addr.port()),
+            None => format!("http://{}", self.bound_addr),
+        })
+    }
+}
+
 fn web_ui_built() -> bool {
     use warden_server::WebAssets;
     warden_server::EmbeddedWebUi.get("index.html").is_some()
@@ -361,6 +376,11 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
         let run = crate::task_cmds::run_tasks_here();
         server = server.with_tasks(warden_bootstrap::tasks::TaskStore::new(dir), run);
     }
+    // P105 — `POST /hooks/<id>` with a webhook's credential, on the same port. The credentials live outside the synced
+    // config (they belong to the machine that is called), and the conversations go next to the tasks' ones above.
+    if let Some(path) = warden_bootstrap::default_webhook_tokens_path() {
+        server = server.with_webhooks(path);
+    }
     let task_runner = server.task_runner();
     let node_registry = server.node_registry();
     let bound_addr = server.local_addr()?;
@@ -452,7 +472,54 @@ mod tests {
         assert_eq!(hubs[0].secure_url, None);
         assert_eq!(handle.secure_url, None);
 
+        // P105 — the same port takes webhook calls. An id nobody made, with no credential, gets the hub's own 401: a hub
+        // without `with_webhooks` would send the web page's 404 instead, and the Webhooks screen would manage something
+        // nothing answers. Only reads the credentials file (an id that can't be in it), writes nothing.
+        {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            stream.write_all(b"POST /hooks/zz-embedded-hub-test HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx").await.unwrap();
+            let mut answer = String::new();
+            tokio::time::timeout(std::time::Duration::from_secs(10), stream.read_to_string(&mut answer)).await.expect("no answer within 10 s").unwrap();
+            assert!(answer.starts_with("HTTP/1.1 401"), "{answer}");
+            assert!(answer.contains("invalid_token"), "{answer}");
+        }
+
         handle.stop();
+    }
+
+    #[test]
+    fn base_url_is_where_a_webhook_is_called() {
+        // The address a caller from another machine would use — loopback standing in for an unspecified bind.
+        let handle = |secure: Option<&str>, bound: &str, without_host: bool| EmbeddedServerHandle {
+            shutdown_tx: tokio::sync::oneshot::channel().0,
+            bound_addr: bound.parse().unwrap(),
+            server_name: "Test".into(),
+            secure_url: secure.map(str::to_string),
+            tls_without_host: without_host,
+            web_ui: true,
+            cert_renewal: None,
+            orchestrator: warden_server::SharedOrchestrator::new(warden_core::orchestrator::Orchestrator::new(
+                std::sync::Arc::new(NoModel),
+                std::sync::Arc::new(warden_core::memory::Vault::new(std::env::temp_dir().join("warden-base-url-test"))),
+            )),
+            task_runner: None,
+            node_registry: warden_server::nodes::NodeRegistry::default(),
+        };
+        assert_eq!(handle(None, "0.0.0.0:7420", false).base_url().as_deref(), Some("http://localhost:7420"));
+        assert_eq!(handle(None, "127.0.0.1:7420", false).base_url().as_deref(), Some("http://127.0.0.1:7420"));
+        assert_eq!(handle(Some("wss://hub.ts.net:7420"), "0.0.0.0:7420", false).base_url().as_deref(), Some("https://hub.ts.net:7420"));
+        assert_eq!(handle(None, "0.0.0.0:7420", true).base_url(), None, "TLS with no known host: no address to give");
+    }
+
+    /// A model that is never asked.
+    struct NoModel;
+
+    #[async_trait::async_trait]
+    impl warden_core::model::ModelProvider for NoModel {
+        async fn chat_stream(&self, _messages: Vec<warden_core::model::Message>, _tools: Vec<warden_core::tool::ToolSpec>) -> anyhow::Result<warden_core::model::ChatStream> {
+            anyhow::bail!("not asked in this test")
+        }
     }
 
     // Locks in the exact camelCase JSON shape `desktop/src/types.ts` expects.

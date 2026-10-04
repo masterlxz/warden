@@ -16,6 +16,7 @@ mod spend_cmds;
 mod ssh_cmds;
 mod sync_cmds;
 mod task_cmds;
+mod webhook_cmds;
 mod vault_cmds;
 mod workspace_cmds;
 
@@ -1044,6 +1045,13 @@ pub fn run() {
             task_cmds::run_task_now,
             task_cmds::task_history,
             task_cmds::set_run_tasks_here,
+            webhook_cmds::list_webhooks,
+            webhook_cmds::save_webhook,
+            webhook_cmds::set_webhook_enabled_cmd,
+            webhook_cmds::delete_webhook,
+            webhook_cmds::create_webhook_credential,
+            webhook_cmds::revoke_webhook_credential,
+            webhook_cmds::webhook_history,
             workspace_cmds::list_paired_devices,
             workspace_cmds::approve_paired_device,
             workspace_cmds::revoke_paired_device,

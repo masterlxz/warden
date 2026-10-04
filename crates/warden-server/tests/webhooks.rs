@@ -769,10 +769,12 @@ async fn a_repeated_delivery_runs_once_and_a_forged_one_cannot_use_up_an_id() {
 /// Waits until the webhook takes a call again (the running mark is dropped just after the conversation is saved), using a
 /// delivery id nobody else uses so the call itself is never a duplicate. It leaves that call's run to finish.
 async fn wait_until_free(hub: &Hub, secret: &str) {
+    static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let before = hub.conversation("task-hook-gh").map_or(0, |c| c.messages.len());
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let probe = format!("probe-{}", now_secs() * 1000 + Instant::now().elapsed().as_nanos() as i64);
+        // A counter, so no two probes ever share an id: the same id twice would be a repeat, answered without running.
+        let probe = format!("probe-{}", PROBES.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
         let (status, _) = post_with(hub, "gh", &[github_signature(secret, "p"), ("X-GitHub-Delivery", probe)], "p").await;
         if status == 202 {
             hub.conversation_with("task-hook-gh", before + 2).await;
