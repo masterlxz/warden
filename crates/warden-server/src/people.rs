@@ -391,6 +391,7 @@ mod tests {
             agent_id: None,
             provider_id: None,
             project_id: None,
+            engine_session_id: None,
         }
     }
 

@@ -133,7 +133,7 @@ async fn spin_up() -> Hub {
 
     // A scheduled task's conversation: the owner's, never listed to a member.
     let tasks = TaskStore::new(dir.join("tasks"));
-    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None }).unwrap();
+    save_conversation(&tasks.conversations_dir(), &Conversation { id: "task-news".into(), title: "News".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }).unwrap();
 
     let offered: Offered = Arc::default();
     let vault = Arc::new(Vault::new(dir.join("vault")));
@@ -696,7 +696,7 @@ async fn a_member_from_before_gets_her_data_encrypted_when_she_signs_in() {
     save_config(&config_path, &config).unwrap();
     std::fs::create_dir_all(hub.dir.join("users/ana/vault/notes")).unwrap();
     std::fs::write(hub.dir.join("users/ana/vault/notes/velha.md"), "nota antiga da ana").unwrap();
-    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None }).unwrap();
+    save_conversation(&hub.dir.join("conversations/users/ana"), &Conversation { id: "velha".into(), title: "Conversa antiga".into(), messages: Vec::new(), created_at: 1, updated_at: 1, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }).unwrap();
 
     let (mut ana, _, user) = member(&hub, "anas-own-pass", None).await.unwrap();
     assert!(user.unwrap().encrypted, "the sign-in turned it on");
@@ -1710,7 +1710,7 @@ async fn a_bot_chat_that_speaks_as_a_member_is_answered_by_the_hub_with_her_data
 }
 
 fn project(id: &str, name: &str) -> warden_server_protocol::protocol::ProjectDto {
-    warden_server_protocol::protocol::ProjectDto { id: id.into(), name: name.into(), description: String::new(), instructions: format!("Instructions of {name}."), workdir: None }
+    warden_server_protocol::protocol::ProjectDto { id: id.into(), name: name.into(), description: String::new(), instructions: format!("Instructions of {name}."), workdir: None, code: false }
 }
 
 async fn save_project(conn: &mut ServerConnection, id: &str, name: &str) -> ServerMessage {
@@ -1886,4 +1886,27 @@ async fn a_conversation_moves_between_projects_and_the_next_turn_runs_in_the_new
     assert!(matches!(move_to(&mut ana, "a1", Some("tax")).await, ServerMessage::ConversationError { message, .. } if message.contains("no project")), "the owner's project isn't hers");
     assert!(matches!(move_to(&mut ana, "a1", Some("mine")).await, ServerMessage::ConversationOk { .. }));
     assert_eq!(project_of(&mut ana, "a1").await.as_deref(), Some("mine"));
+}
+
+/// P103 b: a code project's folder is a path on the owner's machine, so a member who marks one of their own projects as
+/// code (or gives it a working folder) still talks to the Warden's ordinary turn — never to the engine, and never with a
+/// shell, which they don't have. Without the guard this hub, which has no engine, would answer with "no code engine".
+#[tokio::test]
+async fn a_member_never_gets_the_code_engine_or_a_shell_from_a_working_folder_they_name() {
+    let hub = spin_up().await;
+    let (mut ana, _, _) = member(&hub, TEMP, None).await.unwrap();
+    ana.send(&ClientMessage::ChangePassword { request_id: 2, old_password: TEMP.into(), new_password: "anas-own-pass".into(), recovery_code: None }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::PasswordChanged { .. }));
+
+    let mut code = project("repo", "Repo");
+    code.workdir = Some("/etc".into());
+    code.code = true;
+    ana.send(&ClientMessage::SaveProject { request_id: 20, project: code, overwrite: false }).await.unwrap();
+    assert!(matches!(reply(&mut ana).await, ServerMessage::ProjectOk { .. }));
+
+    match chat_in(&mut ana, "hello", "a1", Some("repo")).await {
+        ServerMessage::ChatResponse { content, .. } => assert_eq!(content, "plain"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!last_offered(&hub).contains(&"shell".to_string()), "no shell in a project, and she has none of her own");
 }

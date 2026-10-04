@@ -3,12 +3,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AttachmentError, checkLimits, composeMessage, mediaOf, prepareFile, type PendingAttachment } from "../hub/attachments";
 import type { ChatEntry } from "../hub/connection";
+import type { LiveTurn } from "../hub/liveTurn";
 import type { Attachment } from "../hub/messages";
 import { canRecord, VoiceRecorder } from "../hub/recorder";
 
 interface Props {
   entries: ChatEntry[];
   pending: boolean;
+  /** What a code engine has done so far in this conversation's running task (P103 b), shown instead of the dots. */
+  live?: LiveTurn;
+  /** Stops that task. */
+  onCancel: () => void;
   /** The connection is down — typing is fine, sending isn't. */
   disabled: boolean;
   onSend: (message: string, attachments: Attachment[]) => void;
@@ -85,7 +90,38 @@ function PendingChip({ item, onRemove }: { item: PendingAttachment; onRemove: ()
   );
 }
 
-export default function ChatView({ entries, pending, disabled, onSend, onTranscribe, onExtendLimit }: Props) {
+const TOOL_MARK = { running: "…", completed: "✓", failed: "✗" } as const;
+
+/** The task a code engine is running: its words and its tools in the order they happened, and the way to stop it. */
+function LiveBubble({ live, onCancel }: { live: LiveTurn; onCancel: () => void }) {
+  return (
+    <li className="bubble bubble--assistant bubble--live" aria-label="Em andamento" aria-live="polite">
+      {live.items.map((item, i) =>
+        item.kind === "text" ? (
+          <div key={i} className="bubble-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ExternalLink }}>
+              {item.text}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <p key={i} className={`live-tool live-tool--${item.status}`}>
+            <span className="live-tool-mark" aria-hidden="true">
+              {TOOL_MARK[item.status]}
+            </span>
+            <span className="live-tool-name">{item.tool}</span>
+            <span className="live-tool-title">{item.title}</span>
+          </p>
+        ),
+      )}
+      {live.notice && <p className="live-notice">{live.notice}</p>}
+      <button type="button" className="live-stop" onClick={onCancel}>
+        Parar
+      </button>
+    </li>
+  );
+}
+
+export default function ChatView({ entries, pending, live, onCancel, disabled, onSend, onTranscribe, onExtendLimit }: Props) {
   const [draft, setDraft] = useState("");
   const [attached, setAttached] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -99,7 +135,7 @@ export default function ChatView({ entries, pending, disabled, onSend, onTranscr
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [entries, pending]);
+  }, [entries, pending, live]);
 
   // A recording still going when the chat goes away would keep the microphone on.
   const recordingRef = useRef<VoiceRecorder | null>(null);
@@ -212,7 +248,8 @@ export default function ChatView({ entries, pending, disabled, onSend, onTranscr
                 {entry.spendLimitId && <ExtendLimitAction limitId={entry.spendLimitId} onExtend={onExtendLimit} />}
               </li>
             ))}
-            {pending && (
+            {pending && live && <LiveBubble live={live} onCancel={onCancel} />}
+            {pending && !live && (
               <li className="bubble bubble--assistant bubble--pending" aria-label="Pensando">
                 <span className="dot" />
                 <span className="dot" />

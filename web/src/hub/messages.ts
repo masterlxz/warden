@@ -26,6 +26,14 @@ export interface ToolSpec {
   parameters: unknown;
 }
 
+/** Mirrors `ChatEventDto` (P103 b): what a code engine does while a code project's task runs. The task's end is still
+ * `chatResponse`/`chatError`. */
+export type ChatEventDto =
+  | { type: "text"; text: string }
+  /** `callId` is the same for each stage of one call, so a client updates one line instead of adding one. */
+  | { type: "tool"; callId: string; tool: string; title: string; status: "running" | "completed" | "failed" }
+  | { type: "notice"; text: string };
+
 /** Mirrors `warden_server_protocol::protocol::ProjectDto` (P103). `id` is the folder name and never changes; the files of
  * a project are notes of the vault under `projects/<id>/`. */
 export interface ProjectDto {
@@ -35,6 +43,8 @@ export interface ProjectDto {
   instructions: string;
   /** A code project's working folder on the hub's machine (P103 b): gives its conversations a shell that asks first. */
   workdir?: string;
+  /** Its conversations are driven by a code engine (the opencode) in `workdir`. Needs one. */
+  code?: boolean;
 }
 
 /** Mirrors `warden_server_protocol::protocol::SkillDto` (P72). `agents` is the agent restriction
@@ -600,6 +610,8 @@ export type ClientMessage =
   /** Projects (P103) — of the person's own vault; `requestId` is echoed on the matching reply. */
   /** P103 — moves a conversation into a project, or out of any with no `projectId`; answered by `conversationOk`/`conversationError`. */
   | { type: "moveConversation"; requestId: number; conversationId: string; projectId?: string }
+  /** P103 b — stops the task a code project's conversation is running; the work so far is kept. */
+  | { type: "cancelTurn"; conversationId: string }
   | { type: "listProjects"; requestId: number }
   | { type: "saveProject"; requestId: number; project: ProjectDto; overwrite: boolean }
   | { type: "deleteProject"; requestId: number; id: string }
@@ -704,6 +716,8 @@ export type ServerMessage =
   | { type: "chatResponse"; content: string; usage: Usage | null; attachments: Attachment[]; conversationId?: string; fallbacks: ProviderFallback[] }
   /** `spendLimitId` (P4/P78): the turn stopped on that spending limit — offer `extendLimit`. */
   | { type: "chatError"; message: string; conversationId?: string; spendLimitId?: string }
+  /** P103 b — what the engine does in the middle of a code project's turn, any number of times before `chatResponse`. */
+  | { type: "chatEvent"; conversationId: string; event: ChatEventDto }
   | { type: "toolCallRequest"; callId: number; tool: string; arguments: unknown }
   | { type: "skillList"; requestId: number; skills: SkillDto[] }
   | { type: "skillOk"; requestId: number }

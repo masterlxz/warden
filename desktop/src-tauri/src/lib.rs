@@ -227,6 +227,11 @@ async fn send_message(
 
     // After the agent and the model: the project narrows what the turn can reach, whoever is speaking.
     if let Some(id) = project_id.as_deref() {
+        // P103 b: a code project's conversations are tasks for the opencode, which only the hub runs. Saying so beats
+        // running the ordinary turn with a shell, which is not what the person asked the project for.
+        if warden_core::project::ProjectStore::new(orchestrator.vault().clone()).get(id).is_ok_and(|p| p.code) {
+            return Err("This is a code project: its conversations run on the opencode through the hub, which this window's own chat doesn't use yet. Open it from the web UI (turn on the embedded hub in Settings).".to_string());
+        }
         if let Some(scoped) = warden_bootstrap::scope_to_project(&orchestrator, id).map_err(|e| format!("{e:#}"))? {
             orchestrator = scoped;
         }
@@ -767,7 +772,7 @@ async fn append_conversation_messages(
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     let answered = ends_with_an_answer(&messages);
     // `project_id` only counts when this call creates the conversation (P103): an existing one keeps its own.
-    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), create: true };
+    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), create: true, ..Default::default() };
     let conversation = append_messages(&dir, &conversation_id, options, messages)
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| "the conversation could not be created".to_string())?;
@@ -1040,7 +1045,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("warden-desktop-move-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let dir = root.join("conversations");
         let store = warden_core::project::ProjectStore::new(Arc::new(warden_core::memory::Vault::new(root.join("vault"))));
-        store.save(&warden_core::project::Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }).unwrap();
+        store.save(&warden_core::project::Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None, code: false }).unwrap();
         let options = AppendOptions { title_seed: "t", create: true, ..Default::default() };
         append_messages(&dir, "c1", options, vec![said(SavedRole::User)]).unwrap();
 

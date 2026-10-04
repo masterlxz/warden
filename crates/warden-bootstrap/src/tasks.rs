@@ -559,7 +559,7 @@ pub async fn run_task(
         Err(err) => plain_message(ChatRole::Assistant, format!("(could not run: {err:#})")),
     };
     let title = format!("Tarefa: {}", task.id);
-    let options = AppendOptions { title_seed: &title, agent_id: task.agent.as_deref(), provider_id: None, project_id: None, create: true };
+    let options = AppendOptions { title_seed: &title, agent_id: task.agent.as_deref(), provider_id: None, project_id: None, create: true, ..Default::default() };
     append_messages(conversations_dir, &conversation, options, vec![user, reply])?;
     outcome
 }

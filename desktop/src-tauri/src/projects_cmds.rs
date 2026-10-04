@@ -20,17 +20,20 @@ pub struct ProjectPayload {
     /// A code project's working folder (P103 b); empty or absent for an ordinary project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workdir: Option<String>,
+    /// Driven by a code engine in `workdir` (needs one).
+    #[serde(default)]
+    code: bool,
 }
 
 impl From<Project> for ProjectPayload {
     fn from(project: Project) -> Self {
-        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions, workdir: project.workdir }
+        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions, workdir: project.workdir, code: project.code }
     }
 }
 
 impl From<ProjectPayload> for Project {
     fn from(payload: ProjectPayload) -> Self {
-        Self { id: payload.id.trim().to_string(), name: payload.name.trim().to_string(), description: payload.description, instructions: payload.instructions, workdir: payload.workdir.map(|dir| dir.trim().to_string()).filter(|dir| !dir.is_empty()) }
+        Self { id: payload.id.trim().to_string(), name: payload.name.trim().to_string(), description: payload.description, instructions: payload.instructions, workdir: payload.workdir.map(|dir| dir.trim().to_string()).filter(|dir| !dir.is_empty()), code: payload.code }
     }
 }
 
@@ -82,7 +85,7 @@ mod tests {
     }
 
     fn payload(id: &str) -> ProjectPayload {
-        ProjectPayload { id: id.into(), name: "Tax return".into(), description: "d".into(), instructions: "Be brief.".into(), workdir: None }
+        ProjectPayload { id: id.into(), name: "Tax return".into(), description: "d".into(), instructions: "Be brief.".into(), workdir: None, code: false }
     }
 
     #[test]

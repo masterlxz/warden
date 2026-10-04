@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use warden_core::code_engine::{CodeEvent, ToolStatus};
 use warden_core::model::{Attachment, Message, StreamEvent, Usage};
 use warden_core::project::Project;
 use warden_core::skill::Skill;
@@ -54,11 +55,56 @@ pub struct ProjectDto {
     /// A code project's working folder on the hub's machine (P103 b); absent for an ordinary project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// Its conversations are driven by a code engine in `workdir` (needs one).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code: bool,
 }
 
 impl From<Project> for ProjectDto {
     fn from(project: Project) -> Self {
-        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions, workdir: project.workdir }
+        Self { id: project.id, name: project.name, description: project.description, instructions: project.instructions, workdir: project.workdir, code: project.code }
+    }
+}
+
+/// One thing a code engine does during a task (P103 b), as `ChatEvent` tells it while the task runs. The task's end is
+/// still `ChatResponse`/`ChatError`; these only let the client show the work as it happens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ChatEventDto {
+    /// More of the answer's text.
+    Text { text: String },
+    /// A tool the engine is using. `call_id` is the same for each stage of one call, so a client updates one line.
+    Tool { call_id: String, tool: String, title: String, status: ToolStatusDto },
+    /// Something the engine said about itself that isn't the answer (a retry, a wait).
+    Notice { text: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolStatusDto {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl ChatEventDto {
+    /// What a client is shown of an engine event: `None` for the ones that are the hub's business (the session).
+    pub fn from_code(event: CodeEvent) -> Option<Self> {
+        Some(match event {
+            CodeEvent::Text(text) => Self::Text { text },
+            CodeEvent::Notice(text) => Self::Notice { text },
+            CodeEvent::Session(_) => return None,
+            CodeEvent::Tool(tool) => Self::Tool {
+                call_id: tool.call_id,
+                tool: tool.tool,
+                title: tool.title,
+                status: match tool.status {
+                    ToolStatus::Running => ToolStatusDto::Running,
+                    ToolStatus::Completed => ToolStatusDto::Completed,
+                    ToolStatus::Failed => ToolStatusDto::Failed,
+                },
+            },
+        })
     }
 }
 
@@ -1130,6 +1176,11 @@ pub enum ClientMessage {
         approval_id: u64,
         approved: bool,
     },
+    /// Stops the task a code project's conversation is running (P103 b). The work done so far is kept, and the turn
+    /// ends with the usual `ChatResponse`. Harmless for a conversation that isn't running one.
+    CancelTurn {
+        conversation_id: String,
+    },
     /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
     ToolCallResult {
         call_id: u64,
@@ -1664,6 +1715,12 @@ pub enum ServerMessage {
         /// the client can offer to `ExtendLimit` it and send again.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spend_limit_id: Option<String>,
+    },
+    /// What a code engine is doing in the middle of a code project's turn (P103 b): sent any number of times between the
+    /// `Chat` and its `ChatResponse`, for the client to show. Clients that don't know it ignore it.
+    ChatEvent {
+        conversation_id: String,
+        event: ChatEventDto,
     },
     /// Asks a connected client to run one of the tools it advertised in `Hello.tools` (Fase 7.4).
     /// `call_id` is scoped to this connection (a simple counter, mirrors `Ping`'s `nonce`) — the
@@ -2311,14 +2368,14 @@ mod tests {
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","projectId":"tax"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
 
-        let save = ClientMessage::SaveProject { request_id: 1, project: ProjectDto { id: "tax".into(), name: "Tax".into(), description: "d".into(), instructions: "i".into(), workdir: None }, overwrite: false };
+        let save = ClientMessage::SaveProject { request_id: 1, project: ProjectDto { id: "tax".into(), name: "Tax".into(), description: "d".into(), instructions: "i".into(), workdir: None, code: false }, overwrite: false };
         let json = serde_json::to_string(&save).unwrap();
         assert_eq!(json, r#"{"type":"saveProject","requestId":1,"project":{"id":"tax","name":"Tax","description":"d","instructions":"i"},"overwrite":false}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), save);
         assert_eq!(serde_json::to_string(&ClientMessage::ListProjects { request_id: 2 }).unwrap(), r#"{"type":"listProjects","requestId":2}"#);
         assert_eq!(serde_json::to_string(&ClientMessage::DeleteProject { request_id: 3, id: "tax".into() }).unwrap(), r#"{"type":"deleteProject","requestId":3,"id":"tax"}"#);
 
-        let list = ServerMessage::ProjectList { request_id: 2, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }] };
+        let list = ServerMessage::ProjectList { request_id: 2, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None, code: false }] };
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(json, r#"{"type":"projectList","requestId":2,"projects":[{"id":"tax","name":"Tax","description":"","instructions":""}]}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), list);
@@ -2352,6 +2409,17 @@ mod tests {
         assert_eq!(cancelled, r#"{"type":"approvalCancelled","approvalId":3}"#);
         let changed = serde_json::to_string(&ServerMessage::ConversationsChanged { conversation_id: "c".into() }).unwrap();
         assert_eq!(changed, r#"{"type":"conversationsChanged","conversationId":"c"}"#);
+
+        // P103 b: a code engine's work as it happens, and the stop.
+        let tool = ServerMessage::ChatEvent { conversation_id: "c".into(), event: ChatEventDto::Tool { call_id: "k1".into(), tool: "bash".into(), title: "cargo test".into(), status: ToolStatusDto::Running } };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert_eq!(json, r#"{"type":"chatEvent","conversationId":"c","event":{"type":"tool","callId":"k1","tool":"bash","title":"cargo test","status":"running"}}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), tool);
+        let text = serde_json::to_string(&ServerMessage::ChatEvent { conversation_id: "c".into(), event: ChatEventDto::from_code(CodeEvent::Text("hi".into())).unwrap() }).unwrap();
+        assert_eq!(ChatEventDto::from_code(CodeEvent::Session("s".into())), None, "the session is not for showing");
+        assert_eq!(text, r#"{"type":"chatEvent","conversationId":"c","event":{"type":"text","text":"hi"}}"#);
+        let cancel = ClientMessage::CancelTurn { conversation_id: "c".into() };
+        assert_eq!(serde_json::to_string(&cancel).unwrap(), r#"{"type":"cancelTurn","conversationId":"c"}"#);
     }
 
     #[test]

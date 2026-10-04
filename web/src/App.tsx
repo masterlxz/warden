@@ -20,6 +20,7 @@ import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
+import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import type { Attachment, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
@@ -83,6 +84,8 @@ export default function App() {
     pendingTurnsRef.current = update(pendingTurnsRef.current);
     setPendingTurnsState(pendingTurnsRef.current);
   }, []);
+  /** What a code engine has done so far in each running task (P103 b), by conversation id. */
+  const [liveTurns, setLiveTurns] = useState<Record<string, LiveTurn>>({});
   const [view, setView] = useState<View>("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [conn, setConn] = useState<ServerConnection | null>(null);
@@ -230,10 +233,13 @@ export default function App() {
       connection.onChatMessage((entry, conversationId) => {
         const id = conversationId ?? activeIdRef.current;
         setPendingTurns(({ [id]: _answered, ...rest }) => rest);
+        setLiveTurns(({ [id]: _done, ...rest }) => rest);
         if (id === activeIdRef.current) setEntries((current) => [...current, entry]);
         // New title/order — and a conversation started here now exists on the hub.
         void refreshConversations(connection);
       });
+      // A code project's task, as the engine works on it (P103 b).
+      connection.onChatEvent((event, id) => setLiveTurns((current) => ({ ...current, [id]: applyEvent(current[id], event) })));
       connection.onApproval((event) => {
         if (event.kind === "prompt") setApprovals((queue) => [...queue, event.prompt]);
         else setApprovals((queue) => queue.filter((p) => p.approvalId !== event.approvalId));
@@ -259,6 +265,7 @@ export default function App() {
         }
         // The hub may still finish and save those turns, but this connection won't hear the answer.
         setPendingTurns(() => ({}));
+        setLiveTurns({});
         // Nobody can answer those any more: the hub counts them as a no.
         setApprovals([]);
         if (status.kind === "disconnected") return; // our own goodbye (logout)
@@ -392,6 +399,11 @@ export default function App() {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
     }
+  }
+
+  /** Stops the code task this conversation is running (P103 b); the turn still ends with the engine's answer so far. */
+  function handleCancel() {
+    connRef.current?.cancelTurn(activeIdRef.current);
   }
 
   async function handleTranscribe(audio: Attachment): Promise<string> {
@@ -693,6 +705,8 @@ export default function App() {
               <ChatView
                 entries={entries}
                 pending={activeId in pendingTurns}
+                live={liveTurns[activeId]}
+                onCancel={handleCancel}
                 disabled={!phase.connected}
                 onSend={handleSend}
                 onTranscribe={handleTranscribe}

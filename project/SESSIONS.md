@@ -2,7 +2,29 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-03 (Sessão 126)
+> Última atualização: 2026-10-03 (Sessão 127)
+
+---
+
+### 2026-10-03 — Sessão 127
+
+- **Objetivo**: o modo código do P103 (b), em Plan mode: uma conversa de um projeto de código é uma sessão do **opencode** (P89) na pasta do projeto, com os eventos ao vivo no chat. O usuário decidiu: **projetos primeiro, o modo geral depois**;
+  **eventos ao vivo já na primeira entrega**; o opencode usa os modelos **pelo hub**.
+- **Feito**: `warden_core::code_engine` (trait `CodeEngine`; `Tracker`, que lê o fluxo de eventos do opencode e é puro; `OpencodeEngine`, cliente HTTP/SSE; `OpencodeProcesses`, que sobe um `opencode serve` por pasta, com senha própria,
+  só no loopback, reiniciado se morrer e encerrado por ociosidade); `Project.code`; `Conversation.engine_session_id`; `warden_bootstrap::code_turn` (`code_project`, `CodeTurn`); protocolo (`ChatEvent`, `CancelTurn`, `ProjectDto.code`); hub
+  (`code_turns.rs`, o desvio no `Chat`, o `CancelTurn`); **`engine_models.rs`**, a rota do opencode ao modelo do hub; web (eventos ao vivo no balão, botão Parar, caixa "Modo código" nos projetos); desktop (a caixa e uma recusa clara).
+- **Descoberta que mudou o plano**: o `/v1` do hub **não serve** como porta do opencode. (1) Com TLS ligado ele só redireciona para `https`, e o opencode não confiaria no certificado. (2) Ele fala **como o Warden**: com as ferramentas do Warden, e o
+  `shell` rodaria no hub sem passar pelas aprovações do opencode; com a persona; e com as notas do dono como contexto. O usuário escolheu uma **rota dedicada**: um listener em `127.0.0.1`, plain HTTP, com um token em memória, que entrega só
+  o modelo (sem ferramentas do Warden, sem persona, com um cofre vazio), ainda pelo provedor, pelo fallback e pelos limites do hub (canal `code`). A configuração do opencode (`OPENCODE_CONFIG_CONTENT`) o faz usar **só** esse provedor,
+  inclusive para títulos, e desliga o compartilhamento e a atualização automática. Nada é escrito no repositório do usuário.
+- **Verificado**: **1163 testes passando, 0 falhando, 8 ignorados**; clippy sem avisos no código novo; `tsc` da web e do desktop e o build da web limpos. **Com o opencode 1.18.34 de verdade** (testes `#[ignore]`, o do hub
+  `code_mode::real_…` e o do processo `real_opencode_starts_…`): o servidor sobe e exige a senha, a sessão abre na pasta, a resposta volta pelo modelo do hub, o `bash` pede aprovação pelo modal e só roda **depois do sim**, na pasta do projeto.
+  **Duas mutações** derrubaram o teste certo e foram desfeitas: a guarda do dono (um membro cairia no motor) e o cofre vazio da rota (a nota do dono vazou para o modelo). As demais regras (a sessão que se esquece ao mover, o `CancelTurn`,
+  a recusa sem aprovador) têm teste, mas **não** passaram por mutação. Um membro nunca ganha o modo código: a pasta seria um caminho na máquina do dono.
+- **Erros meus no caminho**: (1) um `pkill -f` que casou com o próprio comando e matou o shell (o servidor de teste foi parado depois, conferido); (2) escrevi um `unsafe` e uma tupla sem sentido em testes e limpei antes de fechar; (3) usei `sed`, Python e
+  `cat >>` em algumas edições (visibilidade de métodos, testes anexados ao fim de arquivos), contra a preferência de ver o diff em `Edit`/`Write`; o conteúdo conferido está no `git diff`.
+- **Não verificado**: um turno com **modelo real** (só um modelo roteirizado); a tela nativa do desktop; o modo código num hub com TLS; o e2e da web (não escrito para este modo).
+- **Fica**: o desktop falar com o hub embutido para rodar o modo código (hoje recusa); o modo geral (P102); "sempre permitir"; anexos; celular, extensão e CLI.
 
 ---
 

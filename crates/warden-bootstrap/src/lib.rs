@@ -37,6 +37,7 @@ pub mod history;
 pub mod bot_access;
 pub mod bot_hub;
 pub mod bot_pairing;
+pub mod code_turn;
 pub mod learning;
 pub mod machine_settings;
 mod config_file;
@@ -823,6 +824,11 @@ pub struct Conversation {
     /// turn. A project that is gone (its `PROJECT.md` removed) is read as "no project".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// The code engine's session for this conversation (P103 b): a conversation of a code project is a session of the
+    /// opencode, and what it said and did lives there; this is how the next message finds it again. Moving the
+    /// conversation to another project forgets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_session_id: Option<String>,
 }
 
 /// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
@@ -1151,6 +1157,8 @@ pub struct AppendOptions<'a> {
     /// keeps the one it has whatever is sent here: every client that doesn't know projects sends none, and one of
     /// them must not take a conversation out of its project by talking in it.
     pub project_id: Option<&'a str>,
+    /// The code engine's session (P103 b): `None` leaves it as it is, like `provider_id`'s outer `None`.
+    pub engine_session_id: Option<&'a str>,
     /// Create the file when it's missing. Otherwise a missing file was deleted meanwhile and stays
     /// deleted.
     pub create: bool,
@@ -1178,11 +1186,15 @@ pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, message
                 agent_id: None,
                 provider_id: None,
                 project_id: options.project_id.map(str::to_string),
+                engine_session_id: None,
             }
         }
     };
     conversation.messages.extend(messages);
     conversation.agent_id = options.agent_id.map(str::to_string);
+    if let Some(session) = options.engine_session_id {
+        conversation.engine_session_id = Some(session.to_string());
+    }
     if let Some(provider_id) = options.provider_id {
         conversation.provider_id = provider_id.map(str::to_string);
     }
@@ -1200,7 +1212,7 @@ fn append_to_conversation(
     create: bool,
     messages: Vec<ConversationMessage>,
 ) -> anyhow::Result<bool> {
-    let options = AppendOptions { title_seed, agent_id, provider_id: None, project_id, create };
+    let options = AppendOptions { title_seed, agent_id, provider_id: None, project_id, create, ..Default::default() };
     Ok(append_messages(dir, id, options, messages)?.is_some())
 }
 
@@ -1255,6 +1267,10 @@ pub fn set_conversation_project(dir: &Path, id: &str, project: Option<&str>) -> 
     let Some(mut conversation) = load_conversation(dir, id)? else {
         return Ok(false);
     };
+    if conversation.project_id.as_deref() != project {
+        // The engine's session belongs to the project it worked in: elsewhere it would be a stranger's.
+        conversation.engine_session_id = None;
+    }
     conversation.project_id = project.map(str::to_string);
     save_conversation(dir, &conversation)?;
     Ok(true)
@@ -2272,6 +2288,7 @@ oauth = true
             agent_id: None,
             provider_id: None,
             project_id: None,
+            engine_session_id: None,
         }
     }
 
@@ -2371,7 +2388,7 @@ oauth = true
             generated_files: Vec::new(),
             tools_used: Vec::new(),
         };
-        let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), project_id: None, create: true };
+        let options = AppendOptions { title_seed: "first words", agent_id: Some("writer"), provider_id: Some(Some("openai")), project_id: None, create: true, ..Default::default() };
         let created = append_messages(&dir, "c1", options, vec![note("hi", ChatRole::User)]).unwrap().unwrap();
         assert_eq!((created.title.as_str(), created.agent_id.as_deref(), created.provider_id.as_deref()), ("first words", Some("writer"), Some("openai")));
 
@@ -2563,7 +2580,7 @@ oauth = true
         let root = temp_dir(name);
         let vault = Arc::new(Vault::new(root.join("vault")));
         warden_core::project::ProjectStore::new(vault.clone())
-            .save(&warden_core::project::Project { id: "tax".into(), name: "Tax return".into(), description: String::new(), instructions: "Answer in Portuguese.".into(), workdir: None })
+            .save(&warden_core::project::Project { id: "tax".into(), name: "Tax return".into(), description: String::new(), instructions: "Answer in Portuguese.".into(), workdir: None, code: false })
             .unwrap();
         vault.write("projects/tax/jan.md", "january receipts").unwrap();
         vault.write("diary.md", "the diary").unwrap();

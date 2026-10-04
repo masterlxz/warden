@@ -46,6 +46,9 @@ pub struct Project {
     /// Only a project with one gets a `shell` in its conversations, which starts there and asks the person before every
     /// command. Not the project's folder in the vault (that is where its notes live).
     pub workdir: Option<String>,
+    /// The project's conversations are driven by a code engine (the opencode) working in `workdir`, instead of the
+    /// Warden's own turn with a `shell`. Opt-in, and only meaningful with a working folder (`validate` insists).
+    pub code: bool,
 }
 
 pub const MAX_WORKDIR_LEN: usize = 512;
@@ -98,12 +101,16 @@ impl Project {
         if let Some(workdir) = &self.workdir {
             validate_workdir(workdir)?;
         }
+        if self.code && self.workdir.is_none() {
+            bail!("a code project needs a working folder");
+        }
         Ok(())
     }
 
     pub fn render(&self) -> String {
         let workdir = self.workdir.as_ref().map(|dir| format!("workdir: {dir}\n")).unwrap_or_default();
-        format!("---\nname: {}\ndescription: {}\n{workdir}---\n{}\n", one_line(&self.name), one_line(&self.description), self.instructions.trim())
+        let code = if self.code { "code: true\n" } else { "" };
+        format!("---\nname: {}\ndescription: {}\n{workdir}{code}---\n{}\n", one_line(&self.name), one_line(&self.description), self.instructions.trim())
     }
 
     /// Parses `PROJECT.md`. `id` comes from the folder name (the source of truth); the frontmatter is optional, so a
@@ -112,6 +119,7 @@ impl Project {
         let raw = raw.replace("\r\n", "\n");
         let (mut name, mut description) = (String::new(), String::new());
         let mut workdir = None;
+        let mut code = false;
         let mut body = raw.as_str();
         if let Some(rest) = raw.strip_prefix("---\n") {
             if let Some(end) = rest.find("\n---") {
@@ -123,6 +131,7 @@ impl Project {
                             "description" => description = value.trim().to_string(),
                             // A hand-edited file with a folder that wouldn't pass `validate` has no working folder: no shell.
                             "workdir" if validate_workdir(value.trim()).is_ok() => workdir = Some(value.trim().to_string()),
+                            "code" => code = value.trim() == "true",
                             _ => {}
                         }
                     }
@@ -133,7 +142,9 @@ impl Project {
         if name.is_empty() {
             name = id.to_string();
         }
-        Project { id: id.to_string(), name, description, instructions: body.trim().to_string(), workdir }
+        // A hand-edited `code: true` without a (valid) folder has nothing to work in, so it is an ordinary project.
+        let code = code && workdir.is_some();
+        Project { id: id.to_string(), name, description, instructions: body.trim().to_string(), workdir, code }
     }
 
     /// What the model is told at the start of every turn of a conversation in this project: the instructions, and
@@ -250,7 +261,18 @@ mod tests {
     }
 
     fn sample(id: &str) -> Project {
-        Project { id: id.into(), name: "Tax return".into(), description: "This year's return".into(), instructions: "Answer in Portuguese.\nCite the file.".into(), workdir: None }
+        Project { id: id.into(), name: "Tax return".into(), description: "This year's return".into(), instructions: "Answer in Portuguese.\nCite the file.".into(), workdir: None, code: false }
+    }
+
+    #[test]
+    fn the_code_flag_needs_a_working_folder_and_survives_the_round_trip() {
+        let store = store("code");
+        let engine = Project { workdir: Some("/home/me/repo".into()), code: true, ..sample("engine") };
+        store.save(&engine).unwrap();
+        assert_eq!(store.get("engine").unwrap(), engine);
+        assert!(Project { code: true, ..sample("x") }.validate().is_err(), "no folder, nothing to drive");
+        assert!(!Project::parse("p", "---\nname: P\ncode: true\n---\nbody").code, "a hand-edited flag without a folder is ignored");
+        assert!(!Project::parse("p", "---\nname: P\nworkdir: /a\ncode: false\n---\nbody").code);
     }
 
     #[test]

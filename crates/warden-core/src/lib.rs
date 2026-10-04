@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod code_engine;
 pub mod jobs;
 pub mod memory;
 pub mod model;

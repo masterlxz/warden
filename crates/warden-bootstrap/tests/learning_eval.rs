@@ -303,7 +303,7 @@ async fn measure_what_the_assistant_learns_with_a_real_model() {
                 tools_used: tools.iter().map(|t| t.to_string()).collect(),
             })
             .collect();
-        save_conversation(&conversations, &Conversation { id: "c1".into(), title: case.name.into(), messages, created_at: 0, updated_at: 0, agent_id: None, provider_id: None, project_id: None }).unwrap();
+        save_conversation(&conversations, &Conversation { id: "c1".into(), title: case.name.into(), messages, created_at: 0, updated_at: 0, agent_id: None, provider_id: None, project_id: None, engine_session_id: None }).unwrap();
 
         let orchestrator = Orchestrator::new(model.clone(), vault.clone());
         let outcome = learn_from_conversation(&orchestrator, &settings, &conversations, "c1", None, 1_000).await;

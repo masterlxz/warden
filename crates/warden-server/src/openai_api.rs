@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use warden_bootstrap::users::agent_visible_to;
 use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, FileConfig};
+use warden_core::memory::Vault;
 use warden_core::model::{Message, StreamEvent, ToolCall, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::spend::SpendContext;
@@ -36,7 +37,7 @@ use warden_core::tool::ToolSpec;
 
 use crate::api_keys::{ApiKey, ApiKeyStore};
 use crate::people::{member_orchestrator, mount_member_spaces, tools_for, MemberSpace, SpaceVaults};
-use crate::settings::{SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
+use crate::settings::{keys_match, SettingsHost, SharedOrchestrator, WRONG_KEY_DELAY};
 use crate::usage::spend_limit_id;
 use crate::web_ui::{write_response, RequestHead};
 
@@ -115,6 +116,58 @@ async fn route<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, head: &Request
         }
         (_, "/v1/models" | "/v1/chat/completions") => Err(ApiError::new("405 Method Not Allowed", "invalid_request_error", format!("{} isn't allowed here", head.method))),
         _ => Err(ApiError::new("404 Not Found", "invalid_request_error", format!("unknown route {path} — this hub serves /v1/models and /v1/chat/completions"))),
+    }
+}
+
+/// What the code engine's own model route needs (P103 b, `engine_models`).
+#[derive(Clone)]
+pub(crate) struct EngineRoute {
+    pub orchestrator: SharedOrchestrator,
+    /// The only credential the route takes, made when the hub started and known to the engine alone.
+    pub token: Arc<str>,
+    /// A vault with nothing in it: the engine's turns read the hub's model, never the owner's notes.
+    pub empty_vault: Arc<Vault>,
+}
+
+/// Answers one request on the code engine's model route; the connection is done afterwards.
+///
+/// The opencode talks to the hub's model through this, not through the Warden API: that one speaks as the Warden, with
+/// its tools (the shell among them, which would run on the hub without the opencode's approvals), its persona and the
+/// owner's notes as context. Here a request gets the model alone — no tools but the opencode's own, no persona but what
+/// the opencode sends, no vault — still through the hub's provider, its fallback and its spending limits (channel
+/// `code`).
+pub(crate) async fn serve_engine<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, head: &RequestHead, route: &EngineRoute) -> std::io::Result<()> {
+    match engine_route(stream, head, route).await {
+        Ok(()) => Ok(()),
+        Err(err) => write_json(stream, err.status, &err.body()).await,
+    }
+}
+
+async fn engine_route<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, head: &RequestHead, route: &EngineRoute) -> Result<(), ApiError> {
+    let presented = head.header("authorization").and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer "))).map(str::trim);
+    if !presented.is_some_and(|token| keys_match(token, &route.token)) {
+        tokio::time::sleep(WRONG_KEY_DELAY).await;
+        let mut err = ApiError::new("401 Unauthorized", "invalid_request_error", "missing or invalid key");
+        err.code = Some("invalid_api_key".into());
+        return Err(err);
+    }
+    let path = head.path.split('?').next().unwrap_or_default();
+    match (head.method.as_str(), path) {
+        ("GET", "/v1/models") => {
+            let body = json!({ "object": "list", "data": [{ "id": DEFAULT_MODEL, "object": "model", "created": 0, "owned_by": "warden" }] });
+            write_json(stream, "200 OK", body.to_string().as_bytes()).await.map_err(io_error)
+        }
+        ("POST", "/v1/chat/completions") => {
+            let body = read_body(stream, head).await?;
+            let request: Value = serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(format!("the body isn't valid JSON: {e}")))?;
+            // Whatever model the engine names, it gets the hub's own.
+            complete(stream, &request, DEFAULT_MODEL.to_string(), |_| {
+                let orchestrator = route.orchestrator.current().with_spend_context(SpendContext::new("code").with_user("opencode")).with_allowed_tools(Some(&[])).with_vault(route.empty_vault.clone());
+                Ok((orchestrator, None))
+            })
+            .await
+        }
+        _ => Err(ApiError::new("404 Not Found", "invalid_request_error", format!("unknown route {path}"))),
     }
 }
 
@@ -450,9 +503,21 @@ fn completion_id() -> String {
 
 async fn chat_completions<S: AsyncWrite + Unpin>(stream: &mut S, api: &ApiContext, key: &ApiKey, request: &Value) -> Result<(), ApiError> {
     let model = effective_model(key, request.get("model").and_then(Value::as_str))?;
+    complete(stream, request, model, |model| scope_model(api, key, model)).await
+}
+
+/// One chat completion, whoever asked: `scope` picks the orchestrator and persona for `model` — the part that differs
+/// between a key's request and the code engine's own route (`serve_engine`) — after the request was read, so a bad
+/// request is refused before a model is looked up.
+async fn complete<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    request: &Value,
+    model: String,
+    scope: impl FnOnce(&str) -> Result<(Orchestrator, Option<String>), ApiError>,
+) -> Result<(), ApiError> {
     let Turn { history, input, system } = parse_turn(request)?;
     let tools = client_tools(request)?;
-    let (orchestrator, persona) = scope_model(api, key, &model)?;
+    let (orchestrator, persona) = scope(&model)?;
     let orchestrator = orchestrator.with_client_tools(tools);
     let system_prompt: Option<String> = {
         let parts: Vec<&str> = persona.iter().map(String::as_str).chain(system.iter().map(String::as_str)).collect();

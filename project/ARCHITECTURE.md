@@ -3108,6 +3108,38 @@ Um projeto agrupa conversas de um assunto, com instruções e arquivos próprios
   começa na pasta (que não é criada; se não existe, erro), **pede aprovação a cada comando** (120 s sem resposta = recusa; canal que não pergunta = recusa) e **não é sandbox** (`cd ..` funciona), então a aprovação é a
   proteção, e o briefing diz isso ao modelo. As tools de arquivo continuam presas às notas do projeto. Se a máquina ou o membro não tem `shell`, o projeto também não ganha.
 
+## Modo código: o opencode como motor (P103 b, P89, Sessão 127)
+
+Um projeto com `workdir` **e** `code: true` (frontmatter do `PROJECT.md`; `validate` recusa `code` sem pasta, e um `code: true` escrito à mão sem pasta válida é ignorado) roda as suas conversas no **opencode**, não no turno do Warden. Um projeto só
+com `workdir` continua com o `shell` que pede aprovação a cada comando (Sessão 126).
+
+- **A camada** (`warden_core::code_engine`): `CodeEngine` (rodar um turno, abortar) com o opencode como primeira implementação; outro motor entra atrás dela sem mexer na memória, nos agentes nem nos clientes. `TurnRequest` leva a pasta, a sessão (se a
+  conversa já tem), a tarefa, o nome do projeto (quem o usuário vê no pedido de aprovação) e as instruções do projeto (vão como `system` a cada tarefa). O motor devolve `CodeEvent` (texto, ferramenta, aviso, e `Session`, que não é para mostrar) e, no fim,
+  o texto, a sessão e as ferramentas usadas.
+- **O `Tracker`** (puro, sem I/O) lê o `GET /event` do opencode. Formatos fixados no OpenAPI do `opencode serve` 1.18.34 (`/doc`), não na documentação: `message.updated` diz o papel de uma mensagem (o prompt do usuário volta como parte de texto, então o texto
+  fica retido até a mensagem ser a do assistente), `message.part.updated`/`message.part.delta` trazem o texto e as ferramentas, `permission.asked` é uma pergunta, `session.idle` acaba a tarefa, `session.error` a falha (`MessageAbortedError` é parar de
+  propósito e **guarda o trabalho feito**), `session.status` com `retry` vira aviso. Os sub-agentes do opencode abrem sessões filhas (`session.created` com `parentID`): as perguntas de permissão delas também chegam ao usuário, mas só a sessão raiz acaba a tarefa.
+- **O cliente** (`OpencodeEngine`): cria (ou reutiliza) a sessão com um conjunto de regras (`"*": ask`, e só `read`, `glob`, `grep` e `list` liberados), abre o fluxo de eventos e **espera ele dizer que está vivo antes** de mandar a tarefa
+  (`prompt_async`), para não perder nada; cada `permission.asked` vai ao `Approver` (120 s sem resposta ou sem aprovador = recusa) e a resposta volta como `once` ou `reject` (não há "sempre"). Toda rota leva `?directory=`. Uma sessão que o opencode não conhece
+  mais (`404`) é trocada por uma nova.
+- **Os processos** (`OpencodeProcesses`): um `opencode serve --hostname 127.0.0.1 --port 0` por pasta, **iniciado na pasta**, com uma senha aleatória no ambiente (`OPENCODE_SERVER_PASSWORD`; a porta vem da linha "listening on" do próprio opencode), a
+  configuração do hub em `OPENCODE_CONFIG_CONTENT` e `OPENCODE_DISABLE_AUTOUPDATE`; **nada é escrito no repositório do usuário**. Reinicia se morrer e é encerrado por ociosidade, **menos enquanto uma tarefa o usa** (a `Endpoint` carrega uma
+  concessão que o gerenciador respeita). `WARDEN_OPENCODE` troca o comando; a versão testada é a 1.18.34 e uma `major.minor` diferente gera um aviso, não uma recusa. Sem o binário, o erro diz como instalar.
+- **A conversa**: `Conversation.engine_session_id` (opcional, como `project_id`), gravado ao fim de cada tarefa; `append_messages` só o altera se mandarem, e `set_conversation_project` o **esquece** quando a conversa muda de projeto. O turno é `CodeTurn::run`
+  (`warden_bootstrap::code_turn`), que grava a mensagem do usuário e a resposta (com `tools_used`), e **não grava nada se a tarefa falha**. Anexos não são aceitos ainda.
+- **No hub**: o `Chat` de uma conversa cujo projeto é de código vira uma tarefa do motor (`code_project`); **só o dono** (a pasta de um membro seria um caminho na máquina do dono, e sem a guarda um membro cairia no motor). Um hub sem motor responde com um
+  erro dizendo isso, em vez de rodar o turno comum com um shell. Os eventos vão como `ServerMessage::ChatEvent` (texto, ferramenta com `callId` estável, aviso) entre o `Chat` e o `ChatResponse`, que continua sendo o fim do turno; a aprovação usa o
+  `ApprovalRequest` que já existia. `CancelTurn` acha a sessão no registro `CodeTurns` (compartilhado entre as conexões, então outro aparelho pode parar a tarefa) e chama `abort`; vale só para o dono.
+- **A rota do opencode ao modelo** (`engine_models.rs`, `openai_api::serve_engine`): o opencode precisa de um modelo, e o hub já tem os provedores, o fallback e os limites. **Mas não pelo `/v1` da API do Warden**: com TLS ele só redireciona para `https`
+  (o opencode não confiaria no certificado), e ele fala *como o Warden*, com as ferramentas dele (o `shell` rodaria no hub sem passar pelas aprovações do opencode), a persona e as notas do dono como contexto. A rota própria é um listener em
+  `127.0.0.1`, HTTP simples, com **um token aleatório só em memória** (nada na lista de chaves da API, nada em disco), que reaproveita o `complete` do `/v1` (extraído de `chat_completions`) com um orquestrador **sem ferramentas do Warden, sem persona e com um
+  cofre vazio**; só valem as ferramentas e o prompt que o opencode manda (as `tools` do cliente, P91). Passa pelo provedor, pelo fallback e pelos limites do hub, no canal `code`. A configuração do opencode o torna o **único provedor** (`enabled_providers`),
+  inclusive para `small_model` (títulos), com `share: disabled` e `autoupdate: false`: nada do que a pessoa digita vai a um provedor que ela não deu. Depende do pacote `@ai-sdk/openai-compatible`, que o opencode baixa do npm na primeira vez (precisa de rede).
+- **Clientes**: a web mostra os eventos numa linha do tempo no balão do turno (texto e ferramentas na ordem em que aconteceram, a ferramenta atualizada no lugar) e o botão **Parar**; o projeto ganha a caixa "Modo código". **O chat do desktop não passa
+  pelo hub**, então hoje recusa uma conversa de projeto de código com uma mensagem clara; falta ele falar com o hub embutido.
+- **Limites conhecidos**: o consumo do opencode é contado pelo `SpendGuard` do hub (canal `code`, pessoa `opencode`), mas **como isso aparece na tela de Uso não foi conferido**; sem "sempre permitir"; sem anexos; sem modo geral (P102); um projeto de código compartilhado entre pessoas não existe; o celular, a extensão e o CLI não o
+  conhecem; o gerenciador sobe uma instância por pasta e segura o *lock* do mapa durante a subida (até 30 s), o que atrasa a primeira tarefa de outra pasta nesse intervalo.
+
 ## Dólares por provedor, agente e pessoa, por dia, e "Testar chave" (P10, Sessão 124)
 
 O P10 pedia UI de consumo, custo por provedor/modelo e gestão de chaves. Boa parte já existia desde o P4; o que faltava:

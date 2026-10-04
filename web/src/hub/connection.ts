@@ -14,6 +14,7 @@ import {
   type ApiKey,
   type Attachment,
   type BotPairingsView,
+  type ChatEventDto,
   type ClientMessage,
   type ConversationSummary,
   type HistoryMessage,
@@ -200,6 +201,7 @@ export type ApprovalEvent = { kind: "prompt"; prompt: ApprovalPrompt } | { kind:
 type ApprovalListener = (event: ApprovalEvent) => void;
 /** Called with the id of a conversation an agent created or changed (P46 `message_agent`). */
 type ConversationsListener = (conversationId: string) => void;
+type ChatEventListener = (event: ChatEventDto, conversationId: string) => void;
 
 export interface ConnectOptions {
   url: string;
@@ -254,6 +256,7 @@ export class ServerConnection {
   private readonly chatListeners = new Set<ChatListener>();
   private readonly approvalListeners = new Set<ApprovalListener>();
   private readonly conversationsListeners = new Set<ConversationsListener>();
+  private readonly chatEventListeners = new Set<ChatEventListener>();
   private recoveryCodeListener: ((code: string) => void) | null = null;
   private unclaimedRecoveryCode: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -319,6 +322,12 @@ export class ServerConnection {
   onApproval(listener: ApprovalListener): () => void {
     this.approvalListeners.add(listener);
     return () => this.approvalListeners.delete(listener);
+  }
+
+  /** P103 b — the engine's work on a code project's task, as it happens. */
+  onChatEvent(listener: ChatEventListener): () => void {
+    this.chatEventListeners.add(listener);
+    return () => this.chatEventListeners.delete(listener);
   }
 
   onConversationsChanged(listener: ConversationsListener): () => void {
@@ -462,6 +471,9 @@ export class ServerConnection {
           listener({ role: "error", content: message.message, attachments: [], spendLimitId: message.spendLimitId }, message.conversationId);
         }
         break;
+      case "chatEvent":
+        for (const listener of this.chatEventListeners) listener(message.event, message.conversationId);
+        break;
       case "approvalRequest": {
         const { approvalId, target, action, detail } = message;
         for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail } });
@@ -573,6 +585,11 @@ export class ServerConnection {
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation), with any
    * images/PDFs, spoken by `agentId` (P46) when set. `projectId` (P103) is the project a *new* conversation starts in;
    * the hub ignores it for one that exists. The reply arrives asynchronously via `onChatMessage`, tagged with the same id. */
+  /** P103 b — asks the hub to stop the task this conversation is running. The turn still ends with `onChatMessage`. */
+  cancelTurn(conversationId: string): void {
+    this.socket.send(encode({ type: "cancelTurn", conversationId }));
+  }
+
   sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string): void {
     this.socket.send(
       encode({

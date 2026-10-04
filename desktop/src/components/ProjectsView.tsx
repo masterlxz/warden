@@ -246,6 +246,17 @@ function ProjectsView({ onChanged }: { onChanged: () => void }) {
             <span className="settings-hint">An absolute path on this machine. With it, the project's conversations get a shell that starts there and asks you before every command.</span>
           </label>
 
+          <label className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              checked={editor.project.code ?? false}
+              disabled={!(editor.project.workdir ?? "").trim()}
+              onChange={(e) => updateEditor({ code: e.currentTarget.checked })}
+            />
+            <span>Code mode (opencode)</span>
+          </label>
+          <span className="settings-hint">Needs the working folder and the opencode installed on the machine running the hub. The project's conversations become opencode sessions in that folder, and each action asks you first.</span>
+
           <label className="settings-field">
             <span className="settings-label">Instructions</span>
             <textarea

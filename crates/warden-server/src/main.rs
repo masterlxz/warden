@@ -1058,12 +1058,17 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let tls = resolve_tls(&args).await?;
 
     let server_name = resolve_server_name(args.server_name.clone());
-    let mut server = Server::bind(args.listen, auth_key, server_name.clone(), Arc::new(orchestrator), conversations_dir, devices_path()?)
+    let shared = warden_server::SharedOrchestrator::new(orchestrator);
+    // P103 b — the opencode's door to the hub's model, on the loopback.
+    let engine_models = warden_server::engine_models::EngineModels::start(shared.clone()).await?;
+    let mut server = Server::bind(args.listen, auth_key, server_name.clone(), shared, conversations_dir, devices_path()?)
         .await?
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
         .with_transcriber(Arc::new(WhisperTranscriber::new(args.config.as_ref().map(PathBuf::from))))
         .with_sync(runner, Some(AUTO_SYNC_INTERVAL))
         .with_api(api_keys_path()?)
+        // P103 b — the conversations of code projects are tasks for the opencode, started per project folder.
+        .with_code_engine(warden_server::code_turns::opencode_engine(&engine_models))
         // P92 — every device lists the tasks' conversations; only `--run-tasks` runs them.
         .with_tasks(tasks_store()?, args.run_tasks)
         // P119 — whether the web settings may change the shell, MCP servers, SSH hosts, folders and the embedded hub.

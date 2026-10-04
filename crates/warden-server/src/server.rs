@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
+use warden_core::code_engine::{CodeEngine, CodeEvent};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::project::ProjectStore;
 use warden_core::skill::SkillStore;
@@ -21,12 +22,14 @@ use warden_core::tool::ToolSpec;
 use warden_core::spend::SpendContext;
 use warden_bootstrap::auto_sync::SyncRunner;
 use warden_bootstrap::tasks::TaskStore;
+use warden_bootstrap::code_turn::{code_project, CodeTurn};
 use warden_bootstrap::{build_model_for, load_config_from_path, scope_to_agent, AgentExtras, TurnAgent};
 
 use crate::approval::WsApprover;
 use crate::bot_admin::{handle_list_bot_pairings, handle_resolve_bot_pairing};
 use crate::provider_admin::handle_test_provider;
 use crate::chat_input::{handle_transcribe, title_seed, validate_attachments, Transcriber};
+use crate::code_turns::CodeTurns;
 use crate::conversations::{handle_conversation_request, handle_history_request, resolve_conversation_id, ConversationDirs};
 use crate::truthid_login::{self, TruthIdLogins};
 use crate::device_registry::{AuthRejection, PairingProof, PairingStatus, PairingStore};
@@ -52,6 +55,7 @@ use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyCh
 use crate::api_keys::ApiKeyStore;
 use crate::openai_api::{self, ApiContext};
 use crate::web_ui::{self, Rewind, WebAssets};
+use warden_server_protocol::protocol::ChatEventDto;
 use warden_server_protocol::tls::DISCOVER_PATH;
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
@@ -117,6 +121,9 @@ pub struct Server {
     /// Whether a settings save may change what reaches this machine (P119): the shell, MCP servers,
     /// SSH hosts, folders and the embedded hub. Off unless the hub was started to allow it.
     allow_machine_settings: bool,
+    /// The engine that drives a code project's conversations (P103 b). `None`: this hub has none, and those
+    /// conversations say so instead of running the ordinary turn with a shell.
+    code_engine: Option<Arc<dyn CodeEngine>>,
 }
 
 /// How often an open connection re-reads the pairing registry to notice it was revoked (P36).
@@ -155,7 +162,14 @@ impl Server {
             node_audit: warden_bootstrap::default_node_audit_log_path(),
             users_dir: None,
             allow_machine_settings: false,
+            code_engine: None,
         })
+    }
+
+    /// Gives the hub the engine that drives the conversations of code projects (P103 b).
+    pub fn with_code_engine(mut self, engine: Arc<dyn CodeEngine>) -> Self {
+        self.code_engine = Some(engine);
+        self
     }
 
     /// Lets a settings save change what reaches this machine (P119): the shell, MCP servers, SSH hosts,
@@ -310,6 +324,8 @@ impl Server {
             space_vaults: SpaceVaults::default(),
             truthid_logins: Arc::new(TruthIdLogins::default()),
             allow_machine_settings: self.allow_machine_settings,
+            code_engine: self.code_engine,
+            code_turns: CodeTurns::default(),
         };
         // P84: conversations are a person's, not a device's — every device's move to the root's,
         // once, before any connection can read them.
@@ -402,6 +418,9 @@ struct ConnectionContext {
     truthid_logins: Arc<TruthIdLogins>,
     /// See `Server::with_machine_settings`.
     allow_machine_settings: bool,
+    code_engine: Option<Arc<dyn CodeEngine>>,
+    /// The code tasks running, shared by every connection so a stop can come from another device.
+    code_turns: CodeTurns,
 }
 
 impl ConnectionContext {
@@ -716,6 +735,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         space_vaults,
         truthid_logins,
         allow_machine_settings,
+        code_engine,
+        code_turns,
     } = ctx;
     let tasks_dir = tasks.as_ref().map(|runner| Arc::new(runner.store().conversations_dir()));
     let (mut sink, mut stream) = ws.split();
@@ -1194,6 +1215,43 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     };
                     // A task's conversation (P92) lives with the tasks; the person can go on talking in it.
                     let conversations_dir = conversation_dirs.dir_for(&conversation_id).to_path_buf();
+                    // P103 b: a code project's conversation is a task for the code engine, not a turn of the Warden's own.
+                    // Only the owner has them: a member's project folder would be a path on the owner's machine.
+                    let projects = ProjectStore::new(orchestrator.vault().clone());
+                    let code = match (&member, code_project(&projects, &conversations_dir, &conversation_id, project_id.as_deref())) {
+                        (None, Ok(Some(project))) => Some(project),
+                        _ => None,
+                    };
+                    if let Some(project) = code {
+                        let Some(engine) = code_engine.clone() else {
+                            let message = "this hub has no code engine, so this project's conversations can't run here".to_string();
+                            let _ = tx.send(ServerMessage::ChatError { message, conversation_id: Some(conversation_id), spend_limit_id: None });
+                            continue;
+                        };
+                        let (reply_tx, turns, approver) = (tx.clone(), code_turns.clone(), Arc::new(approver.clone()));
+                        tokio::spawn(async move {
+                            turns.begin(&conversation_id, project.workdir.as_deref().unwrap_or_default());
+                            let (events_tx, events_turns, events_id) = (reply_tx.clone(), turns.clone(), conversation_id.clone());
+                            let mut on_event = move |event: CodeEvent| match event {
+                                CodeEvent::Session(session) => events_turns.set_session(&events_id, session),
+                                other => {
+                                    if let Some(event) = ChatEventDto::from_code(other) {
+                                        let _ = events_tx.send(ServerMessage::ChatEvent { conversation_id: events_id.clone(), event });
+                                    }
+                                }
+                            };
+                            let seed = title_seed(&message, &attachments);
+                            let turn = CodeTurn { engine: engine.as_ref(), project: &project, conversations_dir: &conversations_dir, conversation_id: &conversation_id, title_seed: &seed, user_input: &message, attachments };
+                            let result = turn.run(Some(approver), &mut on_event).await;
+                            turns.end(&conversation_id);
+                            let reply = match result {
+                                Ok(outcome) => ServerMessage::ChatResponse { content: outcome.content, usage: None, attachments: Vec::new(), conversation_id: Some(conversation_id), fallbacks: Vec::new() },
+                                Err(err) => ServerMessage::ChatError { message: format!("{err:#}"), conversation_id: Some(conversation_id), spend_limit_id: None },
+                            };
+                            let _ = reply_tx.send(reply);
+                        });
+                        continue;
+                    }
                     let reply_tx = tx.clone();
                     let is_member = member.is_some();
                     let learning_settings = settings.clone();
@@ -1236,6 +1294,15 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::ResolveApproval { approval_id, approved }) => {
                     approver.resolve(approval_id, approved);
+                }
+                // P103 b: stops a code task. Never for a member: the tasks are the owner's, and a conversation id is
+                // all it takes to name one.
+                Ok(ClientMessage::CancelTurn { conversation_id }) => {
+                    if let (None, Some(engine), Some((workdir, session))) = (&member, code_engine.clone(), code_turns.session_of(&conversation_id)) {
+                        tokio::spawn(async move {
+                            let _ = engine.abort(&workdir, &session).await;
+                        });
+                    }
                 }
                 Ok(ClientMessage::ToolCallResult { call_id, result }) => {
                     tool_channel.resolve(call_id, Ok(result));

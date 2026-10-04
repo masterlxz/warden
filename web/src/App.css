@@ -491,6 +491,68 @@ button:focus-visible {
   padding: 0.85rem 1rem;
 }
 
+/* A code engine's task as it runs (P103 b): its words and its tools in order, with the way to stop it. */
+.bubble--live {
+  gap: 0.4rem;
+}
+
+.live-tool {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.live-tool-mark {
+  width: 1ch;
+  text-align: center;
+}
+
+.live-tool--completed .live-tool-mark {
+  color: var(--color-ok);
+}
+
+.live-tool--failed .live-tool-mark {
+  color: var(--color-danger);
+}
+
+.live-tool-name {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.live-tool-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.live-notice {
+  margin: 0;
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.live-stop {
+  align-self: flex-start;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.live-stop:hover {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 .dot {
   width: 7px;
   height: 7px;

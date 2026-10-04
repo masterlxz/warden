@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn a_project_turn_loses_the_tools_a_folder_cannot_hold_and_keeps_the_rest() {
         let (base, vault) = orchestrator("tools");
-        ProjectStore::new(vault.clone()).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: "Be brief.".into(), workdir: None }).unwrap();
+        ProjectStore::new(vault.clone()).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: "Be brief.".into(), workdir: None, code: false }).unwrap();
         vault.write("projects/tax/jan.md", "x").unwrap();
 
         let scoped = scope_to_project(&base, "tax").unwrap().expect("the project exists");
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn the_scoped_vault_is_kept_so_a_projects_search_model_loads_once() {
         let (base, vault) = orchestrator("cache");
-        ProjectStore::new(vault).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None }).unwrap();
+        ProjectStore::new(vault).save(&Project { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None, code: false }).unwrap();
         let first = scope_to_project(&base, "tax").unwrap().unwrap();
         let second = scope_to_project(&base, "tax").unwrap().unwrap();
         assert!(Arc::ptr_eq(first.vault(), second.vault()));

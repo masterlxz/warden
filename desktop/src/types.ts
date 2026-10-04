@@ -73,6 +73,8 @@ export interface ProjectEntry {
   instructions: string;
   /** A code project's working folder on the hub's machine (P103 b): gives its conversations a shell that asks first. */
   workdir?: string;
+  /** Its conversations are driven by a code engine (the opencode) in `workdir`. Needs one. */
+  code?: boolean;
 }
 
 /** Mirrors `warden_bootstrap::Provider`. `openaiCompatible` covers any other server that speaks

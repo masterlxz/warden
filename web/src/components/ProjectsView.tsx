@@ -224,6 +224,16 @@ export default function ProjectsView({ conn, onChanged }: { conn: ServerConnecti
           />
           <span className="skills-hint">Caminho absoluto na máquina do hub. Com ela, as conversas do projeto ganham um terminal que começa ali e pede a sua aprovação a cada comando.</span>
         </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={editor.project.code ?? false}
+            disabled={!(editor.project.workdir ?? "").trim()}
+            onChange={(e) => updateEditor({ code: e.target.checked })}
+          />
+          Modo código (opencode)
+        </label>
+        <span className="skills-hint">Precisa da pasta de trabalho e do opencode instalado na máquina do hub. As conversas do projeto passam a ser sessões do opencode nessa pasta, e cada ação dele pede a sua aprovação.</span>
         <label>
           Instruções
           <textarea

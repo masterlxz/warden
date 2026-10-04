@@ -17,7 +17,9 @@ futures-core = "0.3"
 futures-util = "0.3"
 http.workspace = true
 reqwest.workspace = true
-rmcp = { version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
+# The password of each `opencode serve` the code engine starts (`code_engine/process.rs`); same version as warden-bootstrap.
+rand = "0.8"
+rmcp ={ version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest", "auth"] }
 # Needed only to construct a `reqwest::Client` value to hand to rmcp's OAuth `AuthClient`
 # (tool/mcp_oauth.rs) — rmcp's `auth`/`reqwest` features don't re-export their internal
 # `reqwest::Client` type at any public path, so naming it requires depending on the exact same
