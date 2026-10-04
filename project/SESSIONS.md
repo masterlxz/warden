@@ -2,7 +2,18 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 137)
+> Última atualização: 2026-10-04 (Sessão 138)
+
+---
+
+### 2026-10-04 — Sessão 138
+
+- **Objetivo**: fechar o limite herdado do P102 (fatia 2): `read_file` e `write_file` do nó não resolviam symlink, então um link dentro da pasta emprestada que apontasse para fora deixava o agente ler e escrever fora dela. Plano aprovado antes; sem teste prático nem de tela, a pedido do usuário.
+- **Feito**: `inside_shared` (`node_client.rs`): depois do `Vault::path_of`, resolve o trecho mais fundo do caminho que existe e exige que fique dentro da pasta emprestada resolvida; `read_file` e `write_file` passam por ele. `list_files` ficou como estava (a listagem já não segue links).
+- **Testes**: `a_symlink_cannot_lead_out_of_the_shared_folder` (link de arquivo, link de pasta, nova pasta atrás de um link e link quebrado, para ler e escrever, com o arquivo de fora intacto; `list_files` sem arquivo de fora; link que fica dentro e pasta emprestada que é link funcionam) e, no hub, o `LEAK`/`PEEK` em `tests/node_folder.rs` (nó de verdade, pasta com um link para fora). **Mutação** (tirar a comparação): derruba o teste unitário e o do hub, que então lê "top secret" de fora da pasta (desfeita).
+- **Verificado**: suíte inteira sem o desktop, 1206 passaram, 0 falharam, 8 ignorados; clippy do `warden-server` sem aviso. Nada visto numa tela.
+- **Achado**: na primeira rodada da suíte o `rust-lld` deu segfault ao linkar o binário `warden-server` (falha do linker, não do código); a segunda rodada passou. Não investigado.
+- **Fica**: a janela entre a checagem e a escrita (igual à das tools de pasta do hub) e o shell do nó, que não é uma jaula.
 
 ---
 

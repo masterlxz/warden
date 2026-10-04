@@ -205,6 +205,7 @@ impl LocalNode {
                     "read_file" => read_file(vault, path),
                     "write_file" => {
                         let content = args.get("content").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'content' argument"))?;
+                        inside_shared(vault, path)?;
                         vault.write(path, content)?;
                         Ok(json!({ "status": "ok", "path": path }))
                     }
@@ -231,8 +232,20 @@ fn activity_summary(tool: &str, args: &Value) -> String {
     args.get(field).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-fn read_file(vault: &Vault, path: &str) -> anyhow::Result<Value> {
+/// Where `path` is on disk, once it is known to stay inside the lent folder. `Vault::path_of` already refuses `..` and
+/// absolute paths; this also follows symlinks: the deepest part of the path that exists (the file, or the folder it
+/// will be created in) must still be under the resolved folder, so a link inside it can't lead out.
+fn inside_shared(vault: &Vault, path: &str) -> anyhow::Result<PathBuf> {
     let full = vault.path_of(path)?;
+    let root = vault.root().canonicalize().context("the shared folder is not there")?;
+    let existing = full.ancestors().find(|p| p.symlink_metadata().is_ok()).unwrap_or(vault.root());
+    let resolved = existing.canonicalize().with_context(|| format!("'{path}' can't be resolved"))?;
+    anyhow::ensure!(resolved.starts_with(&root), "'{path}' is not inside the shared folder");
+    Ok(full)
+}
+
+fn read_file(vault: &Vault, path: &str) -> anyhow::Result<Value> {
+    let full = inside_shared(vault, path)?;
     let size = std::fs::metadata(&full).with_context(|| format!("can't read '{path}'"))?.len();
     anyhow::ensure!(size <= MAX_READ_BYTES, "'{path}' is {size} bytes — over the {MAX_READ_BYTES}-byte limit for reading");
     let content = std::fs::read_to_string(&full).with_context(|| format!("can't read '{path}' as text"))?;
@@ -528,6 +541,51 @@ mod tests {
             assert!(node.run("write_file", json!({ "path": path, "content": "x" })).await.is_err(), "{path}");
         }
         assert!(node.run("list_files", json!({ "path": ".." })).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A link inside the lent folder that leads out of it is not a way out: not to read, not to write, not through a
+    /// link to a folder, and not a dangling one. A link that stays inside works, and so does a lent folder that is a link.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlink_cannot_lead_out_of_the_shared_folder() {
+        use std::os::unix::fs::symlink;
+        let dir = temp_dir().canonicalize().unwrap();
+        let shared = dir.join("shared");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(shared.join("real")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::fs::write(shared.join("real/ok.txt"), "ok").unwrap();
+        symlink(outside.join("secret.txt"), shared.join("file-link")).unwrap();
+        symlink(&outside, shared.join("dir-link")).unwrap();
+        symlink(outside.join("nope.txt"), shared.join("dangling")).unwrap();
+        symlink(shared.join("real"), shared.join("inner-link")).unwrap();
+        let node = LocalNode::new(false, Some(shared.clone()));
+
+        for path in ["file-link", "dir-link/secret.txt", "dangling"] {
+            assert!(node.run("read_file", json!({ "path": path })).await.is_err(), "read {path}");
+            assert!(node.run("write_file", json!({ "path": path, "content": "changed" })).await.is_err(), "write {path}");
+        }
+        assert!(node.run("write_file", json!({ "path": "dir-link/new.txt", "content": "x" })).await.is_err());
+        assert!(node.run("write_file", json!({ "path": "dir-link/deeper/new.txt", "content": "x" })).await.is_err());
+        // Nothing outside was touched.
+        assert_eq!(std::fs::read_to_string(outside.join("secret.txt")).unwrap(), "secret");
+        assert!(!outside.join("new.txt").exists() && !outside.join("deeper").exists() && !outside.join("nope.txt").exists());
+        // Listing doesn't follow the links either, so no file of outside shows up.
+        let listed = node.run("list_files", json!({})).await.unwrap()["files"].to_string();
+        assert!(!listed.contains("secret"), "{listed}");
+
+        // A link that stays inside is fine, for reading and for writing.
+        assert_eq!(node.run("read_file", json!({ "path": "inner-link/ok.txt" })).await.unwrap()["content"], "ok");
+        node.run("write_file", json!({ "path": "inner-link/new.txt", "content": "y" })).await.unwrap();
+        assert_eq!(std::fs::read_to_string(shared.join("real/new.txt")).unwrap(), "y");
+
+        // The lent folder may itself be a link to the real one.
+        symlink(&shared, dir.join("lent")).unwrap();
+        let via_link = LocalNode::new(false, Some(dir.join("lent")));
+        assert_eq!(via_link.run("read_file", json!({ "path": "real/ok.txt" })).await.unwrap()["content"], "ok");
+        assert!(via_link.run("read_file", json!({ "path": "file-link" })).await.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

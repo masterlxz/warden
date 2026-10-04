@@ -43,6 +43,8 @@ impl ModelProvider for Scripted {
             "WRITE" => call("write_file", json!({ "path": "out.txt", "content": "from the hub" })),
             "READ" => call("read_file", json!({ "path": "out.txt" })),
             "ESCAPE" => call("write_file", json!({ "path": "../escaped.txt", "content": "x" })),
+            "LEAK" => call("write_file", json!({ "path": "leak/stolen.txt", "content": "x" })),
+            "PEEK" => call("read_file", json!({ "path": "leak/secret.txt" })),
             "RUN" => call("shell", json!({ "command": "echo ran > made.txt" })),
             _ => {
                 let told = messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("|");
@@ -241,6 +243,20 @@ async fn the_owner_browses_a_nodes_folders_and_works_in_one() {
     let (reply, _) = say(&mut me, "c1", "ESCAPE", None, false).await;
     assert!(reply.contains("inside the working folder"), "{reply}");
     assert!(!hub.shared().join("escaped.txt").exists() && !hub.shared().join("proj/escaped.txt").exists());
+
+    // Nor through a link inside it that leads out: the node follows links and refuses, for reading and for writing.
+    #[cfg(unix)]
+    {
+        let outside = hub.dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "top secret").unwrap();
+        std::os::unix::fs::symlink(&outside, hub.shared().join("proj/leak")).unwrap();
+        let (reply, _) = say(&mut me, "c1", "PEEK", None, false).await;
+        assert!(reply.contains("not inside the shared folder") && !reply.contains("top secret"), "{reply}");
+        let (reply, _) = say(&mut me, "c1", "LEAK", None, false).await;
+        assert!(reply.contains("not inside the shared folder"), "{reply}");
+        assert!(!outside.join("stolen.txt").exists());
+    }
 
     // The shell always asks: a no runs nothing, a yes runs it in the folder.
     let (reply, asked) = say(&mut me, "c1", "RUN", None, false).await;
