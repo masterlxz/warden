@@ -1,0 +1,1645 @@
+# Visão: o Warden como um sistema operacional de agentes
+
+> **Origem**: documento trazido pronto pelo usuário em 2026-10-04 (`ai-hub-agents-spec.md`, na raiz do repositório),
+> removido da raiz e incorporado aqui, **na íntegra** (Parte 1). A Parte 2 compara a visão com o que o Warden já tem
+> e a Parte 3 lista as decisões em aberto. As pendências derivadas estão no `PENDING.md` (P120 a P124) e o resumo, no
+> `ROADMAP.md` ("Sistema operacional de agentes").
+>
+> **Estado**: só registro. Nada disto foi levado a `/plan`, e o próprio documento diz que as decisões vêm depois
+> (seção 50). O nome do produto no texto original é "AI Hub" e o operador de exemplo é o Fabio; o projeto se chama
+> Warden.
+
+| Parte | O que tem |
+|---|---|
+| **1. A visão** | O documento do usuário, como foi escrito: 50 seções (Chat, Agents, Code, hierarquia, autoridade, autonomia, hospedagem). |
+| **2. O Warden hoje × a visão** | O que já existe, o que existe pela metade e o que não existe, seção por seção. |
+| **3. Decisões em aberto** | Tensões com o que já foi decidido e uma ordem sugerida (não decidida). |
+
+---
+
+# Parte 1 — A visão (documento original)
+
+# AI Hub — Especificação Conceitual do Sistema de Chat, Agents e Code
+
+> Documento de visão de produto e comportamento.  
+> Não define implementação, stack ou arquitetura interna de código.
+
+---
+
+## 1. Visão geral
+
+O projeto é um **hub pessoal e empresarial de IA**, com foco em reunir diferentes modelos, ferramentas e agentes em uma única experiência.
+
+A ideia central é permitir que o usuário:
+
+- converse com uma IA de forma tradicional;
+- crie e utilize agentes especializados;
+- faça agentes trabalharem uns com os outros;
+- crie hierarquias de agentes;
+- delegue tarefas entre agentes;
+- utilize agentes para tarefas empresariais, pessoais e técnicas;
+- utilize um ambiente especializado de programação;
+- escolha entre modelos e agentes diferentes conforme a tarefa;
+- hospede o sistema por conta própria ou utilize uma hospedagem fornecida pelo projeto.
+
+O sistema deve funcionar tanto como um **assistente pessoal completo** quanto como uma plataforma de **automação e organização de trabalho com múltiplos agentes**.
+
+---
+
+# 2. Conceito central: agentes globais
+
+Os agentes são entidades globais dentro do sistema.
+
+Um agente não pertence exclusivamente a uma conversa, ao modo Chat ou ao modo Code.
+
+O mesmo agente pode ser utilizado em diferentes contextos:
+
+- Chat;
+- Agents;
+- Code;
+- tarefas automáticas;
+- outros módulos futuros.
+
+### Exemplo
+
+Um agente chamado `Programming Manager` pode:
+
+- conversar diretamente com o usuário no Chat;
+- aparecer como uma conversa própria no modo Agents;
+- ser selecionado dentro do Code;
+- receber tarefas de outro agente;
+- delegar tarefas para agentes subordinados.
+
+Isso cria uma espécie de **organização virtual de IAs**.
+
+---
+
+# 3. Três modos principais
+
+A interface deve possuir três grandes modos/módulos:
+
+1. **Chat**
+2. **Agents**
+3. **Code**
+
+A troca entre eles deve ser extremamente clara e rápida.
+
+---
+
+# 4. Modo Chat
+
+O Chat é a experiência tradicional de assistente de IA.
+
+A experiência deve ser próxima de ChatGPT/Gemini:
+
+- múltiplas conversas;
+- histórico de conversas;
+- cada conversa pode tratar de um assunto diferente;
+- uma conversa pode existir sem agente;
+- uma conversa pode utilizar um agente;
+- o usuário pode trocar de agente/modelo quando fizer sentido;
+- o usuário não precisa criar um agente para utilizar o sistema.
+
+### Modelo mental
+
+O Chat responde à pergunta:
+
+> "Quero conversar ou resolver alguma coisa."
+
+Uma conversa pode ser:
+
+```text
+Chat
+├── Projeto pessoal
+├── Estudos
+├── Ideia de empresa
+├── Viagem
+└── Desenvolvimento de aplicativo
+```
+
+E qualquer uma dessas conversas pode utilizar:
+
+```text
+Sem agente
+        ↓
+Modelo escolhido diretamente
+
+OU
+
+Agente
+        ↓
+Agente decide como trabalhar
+```
+
+---
+
+# 5. Chat + agentes
+
+Um agente pode ser selecionado dentro de uma conversa normal.
+
+Por exemplo:
+
+```text
+Conversa: "Criar meu aplicativo"
+
+Usuário
+   ↓
+Agente Principal
+   ↓
+Programming Manager
+   ↓
+Agentes especializados
+```
+
+O usuário não precisa necessariamente abrir o modo Code.
+
+Ele pode simplesmente dizer:
+
+> "Preciso criar uma aplicação simples. Gere a especificação e implemente."
+
+O agente de Chat pode:
+
+1. entender o pedido;
+2. gerar a especificação;
+3. identificar que a tarefa exige programação;
+4. enviar a especificação para o agente responsável por programação;
+5. acompanhar o trabalho;
+6. receber o resultado;
+7. apresentar o resultado ao usuário.
+
+---
+
+# 6. Modo Agents
+
+O modo Agents é diferente do Chat.
+
+Ele representa os agentes como **entidades persistentes**, com suas próprias conversas.
+
+O conceito é semelhante ao funcionamento de um WhatsApp:
+
+```text
+Agents
+
+┌──────────────────────────────┐
+│ 🤖 Principal                 │
+│ Última mensagem...           │
+├──────────────────────────────┤
+│ 💻 Programming Manager       │
+│ Implementação concluída...   │
+├──────────────────────────────┤
+│ 🔒 Security Agent            │
+│ Encontrei uma vulnerabilidade │
+├──────────────────────────────┤
+│ 🐧 Linux Manager             │
+│ Servidor atualizado...       │
+└──────────────────────────────┘
+```
+
+Cada agente possui uma conversa principal persistente.
+
+---
+
+# 7. Conversa de agente = canal persistente
+
+No modo Agents, a conversa não deve ser simplesmente uma sequência de prompts do usuário.
+
+O agente pode agir autonomamente.
+
+Exemplo:
+
+```text
+👤 Fabio
+Preciso monitorar meu servidor.
+
+🤖 Server Manager
+Vou configurar o monitoramento.
+
+🤖 Server Monitor
+CPU está em 73%.
+
+🤖 Server Monitor
+Memória está em 81%.
+
+🤖 Server Manager
+O servidor continua saudável.
+
+🤖 Server Monitor
+Atualização concluída.
+
+🤖 Server Manager
+Tudo certo.
+```
+
+O usuário pode simplesmente observar e participar.
+
+O agente pode enviar mensagens sem que o usuário tenha enviado um prompt imediatamente antes.
+
+---
+
+# 8. Agentes podem iniciar mensagens
+
+Agentes devem possuir capacidade de iniciar comunicação quando autorizado.
+
+Casos de uso:
+
+- notificações;
+- monitoramento;
+- conclusão de tarefas;
+- alertas;
+- relatórios;
+- lembretes;
+- acompanhamento de processos;
+- perguntas para o usuário;
+- atualizações periódicas.
+
+Exemplo:
+
+> "Me informe o status do servidor a cada 30 minutos."
+
+O agente pode então enviar:
+
+```text
+08:00 — Servidor saudável.
+08:30 — Servidor saudável.
+09:00 — CPU acima do normal.
+09:30 — CPU normalizada.
+```
+
+Isso transforma o agente em algo mais próximo de um **funcionário digital persistente** do que simplesmente um chatbot.
+
+---
+
+# 9. Comunicação entre agentes
+
+Esse é um dos princípios mais importantes do sistema.
+
+Agentes devem poder conversar entre si.
+
+A comunicação deve ser observável e legível pelo usuário.
+
+Exemplo:
+
+```text
+👤 Fabio
+Crie uma aplicação de controle financeiro.
+
+🤖 Personal Assistant
+Vou preparar a especificação.
+
+🤖 Personal Assistant → Programming Manager
+Preciso que você implemente a aplicação descrita nesta spec.
+
+🤖 Programming Manager
+Entendido. Vou dividir o trabalho.
+
+🤖 Programming Manager → Backend Agent
+Implemente a API.
+
+🤖 Programming Manager → Frontend Agent
+Implemente a interface.
+
+🤖 Backend Agent
+API concluída.
+
+🤖 Frontend Agent
+Interface concluída.
+
+🤖 Programming Manager
+Integração finalizada.
+
+🤖 Personal Assistant
+O projeto foi concluído.
+```
+
+A comunicação entre agentes deve parecer uma conversa real entre membros de uma equipe.
+
+---
+
+# 10. Visibilidade da comunicação
+
+O sistema deve permitir visualizar:
+
+- quem enviou a mensagem;
+- para quem a mensagem foi enviada;
+- qual agente respondeu;
+- qual tarefa foi criada;
+- qual agente delegou a tarefa;
+- qual agente concluiu;
+- quais agentes estão trabalhando.
+
+A interface pode utilizar visualmente:
+
+```text
+Programming Manager
+       │
+       ├──→ Backend Agent
+       │
+       ├──→ Frontend Agent
+       │
+       └──→ Security Agent
+```
+
+Além disso, cada mensagem pode indicar:
+
+```text
+Programming Manager → Security Agent
+```
+
+Isso deve tornar o funcionamento do sistema compreensível sem esconder a colaboração interna.
+
+---
+
+# 11. Modo Code
+
+O modo Code é o ambiente especializado para desenvolvimento.
+
+Ele utiliza o núcleo de programação/harness já previsto no projeto, incluindo a possibilidade de integração com ferramentas como OpenCode.
+
+O Code deve parecer mais próximo de um ambiente de desenvolvimento do que de um simples chatbot.
+
+---
+
+# 12. Code como uma experiência híbrida
+
+O usuário pode trabalhar de duas maneiras:
+
+### Sem agente
+
+```text
+Code
+↓
+Modelo
+↓
+Ferramentas
+↓
+Execução
+```
+
+Isso é semelhante a utilizar um coding assistant tradicional.
+
+### Com agente
+
+```text
+Code
+↓
+Programming Manager
+↓
+Subagentes
+↓
+Ferramentas / modelos
+↓
+Execução
+```
+
+O usuário escolhe o nível de autonomia.
+
+---
+
+# 13. Um agente especializado pode coordenar o Code
+
+O principal agente de programação pode funcionar como um **Programming Manager**.
+
+Ele não precisa executar tudo diretamente.
+
+Ele pode:
+
+- interpretar a tarefa;
+- analisar o projeto;
+- criar um plano;
+- dividir tarefas;
+- escolher agentes;
+- escolher modelos;
+- delegar;
+- acompanhar;
+- revisar;
+- solicitar correções;
+- integrar resultados;
+- finalizar o projeto.
+
+Exemplo:
+
+```text
+Programming Manager
+
+        │
+        ├── Architecture Agent
+        │
+        ├── Backend Agent
+        │
+        ├── Frontend Agent
+        │
+        ├── Database Agent
+        │
+        ├── Testing Agent
+        │
+        └── Security Agent
+```
+
+---
+
+# 14. Agentes temporários no Code
+
+Nem todo agente precisa ser permanente.
+
+O Programming Manager pode criar agentes temporários para tarefas específicas.
+
+Exemplo:
+
+```text
+Programming Manager
+       ↓
+"Preciso analisar este bug específico."
+       ↓
+Bug Analysis Agent
+       ↓
+Analisa
+       ↓
+Resolve
+       ↓
+Agente temporário encerrado
+```
+
+Esses agentes não precisam aparecer como agentes permanentes do usuário.
+
+Eles são **workers temporários**.
+
+Isso evita poluir a lista global de agentes.
+
+---
+
+# 15. Agentes globais vs. subagentes temporários
+
+Existem dois conceitos:
+
+### Agentes persistentes
+
+São agentes criados pelo usuário ou pela organização.
+
+Exemplos:
+
+- Personal Assistant;
+- Programming Manager;
+- Finance Manager;
+- Security Manager;
+- Linux Manager.
+
+Eles aparecem na tela Agents.
+
+### Agentes temporários
+
+São criados para executar tarefas específicas.
+
+Exemplos:
+
+- Debug Agent;
+- Test Generator;
+- API Research Agent;
+- Refactoring Agent.
+
+Eles podem existir somente durante a execução de uma tarefa.
+
+---
+
+# 16. O mesmo agente pode trabalhar em qualquer módulo
+
+Um agente não deve estar preso ao módulo onde foi criado.
+
+Exemplo:
+
+```text
+Programming Manager
+```
+
+pode ser utilizado em:
+
+```text
+Chat
+Agents
+Code
+Automations
+```
+
+Isso é essencial para criar um ecossistema realmente integrado.
+
+---
+
+# 17. Exemplo completo: criar uma aplicação pelo Chat
+
+Usuário está no Chat:
+
+> "Quero criar um aplicativo simples para controlar meus investimentos."
+
+O fluxo pode ser:
+
+```text
+Chat Agent
+    │
+    ├── entende o pedido
+    │
+    ├── cria a especificação
+    │
+    └── envia para Programming Manager
+                    │
+                    ├── Backend Agent
+                    ├── Frontend Agent
+                    ├── Database Agent
+                    └── Testing Agent
+```
+
+O usuário pode escolher:
+
+### Opção A — acompanhar no Chat
+
+O Chat continua mostrando atualizações.
+
+### Opção B — abrir o Code
+
+O usuário entra no módulo Code e vê o trabalho acontecendo.
+
+### Opção C — simplesmente esperar
+
+O usuário deixa o agente trabalhando e recebe uma mensagem quando terminar.
+
+---
+
+# 18. Hierarquia de agentes
+
+O sistema deve permitir criar uma hierarquia real entre agentes.
+
+Não deve ser apenas uma lista de agentes.
+
+A estrutura pode ser:
+
+```text
+                    👑 Principal Agent
+                           │
+              ┌────────────┼────────────┐
+              ↓            ↓            ↓
+         Tech Manager  Finance Manager  Personal Manager
+              │
+       ┌──────┼───────┐
+       ↓      ↓       ↓
+    Backend Frontend Security
+```
+
+Cada agente possui:
+
+- cargo;
+- nível hierárquico;
+- superior;
+- subordinados;
+- permissões;
+- responsabilidades;
+- modelos permitidos;
+- ferramentas permitidas;
+- capacidade de delegação.
+
+---
+
+# 19. Hierarquia visual
+
+A criação e edição da hierarquia deve ser **visual**.
+
+Não deve depender apenas de escrever configurações.
+
+O usuário deve conseguir visualizar uma árvore:
+
+```text
+                 Principal
+                     │
+             ┌───────┴───────┐
+             │               │
+         Tech Manager    Business Manager
+             │
+       ┌─────┼─────┐
+       │     │     │
+     Backend UI  Security
+```
+
+E poder:
+
+- criar agente;
+- mover agente;
+- mudar superior;
+- criar subordinado;
+- alterar cargo;
+- remover agente;
+- visualizar responsabilidades;
+- abrir conversa;
+- visualizar tarefas;
+- visualizar atividade.
+
+---
+
+# 20. Hierarquia modificável pelos próprios agentes
+
+A hierarquia não precisa ser completamente estática.
+
+Agentes autorizados podem administrar outros agentes.
+
+Exemplo:
+
+```text
+Principal Agent
+       ↓
+cria
+       ↓
+Programming Manager
+       ↓
+cria
+       ↓
+Backend Agent
+```
+
+O Programming Manager pode posteriormente:
+
+```text
+Backend Agent
+     ↓
+está com desempenho ruim
+     ↓
+Programming Manager
+     ├── remove Backend Agent
+     └── cria Backend Agent 2
+```
+
+Isso permite que a organização virtual evolua.
+
+---
+
+# 21. Regra fundamental de autoridade
+
+Um agente não pode alterar a própria posição hierárquica livremente.
+
+A regra deve ser:
+
+> **Um agente só pode modificar entidades que estejam dentro do seu escopo de autoridade.**
+
+Exemplo:
+
+```text
+Principal
+   │
+   ├── Manager A
+   │      ├── Worker A1
+   │      └── Worker A2
+   │
+   └── Manager B
+          └── Worker B1
+```
+
+Manager A pode:
+
+- criar A3;
+- remover A1;
+- substituir A2;
+- delegar tarefas aos seus subordinados.
+
+Manager A não pode:
+
+- remover Manager B;
+- tornar-se Principal;
+- alterar as permissões do Principal;
+- alterar sua própria posição para ficar acima do Principal.
+
+---
+
+# 22. Escopo de autoridade
+
+Cada agente deve possuir permissões explícitas.
+
+Exemplos:
+
+```text
+Pode criar agentes
+Pode remover agentes
+Pode editar agentes
+Pode delegar tarefas
+Pode escolher modelos
+Pode escolher ferramentas
+Pode criar agentes temporários
+Pode executar código
+Pode acessar arquivos
+Pode acessar serviços externos
+Pode enviar mensagens ao usuário
+Pode iniciar tarefas
+```
+
+Isso permite diferentes níveis de autonomia.
+
+---
+
+# 23. Cargos
+
+O sistema deve tratar agentes como membros de uma organização.
+
+Exemplos:
+
+- Principal;
+- Director;
+- Manager;
+- Specialist;
+- Worker;
+- Reviewer;
+- Assistant;
+- Coordinator.
+
+O cargo não precisa ser apenas decorativo.
+
+Ele pode representar:
+
+- posição na hierarquia;
+- responsabilidades;
+- permissões;
+- capacidade de delegação.
+
+---
+
+# 24. Agentes podem criar agentes
+
+Um agente autorizado pode criar outro agente.
+
+Exemplo:
+
+```text
+Programming Manager
+       ↓
+"Preciso de um especialista em PostgreSQL."
+       ↓
+cria
+       ↓
+PostgreSQL Specialist
+```
+
+O novo agente recebe:
+
+- objetivo;
+- cargo;
+- superior;
+- permissões;
+- contexto;
+- ferramentas;
+- modelo padrão;
+- limites de atuação.
+
+---
+
+# 25. Gerenciamento de agentes por agentes
+
+Agentes gerentes devem poder:
+
+- contratar/criar agentes;
+- dispensar/remover agentes;
+- substituir agentes;
+- delegar tarefas;
+- revisar resultados;
+- reorganizar subordinados;
+- criar agentes temporários;
+- alterar responsabilidades dentro do seu escopo.
+
+Isso transforma a hierarquia em uma **organização dinâmica**.
+
+---
+
+# 26. Escolha de modelo por tarefa
+
+O agente gerente não precisa utilizar sempre o mesmo modelo.
+
+Ele pode escolher:
+
+```text
+Tarefa
+  ↓
+qual modelo é adequado?
+  ↓
+modelo rápido
+modelo barato
+modelo de raciocínio
+modelo de código
+modelo multimodal
+```
+
+Exemplo:
+
+```text
+Programming Manager
+
+Arquitetura → modelo de raciocínio
+Código       → modelo especializado em programação
+Testes       → modelo barato
+Review       → modelo de alta qualidade
+Documentação → modelo rápido
+```
+
+O agente pode decidir isso automaticamente de acordo com as políticas configuradas.
+
+---
+
+# 27. Agentes + modelos são conceitos diferentes
+
+É importante separar:
+
+**Agente**
+
+> Quem decide o que fazer e como trabalhar.
+
+**Modelo**
+
+> O motor de IA usado pelo agente para raciocinar/gerar respostas.
+
+Assim:
+
+```text
+Programming Manager
+       ↓
+escolhe
+       ↓
+Modelo A
+Modelo B
+Modelo C
+```
+
+Um agente pode trocar de modelo conforme a tarefa.
+
+---
+
+# 28. Agentes + ferramentas
+
+Da mesma forma, ferramentas devem ser separadas dos agentes.
+
+Um agente pode ter acesso a:
+
+- terminal;
+- arquivos;
+- Git;
+- navegador;
+- banco de dados;
+- APIs;
+- servidores;
+- Docker;
+- ferramentas de desenvolvimento;
+- serviços externos;
+- outros agentes.
+
+Isso permite criar agentes especializados sem precisar criar um sistema completamente separado para cada função.
+
+---
+
+# 29. Sistema de delegação
+
+A delegação deve ser uma operação fundamental.
+
+Exemplo:
+
+```text
+Task
+│
+├── responsável: Programming Manager
+├── prioridade: alta
+├── objetivo: criar API
+└── subtarefas:
+      ├── Backend Agent
+      ├── Database Agent
+      └── Testing Agent
+```
+
+Cada agente pode receber uma tarefa e produzir:
+
+- resultado;
+- status;
+- arquivos;
+- mensagens;
+- subtarefas;
+- solicitações de revisão.
+
+---
+
+# 30. Estado das tarefas
+
+O usuário deve conseguir visualizar:
+
+```text
+○ Pendente
+◐ Em andamento
+◉ Aguardando agente
+✓ Concluído
+⚠ Falhou
+⏸ Pausado
+```
+
+E também:
+
+```text
+Programming Manager
+████████████░░░ 80%
+
+Backend       ✓
+Frontend      ✓
+Database      ◐
+Testing       ○
+Security      ○
+```
+
+---
+
+# 31. Visão de organização
+
+Além das conversas, o sistema deve possuir uma visão organizacional.
+
+Exemplo:
+
+```text
+ORGANIZATION
+
+Principal Agent
+│
+├── Programming Manager
+│   ├── Backend
+│   ├── Frontend
+│   ├── Database
+│   └── Security
+│
+├── Finance Manager
+│   ├── Research
+│   └── Analysis
+│
+└── Personal Manager
+    ├── Calendar
+    └── Reminders
+```
+
+Cada nó pode ser aberto para:
+
+- conversa;
+- tarefas;
+- configurações;
+- permissões;
+- histórico;
+- atividade.
+
+---
+
+# 32. Activity Feed
+
+O sistema deve possuir uma visão de atividade.
+
+Exemplo:
+
+```text
+19:32  Personal Assistant criou uma tarefa.
+19:33  Programming Manager recebeu a tarefa.
+19:34  Programming Manager criou Backend Agent.
+19:35  Backend Agent iniciou implementação.
+19:41  Backend Agent concluiu API.
+19:42  Security Agent iniciou revisão.
+19:45  Security Agent encontrou um problema.
+19:47  Programming Manager delegou correção.
+```
+
+Isso permite acompanhar organizações complexas sem precisar abrir cada conversa.
+
+---
+
+# 33. Conversas como primeira classe
+
+Apesar da existência da hierarquia, as conversas continuam sendo importantes.
+
+Cada agente persistente deve possuir sua própria conversa principal.
+
+Isso mantém a experiência simples:
+
+```text
+Agents
+│
+├── Principal
+├── Programming Manager
+├── Backend Agent
+├── Security Agent
+└── Finance Manager
+```
+
+Ao abrir um agente:
+
+```text
+┌─────────────────────────────────┐
+│ Programming Manager             │
+├─────────────────────────────────┤
+│                                 │
+│ 👤 Fabio                         │
+│ ...                              │
+│                                 │
+│ 🤖 Programming Manager           │
+│ ...                              │
+│                                 │
+│ 🤖 Security Agent                │
+│ → revisão concluída              │
+│                                 │
+└─────────────────────────────────┘
+```
+
+---
+
+# 34. Comunicação direta entre agentes
+
+Além da hierarquia, agentes podem conversar diretamente quando permitido.
+
+Exemplo:
+
+```text
+Backend Agent
+      ↓
+Security Agent
+
+"Pode revisar minha API?"
+```
+
+O Security Agent responde:
+
+```text
+"Encontrei 2 problemas."
+```
+
+Essa comunicação deve ser registrada.
+
+---
+
+# 35. Comunicação hierárquica vs. comunicação lateral
+
+Devem existir dois conceitos:
+
+### Hierárquica
+
+```text
+Manager → Worker
+```
+
+Usada para:
+
+- delegação;
+- supervisão;
+- criação;
+- remoção;
+- revisão.
+
+### Lateral
+
+```text
+Worker A ↔ Worker B
+```
+
+Usada para:
+
+- colaboração;
+- consultas;
+- revisão;
+- troca de informações.
+
+As permissões devem determinar quando a comunicação lateral é permitida.
+
+---
+
+# 36. Usuário como membro da organização
+
+O usuário não precisa ser apenas um "cliente" conversando com uma IA.
+
+Ele pode ser considerado o operador da organização.
+
+Exemplo:
+
+```text
+                 Fabio
+                   │
+            Principal Agent
+                   │
+          ┌────────┴────────┐
+          │                 │
+    Programming         Business
+      Manager             Manager
+```
+
+Isso permite construir uma verdadeira **empresa digital assistida por IA**.
+
+---
+
+# 37. Autonomia configurável
+
+Cada agente deve possuir um nível de autonomia.
+
+Exemplo:
+
+```text
+Autonomia
+
+1 — Somente responder
+2 — Sugerir ações
+3 — Executar após aprovação
+4 — Executar autonomamente
+5 — Gerenciar subordinados autonomamente
+```
+
+O usuário pode limitar agentes críticos.
+
+---
+
+# 38. Aprovação humana
+
+Algumas ações podem exigir aprovação do usuário.
+
+Exemplos:
+
+- apagar dados;
+- gastar dinheiro;
+- alterar infraestrutura crítica;
+- enviar mensagens externas;
+- publicar código;
+- alterar configurações importantes;
+- criar agentes com permissões elevadas.
+
+Fluxo:
+
+```text
+Agent
+ ↓
+Solicita ação
+ ↓
+Usuário aprova
+ ↓
+Execução
+```
+
+---
+
+# 39. Princípio de segurança da hierarquia
+
+A hierarquia deve funcionar como um sistema de autoridade.
+
+Um agente não ganha autoridade simplesmente porque "pediu".
+
+A autoridade deve ser derivada de:
+
+```text
+posição
++
+permissões
++
+escopo
++
+aprovação
+```
+
+O sistema deve impedir que um agente utilize outro agente para contornar suas próprias restrições.
+
+---
+
+# 40. Experiência desejada
+
+A experiência geral deve parecer uma mistura de:
+
+- ChatGPT/Gemini para conversa;
+- WhatsApp para comunicação persistente com agentes;
+- Slack para organização;
+- ambiente de coding agent para desenvolvimento;
+- organograma para hierarquia;
+- sistema operacional de agentes para automação.
+
+Mas tudo deve existir dentro de **um único ecossistema**.
+
+---
+
+# 41. Princípio: simples para começar, poderoso para crescer
+
+O sistema não deve exigir que o usuário monte uma empresa de agentes antes de conseguir usar a IA.
+
+Experiência inicial:
+
+```text
+Abrir
+↓
+Chat
+↓
+Conversar
+```
+
+Depois:
+
+```text
+Criar agente
+↓
+Especializar
+↓
+Delegar
+↓
+Criar hierarquia
+↓
+Automatizar
+```
+
+O poder deve aparecer conforme a necessidade.
+
+---
+
+# 42. Exemplo de evolução do usuário
+
+### Nível 1
+
+```text
+Chat
+└── uma conversa normal
+```
+
+### Nível 2
+
+```text
+Chat
+├── conversa pessoal
+└── conversa de programação
+```
+
+### Nível 3
+
+```text
+Agents
+├── Personal Assistant
+└── Programming Manager
+```
+
+### Nível 4
+
+```text
+Programming Manager
+├── Backend
+├── Frontend
+└── Security
+```
+
+### Nível 5
+
+```text
+Principal
+├── Programming Manager
+│   ├── Backend
+│   ├── Frontend
+│   ├── Security
+│   └── Testing
+│
+├── Finance Manager
+│   ├── Research
+│   └── Analysis
+│
+└── Personal Manager
+    ├── Calendar
+    └── Automation
+```
+
+---
+
+# 43. Open Source + hospedagem
+
+O projeto deve manter uma filosofia open source.
+
+Possibilidades:
+
+### Self-hosted
+
+O usuário hospeda tudo por conta própria.
+
+### Hosted
+
+O projeto oferece infraestrutura hospedada.
+
+O mesmo conceito funcional deve existir nos dois modelos.
+
+O produto pode possuir planos pagos principalmente para:
+
+- hospedagem;
+- infraestrutura;
+- modelos;
+- armazenamento;
+- execução;
+- ferramentas premium;
+- automações;
+- recursos empresariais.
+
+A filosofia central continua sendo:
+
+> O usuário pode possuir e controlar sua própria instalação.
+
+---
+
+# 44. Ecossistema de modelos
+
+O hub deve ser agnóstico em relação aos modelos.
+
+O usuário deve poder conectar diferentes provedores/modelos.
+
+Exemplo conceitual:
+
+```text
+Model Hub
+├── Provider A
+├── Provider B
+├── Provider C
+├── Local Models
+└── Custom Endpoint
+```
+
+Os agentes utilizam esses modelos conforme suas configurações e políticas.
+
+---
+
+# 45. Ecossistema de ferramentas
+
+Da mesma forma:
+
+```text
+Tool Hub
+├── Git
+├── Terminal
+├── Browser
+├── Files
+├── Database
+├── Docker
+├── APIs
+└── Custom Tools
+```
+
+Agentes recebem acesso apenas ao que precisam.
+
+---
+
+# 46. Princípio de interoperabilidade
+
+Um agente criado para uma finalidade não deve ficar preso àquela finalidade.
+
+Exemplo:
+
+```text
+Programming Manager
+```
+
+pode receber uma tarefa pelo Chat, trabalhar no Code e reportar o resultado no Agents.
+
+Isso cria um fluxo contínuo:
+
+```text
+Chat
+ ↓
+Agent
+ ↓
+Code
+ ↓
+Agent
+ ↓
+Chat
+```
+
+Sem o usuário precisar copiar e colar informações manualmente.
+
+---
+
+# 47. Fluxo completo de exemplo
+
+Usuário:
+
+> "Quero criar um sistema web para controlar meus investimentos."
+
+### Chat
+
+```text
+Personal Assistant
+↓
+Entende a ideia
+↓
+Gera spec
+```
+
+### Delegação
+
+```text
+Personal Assistant
+↓
+Programming Manager
+```
+
+### Planejamento
+
+```text
+Programming Manager
+↓
+define tarefas
+```
+
+### Execução
+
+```text
+Backend Agent
+Frontend Agent
+Database Agent
+Security Agent
+Testing Agent
+```
+
+### Comunicação
+
+Os agentes conversam entre si conforme necessário.
+
+### Code
+
+O usuário pode abrir o Code e acompanhar:
+
+```text
+Programming Manager
+├── Backend       ✓
+├── Frontend      ◐
+├── Database      ✓
+├── Security      ○
+└── Testing       ○
+```
+
+### Finalização
+
+```text
+Programming Manager
+↓
+Projeto concluído
+↓
+Personal Assistant
+↓
+Usuário
+```
+
+---
+
+# 48. Princípios fundamentais do produto
+
+1. **Agentes são globais.**
+2. **Conversas são independentes dos agentes.**
+3. **O mesmo agente pode atuar em vários módulos.**
+4. **Chat é simples e livre.**
+5. **Agents é persistente e orientado a comunicação.**
+6. **Code é especializado em desenvolvimento.**
+7. **Agentes podem conversar entre si.**
+8. **Agentes podem agir sem prompt imediato quando autorizados.**
+9. **Agentes podem criar agentes quando possuem autoridade.**
+10. **Agentes podem gerenciar subordinados.**
+11. **Agentes não podem ultrapassar sua autoridade.**
+12. **A hierarquia deve ser visual.**
+13. **A hierarquia pode evoluir dinamicamente.**
+14. **Agentes temporários não devem poluir a organização permanente.**
+15. **Modelos e agentes são conceitos separados.**
+16. **Ferramentas e agentes são conceitos separados.**
+17. **O usuário deve poder acompanhar o trabalho.**
+18. **O sistema deve funcionar tanto para uso pessoal quanto empresarial.**
+19. **A experiência inicial deve ser simples.**
+20. **A complexidade deve aparecer apenas quando necessária.**
+21. **Open source deve continuar sendo parte importante da identidade do produto.**
+22. **Self-hosting e hospedagem oficial devem coexistir.**
+
+---
+
+# 49. Ideia central resumida
+
+O projeto não deve ser apenas:
+
+> "Um chatbot com vários agentes."
+
+Ele deve ser:
+
+> **Um sistema operacional de agentes de IA.**
+
+O usuário começa conversando com uma IA normalmente.
+
+Quando precisar de especialização, cria um agente.
+
+Quando precisar de colaboração, cria vários.
+
+Quando precisar de organização, cria uma hierarquia.
+
+Quando precisar de automação, deixa os agentes trabalharem autonomamente.
+
+Quando precisar programar, utiliza o Code.
+
+E todos esses ambientes utilizam **os mesmos agentes globais, as mesmas ferramentas e o mesmo ecossistema de modelos**.
+
+A visão final é uma organização digital na qual:
+
+```text
+                 USUÁRIO
+                    │
+              PRINCIPAL AGENT
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+   BUSINESS       CODE        PERSONAL
+   MANAGER       MANAGER       MANAGER
+       │            │
+       │      ┌─────┼─────┐
+       │      │     │     │
+       │   BACKEND FRONT SECURITY
+       │
+   SPECIALISTS
+```
+
+E essa organização pode **conversar, criar, delegar, executar, revisar, monitorar, aprender e se reorganizar**, sempre dentro das permissões definidas.
+
+---
+
+# 50. Próxima etapa conceitual
+
+Esta especificação deve servir como base para as próximas decisões do projeto:
+
+- modelo de dados dos agentes;
+- modelo de permissões;
+- sistema de tarefas;
+- protocolo de comunicação entre agentes;
+- interface visual da hierarquia;
+- interface dos três modos;
+- sistema de execução/autonomia;
+- integração com o núcleo de Code/OpenCode;
+- sistema de modelos;
+- sistema de ferramentas;
+- automações e mensagens proativas;
+- hospedagem/self-hosting;
+- planos e monetização.
+
+Essas decisões devem ser feitas posteriormente sem perder os princípios definidos neste documento.
+
+---
+
+# Parte 2 — O Warden hoje × a visão
+
+> Escrito em 2026-10-04 a partir do que `ROADMAP.md`, `PENDING.md` e `ARCHITECTURE.md` registram. **Existe** = feito e
+> usado; **Parcial** = há o mecanismo mas não o que a visão descreve; **Não existe** = nada ainda. "Falta" diz o que a
+> visão pede além do que há.
+
+| Seção da visão | O que o Warden tem hoje | Falta | Onde ver |
+|---|---|---|---|
+| §2, §16, §46 — agentes globais | **Parcial.** `[[agents]]` no `config.toml` (id, persona, modelo padrão, tools permitidas), globais ao workspace. Usados no desktop, no CLI, no hub (web, celular, extensão), nas tarefas agendadas e nos webhooks. Um membro tem agentes próprios e compartilhados. | O mesmo agente no modo de código: o projeto de código roda o opencode, não um agente do Warden. | P45, P46, P84, P87, P103 |
+| §3 — três modos (Chat, Agents, Code) | **Parcial.** Chat existe (conversas, projetos, pasta de trabalho) em todos os clientes. Code existe como projeto de código sobre o opencode. | O modo **Agents** não existe; a troca rápida entre os três como módulos. | P103, P89 |
+| §4–5 — chat sem agente, com agente, troca | **Parcial.** O hub e a web aceitam conversa sem agente. O **desktop obriga escolher um agente** antes da primeira mensagem, e o agente fica fixo na conversa. O modelo se troca por conversa no desktop (modelo ou combo); no hub o modelo vem do agente. | Conversa sem agente no desktop; trocar de agente no meio quando fizer sentido. | P45, P90 |
+| §5, §17, §47 — o Chat entrega o trabalho a um agente de programação e acompanha | **Parcial.** `delegate_to_agent` e `delegate_task`, síncronos ou em segundo plano (`jobs`). O destino é sempre um agente do Warden. | Entregar a especificação ao motor de código por delegação e acompanhar o resultado no Chat. | P46, P62, P103 |
+| §6–7 — modo Agents, canal persistente por agente | **Não existe.** As conversas são por conversa; `message_agent` cria conversas "A → B". | Uma conversa principal persistente por agente, lista estilo WhatsApp. | P87 |
+| §8 — agentes que iniciam mensagens | **Parcial.** Tarefas agendadas (cron, a cada, uma vez) e webhooks rodam um agente sem prompt e deixam a conversa na lista; notificações no celular. | O agente decidir avisar sozinho, perguntar ao usuário fora de uma tarefa, lembretes, monitoramento contínuo. | P92, P105 |
+| §9–10, §34 — agentes conversam, de forma observável | **Parcial.** `message_agent` ("funcionários"): um recado numa conversa "A → B" que o usuário vê e na qual entra; o colega responde em segundo plano e **não pode mandar recado de volta**. | Conversa de equipe com remetente e destinatário visíveis, resposta de volta, "quem está trabalhando agora". | P87 |
+| §11–13 — Code com um Programming Manager | **Parcial.** Projeto de código com o opencode: modos manual, aceitar edições, aceitar tudo e plano; cancelar a tarefa; eventos ao vivo. | Um gerente que divide o trabalho entre subagentes de programação e escolhe modelos. | P103, P89 |
+| §14–15 — agentes temporários (workers) | **Parcial.** `delegate_task` cria um sub-agente anônimo que some ao fim do turno (não polui a lista), com teto de chamadas por turno e fila em segundo plano. | Workers com nome e papel que o gerente cria e encerra, visíveis na atividade. | P46, P60 |
+| §18–19, §31 — hierarquia, visual e visão de organização | **Não existe.** Um agente não tem cargo, nível, superior nem subordinados. Delegar é por flag (`can_delegate_to_agents` abre todos os agentes). Nenhuma árvore. | Tudo: modelo de dados, árvore, editor visual, abrir conversa/tarefas/atividade por nó. | — |
+| §20–21, §24–25 — agentes administram agentes, escopo de autoridade | **Parcial.** `manage_agents` (list, create, update, delete) com a aprovação do usuário a cada mudança; o agente criado nasce **sem poderes** e só com tools de leitura; **um agente com poder só um humano edita**. | Escopo por subárvore, substituir e reorganizar subordinados. **Tensão com a regra atual**, ver Parte 3. | P46, Sessões 80 a 83 |
+| §22 — permissões explícitas | **Parcial.** Flags `can_delegate_to_agents`, `can_manage_agents`, `can_message_agents`, `can_manage_tasks`; `allowed_tools`; shell e SSH com aprovação; limites de gasto por agente; quais agentes cada nó e cada pessoa usam. | "Pode escolher modelos", "pode enviar mensagens ao usuário", "pode iniciar tarefas", "pode criar agentes temporários" como permissões próprias. | P46, P84, P93 |
+| §23 — cargos | **Não existe.** | Cargo com efeito (posição, responsabilidade, permissão, delegação). | — |
+| §26–27 — modelo por tarefa | **Parcial.** Modelo padrão por agente (`provider_id`), combos com reserva e troca de modelo por conversa no desktop. | O gerente escolher o modelo de cada subtarefa por política (rápido, barato, raciocínio, código, multimodal). | P90 |
+| §28, §45 — ferramentas separadas dos agentes | **Existe.** Tools por agente, MCP, SSH, nós (shell, arquivos, modelos), skills. | Uma visão única de "Tool Hub". | P47, P93, P16 |
+| §29–30 — delegação com tarefas e estados | **Parcial.** `delegate_*` e `jobs` (list, result); tarefas agendadas com estado (próxima execução, histórico). | Objeto "tarefa" com responsável, prioridade, subtarefas, estados (pendente, em andamento, aguardando, concluído, falhou, pausado) e progresso. | P46, P92 |
+| §32 — feed de atividade | **Não existe.** (Há a lista de conversas, a tela de Tarefas e a de Uso.) | Linha do tempo de quem fez o quê. | — |
+| §36 — o usuário como operador da organização | **Parcial.** Multiusuário: dono e membros do workspace. | O usuário como o topo do organograma. | P84 |
+| §37 — autonomia configurável (1 a 5) | **Parcial.** Aprovação por ação (SSH, `manage_agents`, pausa por limite de gasto) e os modos do projeto de código. | Um nível por agente. | P4, P103 |
+| §38 — aprovação humana | **Existe.** Modal em todos os clientes, com "sempre permitir nesta conversa". | Categorias como gastar dinheiro, mensagem externa e publicar código. | P47, P46 |
+| §39 — a hierarquia não é contornável por outro agente | **Parcial.** O alvo de `delegate_to_agent` usa as tools **dele**, não as do chefe; o agente criado nasce restrito; o colega de `message_agent` não manda de volta. | O modelo geral (posição + permissões + escopo + aprovação). | P46 |
+| §40–42 — simples para começar, poderoso para crescer | **Parcial.** O desktop abre no chat; criar agente é por Settings ou por conversa. | A progressão guiada. | — |
+| §43 — open source e hospedagem | **Parcial.** Open source e hub auto-hospedado existem; a hospedagem oficial é só registro. | Planos pagos. | P50 |
+| §44–45 — ecossistema de modelos e de ferramentas | **Existe.** Gemini, OpenAI, Anthropic, compatíveis com OpenAI (Ollama...), modelo de um nó, combos; MCP. | — | P22, P90 |
+| §49 — organização que "aprende" | **Parcial.** O aprendizado sugere skills a partir das conversas. | Aprender no nível da organização. | P104, P115 |
+
+---
+
+# Parte 3 — Decisões em aberto
+
+Nada aqui foi decidido. São as perguntas que a visão deixa e a ordem que parece natural, para quando o usuário quiser
+levar isto a `/plan`.
+
+**Tensões com o que já foi decidido**
+
+1. **Quem edita um agente com poder.** A Sessão 80 decidiu que um agente com poder só um humano edita, e que nenhum
+   agente liga os próprios poderes. A visão (§20 a §25) deixa o gerente criar, substituir e reorganizar subordinados
+   dentro do seu escopo. É preciso decidir se a regra atual vale como teto (o gerente só mexe em quem tem menos poder
+   que ele) ou se muda.
+2. **Agente global × agente de um membro.** A visão fala de uma organização; o Warden tem agentes do dono, agentes
+   compartilhados e agentes próprios de cada membro (P84). A hierarquia é do workspace ou de cada pessoa?
+3. **O modo de código não usa agentes do Warden.** O projeto de código roda o opencode (P103). A visão quer um
+   Programming Manager do Warden coordenando o trabalho de código. O gerente comanda o opencode como ferramenta, ou
+   há subagentes de programação do próprio Warden (P89)?
+4. **Canal por agente × conversas por conversa.** O modo Agents quer uma conversa principal persistente por agente. Hoje
+   há conversas avulsas, conversas "A → B" (`message_agent`) e `task-*` (tarefas). Elas viram vistas dessa conversa
+   principal, ou convivem?
+5. **Conversa sem agente no desktop.** O hub aceita; o desktop obriga escolher.
+
+**Decisões de desenho que a visão não toma**
+
+6. **Onde mora a hierarquia**: campos no `[[agents]]` (cargo, superior) ou um arquivo próprio; como entra no sync, no
+   multiusuário e na validação (ciclos, órfãos, remover um nó com subordinados).
+7. **Autonomia por agente**: como os níveis 1 a 5 se combinam com a aprovação por ação, os limites de gasto (P4) e as
+   mensagens proativas (por qual canal um agente "inicia" uma mensagem, e o que a notificação faz).
+8. **Tarefa como objeto**: um modelo próprio de tarefa (responsável, subtarefas, estado, progresso) ou estender as
+   tarefas agendadas (P92).
+9. **Hospedagem e planos** (§43): ver P50.
+
+**Ordem sugerida (não decidida)**
+
+1. Campos de cargo e superior nos agentes, e uma **visão de organização só de leitura** (a árvore, abrir a conversa do
+   nó). Dá a base visual sem mudar nenhuma regra.
+2. **Regras de autoridade** aplicadas em `manage_agents` e `delegate_to_agent` pelo escopo (depende da decisão 1).
+3. **Modo Agents**: o canal persistente por agente, com os recados entre agentes à vista.
+4. **Feed de atividade** e estados de tarefa.
+5. **Autonomia por agente** e as permissões novas (escolher modelo, iniciar tarefa, mensagem ao usuário).
+6. **Gerente de código** e modelo por tarefa.
+7. **Editor visual da hierarquia** (criar, mover, trocar o superior).

@@ -1,6 +1,6 @@
 # Warden — Estado do Projeto
 
-> Última atualização: 2026-10-03 (Sessão 125)
+> Última atualização: 2026-10-04 (Sessão 143)
 
 ---
 
@@ -18,6 +18,7 @@ Leia o arquivo relevante para o que você precisa:
 | Decisões de arquitetura | `ARCHITECTURE.md` |
 | **Pendências (resolvidas e não resolvidas)** | **`PENDING.md`** |
 | Roadmap, evoluções planejadas, backlog | `ROADMAP.md` |
+| Visão de produto: o Warden como sistema operacional de agentes (hierarquia, modo Agents, Code) | `VISAO_AGENTES.md` |
 | Estudos de fora (Hermes e o aprendizado dos agentes, etc.) | `STUDIES.md` |
 | Log completo de sessões de trabalho | `SESSIONS.md` |
 

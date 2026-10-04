@@ -105,6 +105,57 @@ conhecimento) e mapear o que já existe / precisa adaptar / precisa criar do zer
 levado a `/plan` ainda — ver P62 pro detalhamento completo e pros próximos passos sugeridos pelo
 próprio usuário no documento original.
 
+### Sistema operacional de agentes — hierarquia, canal por agente e três modos (Chat, Agents, Code)
+
+Visão grande trazida pronta pelo usuário em documento próprio (2026-10-04, `ai-hub-agents-spec.md`, removido da raiz e
+incorporado **na íntegra** em `VISAO_AGENTES.md`, com a comparação contra o que o Warden já tem e as decisões em aberto;
+ver P120 a P124). Evolui o que já está nas duas seções vizinhas ("Agent Builder" e "Orquestração de agentes"): lá o foco
+é criar, capacitar e coordenar agentes; aqui é a **organização** que eles formam. A frase central do documento: o projeto
+não é "um chatbot com vários agentes", é **um sistema operacional de agentes de IA**, que começa como um chat normal e
+cresce por necessidade (criar um agente, especializar, delegar, hierarquia, automação) sem exigir que o usuário monte uma
+empresa antes de usar.
+
+- **Agentes globais.** Um agente não pertence a uma conversa nem a um modo: o mesmo "Programming Manager" conversa no
+  Chat, aparece como conversa própria no Agents, é escolhido no Code, recebe tarefa de outro agente e delega a
+  subordinados. Modelos e ferramentas são conceitos **separados** dos agentes (o agente decide, o modelo é o motor, a
+  ferramenta é o que ele alcança).
+- **Três modos.** **Chat** (conversa tradicional, sem agente ou com um, trocando de modelo ou agente quando faz sentido),
+  **Agents** (cada agente persistente tem uma conversa principal que continua sozinha, estilo WhatsApp, e o agente pode
+  **iniciar mensagens**: monitoramento, alertas, relatórios, lembretes, "me avise a cada 30 minutos") e **Code** (ambiente
+  de desenvolvimento sobre o harness/OpenCode, com ou sem um Programming Manager que divide o trabalho entre subagentes).
+- **Comunicação entre agentes, legível.** Quem enviou, para quem, quem respondeu, quem delegou e concluiu, quem trabalha
+  agora; hierárquica (delegar, supervisionar, criar, remover, revisar) e lateral (colaborar, consultar, revisar), esta
+  liberada por permissão e sempre registrada. Mais um **feed de atividade** e uma **visão de organização** (a árvore, cada
+  nó abre conversa, tarefas, configuração, permissões, histórico, atividade).
+- **Hierarquia visual e dinâmica.** Cargos (Principal, Director, Manager, Specialist, Worker, Reviewer, Assistant,
+  Coordinator) **com efeito**: posição, responsabilidades, permissões, delegação. Árvore que se edita visualmente. Agentes
+  autorizados criam, dispensam e substituem subordinados e criam **workers temporários** que não poluem a lista.
+- **Regra fundamental de autoridade.** Um agente só modifica o que está no seu escopo; nunca a própria posição nem as
+  permissões de quem está acima; autoridade vem de **posição + permissões + escopo + aprovação**, e um agente não usa outro
+  para contornar o que não pode. (Tensão com a decisão da Sessão 80, em que só um humano edita um agente com poder: ver a
+  Parte 3 do documento.)
+- **Autonomia configurável (1 a 5)**: só responder, sugerir, executar após aprovação, executar sozinho, gerenciar
+  subordinados sozinho. **Aprovação humana** para apagar dados, gastar dinheiro, infraestrutura crítica, mensagem externa,
+  publicar código, configuração importante, agente com permissão elevada.
+- **Delegação como operação fundamental**: tarefa com responsável, prioridade, subtarefas e estados (pendente, em
+  andamento, aguardando agente, concluído, falhou, pausado) com progresso; o gerente escolhe o **modelo por tarefa** por
+  política (rápido, barato, raciocínio, código, multimodal).
+- **Open source e hospedagem**: self-hosted e hospedado coexistem com o mesmo conceito funcional; planos pagos para
+  hospedagem, infraestrutura, modelos, armazenamento, execução, ferramentas premium, automações e recursos empresariais
+  (ver "Tier pago"). Uso pessoal e empresarial; o usuário é o operador da organização.
+- **22 princípios** fecham o documento (agentes globais, conversas independentes dos agentes, o mesmo agente em vários
+  módulos, chat simples e livre, Agents persistente, Code especializado, agentes conversam e agem sem prompt quando
+  autorizados, criam e gerenciam dentro da autoridade, hierarquia visual e evolutiva, temporários não poluem, modelos e
+  ferramentas separados dos agentes, o usuário acompanha o trabalho, uso pessoal e empresarial, experiência inicial
+  simples, complexidade só quando necessária, open source e self-hosting + hospedagem oficial). Estão na seção 48.
+
+**O que já existe e o que falta**: a Parte 2 do documento compara seção por seção. Em resumo, existem os agentes globais,
+a delegação recursiva e em segundo plano, agentes que criam agentes com aprovação, o recado entre agentes
+(`message_agent`), as tarefas agendadas e os webhooks (agente que age sem prompt), o isolamento de tools, os limites de
+gasto, a aprovação humana e o projeto de código sobre o opencode. **Não existem**: cargos, superior e subordinados, a árvore,
+o modo Agents (canal persistente por agente), o feed de atividade, o objeto "tarefa" com estados, a autonomia por agente e
+o gerente de código. Nada disto foi levado a `/plan`.
+
 ### Orquestração de agentes — dois modos de uso
 
 Detalhado pelo usuário (2026-09-06), evoluindo a ideia de "Sub-agentes autônomos" logo abaixo:
