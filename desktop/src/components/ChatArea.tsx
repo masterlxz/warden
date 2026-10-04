@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AgentEntry, Attachment, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
+import type { AgentEntry, Attachment, CodeMode, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import type { LiveTurn } from "../lib/liveTurn";
 import { LogoMark } from "./Icons";
 import MessageBubble, { MarkdownLink } from "./MessageBubble";
@@ -15,6 +15,9 @@ interface ChatAreaProps {
   live?: LiveTurn;
   /** Stops that task. */
   onCancel: () => void;
+  /** How much a code conversation asks before the engine acts (P103 b); the picker shows only in a code project. */
+  codeMode: CodeMode;
+  onCodeMode: (mode: CodeMode) => void;
   sendError: string | null;
   agents: AgentEntry[];
   providers: ProviderEntry[];
@@ -97,6 +100,8 @@ function ChatArea({
   isSending,
   live,
   onCancel,
+  codeMode,
+  onCodeMode,
   sendError,
   agents,
   providers,
@@ -161,6 +166,21 @@ function ChatArea({
                 {p.name}
               </option>
             ))}
+          </select>
+        )}
+        {projects.some((p) => p.id === selectedProjectId && p.code) && (
+          // Changeable at any moment, a task that is running included (P103 b).
+          <select
+            className={`chat-header-select${codeMode === "acceptAll" ? " chat-header-select--warn" : ""}`}
+            aria-label="Mode"
+            title="How much the AI asks before acting. Takes effect at once, even in the middle of a task; reopening the conversation goes back to Manual."
+            value={codeMode}
+            onChange={(e) => onCodeMode(e.currentTarget.value as CodeMode)}
+          >
+            <option value="manual">Manual (asks everything)</option>
+            <option value="acceptEdits">Accept edits</option>
+            <option value="acceptAll">Accept all (asks nothing)</option>
+            <option value="plan">Plan (changes nothing)</option>
           </select>
         )}
         <select

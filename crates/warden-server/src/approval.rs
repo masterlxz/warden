@@ -26,6 +26,22 @@ pub struct WsApprover {
     timeout: Duration,
 }
 
+/// Withdraws a question nobody answered: forgets it and tells the client to close it. Answered ones are already gone
+/// from `pending`, so it does nothing for them.
+struct Withdraw {
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Answer>>>>,
+    tx: mpsc::UnboundedSender<ServerMessage>,
+    approval_id: u64,
+}
+
+impl Drop for Withdraw {
+    fn drop(&mut self) {
+        if self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.approval_id).is_some() {
+            let _ = self.tx.send(ServerMessage::ApprovalCancelled { approval_id: self.approval_id });
+        }
+    }
+}
+
 impl WsApprover {
     pub fn new(tx: mpsc::UnboundedSender<ServerMessage>) -> Self {
         Self { tx, pending: Arc::default(), next_id: Arc::default(), timeout: APPROVAL_TIMEOUT }
@@ -59,20 +75,18 @@ impl WsApprover {
         let approval_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (answer_tx, answer_rx) = oneshot::channel();
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(approval_id, answer_tx);
+        // However this ends — the deadline, or the asker giving up (a code task whose mode was changed while it
+        // waited) — a question still open is withdrawn from the person's screen.
+        let _withdraw = Withdraw { pending: self.pending.clone(), tx: self.tx.clone(), approval_id };
         let ask = ServerMessage::ApprovalRequest { approval_id, target: request.target, action: request.action, detail: request.detail, always };
         if self.tx.send(ask).is_err() {
-            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
             return Answer::Reject;
         }
         match tokio::time::timeout(self.timeout, answer_rx).await {
             Ok(Ok(answer)) => answer,
             // The connection closed: nobody can answer any more.
             Ok(Err(_)) => Answer::Reject,
-            Err(_) => {
-                self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&approval_id);
-                let _ = self.tx.send(ServerMessage::ApprovalCancelled { approval_id });
-                Answer::Reject
-            }
+            Err(_) => Answer::Reject,
         }
     }
 
@@ -153,6 +167,26 @@ mod tests {
         assert_eq!(rx.recv().await, Some(ServerMessage::ApprovalCancelled { approval_id: 0 }));
         // A late answer changes nothing.
         approver.resolve(0, true);
+    }
+
+    #[tokio::test]
+    async fn an_asker_that_gives_up_withdraws_the_question_from_the_screen() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let approver = WsApprover::new(tx);
+        // The asker stops waiting (the future is dropped), as a code task does when its mode changes.
+        let _ = tokio::time::timeout(Duration::from_millis(30), approver.ask(request(), None)).await;
+        assert!(matches!(rx.recv().await, Some(ServerMessage::ApprovalRequest { approval_id: 0, .. })));
+        assert_eq!(rx.recv().await, Some(ServerMessage::ApprovalCancelled { approval_id: 0 }));
+        // An answered one is not "withdrawn" afterwards.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let approver = WsApprover::new(tx);
+        let device = approver.clone();
+        tokio::spawn(async move {
+            rx.recv().await.unwrap();
+            device.resolve(0, true);
+            assert!(tokio::time::timeout(Duration::from_millis(50), rx.recv()).await.is_err(), "no cancel after an answer");
+        });
+        assert!(approver.approve(request()).await);
     }
 
     #[tokio::test]

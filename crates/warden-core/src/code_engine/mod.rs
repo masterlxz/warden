@@ -13,10 +13,12 @@ use async_trait::async_trait;
 
 use crate::tool::Approver;
 
+pub mod mode;
 pub mod opencode;
 pub mod process;
 mod tracker;
 
+pub use mode::{CodeMode, CodeModes};
 pub use tracker::{PermissionAsk, Signal, Tracker};
 
 /// What the person watching a turn sees, as it happens.
@@ -63,6 +65,8 @@ pub struct TurnRequest {
     pub target: String,
     /// What the engine is told besides the task, every time: the project's instructions.
     pub system: Option<String>,
+    /// How much to ask the person, now and as they change it during the task.
+    pub mode: tokio::sync::watch::Receiver<CodeMode>,
 }
 
 pub struct TurnOutcome {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::Notify;
-use warden_core::code_engine::{CodeEngine, CodeEvent, ToolEvent, ToolStatus, TurnOutcome, TurnRequest};
+use warden_core::code_engine::{CodeEngine, CodeEvent, CodeMode, ToolEvent, ToolStatus, TurnOutcome, TurnRequest};
 use warden_core::memory::Vault;
 use warden_core::model::{response_stream, ChatStream, Message, ModelProvider, Response};
 use warden_core::orchestrator::Orchestrator;
@@ -28,6 +28,8 @@ impl ModelProvider for Plain {
 
 /// A task that opens `ses_1`, uses one tool that needs a yes, and answers "done" — or, for "HANG", waits to be stopped.
 struct Scripted {
+    /// The mode of each task, as a watch the test can look at again later (a change in the middle of a task).
+    modes: Mutex<Vec<tokio::sync::watch::Receiver<CodeMode>>>,
     asked: Mutex<Vec<TurnRequest>>,
     approvals: Mutex<Vec<bool>>,
     aborted: Mutex<Vec<(String, String)>>,
@@ -38,6 +40,7 @@ struct Scripted {
 impl CodeEngine for Scripted {
     async fn run_turn(&self, request: TurnRequest, approver: Option<Arc<dyn Approver>>, on_event: &mut (dyn FnMut(CodeEvent) + Send)) -> anyhow::Result<TurnOutcome> {
         let hang = request.prompt == "HANG";
+        self.modes.lock().unwrap().push(request.mode.clone());
         self.asked.lock().unwrap().push(request);
         on_event(CodeEvent::Session("ses_1".into()));
         let tool = |status| CodeEvent::Tool(ToolEvent { call_id: "k1".into(), tool: "bash".into(), title: "cargo test".into(), status });
@@ -64,7 +67,7 @@ impl CodeEngine for Scripted {
 }
 
 fn engine() -> Arc<Scripted> {
-    Arc::new(Scripted { asked: Mutex::default(), approvals: Mutex::default(), aborted: Mutex::default(), stop: Notify::new() })
+    Arc::new(Scripted { modes: Mutex::default(), asked: Mutex::default(), approvals: Mutex::default(), aborted: Mutex::default(), stop: Notify::new() })
 }
 
 struct Hub {
@@ -196,6 +199,37 @@ async fn a_stop_finds_the_running_task_and_the_work_so_far_is_kept() {
     elsewhere.send(&ClientMessage::Ping { nonce: 7 }).await.unwrap();
     assert!(matches!(elsewhere.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 7 })));
     assert_eq!(engine.aborted.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_mode_a_device_sets_reaches_the_task_and_a_change_in_the_middle_of_it_does_too() {
+    let engine = engine();
+    let hub = spin_up(Some(engine.clone())).await;
+    let mut me = owner(&hub).await;
+    save_project(&mut me, "repo", Some("/home/me/repo"), true).await;
+
+    // A conversation nobody set is manual; one set before its task starts begins in that mode.
+    me.send(&ClientMessage::SetCodeMode { conversation_id: "c1".into(), mode: "plan".into() }).await.unwrap();
+    say(&mut me, "HANG", Some("repo")).await;
+    assert!(matches!(next(&mut me).await, ServerMessage::ChatEvent { .. }), "the task is running");
+    let mode = engine.modes.lock().unwrap()[0].clone();
+    assert_eq!(*mode.borrow(), CodeMode::Plan);
+
+    // Another device changes it while the task runs: the task's own watch sees it, at once.
+    let mut elsewhere = ServerConnection::connect(&hub.url, "phone", "Phone", KEY).await.unwrap();
+    elsewhere.send(&ClientMessage::SetCodeMode { conversation_id: "c1".into(), mode: "acceptAll".into() }).await.unwrap();
+    elsewhere.send(&ClientMessage::Ping { nonce: 1 }).await.unwrap();
+    assert!(matches!(elsewhere.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 1 })), "messages are handled in order");
+    assert_eq!(*mode.borrow(), CodeMode::AcceptAll);
+
+    // A name nobody knows asks the most.
+    elsewhere.send(&ClientMessage::SetCodeMode { conversation_id: "c1".into(), mode: "yolo".into() }).await.unwrap();
+    elsewhere.send(&ClientMessage::Ping { nonce: 2 }).await.unwrap();
+    assert!(matches!(elsewhere.recv().await.unwrap(), Some(ServerMessage::Pong { nonce: 2 })));
+    assert_eq!(*mode.borrow(), CodeMode::Manual);
+
+    elsewhere.send(&ClientMessage::CancelTurn { conversation_id: "c1".into() }).await.unwrap();
+    assert!(matches!(next(&mut me).await, ServerMessage::ChatResponse { .. }));
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@ import VaultView from "./components/VaultView";
 import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
-import type { Attachment, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
+import type { Attachment, CodeMode, ConversationSummary, ProjectDto, UserInfo } from "./hub/messages";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
 const HISTORY_LIMIT = 200;
@@ -97,6 +97,8 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   /** The project the open conversation is in — "" for none. Chosen before its first message, fixed after. */
   const [projectId, setProjectId] = useState("");
+  /** How much each code conversation asks (P103 b). Only here, never saved: a conversation opened again asks everything. */
+  const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
   /** Tools in this browser's turns waiting for a yes (P46), oldest first. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
   /** P84: the member this browser belongs to — `undefined` for the owner. */
@@ -382,6 +384,8 @@ export default function App() {
     const connection = connRef.current;
     if (!connection) return;
     const id = activeIdRef.current;
+    const isCodeProject = projects.some((p) => p.id === projectId && p.code);
+    const codeMode = codeModes[id] ?? "manual";
     const entry: ChatEntry = { role: "user", content: message, attachments };
     setEntries((current) => [...current, entry]);
     setPendingTurns((current) => ({ ...current, [id]: entry }));
@@ -393,11 +397,24 @@ export default function App() {
       ]);
     }
     try {
+      // Said again with every task: a hub that restarted has forgotten it, and the picker must be what applies.
+      if (isCodeProject) connection.setCodeMode(id, codeMode);
       // The project only counts when this turn starts the conversation: the hub keeps an existing one where it was made.
       connection.sendChat(message, id, attachments, agentId || undefined, projectId || undefined);
     } catch (err) {
       setPendingTurns(({ [id]: _failed, ...rest }) => rest);
       setEntries((current) => [...current, { role: "error", content: errorText(err), attachments: [] }]);
+    }
+  }
+
+  /** The picker's choice, at once — a task that is running included, which is the point of changing it mid-way. */
+  function handleCodeMode(mode: CodeMode) {
+    const id = activeIdRef.current;
+    setCodeModes((current) => ({ ...current, [id]: mode }));
+    try {
+      connRef.current?.setCodeMode(id, mode);
+    } catch {
+      // Offline: the next task says it again.
     }
   }
 
@@ -698,6 +715,23 @@ export default function App() {
                           {p.name}
                         </option>
                       ))}
+                    </select>
+                  </label>
+                )}
+                {projects.some((p) => p.id === projectId && p.code) && (
+                  // Changeable at any moment, a task that is running included (P103 b).
+                  <label className={`agent-picker${(codeModes[activeId] ?? "manual") === "acceptAll" ? " code-mode--warn" : ""}`}>
+                    <span className="agent-picker-label">Modo</span>
+                    <select
+                      value={codeModes[activeId] ?? "manual"}
+                      onChange={(e) => handleCodeMode(e.target.value as CodeMode)}
+                      disabled={!phase.connected}
+                      title="Quanto a IA pergunta antes de agir. Vale na hora, até no meio de uma tarefa; ao reabrir a conversa volta a Manual."
+                    >
+                      <option value="manual">Manual (pergunta tudo)</option>
+                      <option value="acceptEdits">Aceitar edições</option>
+                      <option value="acceptAll">Aceitar tudo (sem perguntar)</option>
+                      <option value="plan">Plano (não altera nada)</option>
                     </select>
                   </label>
                 )}

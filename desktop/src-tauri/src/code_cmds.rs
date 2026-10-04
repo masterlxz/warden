@@ -9,7 +9,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::OnceCell;
 use warden_bootstrap::code_turn::CodeTurn;
-use warden_core::code_engine::{CodeEngine, CodeEvent};
+use warden_core::code_engine::{CodeEngine, CodeEvent, CodeMode, CodeModes};
 use warden_core::model::Attachment;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::project::Project;
@@ -32,6 +32,15 @@ pub struct CodeState {
     runtime: OnceCell<Runtime>,
     /// The tasks running now, to find the session `cancel_turn` stops.
     turns: CodeTurns,
+    /// How much each conversation asks, changeable while its task runs (`set_code_mode`).
+    modes: CodeModes,
+}
+
+impl CodeState {
+    /// `mode` is a name a window sent (`CodeMode::parse`).
+    pub fn set_mode(&self, conversation_id: &str, mode: &str) {
+        self.modes.set(conversation_id, CodeMode::parse(mode));
+    }
 }
 
 /// Runs `content` as a task in `project`'s folder and returns what the engine answered. The exchange is already saved
@@ -79,11 +88,19 @@ pub async fn run_turn(
         title_seed: &seed,
         user_input: content,
         attachments,
+        mode: state.code.modes.subscribe(conversation_id),
     };
     let approver = Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() });
     let result = turn.run(Some(approver), &mut on_event).await;
     turns.end(conversation_id);
     result.map(|outcome| outcome.content).map_err(|e| format!("{e:#}"))
+}
+
+/// How much this conversation asks before the engine acts: `manual`, `acceptEdits`, `acceptAll` or `plan`. Takes effect
+/// at once, a task that is running included.
+#[tauri::command]
+pub fn set_code_mode(state: State<'_, AppState>, conversation_id: String, mode: String) {
+    state.code.set_mode(&conversation_id, &mode);
 }
 
 /// The Stop button: asks the engine to stop the task this conversation is running. Harmless when it isn't running one.

@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use warden_core::code_engine::{CodeEngine, CodeEvent, TurnRequest};
+use warden_core::code_engine::{CodeEngine, CodeEvent, CodeMode, TurnRequest};
 use warden_core::model::Attachment;
 use warden_core::orchestrator::MessageOutcome;
 use warden_core::project::{Project, ProjectStore};
@@ -34,6 +34,8 @@ pub struct CodeTurn<'a> {
     pub title_seed: &'a str,
     pub user_input: &'a str,
     pub attachments: Vec<Attachment>,
+    /// How much to ask the person, changeable while the task runs (`CodeModes::subscribe`).
+    pub mode: tokio::sync::watch::Receiver<CodeMode>,
 }
 
 impl CodeTurn<'_> {
@@ -50,6 +52,7 @@ impl CodeTurn<'_> {
             title: self.project.name.clone(),
             target: self.project.name.clone(),
             system: Some(self.project.instructions.trim().to_string()).filter(|s| !s.is_empty()),
+            mode: self.mode,
         };
         let outcome = self.engine.run_turn(request, approver, on_event).await?;
 
@@ -131,7 +134,7 @@ mod tests {
     }
 
     fn turn<'a>(engine: &'a Scripted, project: &'a Project, dir: &'a Path, text: &'a str) -> CodeTurn<'a> {
-        CodeTurn { engine, project, conversations_dir: dir, conversation_id: "c1", title_seed: text, user_input: text, attachments: Vec::new() }
+        CodeTurn { engine, project, conversations_dir: dir, conversation_id: "c1", title_seed: text, user_input: text, attachments: Vec::new(), mode: tokio::sync::watch::channel(CodeMode::Manual).1 }
     }
 
     #[test]

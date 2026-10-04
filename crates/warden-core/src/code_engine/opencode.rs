@@ -17,9 +17,10 @@ use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Value};
+use tokio::sync::watch;
 
 use super::tracker::{PermissionAsk, Signal, Tracker};
-use super::{CodeEngine, CodeEvent, TurnOutcome, TurnRequest};
+use super::{CodeEngine, CodeEvent, CodeMode, TurnOutcome, TurnRequest};
 use crate::tool::{Answer, ApprovalRequest, Approver};
 
 /// How long one permission ask waits for the person; no answer counts as no (like the project shell and the SSH hosts).
@@ -174,6 +175,39 @@ impl OpencodeEngine {
         !ask.patterns.is_empty() && ask.patterns.iter().all(|touched| allowed.iter().any(|(permission, pattern)| *permission == ask.permission && matches_pattern(pattern, touched)))
     }
 
+    /// Whether the engine may do what it asks to. The mode decides first (and is looked at again whenever the person
+    /// changes it, so an ask waiting at the modal when they switch to "accept all" or to "plan" is answered by the new
+    /// mode and the modal goes away); then what they said "always" to; then the person.
+    async fn decide(&self, session: &str, ask: &PermissionAsk, target: &str, approver: Option<&Arc<dyn Approver>>, mode: &mut watch::Receiver<CodeMode>) -> bool {
+        let mut watching = true;
+        loop {
+            let current = *mode.borrow_and_update();
+            if let Some(decision) = current.decides(&ask.permission) {
+                return decision;
+            }
+            if self.is_allowed(session, ask) {
+                return true;
+            }
+            let Some(approver) = approver else { return false };
+            let request = ApprovalRequest { target: target.to_string(), action: ask.permission.clone(), detail: ask.patterns.join(", ") };
+            let covers = Some(ask.always.join(", ")).filter(|c| !c.is_empty());
+            tokio::select! {
+                answer = tokio::time::timeout(APPROVAL_TIMEOUT, approver.ask(request, covers.as_deref())) => {
+                    let answer = answer.unwrap_or(Answer::Reject);
+                    if answer == Answer::Always {
+                        self.remember(session, ask);
+                    }
+                    return answer != Answer::Reject;
+                }
+                // Dropping the question withdraws it from the person's screen.
+                changed = mode.changed(), if watching => {
+                    // Nobody can change the mode any more: stop listening for it rather than spin.
+                    watching = changed.is_ok();
+                }
+            }
+        }
+    }
+
     fn remember(&self, session: &str, ask: &PermissionAsk) {
         let mut always = self.always.lock().unwrap_or_else(|e| e.into_inner());
         let allowed = always.entry(session.to_string()).or_default();
@@ -216,7 +250,15 @@ impl CodeEngine for OpencodeEngine {
             None => client.create_session(&request.title).await?,
         };
         let mut events = client.events().await?;
-        let system = request.system.as_deref();
+        let mut mode = request.mode.clone();
+        // The mode's own instructions (the plan mode's) go with the task, besides the project's.
+        let mode_note = mode.borrow().instructions();
+        let system_text = match (request.system.as_deref(), mode_note) {
+            (Some(system), Some(note)) => Some(format!("{system}\n\n{note}")),
+            (None, Some(note)) => Some(note.to_string()),
+            (system, None) => system.map(str::to_string),
+        };
+        let system = system_text.as_deref();
         if let Err(err) = client.prompt(&session, &request.prompt, system).await {
             if request.session_id.is_none() || !err.is::<SessionGone>() {
                 return Err(err);
@@ -233,22 +275,7 @@ impl CodeEngine for OpencodeEngine {
                 match signal {
                     Signal::Event(event) => on_event(event),
                     Signal::Ask(ask) => {
-                        let allowed = if self.is_allowed(&session, &ask) {
-                            true
-                        } else {
-                            match &approver {
-                                Some(approver) => {
-                                    let request = ApprovalRequest { target: request.target.clone(), action: ask.permission.clone(), detail: ask.patterns.join(", ") };
-                                    let covers = Some(ask.always.join(", ")).filter(|c| !c.is_empty());
-                                    let answer = tokio::time::timeout(APPROVAL_TIMEOUT, approver.ask(request, covers.as_deref())).await.unwrap_or(Answer::Reject);
-                                    if answer == Answer::Always {
-                                        self.remember(&session, &ask);
-                                    }
-                                    answer != Answer::Reject
-                                }
-                                None => false,
-                            }
-                        };
+                        let allowed = self.decide(&session, &ask, &request.target, approver.as_ref(), &mut mode).await;
                         client.answer(&ask.id, allowed).await?;
                     }
                     Signal::Idle => return Ok(TurnOutcome { session_id: session, text: tracker.text(), tools_used: tracker.tools_used().to_vec() }),
@@ -402,7 +429,12 @@ mod tests {
     }
 
     fn request(session: Option<&str>) -> TurnRequest {
-        TurnRequest { workdir: "/home/me/repo".into(), session_id: session.map(str::to_string), prompt: "fix the bug".into(), title: "Repo".into(), target: "Repo".into(), system: Some("Be brief.".into()) }
+        request_in(session, CodeMode::Manual)
+    }
+
+    /// A task in `mode` that nobody changes.
+    fn request_in(session: Option<&str>, mode: CodeMode) -> TurnRequest {
+        TurnRequest { workdir: "/home/me/repo".into(), session_id: session.map(str::to_string), prompt: "fix the bug".into(), title: "Repo".into(), target: "Repo".into(), system: Some("Be brief.".into()), mode: watch::channel(mode).1 }
     }
 
     struct Says {
@@ -554,6 +586,73 @@ mod tests {
         let asked = person.asked.lock().unwrap();
         assert_eq!(asked.len(), 2);
         assert_eq!(asked[0].1, None, "nothing to offer");
+    }
+
+    /// What the engine was told for one ask, by id.
+    fn reply(fake: &Fake, id: &str) -> String {
+        let reply: Value = serde_json::from_str(&fake.calls("POST", &format!("/permission/{id}/reply"))[0]).unwrap();
+        reply["reply"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn the_mode_decides_what_asks_and_what_does_not() {
+        // (mode, answer to an edit, answer to a command, how many times the person was asked)
+        let cases = [
+            (CodeMode::Manual, "once", "once", 2),
+            (CodeMode::AcceptEdits, "once", "once", 1),
+            (CodeMode::AcceptAll, "once", "once", 0),
+            (CodeMode::Plan, "reject", "reject", 0),
+        ];
+        for (mode, edit, command, asked) in cases {
+            let steps = vec![assistant(), ask_always("per_1", "edit", "src/main.rs", "*"), Step::WaitForAnswer, ask("per_2", "cargo test"), Step::WaitForAnswer, idle()];
+            let fake = serve(steps, vec![]).await;
+            let engine = OpencodeEngine::new(fake.launcher(None));
+            let person = approver(true);
+            run(&engine, request_in(None, mode), Some(person.clone())).await.0.unwrap();
+            assert_eq!((reply(&fake, "per_1").as_str(), reply(&fake, "per_2").as_str()), (edit, command), "{mode:?}");
+            assert_eq!(person.asked.lock().unwrap().len(), asked, "{mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_mode_tells_the_engine_to_answer_with_a_plan_and_the_other_modes_do_not() {
+        for (mode, said) in [(CodeMode::Plan, true), (CodeMode::Manual, false), (CodeMode::AcceptAll, false)] {
+            let fake = serve(vec![assistant(), answer("ok"), idle()], vec![]).await;
+            run(&OpencodeEngine::new(fake.launcher(None)), request_in(None, mode), None).await.0.unwrap();
+            let prompt: Value = serde_json::from_str(&fake.calls("POST", "/session/ses_root/prompt_async")[0]).unwrap();
+            let system = prompt["system"].as_str().unwrap();
+            assert!(system.starts_with("Be brief."), "the project's own instructions stay");
+            assert_eq!(system.contains("Plan mode"), said, "{mode:?}");
+        }
+    }
+
+    /// Never answers, and says it was asked.
+    struct Hangs(tokio::sync::Notify);
+    #[async_trait]
+    impl Approver for Hangs {
+        async fn approve(&self, _request: ApprovalRequest) -> bool {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_the_mode_while_an_ask_waits_answers_it_with_the_new_mode() {
+        for (to, expected) in [(CodeMode::AcceptAll, "once"), (CodeMode::Plan, "reject")] {
+            let fake = serve(vec![assistant(), ask("per_1", "cargo test"), Step::WaitForAnswer, idle()], vec![]).await;
+            let engine = OpencodeEngine::new(fake.launcher(None));
+            let modes = super::super::CodeModes::default();
+            let mut task = request(None);
+            task.mode = modes.subscribe("c1");
+            let person = Arc::new(Hangs(tokio::sync::Notify::new()));
+            let waiting = person.clone();
+            tokio::spawn(async move {
+                waiting.0.notified().await;
+                modes.set("c1", to);
+            });
+            run(&engine, task, Some(person)).await.0.unwrap();
+            assert_eq!(reply(&fake, "per_1"), expected, "switched to {to:?} with the ask open");
+        }
     }
 
     #[test]

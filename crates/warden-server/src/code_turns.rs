@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use warden_core::code_engine::opencode::OpencodeEngine;
 use warden_core::code_engine::process::OpencodeProcesses;
-use warden_core::code_engine::CodeEngine;
+use warden_core::code_engine::{CodeEngine, CodeModes};
 
 use crate::engine_models::EngineModels;
 
@@ -31,6 +31,7 @@ pub fn opencode_engine(models: &EngineModels) -> Arc<dyn CodeEngine> {
 #[derive(Clone, Default)]
 pub struct CodeTurns {
     running: Arc<Mutex<HashMap<String, Running>>>,
+    modes: CodeModes,
 }
 
 #[derive(Clone)]
@@ -41,6 +42,11 @@ struct Running {
 }
 
 impl CodeTurns {
+    /// How much each conversation asks, shared by every connection: another device can change it too.
+    pub fn modes(&self) -> &CodeModes {
+        &self.modes
+    }
+
     pub fn begin(&self, conversation_id: &str, workdir: &str) {
         self.running.lock().unwrap().insert(conversation_id.to_string(), Running { workdir: workdir.to_string(), session: None });
     }

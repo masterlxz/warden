@@ -185,6 +185,10 @@ export interface SshHostEntry {
 /** Payload of the `approval-request` event (`approval::ApprovalPayload`) — something the AI wants to
  * do that needs your "yes": an SSH action on a server that requires approval, or creating/changing an
  * agent. Answered through `resolve_approval`. */
+/** How much a code conversation asks before the engine acts (P103 b): everything / files changed freely / nothing / no
+ * change at all, only a plan. Changeable at any moment, a running task included. */
+export type CodeMode = "manual" | "acceptEdits" | "acceptAll" | "plan";
+
 export interface ApprovalRequest {
   id: number;
   /** The SSH server id or the agent id the action is about. */

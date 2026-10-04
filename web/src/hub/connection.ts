@@ -16,6 +16,7 @@ import {
   type BotPairingsView,
   type ChatEventDto,
   type ClientMessage,
+  type CodeMode,
   type ConversationSummary,
   type HistoryMessage,
   type HubDevice,
@@ -590,6 +591,11 @@ export class ServerConnection {
   /** P103 b — asks the hub to stop the task this conversation is running. The turn still ends with `onChatMessage`. */
   cancelTurn(conversationId: string): void {
     this.socket.send(encode({ type: "cancelTurn", conversationId }));
+  }
+
+  /** P103 b — how much this code conversation asks; the hub forgets it on a restart, so it is said again with each task. */
+  setCodeMode(conversationId: string, mode: CodeMode): void {
+    this.socket.send(encode({ type: "setCodeMode", conversationId, mode }));
   }
 
   sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string): void {

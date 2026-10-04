@@ -26,6 +26,10 @@ export interface ToolSpec {
   parameters: unknown;
 }
 
+/** How much a code conversation asks before the engine acts (P103 b): everything / nothing but looking, files changed
+ * freely / nothing / no change at all, only a plan. */
+export type CodeMode = "manual" | "acceptEdits" | "acceptAll" | "plan";
+
 /** Mirrors `ChatEventDto` (P103 b): what a code engine does while a code project's task runs. The task's end is still
  * `chatResponse`/`chatError`. */
 export type ChatEventDto =
@@ -612,6 +616,8 @@ export type ClientMessage =
   | { type: "moveConversation"; requestId: number; conversationId: string; projectId?: string }
   /** P103 b — stops the task a code project's conversation is running; the work so far is kept. */
   | { type: "cancelTurn"; conversationId: string }
+  /** P103 b — how much a code conversation asks before acting; takes effect at once, a running task included. */
+  | { type: "setCodeMode"; conversationId: string; mode: CodeMode }
   | { type: "listProjects"; requestId: number }
   | { type: "saveProject"; requestId: number; project: ProjectDto; overwrite: boolean }
   | { type: "deleteProject"; requestId: number; id: string }

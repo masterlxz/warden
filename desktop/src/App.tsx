@@ -14,7 +14,7 @@ import TasksView from "./components/TasksView";
 import VaultView from "./components/VaultView";
 import WorkspaceView from "./components/WorkspaceView";
 import { applyEvent, type ChatEventDto, type LiveTurn } from "./lib/liveTurn";
-import type { Attachment, ChatMessage, Conversation, ProjectEntry, ProviderFallback, Settings, Usage } from "./types";
+import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
   providers: [],
@@ -79,6 +79,9 @@ function App() {
   const [sendError, setSendError] = useState<string | null>(null);
   // What a code engine has done so far in the task each conversation is running (P103 b), until the turn ends.
   const [liveTurns, setLiveTurns] = useState<Record<string, LiveTurn>>({});
+  // How much each code conversation asks (P103 b), by conversation id — "new" for one that hasn't started. Only here,
+  // never saved: a conversation opened again asks everything.
+  const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
   const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "workspace">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
@@ -226,6 +229,16 @@ function App() {
       .catch((err) => console.error("failed to persist conversation:", err));
   }
 
+  const codeMode = codeModes[activeConversationId ?? "new"] ?? "manual";
+
+  /** The picker's choice, at once — a task that is running included, which is the point of changing it mid-way. */
+  function handleCodeMode(mode: CodeMode) {
+    setCodeModes((prev) => ({ ...prev, [activeConversationId ?? "new"]: mode }));
+    if (activeConversationId !== null) {
+      invoke("set_code_mode", { conversationId: activeConversationId, mode }).catch((err) => setSendError(String(err)));
+    }
+  }
+
   async function handleSendMessage(content: string, attachments: Attachment[] = []) {
     const conversationId = activeConversationId ?? crypto.randomUUID();
     const history = (activeConversation?.messages ?? []).map(({ role, content, attachments }) => ({
@@ -245,7 +258,11 @@ function App() {
     // leave it twice in the file.
     const isCodeTurn = projects.some((p) => p.id === currentProjectId && p.code);
     appendMessage(conversationId, userMessage, content || "Image", !isCodeTurn);
-    if (activeConversationId === null) setActiveConversationId(conversationId);
+    if (activeConversationId === null) {
+      // The mode picked before the first message goes with the conversation that message starts.
+      setCodeModes(({ new: _started, ...rest }) => ({ ...rest, [conversationId]: codeMode }));
+      setActiveConversationId(conversationId);
+    }
 
     setSendError(null);
     setIsSending(true);
@@ -268,6 +285,8 @@ function App() {
         // The conversation's project (P103): the turn runs on its folder, with its instructions.
         projectId: currentProjectId || null,
         conversationId,
+        // Said with every task, so the mode the picker shows is the one that applies.
+        codeMode: isCodeTurn ? codeMode : null,
       });
       if (reply.alreadySaved) {
         // The backend wrote both messages: take the saved copy instead of appending.
@@ -359,6 +378,8 @@ function App() {
           isSending={isSending}
           live={activeConversationId === null ? undefined : liveTurns[activeConversationId]}
           onCancel={handleCancel}
+          codeMode={codeMode}
+          onCodeMode={handleCodeMode}
           sendError={sendError}
           agents={settings.agents}
           providers={settings.providers}

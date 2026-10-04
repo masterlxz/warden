@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-03 — Sessão 130
+
+- **Objetivo**: o seletor de modo da conversa de código, como no Claude Code e no opencode, trocável **no meio da tarefa** (pedido do usuário). Em Plan mode. Decisões do usuário: quatro modos (Manual, Aceitar edições, Aceitar tudo, Plano); ao reabrir a conversa volta a Manual; Plano imposto pelo Warden.
+- **Feito**: `CodeMode`/`CodeModes` (`warden_core::code_engine::mode`), `TurnRequest.mode` (um `watch`), `OpencodeEngine::decide` (modo → "sempre" → pessoa, com `select!` para a troca no meio), a instrução do Plano no `system`, `ClientMessage::SetCodeMode`, o `CodeModes` dentro do `CodeTurns` do hub, o guard `Withdraw` do `WsApprover`, `set_code_mode` e o `code_mode` do `send_message` no desktop, e o seletor na web e no desktop (cor de perigo em "Aceitar tudo").
+- **Conferido no opencode 1.18.34 instalado** (servidor temporário no scratchpad, apagado depois): a configuração de permissões do opencode só tem a chave `edit` para alterar arquivos (não há `write`/`patch` separados), então "Aceitar edições" é `permission == "edit"`.
+- **Verificado**: 1142 testes passando no workspace sem o desktop (8 novos no core, 1 no hub, 1 no `WsApprover`, 1 no protocolo) + 35 do desktop, 0 falhando, 8 ignorados; `tsc` da web e do desktop limpos; clippy sem aviso novo (o único é o antigo de `learning_eval.rs`). Os testes cobrem: cada modo contra edição e comando (com quantas vezes a pessoa foi perguntada), o Plano no `system` e os outros modos não, a troca com a pergunta aberta (→ Aceitar tudo responde `once`; → Plano responde `reject`), o descarte retirando a pergunta, e no hub o modo chegando à tarefa e uma troca vinda de **outro aparelho** durante a tarefa.
+- **Não verificado**: nenhuma tela; o opencode real nos modos novos (um Plano de verdade; uma edição real em Aceitar edições); o membro ignorado no `SetCodeMode` (a guarda existe, sem teste).
+
+---
+
 ### 2026-10-03 — Sessão 129
 
 - **Objetivo**: o item (3) do P103: "sempre permitir" nas permissões do modo código. Em Plan mode; o usuário escolheu: **por conversa, em memória**, com o **padrão que o opencode sugere** (`always` do pedido).

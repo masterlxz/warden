@@ -1836,6 +1836,12 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* "Aceitar tudo" (P103 b) turns off the only protection the shell has, so the picker says so. */
+.code-mode--warn select {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 /* P46 — a tool in this browser's turn waiting for the person's yes. */
 .approval-backdrop {
   position: fixed;

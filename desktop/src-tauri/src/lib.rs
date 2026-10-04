@@ -199,6 +199,7 @@ async fn send_message(
     provider_id: Option<String>,
     project_id: Option<String>,
     conversation_id: Option<String>,
+    code_mode: Option<String>,
 ) -> Result<SendMessageResult, String> {
     let base = { state.orchestrator.lock().unwrap().clone() }?;
     // Spends as the desktop (P4) — set before scoping, so the agents this one delegates or writes to
@@ -242,6 +243,8 @@ async fn send_message(
             let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
             let code = warden_bootstrap::code_turn::code_project(&projects, &dir, conversation_id, Some(id)).map_err(|e| format!("{e:#}"))?;
             if let Some(project) = code {
+                // The window says its mode with every task, so a mode it shows is the mode that applies.
+                state.code.set_mode(conversation_id, code_mode.as_deref().unwrap_or("manual"));
                 let content = code_cmds::run_turn(app, &state, &base, project, conversation_id, &content, attachments).await?;
                 return Ok(SendMessageResult { content, usage: None, attachments: Vec::new(), generated_files: Vec::new(), fallbacks: Vec::new(), already_saved: true });
             }
@@ -950,6 +953,7 @@ pub fn run() {
             list_tool_names,
             approval::resolve_approval,
             code_cmds::cancel_turn,
+            code_cmds::set_code_mode,
             open_generated_file,
             read_attachment,
             transcribe_audio,

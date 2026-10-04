@@ -325,6 +325,14 @@ body {
   border-color: var(--color-accent);
 }
 
+/* "Accept all" (P103 b) turns off the only protection the shell has, so the picker says so. */
+.chat-header-select--warn,
+.chat-header-select--warn:focus,
+.chat-header-select--warn:hover {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 .chat-header-label {
   border-radius: 999px;
   border: 1px solid transparent;

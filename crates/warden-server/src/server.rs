@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
-use warden_core::code_engine::{CodeEngine, CodeEvent};
+use warden_core::code_engine::{CodeEngine, CodeEvent, CodeMode};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::project::ProjectStore;
 use warden_core::skill::SkillStore;
@@ -1241,7 +1241,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                                 }
                             };
                             let seed = title_seed(&message, &attachments);
-                            let turn = CodeTurn { engine: engine.as_ref(), project: &project, conversations_dir: &conversations_dir, conversation_id: &conversation_id, title_seed: &seed, user_input: &message, attachments };
+                            let mode = turns.modes().subscribe(&conversation_id);
+                            let turn = CodeTurn { engine: engine.as_ref(), project: &project, conversations_dir: &conversations_dir, conversation_id: &conversation_id, title_seed: &seed, user_input: &message, attachments, mode };
                             let result = turn.run(Some(approver), &mut on_event).await;
                             turns.end(&conversation_id);
                             let reply = match result {
@@ -1302,6 +1303,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         tokio::spawn(async move {
                             let _ = engine.abort(&workdir, &session).await;
                         });
+                    }
+                }
+                // P103 b: how much a code conversation asks, changeable while its task runs. Also the owner's alone.
+                Ok(ClientMessage::SetCodeMode { conversation_id, mode }) => {
+                    if member.is_none() {
+                        code_turns.modes().set(&conversation_id, CodeMode::parse(&mode));
                     }
                 }
                 Ok(ClientMessage::ToolCallResult { call_id, result }) => {

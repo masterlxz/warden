@@ -1185,6 +1185,13 @@ pub enum ClientMessage {
     CancelTurn {
         conversation_id: String,
     },
+    /// How much a code conversation asks before acting (P103 b): `manual`, `acceptEdits`, `acceptAll` or `plan`
+    /// (anything else is `manual`). Takes effect at once, a task that is running included; the hub forgets it on a
+    /// restart, so a client says it again with each `Chat`. Ignored for a member.
+    SetCodeMode {
+        conversation_id: String,
+        mode: String,
+    },
     /// The result of a `ServerMessage::ToolCallRequest` this client was asked to run (Fase 7.4).
     ToolCallResult {
         call_id: u64,
@@ -2436,6 +2443,9 @@ mod tests {
         assert_eq!(text, r#"{"type":"chatEvent","conversationId":"c","event":{"type":"text","text":"hi"}}"#);
         let cancel = ClientMessage::CancelTurn { conversation_id: "c".into() };
         assert_eq!(serde_json::to_string(&cancel).unwrap(), r#"{"type":"cancelTurn","conversationId":"c"}"#);
+        let mode = ClientMessage::SetCodeMode { conversation_id: "c".into(), mode: "plan".into() };
+        assert_eq!(serde_json::to_string(&mode).unwrap(), r#"{"type":"setCodeMode","conversationId":"c","mode":"plan"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(r#"{"type":"setCodeMode","conversationId":"c","mode":"plan"}"#).unwrap(), mode);
     }
 
     #[test]
