@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-04 — Sessão 143
+
+- **Objetivo**: seguir no P102 pela verificação sem janela real (a pedido do usuário), depois do Slack (commit `ac9b569`, fim da Sessão 142).
+- **Suíte inteira** depois do pull e do Slack (`cargo test --workspace --no-fail-fast`, com o desktop): **1253 passaram, 0 falharam, 8 ignorados**; sem SIGSEGV desta vez (P101).
+- **Feito**: `web/e2e/workdir-member.test.mjs`, o lado do **membro** da pasta de trabalho, que nenhum teste de navegador cobria. Dois casos, contra um hub real e um Brave headless (`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/brave`; sem ele o harness procura o Chrome em `/opt/google/chrome`, que não existe aqui): (1) o dono cria a `ana` em Pessoas, dá a ela só `work/allowed` em "Pastas de trabalho", a `ana` entra com usuário e senha (troca a senha provisória) e o seletor mostra "Suas pastas" só com `allowed` (sem `secret`, "Usar esta pasta" desligado no topo), desce, sobe e a primeira mensagem leva `workdir` = `allowed/inner`; (2) uma membro sem pasta vê o seletor vazio ("Nenhuma subpasta.") sem erro. **Mutação**: liberar `work` em vez de `allowed` derruba o primeiro caso na lista de pastas (desfeita). Com o `workdir.test.mjs` do dono, **5 de 5 verdes**.
+- **Achados no caminho**: o `web/dist` estava velho (o hub em debug lê da pasta em tempo de execução), então foi preciso `npm run build` antes; a tela de Pessoas tem **dois** formulários pedindo a chave de pareamento ao mesmo tempo (o da política de recuperação fica sempre visível), então o teste escolhe o formulário pelo botão.
+- **Não verificado**: o seletor de Máquina com um nó (precisa de um nó real), `/folder` do CLI e o seletor da extensão, o desktop numa janela, um modelo real na pasta, o shell pedindo aprovação.
+
+---
+
 ### 2026-10-04 — Sessão 142
 
 - **Objetivo**: terminar o webhook de entrada (P105): a assinatura HMAC e as telas na web e no desktop. Plano aprovado, em **três commits**: (1) o backend, o HMAC e o protocolo; (2) a tela da web; (3) a tela do desktop e o hub embutido. **Esta entrada cobre o primeiro**; as outras duas partes acrescentam seus itens aqui. Sem teste prático nem de tela, a pedido do usuário.
