@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { ConversationSummary } from "../protocol/messages";
 import type { OkResponse } from "../background/popup_protocol";
+import FolderPicker from "./FolderPicker";
+import { folderLabel } from "./workdir";
 
 interface Props {
   conversations: ConversationSummary[];
@@ -8,13 +10,16 @@ interface Props {
   pendingIds: string[];
   agentIds: string[];
   agentId: string | null;
+  /** P102 — the open conversation's working folder, or the one a new conversation will start in. */
+  workdir: string | null;
 }
 
 /** P78 — which of this device's conversations the chat shows, plus new/rename/delete. A `<select>`
  * rather than a list: the side panel is narrow. Talks to the background directly, like `SkillsView`;
  * the result comes back as a `conversationsChanged` event. */
-export default function ConversationBar({ conversations, activeConversationId, pendingIds, agentIds, agentId }: Props) {
+export default function ConversationBar({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +38,7 @@ export default function ConversationBar({ conversations, activeConversationId, p
   }
 
   function select(conversationId: string) {
+    setPickingFolder(false);
     setRenaming(null);
     setConfirmDelete(false);
     setError(null);
@@ -40,6 +46,7 @@ export default function ConversationBar({ conversations, activeConversationId, p
   }
 
   function startNew() {
+    setPickingFolder(false);
     setRenaming(null);
     setConfirmDelete(false);
     setError(null);
@@ -127,6 +134,38 @@ export default function ConversationBar({ conversations, activeConversationId, p
             {agentId !== null && !agentIds.includes(agentId) && <option value={agentId}>{agentId} (removido)</option>}
           </select>
         </label>
+      )}
+      {/* P102 — the working folder: picked before the first message, only shown after it. */}
+      {(active ? workdir !== null : true) && (
+        <span className="conversation-bar-agent">
+          Pasta
+          {active ? (
+            <span className="folder-chip" title={workdir ?? ""}>
+              {folderLabel(workdir ?? "")}
+            </span>
+          ) : (
+            <>
+              <button type="button" className="link-button folder-chip" onClick={() => setPickingFolder(true)} title={workdir ?? "Escolher uma pasta do hub para a IA trabalhar"}>
+                {workdir !== null ? folderLabel(workdir) : "Nenhuma"}
+              </button>
+              {workdir !== null && (
+                <button type="button" className="link-button" aria-label="Tirar a pasta" onClick={() => void run({ type: "selectWorkdir", path: null })}>
+                  ×
+                </button>
+              )}
+            </>
+          )}
+        </span>
+      )}
+      {pickingFolder && !active && (
+        <FolderPicker
+          initialPath={workdir}
+          onCancel={() => setPickingFolder(false)}
+          onPick={(path) => {
+            setPickingFolder(false);
+            void run({ type: "selectWorkdir", path });
+          }}
+        />
       )}
       {error && <p className="error-banner">{error}</p>}
     </div>

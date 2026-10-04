@@ -7,7 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
-import type { ApprovalPrompt, ConversationSummary, SkillDto } from "../protocol/messages";
+import type { ApprovalPrompt, ConversationSummary, DirListing, SkillDto } from "../protocol/messages";
 import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
@@ -33,6 +33,10 @@ export type PopupRequest =
   /** P87 — the agent the next turns speak as (`null`: none). */
   | { type: "selectAgent"; agentId: string | null }
   | { type: "refreshAgents" }
+  /** P102 — the folder the conversation about to start works in (`null`: none). Only before its first message. */
+  | { type: "selectWorkdir"; path: string | null }
+  /** P102 — the folders inside `path` on the hub's machine (or a node's); no `path`: where the person starts. */
+  | { type: "listDirs"; path?: string }
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "discoverHubs"; port: number }
   | { type: "listSkills" }
@@ -53,6 +57,8 @@ export interface ConversationState {
    * conversation restores the agent it last spoke with; a new one keeps the last choice. */
   agentIds: string[];
   agentId: string | null;
+  /** P102 — the open conversation's working folder, or the one a new conversation will start in (`null`: none). */
+  workdir: string | null;
 }
 
 export interface GetStatusResponse extends ConversationState {
@@ -81,6 +87,13 @@ export interface DiscoverHubsResponse {
 export interface ListSkillsResponse {
   ok: boolean;
   skills: SkillDto[];
+  error?: string;
+}
+
+/** Reply to `{ type: "listDirs" }` — `listing` is set when `ok`, same posture as the other list replies. */
+export interface ListDirsResponse {
+  ok: boolean;
+  listing?: DirListing;
   error?: string;
 }
 

@@ -16,6 +16,7 @@ import {
   type ApprovalPrompt,
   type ClientMessage,
   type ConversationSummary,
+  type DirListing,
   type HistoryMessage,
   type ServerMessage,
   type SkillDto,
@@ -280,8 +281,10 @@ export class ServerConnection {
       case "history":
       case "conversationList":
       case "conversationOk":
+      case "dirList":
         this.settleRequest(message.requestId, (pending) => pending.resolve(message));
         break;
+      case "dirError":
       case "skillError":
       case "historyError":
       case "conversationError":
@@ -313,8 +316,15 @@ export class ServerConnection {
 
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation, P78). The reply
    * arrives asynchronously via `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string, agentId?: string): void {
-    this.socket.send(encode({ type: "chat", message, conversationId, ...(agentId !== undefined && { agentId }) }));
+  sendChat(message: string, conversationId: string, agentId?: string, workdir?: string): void {
+    this.socket.send(encode({ type: "chat", message, conversationId, ...(agentId !== undefined && { agentId }), ...(workdir !== undefined && { workdir }) }));
+  }
+
+  /** P102 — the folders inside `path` on the hub's machine (or a node's), to pick a conversation's working folder. */
+  async listDirs(path?: string): Promise<DirListing> {
+    const reply = await this.request((requestId) => ({ type: "listDirs", requestId, ...(path ? { path } : {}) }));
+    if (reply.type !== "dirList") return { path: "", dirs: [] };
+    return { path: reply.path, parent: reply.parent, dirs: reply.dirs };
   }
 
   /** P87 — the configured agents' ids, from the hub's settings. */

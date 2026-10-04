@@ -22,6 +22,7 @@ export default function App() {
     pendingIds: [],
     agentIds: [],
     agentId: null,
+    workdir: null,
   });
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
@@ -32,8 +33,8 @@ export default function App() {
       setStatus(res.status);
       setHistory(res.history);
       setSavedSettings(res.savedSettings);
-      const { conversations, activeConversationId, pendingIds, agentIds, agentId } = res;
-      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId });
+      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir } = res;
+      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir });
       setApprovals(res.approvals);
     });
 
@@ -45,8 +46,8 @@ export default function App() {
       } else if (event.type === "historyLoaded") {
         setHistory(event.history);
       } else if (event.type === "conversationsChanged") {
-        const { conversations, activeConversationId, pendingIds, agentIds, agentId } = event;
-        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId });
+        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir } = event;
+        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir });
       } else if (event.type === "approvalsChanged") {
         setApprovals(event.approvals);
       }

@@ -44,6 +44,9 @@ let pendingTurns: Record<string, string> = {};
 /** P87 — the hub's configured agents and the one the next turn speaks as. */
 let agentIds: string[] = [];
 let agentId: string | null = null;
+/** P102 — the open conversation's working folder, or the one a new conversation will start in. Chosen before its first
+ * message and fixed after (the hub keeps the one it was created with), so this only matters while it is unsent. */
+let workdir: string | null = null;
 /** P87 — approvals the hub is waiting on. The panel may be closed, so the icon shows a "!" too. */
 let approvals: ApprovalPrompt[] = [];
 
@@ -93,7 +96,7 @@ function addChatEntry(entry: ChatEntry): void {
 const HISTORY_LIMIT = 100;
 
 function conversationState(): ConversationState {
-  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId };
+  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir };
 }
 
 function setApprovals(next: ApprovalPrompt[]): void {
@@ -120,6 +123,8 @@ async function refreshAgents(from: ServerConnection): Promise<void> {
 function restoreAgent(id: string): void {
   const conversation = conversations.find((c) => c.id === id);
   if (conversation) agentId = conversation.agentId ?? null;
+  // The folder is the conversation's own: one that isn't on the hub yet starts with none.
+  workdir = conversation?.workdir ?? null;
 }
 
 function broadcastConversations(): void {
@@ -285,16 +290,37 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       const id = activeConversationId as string;
       addChatEntry({ role: "user", content: request.message });
       pendingTurns[id] = request.message;
-      if (!conversations.some((c) => c.id === id)) {
+      // The folder only counts on the turn that starts the conversation: the hub keeps the one it was made with.
+      const startsHere = !conversations.some((c) => c.id === id);
+      if (startsHere) {
         // Shown until the hub's list has it — same title the hub gives it (`title_from`).
         const now = Date.now();
         const collapsed = request.message.split(/\s+/).filter(Boolean).join(" ");
         const title = [...collapsed].length > 40 ? `${[...collapsed].slice(0, 40).join("")}…` : collapsed;
-        conversations = [{ id, title, createdAt: now, updatedAt: now, ...(agentId !== null && { agentId }) }, ...conversations];
+        conversations = [{ id, title, createdAt: now, updatedAt: now, ...(agentId !== null && { agentId }), ...(workdir !== null && { workdir }) }, ...conversations];
       }
       broadcastConversations();
-      connection.sendChat(request.message, id, agentId ?? undefined);
+      connection.sendChat(request.message, id, agentId ?? undefined, startsHere ? (workdir ?? undefined) : undefined);
       return { ok: true };
+    }
+
+    case "selectWorkdir": {
+      // Chosen before the first message and never after: a conversation on the hub keeps its own folder.
+      if (activeConversationId !== null && conversations.some((c) => c.id === activeConversationId)) {
+        return { ok: false, error: "a pasta é escolhida antes da primeira mensagem e não muda depois" };
+      }
+      workdir = request.path;
+      broadcastConversations();
+      return { ok: true };
+    }
+
+    case "listDirs": {
+      if (!connection || connection.status.kind !== "connected") return { ok: false, error: "not connected" };
+      try {
+        return { ok: true, listing: await connection.listDirs(request.path) };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
     }
 
     case "selectAgent":

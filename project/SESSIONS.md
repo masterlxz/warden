@@ -6,6 +6,15 @@
 
 ---
 
+### 2026-10-04 — Sessão 136
+
+- **Objetivo**: o seletor de pasta de trabalho na extensão do navegador. Sem rodar nem escrever testes e com cuidado com o disco (`/home` em 86%; só `tsc`, que não gera nada no `target`).
+- **Feito**: `chat.workdir`, `listDirs`/`dirList`/`dirError` e `ConversationSummary.workdir` no protocolo da extensão; `ServerConnection.listDirs` e `sendChat(.., workdir)`; no background, o `workdir`, `selectWorkdir` (só antes da primeira mensagem), `listDirs`, e a pasta restaurada ao abrir uma conversa; no painel, `FolderPicker` inline, a pasta na `ConversationBar` e o rótulo (`workdir.ts`).
+- **Verificado**: só `tsc --noEmit` da extensão, limpo. **Nenhum teste**, o `npm run build` não foi rodado e a extensão nunca foi carregada num navegador.
+- **Limite**: o painel não lista nós, então o dono não escolhe uma pasta de nó por aqui.
+
+---
+
 ### 2026-10-04 — Sessão 135
 
 - **Objetivo**: o seletor de pasta de trabalho no CLI (o celular e a extensão ficam). Sem rodar nem escrever testes, e com cuidado com o disco (`/home` em 86%, 26 GB livres; só `cargo check`, que não cresceu o `target`).

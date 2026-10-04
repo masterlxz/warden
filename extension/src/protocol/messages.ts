@@ -49,6 +49,21 @@ export interface ConversationSummary {
   updatedAt: number;
   /** The agent this conversation last spoke with (P46/P87), restored when it's opened. */
   agentId?: string;
+  /** The folder the conversation works in (P102): a path of the hub's machine, or `node:<id>:<path>` on a node. */
+  workdir?: string;
+}
+
+/** Mirrors `DirEntryDto` (P102): a folder in the folder browser. */
+export interface DirEntry {
+  name: string;
+  path: string;
+}
+
+/** What the folder browser shows (`dirList`): `path` is "" for a member's list of allowed folders, `parent` absent at the top. */
+export interface DirListing {
+  path: string;
+  parent?: string;
+  dirs: DirEntry[];
 }
 
 /** A tool in this device's turn needs the person's yes (P87) — mirrors `ServerMessage::ApprovalRequest`. */
@@ -74,7 +89,9 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string; agentId?: string }
+  | { type: "chat"; message: string; conversationId?: string; agentId?: string; workdir?: string }
+  /** P102 — the folders inside `path` on the hub's machine (or a node's, `node:<id>:<path>`); no `path`: where the person starts. Answered by `dirList`/`dirError`. */
+  | { type: "listDirs"; requestId: number; path?: string }
   /** P87 — only for the configured agents' ids, as the web's selector does. */
   | { type: "requestSettings"; requestId: number }
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
@@ -118,6 +135,8 @@ export type ServerMessage =
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
   | { type: "conversationOk"; requestId: number }
   | { type: "conversationError"; requestId: number; message: string }
+  | { type: "dirList"; requestId: number; path: string; parent?: string; dirs: DirEntry[] }
+  | { type: "dirError"; requestId: number; message: string }
   /** Reply to `requestSettings`, reduced to what this client uses (P87). */
   | { type: "settings"; requestId: number; agentIds: string[] }
   | { type: "settingsError"; requestId: number; message: string }
@@ -167,6 +186,8 @@ export function decode(text: string): ServerMessage {
     case "conversationList":
     case "conversationOk":
     case "conversationError":
+    case "dirList":
+    case "dirError":
       return json as ServerMessage;
     case "history": {
       const raw = json as { requestId: number; messages: Array<Omit<HistoryMessage, "attachments"> & { attachments?: Attachment[] }> };

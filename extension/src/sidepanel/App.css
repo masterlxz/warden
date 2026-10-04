@@ -447,6 +447,82 @@ button:hover:not(:disabled) {
   font-size: 0.9em;
 }
 
+/* P102 — the working folder: a button that opens the folder browser (inline, the panel is narrow), and its chip. */
+.folder-chip {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-picker {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.folder-picker-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.folder-picker-here {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  background: var(--color-surface-alt, rgba(127, 127, 127, 0.12));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.folder-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 4rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.folder-picker-item {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.folder-picker-item:hover,
+.folder-picker-item:focus-visible {
+  background: var(--color-surface-alt, rgba(127, 127, 127, 0.12));
+  outline: none;
+}
+
+.folder-picker-empty {
+  padding: 0.5rem 0.6rem;
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+}
+
+.folder-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
 /* P87 — an approval the hub is waiting on, above the conversation bar. */
 .approval-card {
   margin-bottom: 0.6rem;
