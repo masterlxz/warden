@@ -6,6 +6,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, PAIRING_PORTS, PAIRING_TIMEOUT};
 use warden_bootstrap::tasks::{check_tasks, next_run, run_task, task_status, TaskStore, Zone};
+use warden_bootstrap::webhooks::{upsert_webhook, WebhookConfig};
 use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
@@ -61,6 +62,11 @@ enum Command {
     /// conversation, which every device lists. A running `serve` sees changes made here within
     /// half a minute.
     Tasks(TasksArgs),
+    /// Incoming webhooks (P105): a prompt an agent runs when something `POST`s to `/hooks/<id>` on this hub with
+    /// the webhook's token — kept as `[[webhooks]]` in the config file, with the tokens outside it (they don't
+    /// sync). Each call lands in the webhook's conversation, which every device lists. A running `serve` sees
+    /// changes made here on the next call.
+    Webhooks(WebhooksArgs),
     /// Makes this machine a node (P93): it connects to a hub and lends its shell and/or a folder of
     /// files to the hub's agents. The hub still decides who may use it (`warden-server nodes`).
     Node(NodeArgs),
@@ -329,6 +335,43 @@ enum TasksCommand {
         #[arg(long)]
         vault_path: Option<String>,
     },
+}
+
+#[derive(clap::Args, Debug)]
+struct WebhooksArgs {
+    #[command(subcommand)]
+    action: WebhooksCommand,
+
+    /// Path to the config file (TOML), as in `serve`.
+    #[arg(long, global = true)]
+    config: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum WebhooksCommand {
+    /// Every webhook: whether it's on, its agent and whether it has a token.
+    List,
+    /// Adds a webhook. It takes no calls until it has a token (`webhooks token <id>`).
+    Add {
+        /// 1-54 letters, digits, '-' or '_'. It is the end of the URL: /hooks/<id>.
+        id: String,
+        /// What the agent is asked on every call; the request body is added after it, as data.
+        #[arg(long)]
+        prompt: String,
+        /// The agent that runs it (none: no persona). Give it few tools: the body of a call comes from outside.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Refuses calls to a webhook until `resume`.
+    Pause { id: String },
+    /// Takes calls again.
+    Resume { id: String },
+    /// Removes a webhook and its token. Its conversation stays, for whoever wants to read it.
+    Remove { id: String },
+    /// A new token for a webhook — printed once, never stored. It replaces the old one, which stops working at once.
+    Token { id: String },
+    /// Takes a webhook's token away: calls get 401 from the next one on, and the webhook stays.
+    Revoke { id: String },
 }
 
 #[derive(clap::Args, Debug)]
@@ -943,6 +986,7 @@ async fn run_tasks_command(args: TasksArgs) -> anyhow::Result<()> {
             let task = TaskConfig { id: id.clone(), agent, prompt, every, cron, once, timezone, enabled: true };
             config.tasks.push(task.clone());
             check_tasks(&config.tasks, &config.agents)?;
+            warden_bootstrap::webhooks::check_task_clashes(&config.tasks, &config.webhooks)?;
             save_config(&config_path, &config)?;
             let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
             match next_run(&task, None, now_millis()) {
@@ -985,6 +1029,78 @@ async fn run_tasks_command(args: TasksArgs) -> anyhow::Result<()> {
 
 fn api_keys_path() -> anyhow::Result<PathBuf> {
     warden_bootstrap::default_api_keys_path().context("could not determine the OS config directory for the API keys")
+}
+
+fn webhook_tokens_path() -> anyhow::Result<PathBuf> {
+    warden_bootstrap::default_webhook_tokens_path().context("could not determine the OS config directory for the webhook tokens")
+}
+
+fn run_webhooks_command(args: WebhooksArgs) -> anyhow::Result<()> {
+    let config_path = args.config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).context("could not determine the OS config directory")?;
+    let mut config = load_config_from_path(&config_path, args.config.is_some())?;
+    let tokens = warden_server::webhook_tokens::WebhookTokenStore::new(webhook_tokens_path()?);
+    let position = |config: &warden_bootstrap::FileConfig, id: &str| {
+        config.webhooks.iter().position(|h| h.id == id).ok_or_else(|| anyhow::anyhow!("no webhook named '{id}' — `warden-server webhooks list` shows them"))
+    };
+    match args.action {
+        WebhooksCommand::List => {
+            if config.webhooks.is_empty() {
+                println!("no webhooks yet — add one with `warden-server webhooks add <id> --prompt ...`");
+                return Ok(());
+            }
+            let with_token = tokens.list()?;
+            for hook in &config.webhooks {
+                let on = if hook.enabled { "on" } else { "paused" };
+                let agent = hook.agent.as_deref().unwrap_or("(no agent)");
+                let token = match with_token.iter().find(|t| t.webhook == hook.id) {
+                    Some(t) => format!("token {}… created {}{}", t.shown, t.created_at_ms, t.last_used_at_ms.map_or(", never used".to_string(), |ms| format!(", last used {ms}"))),
+                    None => "no token (takes no calls)".to_string(),
+                };
+                println!("{}\t{on}\t{agent}\t/hooks/{}\t{token}", hook.id, hook.id);
+            }
+        }
+        WebhooksCommand::Add { id, prompt, agent } => {
+            anyhow::ensure!(!config.webhooks.iter().any(|h| h.id == id), "there's already a webhook named '{id}'");
+            upsert_webhook(&mut config, WebhookConfig { id: id.clone(), agent, prompt, enabled: true })?;
+            save_config(&config_path, &config)?;
+            println!("webhook '{id}' added — it takes no calls until it has a token: `warden-server webhooks token {id}`");
+        }
+        WebhooksCommand::Pause { id } => {
+            let i = position(&config, &id)?;
+            config.webhooks[i].enabled = false;
+            save_config(&config_path, &config)?;
+            println!("webhook '{id}' paused — calls are refused until `resume`");
+        }
+        WebhooksCommand::Resume { id } => {
+            let i = position(&config, &id)?;
+            config.webhooks[i].enabled = true;
+            save_config(&config_path, &config)?;
+            println!("webhook '{id}' takes calls again");
+        }
+        WebhooksCommand::Remove { id } => {
+            let i = position(&config, &id)?;
+            config.webhooks.remove(i);
+            save_config(&config_path, &config)?;
+            tokens.revoke(&id)?;
+            println!("webhook '{id}' and its token removed — its conversation stays on the hub");
+        }
+        WebhooksCommand::Token { id } => {
+            let i = position(&config, &id)?;
+            let created = tokens.create(&id)?;
+            println!("{}", created.token);
+            eprintln!("token for webhook '{id}' created — copy it now, it isn't shown again; any earlier token for it stopped working");
+            eprintln!("call it with: curl -X POST -H 'Authorization: Bearer <token>' --data-binary @body.json http(s)://<this hub>:<port>/hooks/{id}");
+            eprintln!("(a service that can't set that header can send the token as X-Warden-Token instead)");
+            if !config.webhooks[i].enabled {
+                eprintln!("note: the webhook is paused — `warden-server webhooks resume {id}` to take calls");
+            }
+        }
+        WebhooksCommand::Revoke { id } => {
+            anyhow::ensure!(tokens.revoke(&id)?, "webhook '{id}' has no token");
+            println!("the token of webhook '{id}' is revoked — calls get 401 from the next one on");
+        }
+    }
+    Ok(())
 }
 
 fn run_api_keys_command(action: ApiKeysAction) -> anyhow::Result<()> {
@@ -1071,6 +1187,8 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_code_engine(warden_server::code_turns::opencode_engine(&engine_models))
         // P92 — every device lists the tasks' conversations; only `--run-tasks` runs them.
         .with_tasks(tasks_store()?, args.run_tasks)
+        // P105 — `POST /hooks/<id>` with a webhook's token; the conversations go next to the tasks' ones.
+        .with_webhooks(webhook_tokens_path()?)
         // P119 — whether the web settings may change the shell, MCP servers, SSH hosts, folders and the embedded hub.
         .with_machine_settings(args.allow_machine_settings);
     if args.allow_machine_settings {
@@ -1147,6 +1265,7 @@ async fn main() -> anyhow::Result<()> {
         Command::ApiKeys { action } => run_api_keys_command(action),
         Command::Sync(args) => run_sync_command(args).await,
         Command::Tasks(args) => run_tasks_command(args).await,
+        Command::Webhooks(args) => run_webhooks_command(args),
         Command::Node(args) => run_node_command(args).await,
         Command::Nodes { action, config } => run_nodes_command(action, config),
         Command::Users { action, config } => run_users_command(action, config),

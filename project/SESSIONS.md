@@ -2,7 +2,21 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 140)
+> Última atualização: 2026-10-04 (Sessão 141)
+
+---
+
+### 2026-10-04 — Sessão 141
+
+- **Objetivo**: o webhook de entrada (P105, lacuna nº 2 do estudo do OpenClaw): `POST /hooks/<id>` com token dispara um agente. Plano aprovado antes. Decisões: separado de `[[tasks]]`, **só backend e CLI** (sem telas), resposta assíncrona (`202`), autenticação só por token (sem HMAC). Sem teste prático nem de tela, a pedido do usuário.
+- **Feito**: `[[webhooks]]` no config (`warden-bootstrap/src/webhooks.rs`: `WebhookConfig`, `check_webhooks`, `check_task_clashes`, `upsert_webhook`, `input_for`, `run_webhook`); o núcleo do `run_task` virou `tasks::run_unattended_turn`, compartilhado com os webhooks; tokens (`warden-server/src/webhook_tokens.rs`, um por webhook, só o hash no disco, fora do config que sincroniza); a rota e o `WebhookRunner` (`warden-server/src/webhooks.rs`, ligada em `server.rs`, `Server::with_webhooks`); o CLI `warden-server webhooks list|add|pause|resume|remove|token|revoke`; o relatório de gasto agora chama a linha de "Tarefas e webhooks". Detalhes e regras no `ARCHITECTURE.md`, "Webhooks de entrada".
+- **Achado no caminho**: o **desktop reconstrói o `FileConfig` inteiro ao salvar as configurações** (`save_settings`, copiando `tasks`, `nodes`, `users`...). Sem copiar também `webhooks`, salvar qualquer configuração no desktop **apagaria os webhooks**. Corrigido (`webhooks: existing.webhooks`), **mas sem teste**: `save_settings` é um comando Tauri com estado e não há teste de nenhum dos campos que ele preserva; fica só compilado e passado pelo clippy.
+- **Outro achado**: a colisão de conversa. `task-hook-<id>` é também a conversa de uma tarefa chamada `hook-<id>`; `check_task_clashes` recusa dos dois lados (webhook novo, `upsert_task` — que a ferramenta `manage_tasks` usa — e `tasks add`).
+- **Testes**: unitários do `webhooks.rs` (validação e colisão, cerca e corte do corpo, execução, nota de erro) e do `webhook_tokens.rs`; `tests/webhooks.rs` com um hub de verdade e HTTP por TCP (9 casos: caminho feliz com conversa, aviso ao aparelho e listagem; os seis jeitos de falhar o token com o mesmo `401`; token antes do corpo; pausado, removido e retomado; os limites do corpo; o `409` e a volta; rotação e revogação; limite de gasto no canal `webhooks`; `404` sem a página web). **Mutações** (tirar a comparação do token, a checagem de pausado e a trava de uma chamada por vez): cada uma derruba o teste certo (desfeitas). **Smoke**: o `serve` de verdade com `curl` (401 sem token, 202 com token, conversa gravada com a nota da falha do modelo, que era um provedor apontado para uma porta fechada) e o CLI inteiro contra um config temporário.
+- **Verificado**: suíte inteira **com o desktop** (`cargo test --workspace --no-fail-fast`): 1225 passaram, 0 falharam, 8 ignorados (19 a mais: 7 do `webhooks.rs`, 3 dos tokens, 9 do hub); clippy do workspace sem aviso novo. `tsc` não rodado (nada de TypeScript mudou). **Atenção**: o `--exclude warden-desktop` das rodadas anteriores não excluía nada (o crate se chama `desktop`), então elas já incluíam os testes dele.
+- **Falha isolada, não explicada**: numa rodada, `device_routing::an_unapproved_caller_cannot_route_even_to_an_approved_target` falhou (o `dev-a`, nunca aprovado, foi roteado até o `dev-b`: "connection closed while waiting for a reply"). Sozinho, 0 falhas em 60 execuções (30 sem carga, 30 com 16 `yes`), e a rodada seguinte passou inteira. Parece estado compartilhado entre testes do mesmo binário (o `devices.json`), mas a hipótese de dois testes caírem no mesmo nanossegundo do nome da pasta temporária foi descartada (o relógio não repete valores aqui). Fica registrada; combina com a máquina instável da Sessão 140, mas não prova nada. Esse arquivo de teste não tem relação com os webhooks.
+- **Não verificado**: um modelo real recebendo um webhook; a ferramenta `manage_tasks` recusando a colisão pelo agente (só pelo `upsert_task`); a aprovação recusada numa chamada de webhook (a regra é a mesma das tarefas, mas não há teste próprio).
+- **Fica**: telas na web e no desktop, assinatura HMAC (GitHub, Stripe), modo que espera a resposta do agente, limite de chamadas por segundo além do `409`.
 
 ---
 

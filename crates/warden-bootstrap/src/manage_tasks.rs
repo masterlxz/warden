@@ -165,7 +165,7 @@ impl ManageTasksTool {
     /// What `config` would look like after `change`, and what a human reads to approve it. Pure but
     /// for the time used in "first run", so the same checks run before and after the prompt.
     fn plan(&self, config: &FileConfig, change: &Change) -> anyhow::Result<(Vec<TaskConfig>, String)> {
-        let mut next = FileConfig { tasks: config.tasks.clone(), agents: config.agents.clone(), ..FileConfig::default() };
+        let mut next = FileConfig { tasks: config.tasks.clone(), agents: config.agents.clone(), webhooks: config.webhooks.clone(), ..FileConfig::default() };
         let detail = match change {
             Change::Create(task) => {
                 check_prompt(&task.prompt)?;

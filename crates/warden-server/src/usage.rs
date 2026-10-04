@@ -20,7 +20,8 @@ pub const USAGE_DAYS: u32 = 30;
 
 /// The row scheduled tasks (P92) get in `by_device`: their conversations live apart from any device.
 pub const TASKS_USAGE_ID: &str = "tasks";
-const TASKS_USAGE_NAME: &str = "Tarefas agendadas";
+/// The webhooks' conversations (P105) live in the same folder, so they are counted in the same row.
+const TASKS_USAGE_NAME: &str = "Tarefas e webhooks";
 /// P84: the owner's conversations, every device of theirs together.
 const ROOT_USAGE_NAME: &str = "Owner";
 
@@ -317,6 +318,6 @@ mod tests {
         let report = build_usage_report(&root, Some(&tasks), &pairing, None, 0, now).unwrap();
         assert_eq!(report.total.total_tokens, 25);
         let row = report.by_device.iter().find(|d| d.device_id == TASKS_USAGE_ID).unwrap();
-        assert_eq!((row.name.as_deref(), row.conversation_count, row.usage.total_tokens), (Some("Tarefas agendadas"), 1, 15));
+        assert_eq!((row.name.as_deref(), row.conversation_count, row.usage.total_tokens), (Some("Tarefas e webhooks"), 1, 15));
     }
 }

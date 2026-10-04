@@ -697,6 +697,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         ssh_hosts,
         // Scheduled tasks (P92) have no Settings screen yet — carry them forward.
         tasks: existing.tasks,
+        // Incoming webhooks (P105) have no Settings screen either (`warden-server webhooks`): dropping them here would delete them.
+        webhooks: existing.webhooks,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,
         // People (P84) are managed on the Workspace screen and the hub, not this form.

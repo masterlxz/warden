@@ -52,6 +52,7 @@ pub mod settings;
 pub mod skill_gen;
 pub mod spend;
 pub mod tasks;
+pub mod webhooks;
 pub mod usage;
 pub mod users;
 pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
@@ -445,6 +446,10 @@ pub struct FileConfig {
     /// Only a hub started with `--run-tasks` runs them — the file syncs, so every hub reads them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskConfig>,
+    /// Incoming webhooks (P105, TOML `[[webhooks]]`): a prompt an agent runs when someone `POST`s to the hub's
+    /// `/hooks/<id>` with the webhook's token. The tokens aren't here (they don't sync): see `webhooks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<webhooks::WebhookConfig>,
     /// What agents may do with each node (P93, TOML `[[nodes]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeAccessConfig>,
@@ -958,6 +963,12 @@ pub fn default_server_devices_path() -> Option<PathBuf> {
 /// the standalone hub and the desktop's embedded one, like `devices.json`.
 pub fn default_api_keys_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("api_keys.json"))
+}
+
+/// Where a hub keeps its webhooks' tokens (P105) — only their hashes, and outside the synced config: a token belongs to
+/// the hub whose URL the caller knows, and only that one runs the call.
+pub fn default_webhook_tokens_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("webhook_tokens.json"))
 }
 
 /// Where a hub keeps the TLS certificate it fetches with `tailscale cert` (P36) — shared by
@@ -2238,6 +2249,7 @@ oauth = true
                 timezone: Some("America/Sao_Paulo".to_string()),
                 enabled: false,
             }],
+            webhooks: vec![webhooks::WebhookConfig { id: "build".to_string(), agent: Some("helper".to_string()), prompt: "why did it fail?".to_string(), enabled: false }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
             removed_users: Vec::new(),

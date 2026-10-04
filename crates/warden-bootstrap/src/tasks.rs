@@ -198,7 +198,7 @@ pub fn conversation_id(task_id: &str) -> String {
     format!("{CONVERSATION_PREFIX}{task_id}")
 }
 
-fn is_valid_task_id(id: &str) -> bool {
+pub(crate) fn is_valid_task_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_TASK_ID_LEN && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
@@ -399,6 +399,7 @@ pub fn upsert_task(config: &mut FileConfig, original_id: Option<&str>, task: Tas
         }
     }
     check_tasks(&tasks, &config.agents)?;
+    crate::webhooks::check_task_clashes(&tasks, &config.webhooks)?;
     config.tasks = tasks;
     Ok(())
 }
@@ -535,11 +536,35 @@ pub async fn run_task(
     conversations_dir: &Path,
     now_ms: i64,
 ) -> anyhow::Result<MessageOutcome> {
-    let conversation = conversation_id(&task.id);
     let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
     let input = format!("[Scheduled task '{}', {}]\n\n{}", task.id, zone.format(now_ms), task.prompt.trim());
+    let turn = UnattendedTurn {
+        conversation: conversation_id(&task.id),
+        title: format!("Tarefa: {}", task.id),
+        agent: task.agent.as_deref(),
+        spend: SpendContext::new("tasks").with_user(format!("task:{}", task.id)),
+        input,
+    };
+    run_unattended_turn(base, config, config_path, conversations_dir, turn).await
+}
 
-    let outcome = match prepare(base, config, config_path, task) {
+/// One turn nobody is watching — a scheduled task's run or a webhook's call (`webhooks.rs`): where it is saved, who
+/// runs it and what it is told.
+pub(crate) struct UnattendedTurn<'a> {
+    /// The conversation id the prompt and the answer are added to.
+    pub conversation: String,
+    pub title: String,
+    pub agent: Option<&'a str>,
+    /// Who the spending is counted for.
+    pub spend: SpendContext,
+    pub input: String,
+}
+
+/// Runs `turn` with the last `HISTORY_MESSAGES` of its conversation as history, and adds the input and the answer — or
+/// why there is none — to the conversation.
+pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, conversations_dir: &Path, turn: UnattendedTurn<'_>) -> anyhow::Result<MessageOutcome> {
+    let UnattendedTurn { conversation, title, agent, spend, input } = turn;
+    let outcome = match prepare(base, config, config_path, agent, spend) {
         Ok((orchestrator, persona)) => {
             let history: Vec<Message> = load_conversation(conversations_dir, &conversation)?
                 .map(|c| {
@@ -558,17 +583,16 @@ pub async fn run_task(
         // In the conversation too, so whoever opens it sees why this run has no answer.
         Err(err) => plain_message(ChatRole::Assistant, format!("(could not run: {err:#})")),
     };
-    let title = format!("Tarefa: {}", task.id);
-    let options = AppendOptions { title_seed: &title, agent_id: task.agent.as_deref(), provider_id: None, project_id: None, create: true, ..Default::default() };
+    let options = AppendOptions { title_seed: &title, agent_id: agent, provider_id: None, project_id: None, create: true, ..Default::default() };
     append_messages(conversations_dir, &conversation, options, vec![user, reply])?;
     outcome
 }
 
-/// The orchestrator and persona `task` runs with: spending counted for the task, scoped to its
-/// agent and that agent's model. No approver is attached — nobody is there to answer.
-fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, task: &TaskConfig) -> anyhow::Result<(Orchestrator, Option<String>)> {
-    let base = base.with_spend_context(SpendContext::new("tasks").with_user(format!("task:{}", task.id)));
-    let Some(agent_id) = &task.agent else {
+/// The orchestrator and persona an unattended turn runs with: spending counted as `spend`, scoped to `agent` and that
+/// agent's model. No approver is attached — nobody is there to answer.
+fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, agent: Option<&str>, spend: SpendContext) -> anyhow::Result<(Orchestrator, Option<String>)> {
+    let base = base.with_spend_context(spend);
+    let Some(agent_id) = agent else {
         return Ok((base, None));
     };
     let scoped = scope_to_agent(&base, config, config_path, agent_id, AgentExtras::default())

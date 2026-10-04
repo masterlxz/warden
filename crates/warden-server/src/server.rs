@@ -54,6 +54,7 @@ use crate::tls::HubTls;
 use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyChange};
 use crate::api_keys::ApiKeyStore;
 use crate::openai_api::{self, ApiContext};
+use crate::webhooks::{self, WebhookContext, WebhookRunner};
 use crate::web_ui::{self, Rewind, WebAssets};
 use warden_server_protocol::protocol::ChatEventDto;
 use warden_server_protocol::tls::DISCOVER_PATH;
@@ -106,6 +107,8 @@ pub struct Server {
     sync_loop: Option<Duration>,
     /// Where the Warden API's keys live (P12). `None`: no API on this hub.
     api_keys: Option<Arc<PathBuf>>,
+    /// Where the incoming webhooks' tokens live (P105). `None`: no webhooks on this hub.
+    webhook_tokens: Option<Arc<PathBuf>>,
     /// Scheduled tasks (P92): their conversations, which every device lists, and whether this hub
     /// also runs them on schedule (`--run-tasks`).
     tasks: Option<TaskRunner>,
@@ -155,6 +158,7 @@ impl Server {
             sync: None,
             sync_loop: None,
             api_keys: None,
+            webhook_tokens: None,
             tasks: None,
             task_tick: DEFAULT_TASK_TICK,
             changes: broadcast::channel(64).0,
@@ -233,6 +237,15 @@ impl Server {
         self
     }
 
+    /// Serves incoming webhooks (P105) on this same port: `POST /hooks/<id>` with a token from `tokens_path` (see
+    /// `webhook_tokens.rs`) runs the `[[webhooks]]` entry of that id, read from the settings file on every call, so it
+    /// needs `with_settings` and `with_tasks` too (the conversations go next to the tasks' ones). Without them the route
+    /// answers 404.
+    pub fn with_webhooks(mut self, tokens_path: PathBuf) -> Self {
+        self.webhook_tokens = Some(Arc::new(tokens_path));
+        self
+    }
+
     /// Makes this hub TLS-only (P36): `Hello` and everything after it only over `wss://`. The same
     /// port still answers a plain `ws://` upgrade on `DISCOVER_PATH`, and only with `DiscoverAck`
     /// (pointing at the `wss://` URL) — any other plain upgrade gets `426 Upgrade Required` before
@@ -302,6 +315,13 @@ impl Server {
             Some(tls) => tls.secure_url(listener.local_addr()?.port()).map(Arc::from),
             None => None,
         };
+        // One runner for the whole hub, so two calls to one webhook never overlap on different connections.
+        let webhooks = self.webhook_tokens.map(|tokens_path| WebhookContext {
+            orchestrator: self.orchestrator.clone(),
+            settings: self.settings.clone(),
+            tokens_path,
+            runner: self.tasks.as_ref().map(|tasks| WebhookRunner::new(tasks.store().conversations_dir(), self.changes.clone())),
+        });
         let mut ctx = ConnectionContext {
             auth_key: self.auth_key,
             server_name: self.server_name,
@@ -316,6 +336,7 @@ impl Server {
             settings_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync: self.sync,
             api_keys: self.api_keys,
+            webhooks,
             tasks: self.tasks,
             changes: self.changes.clone(),
             nodes: self.nodes.clone(),
@@ -404,6 +425,8 @@ struct ConnectionContext {
     settings_lock: Arc<tokio::sync::Mutex<()>>,
     sync: Option<Arc<SyncRunner>>,
     api_keys: Option<Arc<PathBuf>>,
+    /// Incoming webhooks (P105); `None`: this hub offers none, and `/hooks/` answers 404.
+    webhooks: Option<WebhookContext>,
     /// Scheduled tasks (P92): their conversations are listed next to every device's own.
     tasks: Option<TaskRunner>,
     changes: broadcast::Sender<String>,
@@ -689,6 +712,14 @@ async fn serve_web_or_ws<S: Transport>(mut stream: S, peer: SocketAddr, secure: 
         openai_api::serve(&mut stream, &head, &ctx.api()).await?;
         return Ok(());
     }
+    if head.path.starts_with(webhooks::HOOKS_PREFIX) {
+        // Not left to the web page: its fallback would answer a caller's POST with a 200.
+        match &ctx.webhooks {
+            Some(webhooks) => webhooks::serve(&mut stream, &head, webhooks).await?,
+            None => web_ui::not_found(&mut stream, head.method == "HEAD").await?,
+        }
+        return Ok(());
+    }
     match web_ui {
         Some(assets) => web_ui::serve(&mut stream, &head, assets.as_ref()).await?,
         None => web_ui::not_found(&mut stream, head.method == "HEAD").await?,
@@ -743,6 +774,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         settings_lock,
         sync,
         api_keys,
+        webhooks: _,
         tasks,
         changes,
         nodes,
