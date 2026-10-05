@@ -1,0 +1,385 @@
+//! The work agents hand to each other, kept as records (P123). A delegation in the background (`delegate_task` or
+//! `delegate_to_agent` with `background: true`) is written down as a task when it is queued, when it starts and when it
+//! ends, so a screen can show who is doing what, how far along a manager's batch is, and what it cost — after the turn that
+//! started it is over.
+//!
+//! One append-only log of JSON lines (`agent_tasks.jsonl`, next to `spend_ledger.jsonl`), shared by every Warden process on the
+//! machine. Reading folds the events into the latest state of each task; a task that was last seen pending or running long
+//! ago is shown as cancelled, since whoever was running it is gone.
+
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use warden_core::jobs::{TaskOutcome, TaskRecorder, TaskSpec};
+use warden_core::model::Usage;
+
+/// The most tasks a read hands back (the newest ones) and keeps when the log is compacted.
+pub const MAX_TASKS: usize = 200;
+/// Past this size the log is rewritten with only the tasks that are kept.
+const COMPACT_ABOVE_BYTES: u64 = 1024 * 1024;
+/// A task last seen pending or running this long ago is shown as cancelled.
+pub const STALE_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
+const MAX_OBJECTIVE_CHARS: usize = 2000;
+const MAX_RESULT_CHARS: usize = 4000;
+
+/// Where a task is. "Waiting for an agent" and "paused" are not here yet: they need agents answering each other and a real pause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    /// Queued, waiting for a free slot under the limit of tasks running at once.
+    Pending,
+    Running,
+    Done,
+    Failed,
+    /// The turn ended (or was cancelled) before it finished, or its runner disappeared.
+    Cancelled,
+}
+
+impl TaskState {
+    pub fn is_finished(self) -> bool {
+        matches!(self, TaskState::Done | TaskState::Failed | TaskState::Cancelled)
+    }
+
+    /// The word screens and the wire use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskState::Pending => "pending",
+            TaskState::Running => "running",
+            TaskState::Done => "done",
+            TaskState::Failed => "failed",
+            TaskState::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One delegated task, as of the last event written about it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentTask {
+    pub id: String,
+    /// Every task one turn started shares it: the batch a progress is counted over.
+    pub group: String,
+    /// The agent that delegated.
+    pub owner: Option<String>,
+    /// The agent that does the work, or the name given to a temporary helper.
+    pub assignee: String,
+    pub objective: String,
+    /// The provider or combo chosen for this task, if the delegating agent chose one.
+    pub model: Option<String>,
+    pub channel: String,
+    pub state: TaskState,
+    /// What it produced, when it is done.
+    pub result: Option<String>,
+    /// Why it failed or was cancelled.
+    pub error: Option<String>,
+    pub usage: Option<Usage>,
+    pub created_at_ms: u64,
+    pub started_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "e", rename_all = "snake_case")]
+enum Event {
+    /// The whole task as it was at this moment: how a task is created, and how a compacted log keeps it.
+    Task { task: AgentTask },
+    Running { id: String, at: u64 },
+    Finished { id: String, at: u64, state: TaskState, result: Option<String>, error: Option<String>, usage: Option<Usage> },
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Where the log lives, next to `config.toml`.
+pub fn default_agent_tasks_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("warden").join("agent_tasks.jsonl"))
+}
+
+/// Writes the tasks the background jobs run (P123). Cheap: one short line appended per event.
+pub struct FileTaskRecorder {
+    path: PathBuf,
+    next: AtomicU64,
+    /// Keeps this process's appends and the compaction from interleaving.
+    write: Mutex<()>,
+}
+
+impl FileTaskRecorder {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into(), next: AtomicU64::new(0), write: Mutex::new(()) }
+    }
+
+    fn append(&self, event: &Event) {
+        let Ok(mut line) = serde_json::to_string(event) else { return };
+        line.push('\n');
+        let _held = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let written = OpenOptions::new().create(true).append(true).open(&self.path).and_then(|mut file| file.write_all(line.as_bytes()));
+        // A log that can't be written must never stop the work it describes.
+        if written.is_ok() && std::fs::metadata(&self.path).is_ok_and(|m| m.len() > COMPACT_ABOVE_BYTES) {
+            self.compact();
+        }
+    }
+
+    /// Rewrites the log as one snapshot per task kept. Called with the write lock held.
+    fn compact(&self) {
+        let tasks = read_agent_tasks(&self.path);
+        let mut text = String::new();
+        for task in tasks.into_iter().rev() {
+            if let Ok(line) = serde_json::to_string(&Event::Task { task }) {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
+        let temp = self.path.with_extension("jsonl.tmp");
+        if std::fs::write(&temp, text).is_ok() {
+            let _ = std::fs::rename(&temp, &self.path);
+        }
+    }
+}
+
+impl TaskRecorder for FileTaskRecorder {
+    fn created(&self, spec: &TaskSpec) -> String {
+        let now = now_ms();
+        let id = format!("at-{now}-{}-{}", std::process::id(), self.next.fetch_add(1, Ordering::Relaxed));
+        self.append(&Event::Task {
+            task: AgentTask {
+                id: id.clone(),
+                group: spec.group.clone(),
+                owner: spec.owner.clone(),
+                assignee: spec.assignee.clone(),
+                objective: clip(&spec.objective, MAX_OBJECTIVE_CHARS),
+                model: spec.model.clone(),
+                channel: spec.channel.clone(),
+                state: TaskState::Pending,
+                result: None,
+                error: None,
+                usage: None,
+                created_at_ms: now,
+                started_at_ms: None,
+                finished_at_ms: None,
+            },
+        });
+        id
+    }
+
+    fn running(&self, id: &str) {
+        self.append(&Event::Running { id: id.to_string(), at: now_ms() });
+    }
+
+    fn finished(&self, id: &str, outcome: TaskOutcome) {
+        let (state, result, error, usage) = match outcome {
+            TaskOutcome::Done { result, usage } => (TaskState::Done, Some(clip(&result, MAX_RESULT_CHARS)), None, usage),
+            TaskOutcome::Failed { error } => (TaskState::Failed, None, Some(clip(&error, MAX_RESULT_CHARS)), None),
+            TaskOutcome::Cancelled => (TaskState::Cancelled, None, Some("the turn ended before it finished".to_string()), None),
+        };
+        self.append(&Event::Finished { id: id.to_string(), at: now_ms(), state, result, error, usage });
+    }
+}
+
+/// The tasks in the log at `path`, newest first, at most `MAX_TASKS`. A missing file is no tasks, a line that doesn't parse is skipped.
+pub fn read_agent_tasks(path: &Path) -> Vec<AgentTask> {
+    read_agent_tasks_at(path, now_ms())
+}
+
+fn read_agent_tasks_at(path: &Path, now: u64) -> Vec<AgentTask> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let mut tasks: Vec<AgentTask> = Vec::new();
+    for event in text.lines().filter_map(|line| serde_json::from_str::<Event>(line).ok()) {
+        match event {
+            Event::Task { task } => match tasks.iter_mut().find(|t| t.id == task.id) {
+                Some(existing) => *existing = task,
+                None => tasks.push(task),
+            },
+            Event::Running { id, at } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished()) {
+                    task.state = TaskState::Running;
+                    task.started_at_ms = Some(at);
+                }
+            }
+            Event::Finished { id, at, state, result, error, usage } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id) {
+                    task.state = state;
+                    task.finished_at_ms = Some(at);
+                    task.result = result;
+                    task.error = error;
+                    task.usage = usage;
+                }
+            }
+        }
+    }
+    for task in tasks.iter_mut().filter(|t| !t.state.is_finished()) {
+        let last_seen = task.started_at_ms.unwrap_or(task.created_at_ms);
+        if now.saturating_sub(last_seen) > STALE_AFTER_MS {
+            task.state = TaskState::Cancelled;
+            task.error = Some("interrupted: nothing was recorded about it for a long time".to_string());
+        }
+    }
+    // Newest first; tasks made in the same millisecond by one process keep their order through the counter at the end of the id.
+    let counter = |id: &str| id.rsplit('-').next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    tasks.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then_with(|| counter(&b.id).cmp(&counter(&a.id))).then_with(|| b.id.cmp(&a.id)));
+    tasks.truncate(MAX_TASKS);
+    tasks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_log() -> PathBuf {
+        std::env::temp_dir().join(format!("warden-agent-tasks-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())).join("agent_tasks.jsonl")
+    }
+
+    fn spec(assignee: &str, group: &str) -> TaskSpec {
+        TaskSpec {
+            group: group.into(),
+            owner: Some("chief".into()),
+            assignee: assignee.into(),
+            objective: "write the thing".into(),
+            model: Some("fast".into()),
+            channel: "desktop".into(),
+        }
+    }
+
+    #[test]
+    fn a_task_goes_from_pending_to_running_to_done_with_its_tokens() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&spec("writer", "g1"));
+        assert_eq!(read_agent_tasks(&log)[0].state, TaskState::Pending);
+
+        recorder.running(&id);
+        let running = &read_agent_tasks(&log)[0];
+        assert_eq!(running.state, TaskState::Running);
+        assert!(running.started_at_ms.is_some());
+
+        recorder.finished(&id, TaskOutcome::Done { result: "the text".into(), usage: Some(Usage { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 }) });
+        let done = &read_agent_tasks(&log)[0];
+        assert_eq!((done.state, done.result.as_deref(), done.usage.map(|u| u.total_tokens)), (TaskState::Done, Some("the text"), Some(7)));
+        assert_eq!((done.owner.as_deref(), done.assignee.as_str(), done.model.as_deref(), done.group.as_str()), (Some("chief"), "writer", Some("fast"), "g1"));
+        assert!(done.finished_at_ms.is_some());
+    }
+
+    #[test]
+    fn a_failed_and_a_cancelled_task_say_why() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let failed = recorder.created(&spec("a", "g"));
+        recorder.finished(&failed, TaskOutcome::Failed { error: "model exploded".into() });
+        let cancelled = recorder.created(&spec("b", "g"));
+        recorder.finished(&cancelled, TaskOutcome::Cancelled);
+
+        let tasks = read_agent_tasks(&log);
+        let by = |id: &str| tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!((by(&failed).state, by(&failed).error.as_deref()), (TaskState::Failed, Some("model exploded")));
+        assert_eq!(by(&cancelled).state, TaskState::Cancelled);
+        assert!(by(&cancelled).error.as_deref().unwrap().contains("turn ended"));
+    }
+
+    #[test]
+    fn ids_are_unique_and_the_newest_task_comes_first() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let ids: Vec<String> = (0..5).map(|n| recorder.created(&spec(&format!("a{n}"), "g"))).collect();
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 5);
+        let tasks = read_agent_tasks(&log);
+        assert_eq!(tasks.len(), 5);
+        assert_eq!(tasks[0].assignee, "a4", "newest first");
+    }
+
+    #[test]
+    fn a_line_that_does_not_parse_and_a_missing_file_are_not_an_error() {
+        let log = temp_log();
+        assert!(read_agent_tasks(&log).is_empty());
+        let recorder = FileTaskRecorder::new(&log);
+        recorder.created(&spec("a", "g"));
+        let mut text = std::fs::read_to_string(&log).unwrap();
+        text.push_str("{ not json\n\n{\"e\":\"running\",\"id\":\"ghost\",\"at\":1}\n");
+        std::fs::write(&log, text).unwrap();
+        assert_eq!(read_agent_tasks(&log).len(), 1, "an event about a task nobody created is ignored too");
+    }
+
+    #[test]
+    fn only_the_newest_tasks_are_kept() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        for n in 0..(MAX_TASKS + 20) {
+            recorder.created(&spec(&format!("a{n}"), "g"));
+        }
+        let tasks = read_agent_tasks(&log);
+        assert_eq!(tasks.len(), MAX_TASKS);
+        assert_eq!(tasks[0].assignee, format!("a{}", MAX_TASKS + 19));
+    }
+
+    #[test]
+    fn a_task_last_seen_long_ago_is_shown_as_cancelled_not_running_forever() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+        let finished = recorder.created(&spec("b", "g"));
+        recorder.finished(&finished, TaskOutcome::Done { result: "ok".into(), usage: None });
+
+        let much_later = now_ms() + STALE_AFTER_MS + 1000;
+        let tasks = read_agent_tasks_at(&log, much_later);
+        let by = |id: &str| tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(by(&id).state, TaskState::Cancelled);
+        assert!(by(&id).error.as_deref().unwrap().contains("interrupted"));
+        assert_eq!(by(&finished).state, TaskState::Done, "a finished task stays as it was");
+        assert_eq!(read_agent_tasks(&log).iter().find(|t| t.id == id).unwrap().state, TaskState::Running, "and a recent one is still running");
+    }
+
+    #[test]
+    fn long_text_is_clipped() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&TaskSpec { objective: "o".repeat(5000), ..spec("a", "g") });
+        recorder.finished(&id, TaskOutcome::Done { result: "r".repeat(9000), usage: None });
+        let task = &read_agent_tasks(&log)[0];
+        assert_eq!(task.objective.chars().count(), MAX_OBJECTIVE_CHARS + 1);
+        assert_eq!(task.result.as_deref().unwrap().chars().count(), MAX_RESULT_CHARS + 1);
+    }
+
+    #[test]
+    fn compacting_keeps_each_task_as_it_stood() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+        recorder.finished(&id, TaskOutcome::Done { result: "ok".into(), usage: None });
+        let other = recorder.created(&spec("b", "g"));
+        let before = read_agent_tasks(&log);
+
+        {
+            let _held = recorder.write.lock().unwrap();
+            recorder.compact();
+        }
+        let after = read_agent_tasks(&log);
+        assert_eq!(before, after);
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2, "one snapshot per task");
+        // And it keeps working after a compaction.
+        recorder.running(&other);
+        assert_eq!(read_agent_tasks(&log).iter().find(|t| t.id == other).unwrap().state, TaskState::Running);
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_written_does_not_stop_anything() {
+        let recorder = FileTaskRecorder::new(std::env::temp_dir().join("warden-no-such-dir-\0bad").join("x.jsonl"));
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+        recorder.finished(&id, TaskOutcome::Cancelled);
+    }
+}

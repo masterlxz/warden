@@ -4,7 +4,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::jobs::{JobBoard, JobState};
+use crate::jobs::{JobBoard, JobState, TaskDraft};
+use crate::model::Usage;
 use crate::tool::{Tool, ToolSpec};
 
 /// The `background` argument the delegation tools (`delegate_task`, `delegate_to_agent`) accept once
@@ -30,6 +31,20 @@ where
     F: Future<Output = anyhow::Result<String>> + Send + 'static,
 {
     let job_id = board.spawn(label, work);
+    json!({
+        "job_id": job_id,
+        "status": "started",
+        "next": "Carry on; read the outcome later with the 'jobs' tool (action 'result', this job_id)."
+    })
+}
+
+/// Like `start_background`, for a delegation that is a task (P123): it is recorded with `draft` (who, what for, which
+/// model) when the board records, and its token usage is kept.
+pub fn start_task<F>(board: &JobBoard, label: String, draft: TaskDraft, work: F) -> Value
+where
+    F: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
+{
+    let job_id = board.spawn_task(label, draft, work);
     json!({
         "job_id": job_id,
         "status": "started",
@@ -110,8 +125,25 @@ impl Tool for JobsTool {
         let action = args.get("action").and_then(Value::as_str).ok_or_else(|| anyhow::anyhow!("missing required 'action' argument"))?;
         match action {
             "list" => {
-                let jobs: Vec<Value> =
-                    board.list().iter().map(|j| json!({ "job_id": j.id, "label": j.label, "state": j.state.name() })).collect();
+                let jobs: Vec<Value> = board
+                    .list()
+                    .iter()
+                    .map(|j| {
+                        let mut row = json!({ "job_id": j.id, "label": j.label, "state": j.state.name() });
+                        // A job recorded as a task (P123) also says who does it, on which model, and what it cost.
+                        if let Some(task) = &j.task {
+                            row["task_id"] = json!(task.task_id);
+                            row["assignee"] = json!(task.assignee);
+                            if let Some(model) = &task.model {
+                                row["model"] = json!(model);
+                            }
+                            if let Some(tokens) = task.total_tokens {
+                                row["total_tokens"] = json!(tokens);
+                            }
+                        }
+                        row
+                    })
+                    .collect();
                 Ok(json!({ "jobs": jobs }))
             }
             "result" => {

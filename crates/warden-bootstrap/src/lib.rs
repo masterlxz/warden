@@ -20,6 +20,7 @@ use warden_core::model::{Attachment, FallbackProvider, Message, ModelProvider, U
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
 use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, NamedSubAgent};
+use warden_core::tool::delegate::ModelChoices;
 use warden_core::tool::job_tools::JobsTool;
 use warden_core::tool::document::GenerateDocumentTool;
 use warden_core::tool::file_tools::{ReadFileTool, WriteFileTool};
@@ -32,6 +33,7 @@ use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
 pub mod agent_scope;
+pub mod agent_tasks;
 pub mod auto_sync;
 pub mod history;
 pub mod bot_access;
@@ -1718,7 +1720,13 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator, caller: Op
 
 pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator, caller: Option<&str>) -> Option<Arc<dyn Tool>> {
     let targets = delegate_targets(config, orchestrator, caller);
-    (!targets.is_empty()).then(|| Arc::new(DelegateToAgentTool::new(targets)) as Arc<dyn Tool>)
+    (!targets.is_empty()).then(|| {
+        let tool = DelegateToAgentTool::new(targets);
+        Arc::new(match model_choices(config) {
+            Some(models) => tool.with_models(models),
+            None => tool,
+        }) as Arc<dyn Tool>
+    })
 }
 
 /// Same tool as `build_delegate_to_agent_tool`, but its target list follows the agents on disk
@@ -1747,7 +1755,11 @@ pub fn build_live_delegate_to_agent_tool(
         let config = load_config_from_path(&path, false).ok()?;
         Some(delegate_targets(&config, &base, caller.as_deref()))
     });
-    Some(Arc::new(DelegateToAgentTool::live(targets, revision, resolver)))
+    let tool = DelegateToAgentTool::live(targets, revision, resolver);
+    Some(Arc::new(match model_choices(config) {
+        Some(models) => tool.with_models(models),
+        None => tool,
+    }))
 }
 
 /// Resolves which `ModelProvider` to build, in order: an explicit `overrides.provider_id` or
@@ -1809,6 +1821,7 @@ pub async fn bootstrap(
 
     // Read here, before `config` is picked apart below (the Tavily key is moved out of it).
     let spend_guard = spend::build_spend_guard(&config);
+    let models = model_choices(&config);
 
     let mut base_tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool::new(vault.clone())),
@@ -1870,11 +1883,16 @@ pub async fn bootstrap(
     // Shows the spending meter (P4). Same story as `jobs`: bound to each turn by the orchestrator, and
     // hidden from the model whenever the turn has no limits.
     base_tools.push(Arc::new(BudgetTool::new()));
-    let mut orchestrator = build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path)
-        .with_delegation_limit(max_delegated_calls)
-        .with_parallel_jobs(max_parallel_jobs as usize);
+    let mut orchestrator =
+        build_delegating_orchestrator(model_provider, vault, &base_tools, delegate_max_depth, generated_path, models)
+            .with_delegation_limit(max_delegated_calls)
+            .with_parallel_jobs(max_parallel_jobs as usize);
     if let Some(guard) = spend_guard {
         orchestrator = orchestrator.with_spend_guard(guard);
+    }
+    // P123: the background tasks of every turn are written down, so a screen can show them after the turn is over.
+    if let Some(path) = resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok()) {
+        orchestrator = orchestrator.with_task_recorder(Arc::new(agent_tasks::FileTaskRecorder::new(path)));
     }
 
     Ok(orchestrator)
@@ -1934,16 +1952,44 @@ fn build_delegating_orchestrator(
     base_tools: &[Arc<dyn Tool>],
     depth: u32,
     media_root: PathBuf,
+    models: Option<ModelChoices>,
 ) -> Orchestrator {
     let mut orchestrator = Orchestrator::new(model.clone(), vault.clone()).with_media_root(media_root.clone());
     for tool in base_tools {
         orchestrator.register_tool(tool.clone());
     }
     if depth > 0 {
-        let sub = build_delegating_orchestrator(model, vault, base_tools, depth - 1, media_root);
-        orchestrator.register_tool(Arc::new(DelegateTool::new(sub)));
+        let sub = build_delegating_orchestrator(model, vault, base_tools, depth - 1, media_root, models.clone());
+        let delegate = DelegateTool::new(sub);
+        orchestrator.register_tool(Arc::new(match models {
+            Some(models) => delegate.with_models(models),
+            None => delegate,
+        }));
     }
     orchestrator
+}
+
+/// The models an agent may choose between for each task it delegates (P123): every configured provider and combo, by id.
+/// `None` when there is nothing to choose between (fewer than two), so no `model` argument is offered.
+pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
+    let ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect();
+    if ids.len() < 2 {
+        return None;
+    }
+    // `FileConfig` isn't `Clone`; a round trip through its own file format is how this crate copies one.
+    let snapshot: FileConfig = toml::from_str(&toml::to_string(config).ok()?).ok()?;
+    let snapshot = Arc::new(snapshot);
+    Some(ModelChoices { ids, resolve: Arc::new(move |id| build_model_for(&snapshot, id, None)) })
+}
+
+/// Where the log of delegated tasks is written (P123): `WARDEN_AGENT_TASKS` (a file path) wins over the default location,
+/// and `off` writes none.
+pub fn resolve_agent_tasks_path(from_env: Option<String>) -> Option<PathBuf> {
+    match from_env.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+        Some(value) if value.eq_ignore_ascii_case("off") => None,
+        Some(value) => Some(PathBuf::from(value)),
+        None => agent_tasks::default_agent_tasks_path(),
+    }
 }
 
 #[cfg(test)]

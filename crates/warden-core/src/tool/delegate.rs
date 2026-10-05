@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::budget::TurnBudget;
-use crate::jobs::JobBoard;
+use crate::jobs::{JobBoard, TaskDraft};
+use crate::model::ModelProvider;
 use crate::orchestrator::Orchestrator;
-use crate::tool::job_tools::{background_property, job_label, start_background, wants_background};
+use crate::tool::job_tools::{background_property, job_label, start_task, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// Delegates a scoped, self-contained task to a fresh sub-agent — its own `Orchestrator`
@@ -25,11 +26,63 @@ pub struct DelegateTool {
     /// The turn's background jobs, once bound (`with_jobs`). Only then does the tool accept
     /// `background: true` and say so in its spec.
     jobs: Option<Arc<JobBoard>>,
+    /// The models the caller may pick for a task (P123), when the host offers any: the `model` argument.
+    models: Option<ModelChoices>,
+}
+
+/// The models a delegating agent may choose between, one per task (P123): the ids of the configured providers and combos,
+/// and how to turn one into a model. Built by the host, which knows the config; `warden-core` only calls it.
+#[derive(Clone)]
+pub struct ModelChoices {
+    pub ids: Vec<String>,
+    pub resolve: ModelResolver,
+}
+
+/// Turns the id of a configured provider or combo into the model that runs a task.
+pub type ModelResolver = Arc<dyn Fn(&str) -> anyhow::Result<Arc<dyn ModelProvider>> + Send + Sync>;
+
+/// The `model` argument of a delegation: which provider or combo does this task.
+pub fn model_property(choices: &ModelChoices) -> Value {
+    json!({
+        "type": "string",
+        "enum": choices.ids,
+        "description": "Which model does this task. Leave it out to use the default one. Pick a faster or cheaper model for \
+            simple work and a stronger one for hard reasoning or code: you decide task by task."
+    })
+}
+
+/// The model a call asked for, or `None` for the default. An id that isn't one of the choices is refused, naming the ones that are.
+pub fn pick_model(choices: &Option<ModelChoices>, args: &Value) -> anyhow::Result<Option<(String, Arc<dyn ModelProvider>)>> {
+    let Some(wanted) = args.get("model").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(choices) = choices else {
+        anyhow::bail!("this agent can't choose a model for a task — leave out 'model'");
+    };
+    if !choices.ids.iter().any(|id| id == wanted) {
+        anyhow::bail!("unknown model '{wanted}' — choose one of: {}", choices.ids.join(", "));
+    }
+    Ok(Some((wanted.to_string(), (choices.resolve)(wanted)?)))
+}
+
+/// What the sub-agent of a delegation is called in a listing: the name the caller gave a temporary helper, if any.
+fn helper_name(args: &Value) -> String {
+    args.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map_or_else(|| "helper".to_string(), |n| n.chars().take(60).collect())
 }
 
 impl DelegateTool {
     pub fn new(orchestrator: Orchestrator) -> Self {
-        Self { orchestrator, jobs: None }
+        Self { orchestrator, jobs: None, models: None }
+    }
+
+    /// Lets the caller pick a model for each task (P123).
+    pub fn with_models(mut self, models: ModelChoices) -> Self {
+        self.models = Some(models);
+        self
+    }
+
+    fn rebuilt(&self, orchestrator: Orchestrator, jobs: Option<Arc<JobBoard>>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator, jobs, models: self.models.clone() }))
     }
 }
 
@@ -46,6 +99,13 @@ impl Tool for DelegateTool {
         });
         if self.jobs.is_some() {
             properties["background"] = background_property();
+            properties["name"] = json!({
+                "type": "string",
+                "description": "A short name for this temporary helper (e.g. 'schema reviewer'), shown with the task in the progress view."
+            });
+        }
+        if let Some(models) = &self.models {
+            properties["model"] = model_property(models);
         }
         ToolSpec {
             name: "delegate_task".to_string(),
@@ -67,31 +127,31 @@ impl Tool for DelegateTool {
     }
 
     fn with_budget(&self, budget: &Arc<TurnBudget>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.charged_to(budget.clone()), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.charged_to(budget.clone()), self.jobs.clone())
     }
 
     fn restricted_to(&self, allowed: &[String]) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_allowed_tools(Some(allowed)), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.with_allowed_tools(Some(allowed)), self.jobs.clone())
     }
 
     fn with_autonomy(&self, level: crate::autonomy::Autonomy, read_only: &[String]) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_autonomy(level, read_only), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.with_autonomy(level, read_only), self.jobs.clone())
     }
 
     fn with_approval_rules(&self, required: &[crate::autonomy::Category], classifier: Option<&crate::autonomy::Classifier>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_approval_rules(required, classifier.cloned()), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.with_approval_rules(required, classifier.cloned()), self.jobs.clone())
     }
 
     fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_vault(vault.clone()), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.with_vault(vault.clone()), self.jobs.clone())
     }
 
     fn with_media_root(&self, root: &std::path::Path) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.with_media_root(root.to_path_buf()), jobs: self.jobs.clone() }))
+        self.rebuilt(self.orchestrator.with_media_root(root.to_path_buf()), self.jobs.clone())
     }
 
     fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
-        Some(Arc::new(Self { orchestrator: self.orchestrator.clone(), jobs: Some(board.clone()) }))
+        self.rebuilt(self.orchestrator.clone(), Some(board.clone()))
     }
 
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
@@ -99,18 +159,24 @@ impl Tool for DelegateTool {
             .get("task")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing required 'task' argument"))?;
+        let (orchestrator, model_id) = match pick_model(&self.models, &args)? {
+            Some((id, model)) => (self.orchestrator.with_model(model), Some(id)),
+            None => (self.orchestrator.clone(), None),
+        };
 
         if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
-            let orchestrator = self.orchestrator.clone();
             let owned_task = task.to_string();
-            return Ok(start_background(board, job_label("helper", task), async move {
-                Ok(orchestrator.handle_message(&[], &owned_task).await?.content)
+            let name = helper_name(&args);
+            let draft = TaskDraft { assignee: name.clone(), objective: task.to_string(), model: model_id };
+            return Ok(start_task(board, job_label(&name, task), draft, async move {
+                let outcome = orchestrator.handle_message(&[], &owned_task).await?;
+                Ok((outcome.content, outcome.usage))
             }));
         }
 
         // Sub-agent's token usage is dropped here, not rolled up into the parent conversation's
         // total — Tool::call only returns serde_json::Value, not a MessageOutcome.
-        let result = self.orchestrator.handle_message(&[], task).await?;
+        let result = orchestrator.handle_message(&[], task).await?;
         Ok(json!({ "result": result.content }))
     }
 }
@@ -161,6 +227,39 @@ mod tests {
 
         let result = tool.call(json!({ "task": "summarize X" })).await.unwrap();
         assert_eq!(result, json!({ "result": "sub-agent done" }));
+    }
+
+    fn two_models() -> ModelChoices {
+        ModelChoices {
+            ids: vec!["fast".to_string(), "strong".to_string()],
+            resolve: Arc::new(|id| match id {
+                "fast" | "strong" => Ok(Arc::new(FixedAnswerModel { answer: format!("answered by {id}") }) as Arc<dyn ModelProvider>),
+                other => anyhow::bail!("no model {other}"),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chosen_model_does_the_task_and_the_default_one_otherwise() {
+        let default = Arc::new(FixedAnswerModel { answer: "answered by default".to_string() });
+        let tool = DelegateTool::new(Orchestrator::new(default, temp_vault())).with_models(two_models());
+
+        assert_eq!(tool.call(json!({ "task": "x" })).await.unwrap()["result"], "answered by default");
+        assert_eq!(tool.call(json!({ "task": "x", "model": "strong" })).await.unwrap()["result"], "answered by strong");
+        assert_eq!(tool.call(json!({ "task": "x", "model": "  " })).await.unwrap()["result"], "answered by default", "a blank model is no choice");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_model_is_refused_naming_the_ones_there_are_and_none_is_offered_without_choices() {
+        let default = Arc::new(FixedAnswerModel { answer: "d".to_string() });
+        let tool = DelegateTool::new(Orchestrator::new(default.clone(), temp_vault())).with_models(two_models());
+        let err = tool.call(json!({ "task": "x", "model": "huge" })).await.unwrap_err().to_string();
+        assert!(err.contains("unknown model 'huge'") && err.contains("fast, strong"), "{err}");
+
+        let plain = DelegateTool::new(Orchestrator::new(default, temp_vault()));
+        assert!(plain.spec().parameters["properties"].get("model").is_none(), "no choices, no argument");
+        assert!(plain.call(json!({ "task": "x", "model": "fast" })).await.unwrap_err().to_string().contains("can't choose a model"));
+        assert_eq!(tool.spec().parameters["properties"]["model"]["enum"], json!(["fast", "strong"]));
     }
 
     /// Proves P46's core claim end-to-end: a chain of orchestrators three deep (root → level-1 →

@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Attachment,
   AgentEntry,
+  AgentTask,
   ChatMessage,
   ProjectEntry,
   RunMessage,
@@ -196,6 +197,11 @@ export function hubTasks(askKey: KeyAsker) {
       return (await hubHistory(`task-${id}`)).map(({ role, content, createdAt }) => ({ role, content, createdAt }));
     },
   };
+}
+
+/** The work agents delegated to each other on the hub in use (P123), newest first. Read only, so no pairing key. */
+export async function hubAgentTasks(): Promise<AgentTask[]> {
+  return (await ask<{ type: string; tasks: AgentTask[] }>({ type: "listAgentTasks" }, "agentTaskList")).tasks;
 }
 
 interface HubWebhookReply {

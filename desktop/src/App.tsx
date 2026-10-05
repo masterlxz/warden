@@ -9,6 +9,7 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import OrganizationView from "./components/OrganizationView";
+import AgentTasksView from "./components/AgentTasksView";
 import SkillsView from "./components/SkillsView";
 import ProjectsView from "./components/ProjectsView";
 import ApprovalModal from "./components/ApprovalModal";
@@ -106,7 +107,7 @@ function App() {
   // How much each code conversation asks (P103 b), by conversation id — "new" for one that hasn't started. Only here,
   // never saved: a conversation opened again asks everything.
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization">("chat");
+  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -590,6 +591,7 @@ function App() {
         onOpenWebhooks={() => setView("webhooks")}
         onOpenWorkspace={() => setView("workspace")}
         onOpenOrganization={() => setView("organization")}
+        onOpenAgentWork={() => setView("agentWork")}
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
@@ -622,6 +624,8 @@ function App() {
         <WebhooksView key={activeHubId ?? "local"} remote={remote} hubUrl={hubs.find((h) => h.id === activeHubId)?.url} agents={settings.agents} />
       ) : view === "workspace" ? (
         <WorkspaceView />
+      ) : view === "agentWork" ? (
+        <AgentTasksView key={activeHubId ?? "local"} remote={remote} />
       ) : view === "organization" ? (
         <OrganizationView agents={settings.agents} onEdit={() => setView("settings")} />
       ) : (

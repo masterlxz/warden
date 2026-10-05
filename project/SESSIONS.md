@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 148)
+> Última atualização: 2026-10-05 (Sessão 149)
 
 ---
+
+### 2026-10-05 — Sessão 149
+
+- **Objetivo**: primeira fatia do P123, a tarefa de agente como objeto, a pedido do usuário. Planejada em Plan mode; decisões: tarefas **persistidas** com estado e progresso, e o gerente escolhe o modelo por um argumento `model` (id de provedor ou combo).
+- **Feito**: `TaskRecorder`, `TaskSpec`, `TaskOutcome`, `JobBoard::recording`/`spawn_task` (com o guarda de Drop que marca `cancelled`), `with_task_recorder` no orquestrador (grupo por turno, dono e canal); `ModelChoices`, `model` em `delegate_task` e `delegate_to_agent` e `name` no worker temporário; `agent_tasks.rs` (log JSONL, leitura que dobra os eventos, retenção, tarefa velha vira cancelada) e a fiação do bootstrap (`model_choices`, `resolve_agent_tasks_path`); protocolo `ListAgentTasks`/`AgentTaskList`, `Server::with_agent_tasks`; tela "Agent work" no desktop e aba "Trabalho dos agentes" na web. Detalhes em `ARCHITECTURE.md` ("Tarefas de agentes").
+- **Testes**: 1359 testes Rust verdes (em dois blocos), `npm test` do desktop 32 de 32, `tsc` e builds de desktop e web; clippy só com o aviso antigo.
+- **Não verificado**: as telas numa janela; um modelo real escolhendo o `model` de uma tarefa; o log com vários processos escrevendo ao mesmo tempo (o desenho é de anexar, mas só um processo foi testado).
+- **Fica no P123**: "aguardando agente" e "pausado", subtarefas aninhadas, cancelar pela tela, políticas nomeadas de modelo, CLI/celular/extensão.
 
 ### 2026-10-05 — Sessão 148
 

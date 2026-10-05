@@ -20,6 +20,7 @@ mod skills_cmds;
 mod spend_cmds;
 mod ssh_cmds;
 mod sync_cmds;
+mod agent_task_cmds;
 mod task_cmds;
 mod webhook_cmds;
 mod vault_cmds;
@@ -1069,6 +1070,7 @@ pub fn run() {
             lend_cmds::lend_options,
             lend_cmds::start_lending,
             lend_cmds::stop_lending,
+            agent_task_cmds::list_agent_tasks,
             task_cmds::list_tasks,
             task_cmds::save_task,
             task_cmds::set_task_enabled_cmd,

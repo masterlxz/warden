@@ -5,9 +5,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::budget::TurnBudget;
-use crate::jobs::JobBoard;
+use crate::jobs::{JobBoard, TaskDraft};
 use crate::orchestrator::Orchestrator;
-use crate::tool::job_tools::{background_property, job_label, start_background, wants_background};
+use crate::tool::delegate::{model_property, pick_model, ModelChoices};
+use crate::tool::job_tools::{background_property, job_label, start_task, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// One addressable target for `DelegateToAgentTool` (P46's opt-in "chief" mechanism) — a
@@ -78,11 +79,19 @@ pub struct DelegateToAgentTool {
     /// The turn's background jobs, once bound (`with_jobs`): only then does the tool accept
     /// `background: true` and say so in its spec.
     jobs: Option<Arc<JobBoard>>,
+    /// The models the caller may pick for a task (P123): the `model` argument, when the host offers any.
+    models: Option<ModelChoices>,
 }
 
 impl DelegateToAgentTool {
     pub fn new(agents: Vec<NamedSubAgent>) -> Self {
-        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None, jobs: None }
+        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None, jobs: None, models: None }
+    }
+
+    /// Lets the caller pick a model for each task (P123), instead of the target agent's own.
+    pub fn with_models(mut self, models: ModelChoices) -> Self {
+        self.models = Some(models);
+        self
     }
 
     /// Like `new`, but re-resolves the targets through `resolver` whenever `revision` has moved
@@ -94,6 +103,7 @@ impl DelegateToAgentTool {
             live: Some(LiveAgents { revision, resolver }),
             budget: None,
             jobs: None,
+            models: None,
         }
     }
 
@@ -140,6 +150,9 @@ impl Tool for DelegateToAgentTool {
         if self.jobs.is_some() {
             properties["background"] = background_property();
         }
+        if let Some(models) = &self.models {
+            properties["model"] = model_property(models);
+        }
         ToolSpec {
             name: "delegate_to_agent".to_string(),
             description: format!(
@@ -166,6 +179,7 @@ impl Tool for DelegateToAgentTool {
             live: self.live.clone(),
             budget: Some(budget.clone()),
             jobs: self.jobs.clone(),
+            models: self.models.clone(),
         }))
     }
 
@@ -177,6 +191,7 @@ impl Tool for DelegateToAgentTool {
             live: self.live.clone(),
             budget: self.budget.clone(),
             jobs: Some(board.clone()),
+            models: self.models.clone(),
         }))
     }
 
@@ -190,14 +205,22 @@ impl Tool for DelegateToAgentTool {
             anyhow::anyhow!("unknown agent_id '{agent_id}' — must be one of: {available}")
         })?;
 
+        // P123: the caller may pick the model of this task instead of the agent's own.
+        let (orchestrator, model_id) = match pick_model(&self.models, &args)? {
+            Some((id, model)) => (agent.orchestrator.with_model(model), Some(id)),
+            None => (agent.orchestrator.clone(), None),
+        };
+
         if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
-            let (orchestrator, persona, owned_task) = (agent.orchestrator.clone(), agent.persona.clone(), task.to_string());
-            return Ok(start_background(board, job_label(&agent.id, task), async move {
-                Ok(orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?.content)
+            let (persona, owned_task) = (agent.persona.clone(), task.to_string());
+            let draft = TaskDraft { assignee: agent.id.clone(), objective: task.to_string(), model: model_id };
+            return Ok(start_task(board, job_label(&agent.id, task), draft, async move {
+                let outcome = orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
+                Ok((outcome.content, outcome.usage))
             }));
         }
 
-        let result = agent.orchestrator.handle_turn(&[], task, Vec::new(), agent.persona.as_deref()).await?;
+        let result = orchestrator.handle_turn(&[], task, Vec::new(), agent.persona.as_deref()).await?;
         Ok(json!({ "result": result.content }))
     }
 }

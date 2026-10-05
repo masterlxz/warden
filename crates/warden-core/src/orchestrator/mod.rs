@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::autonomy::{Autonomy, Category, Classifier};
 use crate::budget::{SpendTurn, TurnBudget};
-use crate::jobs::{JobBoard, JobsGuard};
+use crate::jobs::{JobBoard, JobsGuard, TaskContext, TaskRecorder};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, Role, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
@@ -97,6 +97,8 @@ pub struct Orchestrator {
     /// The risk categories that need a person's yes even at level 4 (P122), and how a call is put in one. Both only grow.
     approval_required: Arc<[Category]>,
     classifier: Option<Classifier>,
+    /// Where the background jobs of a turn are kept as records (P123), or `None` for jobs that stay in memory.
+    task_recorder: Option<Arc<dyn TaskRecorder>>,
 }
 
 impl Orchestrator {
@@ -120,7 +122,14 @@ impl Orchestrator {
             read_only_tools: Arc::from([]),
             approval_required: Arc::from([]),
             classifier: None,
+            task_recorder: None,
         }
+    }
+
+    /// Returns a copy whose turns record the background jobs they start (P123) with `recorder`: each delegated task
+    /// becomes a record that outlives the turn, with its state, tokens and model.
+    pub fn with_task_recorder(&self, recorder: Arc<dyn TaskRecorder>) -> Self {
+        Self { task_recorder: Some(recorder), ..self.clone() }
     }
 
     /// Returns a copy that asks a person before any call in `required` (P122), whatever its autonomy level, with
@@ -322,7 +331,19 @@ impl Orchestrator {
         if !self.tools.iter().any(|t| t.spec().name == "jobs") {
             return None;
         }
-        let board = JobBoard::new(limit);
+        let board = match &self.task_recorder {
+            Some(recorder) => {
+                static TURNS: AtomicU64 = AtomicU64::new(0);
+                let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+                let context = TaskContext {
+                    group: format!("turn-{nanos}-{}", TURNS.fetch_add(1, Ordering::Relaxed)),
+                    owner: self.agent_id.clone(),
+                    channel: self.spend_ctx.channel.clone(),
+                };
+                JobBoard::recording(limit, recorder.clone(), context)
+            }
+            None => JobBoard::new(limit),
+        };
         for tool in &mut self.tools {
             if let Some(bound) = tool.with_jobs(&board) {
                 *tool = bound;
@@ -1458,6 +1479,54 @@ mod tests {
 
         assert_eq!(answer.matches("sub-agent done").count(), 3, "{answer}");
         assert_eq!(peak.load(Ordering::SeqCst), 2, "three jobs under a limit of 2 should peak at 2 at once");
+    }
+
+    #[tokio::test]
+    async fn the_background_tasks_of_a_turn_are_recorded_together_under_the_agent_that_delegated() {
+        use crate::jobs::{TaskOutcome, TaskRecorder, TaskSpec};
+
+        #[derive(Default)]
+        struct Records {
+            created: std::sync::Mutex<Vec<TaskSpec>>,
+            ended: std::sync::Mutex<Vec<String>>,
+        }
+        impl TaskRecorder for Records {
+            fn created(&self, task: &TaskSpec) -> String {
+                let mut created = self.created.lock().unwrap();
+                created.push(task.clone());
+                format!("t{}", created.len())
+            }
+            fn running(&self, _id: &str) {}
+            fn finished(&self, id: &str, outcome: TaskOutcome) {
+                let word = match outcome {
+                    TaskOutcome::Done { .. } => "done",
+                    TaskOutcome::Failed { .. } => "failed",
+                    TaskOutcome::Cancelled => "cancelled",
+                };
+                self.ended.lock().unwrap().push(format!("{id} {word}"));
+            }
+        }
+
+        let sub = Arc::new(SlowSubAgentModel { active: Default::default(), peak: Default::default(), tools_seen: Default::default() });
+        let records = Arc::new(Records::default());
+        let chief = chief_with_jobs(sub, 3)
+            .with_agent(Some("chief".to_string()))
+            .with_spend_context(SpendContext::new("desktop"))
+            .with_task_recorder(records.clone());
+
+        chief.handle_message(&[], "go").await.unwrap();
+        let first_turn = records.created.lock().unwrap().clone();
+        assert_eq!(first_turn.len(), 3);
+        assert!(first_turn.iter().all(|t| t.owner.as_deref() == Some("chief") && t.channel == "desktop" && t.assignee == "helper"));
+        assert!(first_turn.iter().all(|t| t.group == first_turn[0].group), "one turn, one group");
+        assert_eq!(first_turn[0].objective, "task 1");
+        let mut ended = records.ended.lock().unwrap().clone();
+        ended.sort();
+        assert_eq!(ended, ["t1 done", "t2 done", "t3 done"]);
+
+        chief.handle_message(&[], "go again").await.unwrap();
+        let all = records.created.lock().unwrap().clone();
+        assert_ne!(all[3].group, first_turn[0].group, "the next turn is a new group");
     }
 
     #[tokio::test]

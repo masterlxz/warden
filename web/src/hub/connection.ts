@@ -31,6 +31,7 @@ import {
   type UsageReport,
   type NodeInfo,
   type NodeFolder,
+  type AgentTask,
   type DirListing,
   type ProjectDto,
   type SkillDto,
@@ -545,6 +546,7 @@ export class ServerConnection {
       case "apiKeyCreated":
       case "syncStatus":
       case "taskList":
+      case "agentTaskList":
       case "webhookList":
       case "webhookCreated":
       case "nodeList":
@@ -823,6 +825,13 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "setNodeAccess", requestId, pairingKey, deviceId, enabled, agents, requireApproval }));
     if (reply.type !== "nodeList") throw new Error("resposta inesperada do hub");
     return reply.nodes;
+  }
+
+  /** O trabalho que os agentes passaram uns aos outros em segundo plano (P123), do mais novo ao mais antigo. Só leitura. */
+  async listAgentTasks(): Promise<AgentTask[]> {
+    const reply = await this.request((requestId) => ({ type: "listAgentTasks", requestId }));
+    if (reply.type !== "agentTaskList") throw new Error("resposta inesperada do hub");
+    return reply.tasks;
   }
 
   /** Scheduled tasks (P92), in the config's order, and whether this hub runs them on schedule. */

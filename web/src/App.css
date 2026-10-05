@@ -1074,6 +1074,94 @@ button:focus-visible {
   opacity: 0.7;
 }
 
+/* Trabalho dos agentes (P123) */
+
+.agent-work-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.agent-work-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.agent-work-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.agent-work-live {
+  font-size: 0.8em;
+  padding: 0.05em 0.5em;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+}
+
+.agent-work-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.2);
+  overflow: hidden;
+}
+
+.agent-work-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width 0.3s ease;
+}
+
+.agent-work-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.agent-work-task-line {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.4em auto 1fr auto;
+  align-items: baseline;
+  gap: 0.6em;
+  text-align: left;
+  padding: 0.4em 0.6em;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.agent-work-assignee {
+  font-weight: 600;
+}
+
+.agent-work-objective {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.agent-work-meta {
+  display: inline-flex;
+  gap: 0.5em;
+  align-items: baseline;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.agent-work-detail {
+  padding: 0.4em 0.6em 0.6em 2em;
+}
+
 /* Usage (P78) */
 
 .usage-view {

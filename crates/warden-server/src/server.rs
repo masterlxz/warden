@@ -113,6 +113,8 @@ pub struct Server {
     /// Scheduled tasks (P92): their conversations, which every device lists, and whether this hub
     /// also runs them on schedule (`--run-tasks`).
     tasks: Option<TaskRunner>,
+    /// Where the log of tasks agents delegated to each other lives (P123), for `ListAgentTasks`. `None`: this hub shows none.
+    agent_tasks: Option<Arc<PathBuf>>,
     task_tick: Duration,
     /// Conversations changed outside any one connection (a task ran): every connection hears it.
     changes: broadcast::Sender<String>,
@@ -161,6 +163,7 @@ impl Server {
             api_keys: None,
             webhook_tokens: None,
             tasks: None,
+            agent_tasks: None,
             task_tick: DEFAULT_TASK_TICK,
             changes: broadcast::channel(64).0,
             nodes: NodeRegistry::default(),
@@ -210,6 +213,13 @@ impl Server {
     /// `with_settings` too. Off by default: the config syncs, and only one hub should run them.
     pub fn with_tasks(mut self, store: TaskStore, run: bool) -> Self {
         self.tasks = Some(TaskRunner::new(store, self.changes.clone(), run));
+        self
+    }
+
+    /// Shows the tasks agents delegated to each other (P123) from the log at `path`, to a device that asks (`ListAgentTasks`);
+    /// `None` shows none. The log is written by the orchestrator's `FileTaskRecorder`; this only reads it.
+    pub fn with_agent_tasks(mut self, path: Option<PathBuf>) -> Self {
+        self.agent_tasks = path.map(Arc::new);
         self
     }
 
@@ -339,6 +349,7 @@ impl Server {
             api_keys: self.api_keys,
             webhooks,
             tasks: self.tasks,
+            agent_tasks: self.agent_tasks,
             changes: self.changes.clone(),
             nodes: self.nodes.clone(),
             node_tools: None,
@@ -430,6 +441,8 @@ struct ConnectionContext {
     webhooks: Option<WebhookContext>,
     /// Scheduled tasks (P92): their conversations are listed next to every device's own.
     tasks: Option<TaskRunner>,
+    /// The log of tasks agents delegated to each other (P123).
+    agent_tasks: Option<Arc<PathBuf>>,
     changes: broadcast::Sender<String>,
     nodes: NodeRegistry,
     /// Rebuilds the nodes' MCP tools when one joins or leaves (fatia 2). `None` without a settings file.
@@ -801,6 +814,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         api_keys,
         webhooks,
         tasks,
+        agent_tasks,
         changes,
         nodes,
         node_tools,
@@ -1616,6 +1630,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         let reply = handle_set_node_access(&nodes, &pairing, settings.as_deref(), &lock, &auth_key, request_id, &pairing_key, access).await;
                         let _ = reply_tx.send(reply);
                     });
+                }
+                Ok(ClientMessage::ListAgentTasks { request_id }) => {
+                    let _ = tx.send(crate::agent_task_list::handle_list_agent_tasks(agent_tasks.as_deref().map(|p| p.as_path()), member.is_none(), request_id));
                 }
                 Ok(ClientMessage::ListTasks { request_id }) => {
                     let _ = tx.send(handle_list_tasks(tasks.as_ref(), settings.as_deref(), request_id));

@@ -1208,6 +1208,8 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_tasks(tasks_store()?, args.run_tasks)
         // P105 — `POST /hooks/<id>` with a webhook's token; the conversations go next to the tasks' ones.
         .with_webhooks(webhook_tokens_path()?)
+        // P123 — the tasks agents delegate to each other, written by the orchestrator and listed to the devices.
+        .with_agent_tasks(warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok()))
         // P119 — whether the web settings may change the shell, MCP servers, SSH hosts, folders and the embedded hub.
         .with_machine_settings(args.allow_machine_settings);
     if args.allow_machine_settings {

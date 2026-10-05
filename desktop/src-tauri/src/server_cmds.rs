@@ -381,6 +381,8 @@ pub(crate) async fn start_embedded_server_inner(state: &AppState, config: &Embed
     if let Some(path) = warden_bootstrap::default_webhook_tokens_path() {
         server = server.with_webhooks(path);
     }
+    // P123 — the tasks agents delegate to each other are listed to the devices of this hub too.
+    server = server.with_agent_tasks(warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok()));
     let task_runner = server.task_runner();
     let node_registry = server.node_registry();
     let bound_addr = server.local_addr()?;

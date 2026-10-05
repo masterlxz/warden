@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinHandle;
 
+use crate::model::Usage;
+
 /// Where a background job is (P46, job queue). `Queued` = waiting for a free slot under the
 /// concurrency limit; the other three are self-explanatory. `Done`/`Failed` carry what the job
 /// produced, so a result can be read any number of times.
@@ -31,12 +33,73 @@ impl JobState {
     }
 }
 
+/// What a recorded task is about (P123): who does it, what for, and on which model. The rest of what a record carries
+/// (the turn's group, the agent that delegated, the channel) comes from the turn itself (`TaskContext`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskDraft {
+    /// The agent that does the work, or the name the delegating agent gave a temporary helper.
+    pub assignee: String,
+    pub objective: String,
+    /// The provider or combo chosen for this task, `None` for the assignee's own.
+    pub model: Option<String>,
+}
+
+/// A task as the recorder is told about it (P123): a `TaskDraft` placed in the turn that created it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSpec {
+    /// Shared by every task one turn starts, so a screen can show them together with a progress.
+    pub group: String,
+    /// The agent that delegated (the one the turn speaks as), if there was one.
+    pub owner: Option<String>,
+    pub assignee: String,
+    pub objective: String,
+    pub model: Option<String>,
+    pub channel: String,
+}
+
+/// How a recorded task ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskOutcome {
+    Done { result: String, usage: Option<Usage> },
+    Failed { error: String },
+    /// The turn ended (or was cancelled) before it finished.
+    Cancelled,
+}
+
+/// Keeps the tasks the background jobs run as records that outlive the turn (P123). Implemented by the host
+/// (`warden-bootstrap`'s file log); `created` hands back the record's id, and every later call names it.
+pub trait TaskRecorder: Send + Sync {
+    fn created(&self, task: &TaskSpec) -> String;
+    fn running(&self, id: &str);
+    fn finished(&self, id: &str, outcome: TaskOutcome);
+}
+
+/// What a turn tells its board about itself, to place the tasks it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskContext {
+    pub group: String,
+    pub owner: Option<String>,
+    pub channel: String,
+}
+
+/// What a recorded job adds to its row in `JobBoard::list`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobTask {
+    pub task_id: String,
+    pub assignee: String,
+    pub model: Option<String>,
+    /// Known once the job has finished and the model reported usage.
+    pub total_tokens: Option<u64>,
+}
+
 /// A row of `JobBoard::list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobSummary {
     pub id: String,
     pub label: String,
     pub state: JobState,
+    /// Only for a job that is recorded as a task.
+    pub task: Option<JobTask>,
 }
 
 struct Job {
@@ -44,6 +107,30 @@ struct Job {
     label: String,
     state: watch::Receiver<JobState>,
     handle: JoinHandle<()>,
+    task: Option<RecordedTask>,
+}
+
+struct RecordedTask {
+    task_id: String,
+    assignee: String,
+    model: Option<String>,
+    usage: Arc<Mutex<Option<Usage>>>,
+}
+
+/// Marks a recorded task cancelled when the future that owns it is dropped before it finished — which is what
+/// `abort_unfinished` does to a job — and does nothing once the outcome has been written.
+struct CancelOnDrop {
+    recorder: Arc<dyn TaskRecorder>,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.recorder.finished(&self.id, TaskOutcome::Cancelled);
+        }
+    }
 }
 
 /// The background jobs of one turn (P46): sub-agent tasks a "chief" started without waiting for
@@ -55,12 +142,73 @@ struct Job {
 pub struct JobBoard {
     slots: Arc<Semaphore>,
     jobs: Mutex<Vec<Job>>,
+    /// Where the tasks of this turn are recorded (P123), and the turn they belong to. `None`: jobs stay in memory.
+    recording: Option<(Arc<dyn TaskRecorder>, TaskContext)>,
 }
 
 impl JobBoard {
     /// `max_parallel` is clamped to at least 1, so a job always eventually gets to run.
     pub fn new(max_parallel: usize) -> Arc<Self> {
-        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel.max(1))), jobs: Mutex::new(Vec::new()) })
+        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel.max(1))), jobs: Mutex::new(Vec::new()), recording: None })
+    }
+
+    /// Like `new`, with every task started through `spawn_task` recorded by `recorder` as part of `context`'s turn.
+    pub fn recording(max_parallel: usize, recorder: Arc<dyn TaskRecorder>, context: TaskContext) -> Arc<Self> {
+        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel.max(1))), jobs: Mutex::new(Vec::new()), recording: Some((recorder, context)) })
+    }
+
+    /// Like `spawn`, for work that is a task (P123): when the board records, the task is written as pending now, running
+    /// when it gets a slot, and finished (done with its tokens, failed, or cancelled with the turn) when it ends. Without a
+    /// recorder it is a plain job, and the usage is dropped.
+    pub fn spawn_task<F>(&self, label: String, draft: TaskDraft, work: F) -> String
+    where
+        F: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
+    {
+        let Some((recorder, context)) = &self.recording else {
+            return self.spawn(label, async move { work.await.map(|(text, _)| text) });
+        };
+        let task_id = recorder.created(&TaskSpec {
+            group: context.group.clone(),
+            owner: context.owner.clone(),
+            assignee: draft.assignee.clone(),
+            objective: draft.objective.clone(),
+            model: draft.model.clone(),
+            channel: context.channel.clone(),
+        });
+        let usage_slot = Arc::new(Mutex::new(None));
+        let (state_tx, state_rx) = watch::channel(JobState::Queued);
+        let slots = self.slots.clone();
+        let (recorder, id, usage) = (recorder.clone(), task_id.clone(), usage_slot.clone());
+        let handle = tokio::spawn(async move {
+            let mut cancel = CancelOnDrop { recorder: recorder.clone(), id: id.clone(), armed: true };
+            let Ok(_slot) = slots.acquire_owned().await else {
+                cancel.armed = false;
+                recorder.finished(&id, TaskOutcome::Failed { error: "the job queue was closed".to_string() });
+                state_tx.send_replace(JobState::Failed("the job queue was closed".to_string()));
+                return;
+            };
+            state_tx.send_replace(JobState::Running);
+            recorder.running(&id);
+            let outcome = work.await;
+            cancel.armed = false;
+            match outcome {
+                Ok((text, used)) => {
+                    *usage.lock().unwrap_or_else(|e| e.into_inner()) = used;
+                    recorder.finished(&id, TaskOutcome::Done { result: text.clone(), usage: used });
+                    state_tx.send_replace(JobState::Done(text));
+                }
+                Err(err) => {
+                    let error = format!("{err:#}");
+                    recorder.finished(&id, TaskOutcome::Failed { error: error.clone() });
+                    state_tx.send_replace(JobState::Failed(error));
+                }
+            }
+        });
+
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let id = format!("job-{}", jobs.len() + 1);
+        jobs.push(Job { id: id.clone(), label, state: state_rx, handle, task: Some(RecordedTask { task_id, assignee: draft.assignee, model: draft.model, usage: usage_slot }) });
+        id
     }
 
     /// Queues `work` and returns its id (`job-1`, `job-2`, ...) right away, without waiting. `label`
@@ -87,13 +235,25 @@ impl JobBoard {
 
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         let id = format!("job-{}", jobs.len() + 1);
-        jobs.push(Job { id: id.clone(), label, state: state_rx, handle });
+        jobs.push(Job { id: id.clone(), label, state: state_rx, handle, task: None });
         id
     }
 
     pub fn list(&self) -> Vec<JobSummary> {
         let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        jobs.iter().map(|j| JobSummary { id: j.id.clone(), label: j.label.clone(), state: j.state.borrow().clone() }).collect()
+        jobs.iter()
+            .map(|j| JobSummary {
+                id: j.id.clone(),
+                label: j.label.clone(),
+                state: j.state.borrow().clone(),
+                task: j.task.as_ref().map(|t| JobTask {
+                    task_id: t.task_id.clone(),
+                    assignee: t.assignee.clone(),
+                    model: t.model.clone(),
+                    total_tokens: t.usage.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|u| u64::from(u.total_tokens)),
+                }),
+            })
+            .collect()
     }
 
     /// Where `id` is right now, or `None` for an id that was never handed out.
@@ -261,6 +421,107 @@ mod tests {
 
         assert_eq!(aborted.load(Ordering::SeqCst), 1, "the hung job's future should have been dropped");
         assert_eq!(board.state(&done), Some(JobState::Done("kept".to_string())));
+    }
+
+    /// Writes down what a recorder is told, as short lines.
+    struct Log(Mutex<Vec<String>>);
+
+    impl Log {
+        fn lines(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl TaskRecorder for Log {
+        fn created(&self, task: &TaskSpec) -> String {
+            let mut lines = self.0.lock().unwrap();
+            let id = format!("t{}", lines.iter().filter(|l| l.starts_with("created")).count() + 1);
+            lines.push(format!("created {id} {} model={} group={} owner={:?}", task.assignee, task.model.as_deref().unwrap_or("-"), task.group, task.owner));
+            id
+        }
+
+        fn running(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("running {id}"));
+        }
+
+        fn finished(&self, id: &str, outcome: TaskOutcome) {
+            self.0.lock().unwrap().push(match outcome {
+                TaskOutcome::Done { result, usage } => format!("done {id} {result} tokens={}", usage.map_or(0, |u| u.total_tokens)),
+                TaskOutcome::Failed { error } => format!("failed {id} {error}"),
+                TaskOutcome::Cancelled => format!("cancelled {id}"),
+            });
+        }
+    }
+
+    fn recording_board(max: usize) -> (Arc<JobBoard>, Arc<Log>) {
+        let log = Arc::new(Log(Mutex::new(Vec::new())));
+        let context = TaskContext { group: "g1".into(), owner: Some("chief".into()), channel: "desktop".into() };
+        (JobBoard::recording(max, log.clone(), context), log)
+    }
+
+    fn draft(assignee: &str) -> TaskDraft {
+        TaskDraft { assignee: assignee.into(), objective: "do it".into(), model: Some("fast".into()) }
+    }
+
+    #[tokio::test]
+    async fn a_task_is_recorded_as_pending_then_running_then_done_with_its_tokens() {
+        let (board, log) = recording_board(2);
+        let id = board.spawn_task("writer: draft".into(), draft("writer"), async { Ok(("the text".to_string(), Some(Usage { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 }))) });
+
+        assert_eq!(board.wait(&id).await, Some(JobState::Done("the text".to_string())));
+        assert_eq!(
+            log.lines(),
+            ["created t1 writer model=fast group=g1 owner=Some(\"chief\")", "running t1", "done t1 the text tokens=7"]
+        );
+        let listed = board.list();
+        let task = listed[0].task.as_ref().unwrap();
+        assert_eq!((task.task_id.as_str(), task.assignee.as_str(), task.model.as_deref(), task.total_tokens), ("t1", "writer", Some("fast"), Some(7)));
+    }
+
+    #[tokio::test]
+    async fn a_failing_task_is_recorded_as_failed() {
+        let (board, log) = recording_board(2);
+        let id = board.spawn_task("bad".into(), draft("bad"), async { anyhow::bail!("model exploded") });
+        board.wait(&id).await;
+        let lines = log.lines();
+        assert_eq!(lines[1], "running t1");
+        assert!(lines[2].starts_with("failed t1") && lines[2].contains("model exploded"), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_task_the_turn_aborts_is_recorded_as_cancelled_and_one_still_queued_too() {
+        let (board, log) = recording_board(1);
+        board.spawn_task("first".into(), draft("a"), async {
+            std::future::pending::<()>().await;
+            Ok((String::new(), None))
+        });
+        board.spawn_task("second".into(), draft("b"), async { Ok(("never".to_string(), None)) });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // The second is waiting for the one slot: pending, not running.
+        assert!(log.lines().iter().any(|l| l == "running t1") && !log.lines().iter().any(|l| l == "running t2"), "{:?}", log.lines());
+
+        drop(JobsGuard(board.clone()));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let lines = log.lines();
+        assert!(lines.contains(&"cancelled t1".to_string()) && lines.contains(&"cancelled t2".to_string()), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_is_not_marked_cancelled_when_the_turn_ends() {
+        let (board, log) = recording_board(1);
+        let id = board.spawn_task("quick".into(), draft("a"), async { Ok(("ok".to_string(), None)) });
+        board.wait(&id).await;
+        drop(JobsGuard(board.clone()));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!log.lines().iter().any(|l| l.starts_with("cancelled")), "{:?}", log.lines());
+    }
+
+    #[tokio::test]
+    async fn without_a_recorder_a_task_is_a_plain_job() {
+        let board = JobBoard::new(1);
+        let id = board.spawn_task("plain".into(), draft("a"), async { Ok(("fine".to_string(), None)) });
+        assert_eq!(board.wait(&id).await, Some(JobState::Done("fine".to_string())));
+        assert!(board.list()[0].task.is_none());
     }
 
     #[tokio::test]

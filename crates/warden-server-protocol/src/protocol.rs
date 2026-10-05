@@ -737,6 +737,41 @@ fn default_autonomy() -> u8 {
     4
 }
 
+/// One task an agent delegated in the background (P123), as the screens list it. `state` is `pending`, `running`, `done`,
+/// `failed` or `cancelled`; `group` is shared by the tasks one turn started, which is what a progress is counted over.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTaskDto {
+    pub id: String,
+    pub group: String,
+    /// The agent that delegated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// The agent that does the work, or the name given to a temporary helper.
+    pub assignee: String,
+    pub objective: String,
+    /// The provider or combo chosen for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub channel: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+}
+
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`
 /// or `user`; `target` is empty for a global limit; `warn_at`/`extend_step` are fractions (0–1),
 /// `None` meaning the default.
@@ -1538,6 +1573,11 @@ pub enum ClientMessage {
     ListTasks {
         request_id: u64,
     },
+    /// The work agents delegated to each other in the background (P123), newest first, answered by `AgentTaskList`. Read
+    /// only, for the owner: a member gets an empty list.
+    ListAgentTasks {
+        request_id: u64,
+    },
     /// Creates a task, or replaces `original_id` with it (a rename when the ids differ).
     SaveTask {
         request_id: u64,
@@ -2123,6 +2163,11 @@ pub enum ServerMessage {
         tasks: Vec<TaskInfoDto>,
         runs_here: bool,
     },
+    /// Reply to `ListAgentTasks` (P123): the delegated tasks, newest first.
+    AgentTaskList {
+        request_id: u64,
+        tasks: Vec<AgentTaskDto>,
+    },
     /// A task request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     TaskError {
         request_id: u64,
@@ -2634,6 +2679,44 @@ mod tests {
         assert_eq!(summary.workdir, None);
         let in_folder = ConversationSummary { workdir: Some("/srv/work".into()), ..summary };
         assert!(serde_json::to_string(&in_folder).unwrap().contains(r#""workdir":"/srv/work""#));
+    }
+
+    #[test]
+    fn the_delegated_tasks_are_asked_for_and_listed_with_what_they_cost() {
+        let ask = ClientMessage::ListAgentTasks { request_id: 4 };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(json, r#"{"type":"listAgentTasks","requestId":4}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), ask);
+
+        let task = AgentTaskDto {
+            id: "at-1".into(),
+            group: "turn-1".into(),
+            owner: Some("chief".into()),
+            assignee: "backend".into(),
+            objective: "build the API".into(),
+            model: Some("strong".into()),
+            channel: "desktop".into(),
+            state: "done".into(),
+            result: Some("done".into()),
+            error: None,
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: Some(15),
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: Some(3),
+        };
+        let reply = ServerMessage::AgentTaskList { request_id: 4, tasks: vec![task] };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"agentTaskList","requestId":4,"tasks":[{"id":"at-1","group":"turn-1","owner":"chief","assignee":"backend","objective":"build the API","model":"strong","channel":"desktop","state":"done","result":"done","promptTokens":10,"completionTokens":5,"totalTokens":15,"createdAtMs":1,"startedAtMs":2,"finishedAtMs":3}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
+
+        // A pending task has none of the fields that come later.
+        let pending: AgentTaskDto = serde_json::from_str(r#"{"id":"a","group":"g","assignee":"x","objective":"o","channel":"cli","state":"pending","createdAtMs":9}"#).unwrap();
+        assert_eq!((pending.owner, pending.total_tokens, pending.started_at_ms), (None, None, None));
     }
 
     #[test]

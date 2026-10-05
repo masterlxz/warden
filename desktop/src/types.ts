@@ -353,6 +353,32 @@ export interface Task {
   enabled: boolean;
 }
 
+/** Where a delegated task is (P123). */
+export type AgentTaskState = "pending" | "running" | "done" | "failed" | "cancelled";
+
+/** Mirrors `AgentTaskDto` (P123): a task an agent delegated in the background. `group` is shared by the tasks one turn started. */
+export interface AgentTask {
+  id: string;
+  group: string;
+  /** The agent that delegated. */
+  owner?: string | null;
+  /** The agent that does the work, or the name given to a temporary helper. */
+  assignee: string;
+  objective: string;
+  /** The provider or combo chosen for this task. */
+  model?: string | null;
+  channel: string;
+  state: AgentTaskState;
+  result?: string | null;
+  error?: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  createdAtMs: number;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+}
+
 /** Mirrors `TaskInfoDto`: a task and where it stands on the machine that runs it. */
 export interface TaskInfo extends Task {
   nextRunAtMs?: number;

@@ -18,7 +18,8 @@ interface SidebarProps {
   onOpenWebhooks: () => void;
   onOpenWorkspace: () => void;
   onOpenOrganization: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization";
+  onOpenAgentWork: () => void;
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork";
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Which machine the screens use (P102): this computer or a hub. Shown under the brand, not in the collapsed bar. */
@@ -41,6 +42,7 @@ function Sidebar({
   onOpenWebhooks,
   onOpenWorkspace,
   onOpenOrganization,
+  onOpenAgentWork,
   view,
   collapsed,
   onToggleCollapsed,
@@ -168,6 +170,15 @@ function Sidebar({
         >
           <OrgIcon size={17} />
           {!collapsed && "Organization"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "agentWork" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenAgentWork}
+          title="Agent work"
+        >
+          <ChartIcon size={17} />
+          {!collapsed && "Agent work"}
         </button>
         <button
           type="button"

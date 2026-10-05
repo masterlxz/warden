@@ -543,6 +543,31 @@ export interface NodeInfo {
 }
 
 /** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
+/** Onde uma tarefa delegada está (P123). */
+export type AgentTaskState = "pending" | "running" | "done" | "failed" | "cancelled";
+
+/** Espelha `AgentTaskDto` (P123): uma tarefa que um agente delegou em segundo plano. `group` é comum às tarefas que um turno começou. */
+export interface AgentTask {
+  id: string;
+  group: string;
+  /** O agente que delegou. */
+  owner?: string | null;
+  /** Quem faz o trabalho, ou o nome dado a um ajudante temporário. */
+  assignee: string;
+  objective: string;
+  model?: string | null;
+  channel: string;
+  state: AgentTaskState;
+  result?: string | null;
+  error?: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  createdAtMs: number;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+}
+
 export interface Task {
   id: string;
   /** The agent that runs it; absent runs with no persona. */
@@ -721,6 +746,8 @@ export type ClientMessage =
   | { type: "setNodeAccess"; requestId: number; pairingKey: string; deviceId: string; enabled: boolean; agents: string[]; requireApproval: boolean }
   /** P92 — scheduled tasks; every change repeats the pairing key. */
   | { type: "listTasks"; requestId: number }
+  /** P123 — o trabalho que os agentes passaram uns aos outros em segundo plano, respondido por `agentTaskList`. */
+  | { type: "listAgentTasks"; requestId: number }
   | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
   | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
   | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }
@@ -838,6 +865,7 @@ export type ServerMessage =
   | { type: "nodeError"; requestId: number; message: string; authRejected: boolean }
   /** `runsHere`: this hub runs the tasks on schedule. */
   | { type: "taskList"; requestId: number; tasks: TaskInfo[]; runsHere: boolean }
+  | { type: "agentTaskList"; requestId: number; tasks: AgentTask[] }
   | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
   /** `servesHere`: this hub takes the calls (`/hooks/<id>`). */
   | { type: "webhookList"; requestId: number; webhooks: WebhookInfo[]; servesHere: boolean }
@@ -976,6 +1004,10 @@ export function decode(text: string): ServerMessage {
     case "taskList": {
       const raw = json as { requestId: number; tasks: Array<Omit<TaskInfo, "running"> & { running?: boolean }>; runsHere: boolean };
       return { type: "taskList", requestId: raw.requestId, tasks: raw.tasks.map((t) => ({ ...t, running: t.running ?? false })), runsHere: raw.runsHere };
+    }
+    case "agentTaskList": {
+      const raw = json as { requestId: number; tasks: AgentTask[] };
+      return { type: "agentTaskList", requestId: raw.requestId, tasks: raw.tasks ?? [] };
     }
     case "webhookList": {
       const raw = json as { requestId: number; webhooks: WebhookInfo[]; servesHere?: boolean };
