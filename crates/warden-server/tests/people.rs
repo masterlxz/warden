@@ -119,6 +119,7 @@ async fn spin_up() -> Hub {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: warden_bootstrap::default_autonomy(),
             owner: None,
             shared_with: vec!["ana".into()],
         }],
@@ -392,6 +393,7 @@ async fn what_a_member_may_use_is_what_the_owner_shares_and_allows() {
         can_message_agents: false,
         can_manage_tasks: false,
         allowed_tools: Some(vec!["write_file".into(), "read_file".into()]),
+        autonomy: 4,
         shared_with: vec!["*".into()],
         owner: None,
     };

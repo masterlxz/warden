@@ -415,6 +415,9 @@ struct AgentPayload {
     /// Tool isolation (P46) — see `AgentConfig::allowed_tools`. `None` (JSON `null`) = every tool.
     #[serde(default)]
     allowed_tools: Option<Vec<String>>,
+    /// P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts on its own — see `AgentConfig::autonomy`.
+    #[serde(default = "warden_bootstrap::default_autonomy")]
+    autonomy: u8,
     /// P84 — the people this agent is shared with (`"*"` = everyone) — see `AgentConfig::shared_with`.
     #[serde(default)]
     shared_with: Vec<String>,
@@ -552,6 +555,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
+                autonomy: a.autonomy,
                 shared_with: a.shared_with,
             })
             .collect(),
@@ -634,6 +638,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
+                autonomy: a.autonomy,
                 owner: None,
                 shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
             })

@@ -310,11 +310,12 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: 4,
             shared_with: Vec::new(),
             owner: None,
         })
         .unwrap();
-        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "sharedWith"] {
+        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "autonomy", "sharedWith"] {
             assert!(agent.get(field).is_some(), "the agent has no '{field}': {agent}");
         }
         assert!(agent["allowedTools"].is_null(), "null, as the mapper's `string[] | null` says");

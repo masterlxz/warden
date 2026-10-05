@@ -6,12 +6,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use warden_core::autonomy::Autonomy;
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::Tool;
 
 use crate::message_agent::{ConversationsChanged, MessageAgentTool};
-use crate::{build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, FileConfig, ManageAgentsTool, ManageTasksTool};
+use crate::{build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, FileConfig, ManageAgentsTool, ManageTasksTool, SAFE_AGENT_TOOLS};
 
 /// What differs per channel when scoping an agent.
 #[derive(Clone, Default)]
@@ -45,17 +46,23 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     let agent = config.agents.iter().find(|a| a.id == agent_id)?;
     // Skills (P72 c) follow the agent.
     let orchestrator = base.with_agent(Some(agent.id.clone()));
+    // P122: held to the agent's level before anything is cloned from it, so a delegate target never gets more.
+    let level = Autonomy::from_level(agent.autonomy).unwrap_or(Autonomy::AskFirst);
+    let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
+    let orchestrator = orchestrator.with_autonomy(level, &read_only);
 
     // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
     let agents_revision = AgentsRevision::default();
     let mut extra: Vec<Arc<dyn Tool>> = Vec::new();
-    if agent.can_delegate_to_agents {
+    // Level 1 has no tools at all, the opt-in ones included.
+    let tools_allowed = level != Autonomy::AnswerOnly;
+    if tools_allowed && agent.can_delegate_to_agents {
         extra.extend(match config_path {
             Some(path) => build_live_delegate_to_agent_tool(path, config, &orchestrator, agents_revision.clone()),
             None => build_delegate_to_agent_tool(config, &orchestrator),
         });
     }
-    if let Some(path) = config_path {
+    if let Some(path) = config_path.filter(|_| tools_allowed) {
         // Lets a "chief" create/edit other agents; every change waits for a person's yes.
         if agent.can_manage_agents {
             let known_tools: Vec<String> = base.tools().iter().map(|t| t.spec().name).collect();
@@ -63,6 +70,7 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
                 ManageAgentsTool::new(path)
                     .with_known_tools(known_tools)
                     .with_caller_limit(agent.allowed_tools.clone())
+                    .with_caller_autonomy(level.level())
                     .with_agents_revision(agents_revision),
             ));
         }

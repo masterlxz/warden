@@ -82,6 +82,7 @@ fn agent(id: &str, persona: &str, manage: bool, message: bool) -> AgentConfig {
         can_message_agents: message,
         can_manage_tasks: false,
         allowed_tools: None,
+        autonomy: warden_bootstrap::default_autonomy(),
         owner: None,
         shared_with: Vec::new(),
     }
@@ -251,4 +252,59 @@ async fn message_agent_leaves_a_message_the_device_can_open_and_the_colleague_an
     conn.send(&chat("thanks", &thread, Some("poet"))).await.unwrap();
     let (reply, _) = finish_turn(&mut conn, false).await;
     assert!(matches!(reply, ServerMessage::ChatResponse { ref content, .. } if content == "haiku!"));
+}
+
+fn set_autonomy(hub: &Hub, agent_id: &str, level: u8) {
+    let mut config = load_config_from_path(&hub.config_path, true).unwrap();
+    config.agents.iter_mut().find(|a| a.id == agent_id).unwrap().autonomy = level;
+    save_config(&hub.config_path, &config).unwrap();
+}
+
+fn asked_actions(others: &[ServerMessage]) -> Vec<String> {
+    others
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::ApprovalRequest { action, .. } => Some(action.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_agent_at_autonomy_three_asks_the_device_before_a_change_and_only_a_yes_runs_it() {
+    for approve in [true, false] {
+        let hub = spin_up().await;
+        set_autonomy(&hub, "chief", 3);
+        let mut conn = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+        conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+        let (reply, others) = finish_turn(&mut conn, approve).await;
+
+        let saved = load_config_from_path(&hub.config_path, true).unwrap().agents.iter().any(|a| a.id == "critic");
+        assert_eq!(saved, approve);
+        if approve {
+            // The level asks first, then `manage_agents` asks for what it will save.
+            assert_eq!(asked_actions(&others), ["tool_call", "create_agent"]);
+        } else {
+            assert_eq!(asked_actions(&others), ["tool_call"]);
+            assert!(matches!(&reply, ServerMessage::ChatResponse { content, .. } if content.contains("was not run")), "got {reply:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_agent_at_autonomy_two_only_suggests_and_one_has_no_tools() {
+    let hub = spin_up().await;
+    set_autonomy(&hub, "chief", 2);
+    let mut conn = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+    let (reply, others) = finish_turn(&mut conn, true).await;
+    assert!(asked_actions(&others).is_empty(), "{others:?}");
+    assert!(matches!(&reply, ServerMessage::ChatResponse { content, .. } if content.contains("only suggests")), "got {reply:?}");
+    assert!(!load_config_from_path(&hub.config_path, true).unwrap().agents.iter().any(|a| a.id == "critic"));
+
+    set_autonomy(&hub, "chief", 1);
+    conn.send(&chat("hello", "c2", Some("chief"))).await.unwrap();
+    finish_turn(&mut conn, true).await;
+    let seen = hub.seen.lock().unwrap().last().cloned().unwrap();
+    assert!(seen.tools.is_empty(), "level 1 is offered no tools: {:?}", seen.tools);
 }

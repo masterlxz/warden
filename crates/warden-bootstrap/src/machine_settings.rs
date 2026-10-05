@@ -387,7 +387,7 @@ mod tests {
     use super::*;
 
     fn agent(id: &str) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false, can_message_agents: false, can_manage_tasks: false, allowed_tools: None, owner: None, shared_with: Vec::new() }
+        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false, can_message_agents: false, can_manage_tasks: false, allowed_tools: None, autonomy: crate::default_autonomy(), owner: None, shared_with: Vec::new() }
     }
 
     fn ssh(id: &str) -> SshHostDto {

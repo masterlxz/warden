@@ -162,6 +162,8 @@ export interface AgentEntry {
   /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
    * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
   allowedTools: string[] | null;
+  /** P122 — how much the agent may do without asking: 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone. */
+  autonomy: number;
   /** P84 — the people this agent is shared with, by username, or ["*"] for everyone. */
   sharedWith?: string[];
 }

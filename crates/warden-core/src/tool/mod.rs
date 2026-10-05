@@ -53,6 +53,13 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool whose nested orchestrator is held to `level` (P122), or `None` when it runs no nested agent.
+    /// Called by `Orchestrator::with_autonomy`; `delegate_task` overrides it so a sub-agent can't do what its caller
+    /// may not without asking.
+    fn with_autonomy(&self, _level: crate::autonomy::Autonomy, _read_only: &[String]) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// A copy of this tool that reads and writes `vault` instead of the one it was built with, or
     /// `None` when it doesn't touch a vault. Called by `Orchestrator::with_vault` (P84: a person's
     /// own vault): every tool that holds a vault — or a nested orchestrator — overrides it, so the

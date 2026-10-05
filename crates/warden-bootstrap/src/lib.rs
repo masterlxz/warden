@@ -149,6 +149,12 @@ pub struct AgentConfig {
     /// conversation's agent or as a `delegate_to_agent` target.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// How much this agent may do without asking (P122), 1 to 4: 1 only answers, 2 suggests (a call that would change
+    /// something is refused), 3 asks a person before every such call, 4 runs its tools on its own. 4 is what every
+    /// agent written before this field did, so it is the default. Applied in code (`Orchestrator::with_autonomy`),
+    /// and a delegate target never gets more than the agent that called it.
+    #[serde(default = "default_autonomy")]
+    pub autonomy: u8,
     /// P84: the workspace member this agent belongs to — `None` is the owner's. A member's agent is
     /// only theirs: nobody else sees it or talks to it, and it never gets the `can_*` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +163,11 @@ pub struct AgentConfig {
     /// meaningful on the owner's agents; empty keeps it the owner's alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared_with: Vec<String>,
+}
+
+/// `AgentConfig.autonomy` of an agent that doesn't say (P122): 4, no change from before the field existed.
+pub fn default_autonomy() -> u8 {
+    warden_core::autonomy::Autonomy::DEFAULT_LEVEL
 }
 
 /// What an agent created by another agent may use unless the creator asks for more (and the user
@@ -1665,6 +1676,10 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<Nam
         // chief's — which is why `orchestrator` must reach this function unrestricted.
         let target_orchestrator =
             target_orchestrator.with_agent(Some(agent.id.clone())).with_allowed_tools(agent.allowed_tools.as_deref());
+        // P122: its own level too — and never above the caller's, which `orchestrator` already carries.
+        let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
+        let target_orchestrator =
+            target_orchestrator.with_autonomy(warden_core::autonomy::Autonomy::from_level(agent.autonomy).unwrap_or(warden_core::autonomy::Autonomy::AskFirst), &read_only);
         let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
         targets.push(NamedSubAgent {
             id: agent.id.clone(),
@@ -2199,6 +2214,7 @@ oauth = true
                 can_message_agents: true,
                 can_manage_tasks: false,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
+                autonomy: 2,
                 owner: None,
                 shared_with: Vec::new(),
             }],
@@ -3096,6 +3112,7 @@ oauth = true
                 can_message_agents: false,
                 can_manage_tasks: false,
                 allowed_tools: None,
+                autonomy: default_autonomy(),
                 owner: None,
                 shared_with: Vec::new(),
             }],
@@ -3223,6 +3240,7 @@ oauth = true
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: default_autonomy(),
             owner: None,
             shared_with: Vec::new(),
         }

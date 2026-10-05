@@ -237,6 +237,9 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], comb
                 return Err(format!("agent '{id}' has an unknown default provider '{pid}'"));
             }
         }
+        if warden_core::autonomy::Autonomy::from_level(a.autonomy).is_none() {
+            return Err(format!("agent '{id}' has autonomy {}: pick a level from 1 to 4", a.autonomy));
+        }
         checked.push(AgentConfig { id, provider_id, ..a });
     }
     Ok(checked)
@@ -346,6 +349,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 can_message_agents: a.can_message_agents,
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools.clone(),
+                autonomy: a.autonomy,
                 shared_with: a.shared_with.clone(),
                 owner: None,
             })
@@ -499,6 +503,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             can_message_agents: dto.can_message_agents,
             can_manage_tasks: dto.can_manage_tasks,
             allowed_tools: dto.allowed_tools,
+            autonomy: dto.autonomy,
             owner: None,
             shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
         });
@@ -606,6 +611,7 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: crate::default_autonomy(),
             owner: None,
             shared_with: Vec::new(),
         }
@@ -954,6 +960,29 @@ mod tests {
         let saved = apply_hub_settings(sample(), update).unwrap();
         assert!(saved.ssh_hosts[0].agents.is_empty());
         assert!(!saved.ssh_hosts[0].enabled);
+    }
+
+    #[test]
+    fn an_agent_autonomy_is_a_level_from_one_to_four() {
+        for level in 1..=4 {
+            assert!(check_agents(vec![AgentConfig { autonomy: level, ..agent("a") }], &[], &[]).is_ok());
+        }
+        for level in [0, 5, 200] {
+            let err = check_agents(vec![AgentConfig { autonomy: level, ..agent("a") }], &[], &[]).unwrap_err();
+            assert!(err.contains("autonomy") && err.contains("1 to 4"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_agent_written_before_levels_existed_loads_at_four_and_a_chosen_level_survives_a_save() {
+        let old: FileConfig = toml::from_str("[[agents]]\nid = \"pirate\"\npersona = \"p\"\n").unwrap();
+        assert_eq!(old.agents[0].autonomy, 4);
+
+        let mut update = untouched(&sample());
+        update.agents[0].autonomy = 2;
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.agents[0].autonomy, 2);
+        assert_eq!(hub_settings(&saved, Vec::new(), Vec::new()).agents[0].autonomy, 2);
     }
 
     #[test]

@@ -66,6 +66,7 @@ export interface HubAgent {
   canMessageAgents?: boolean;
   canManageTasks?: boolean;
   allowedTools: string[] | null;
+  autonomy?: number;
   sharedWith?: string[];
 }
 
@@ -176,6 +177,7 @@ export function agentFromHub(agent: HubAgent): AgentEntry {
     canMessageAgents: agent.canMessageAgents ?? false,
     canManageTasks: agent.canManageTasks ?? false,
     allowedTools: agent.allowedTools,
+    autonomy: agent.autonomy ?? 4,
     ...(agent.sharedWith && agent.sharedWith.length > 0 ? { sharedWith: agent.sharedWith } : {}),
   };
 }

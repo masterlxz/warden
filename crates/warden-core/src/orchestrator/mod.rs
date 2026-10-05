@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::autonomy::Autonomy;
 use crate::budget::{SpendTurn, TurnBudget};
 use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
@@ -89,6 +90,10 @@ pub struct Orchestrator {
     /// What a conversation in a project (P103) is told before anything else but the persona: the project's
     /// instructions and files. Set per turn through `with_project`; `None` for every other conversation.
     project_briefing: Option<Arc<str>>,
+    /// How much this orchestrator's tools may do without asking (P122). Only ever lowered — see `with_autonomy`.
+    autonomy: Autonomy,
+    /// The tools that change nothing, which levels 2 and 3 let through without a yes.
+    read_only_tools: Arc<[String]>,
 }
 
 impl Orchestrator {
@@ -108,7 +113,32 @@ impl Orchestrator {
             approver: None,
             client_tools: Vec::new(),
             project_briefing: None,
+            autonomy: Autonomy::Autonomous,
+            read_only_tools: Arc::from([]),
         }
+    }
+
+    /// Returns a copy held to `level` (P122), with `read_only` naming the tools that need no yes at levels 2 and 3.
+    /// The level only goes down: a copy already at 2 stays at 2 when asked for 4, so a nested agent can't be used to
+    /// get past its caller. Level 1 takes every tool away; the tools that carry a nested orchestrator (`delegate_task`)
+    /// are held to the same level (`Tool::with_autonomy`).
+    pub fn with_autonomy(&self, level: Autonomy, read_only: &[String]) -> Self {
+        let mut clone = self.clone();
+        clone.autonomy = self.autonomy.min(level);
+        clone.read_only_tools = Arc::from(read_only);
+        if clone.autonomy == Autonomy::AnswerOnly {
+            clone.tools.clear();
+        }
+        for tool in &mut clone.tools {
+            if let Some(held) = tool.with_autonomy(clone.autonomy, read_only) {
+                *tool = held;
+            }
+        }
+        clone
+    }
+
+    pub fn autonomy(&self) -> Autonomy {
+        self.autonomy
     }
 
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -708,6 +738,7 @@ impl Orchestrator {
             .iter()
             .find(|t| t.spec().name == tool_call.name)
             .ok_or_else(|| anyhow::anyhow!("model requested unknown tool '{}'", tool_call.name))?;
+        crate::autonomy::authorize(self.autonomy, &self.read_only_tools, self.approver.as_ref(), tool_call).await?;
         tool.call(tool_call.arguments.clone()).await
     }
 }
@@ -1578,6 +1609,79 @@ mod tests {
         let restricted = outer.with_allowed_tools(Some(&allowed));
         let result = delegate_only(&restricted).call(serde_json::json!({ "task": "x" })).await.unwrap();
         assert_eq!(result["result"], "read_file");
+    }
+
+    fn call_of(name: &str) -> ToolCall {
+        ToolCall { id: "1".into(), name: name.into(), arguments: serde_json::json!({}), thought_signature: None }
+    }
+
+    #[tokio::test]
+    async fn autonomy_one_offers_no_tools_and_two_refuses_a_change_but_not_a_read() {
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        for name in ["read_file", "write_file"] {
+            orchestrator.register_tool(Arc::new(NamedTool(name)));
+        }
+        let reads = vec!["read_file".to_string()];
+
+        let answer_only = orchestrator.with_autonomy(Autonomy::AnswerOnly, &reads);
+        assert!(answer_only.tools().is_empty());
+
+        let suggests = orchestrator.with_autonomy(Autonomy::Suggest, &reads);
+        assert!(suggests.run_tool(&call_of("read_file")).await.is_ok());
+        let refused = suggests.run_tool(&call_of("write_file")).await.unwrap_err().to_string();
+        assert!(refused.contains("only suggests"), "{refused}");
+
+        // The original, and a level that isn't lower than the one it has, change nothing.
+        assert!(orchestrator.run_tool(&call_of("write_file")).await.is_ok());
+        let still_two = suggests.with_autonomy(Autonomy::Autonomous, &reads);
+        assert_eq!(still_two.autonomy(), Autonomy::Suggest);
+        assert!(still_two.run_tool(&call_of("write_file")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn autonomy_three_asks_the_orchestrators_approver_and_refuses_when_there_is_none() {
+        use crate::tool::{Answer, ApprovalRequest};
+        struct Yes(AtomicUsize);
+        #[async_trait]
+        impl Approver for Yes {
+            async fn approve(&self, _request: ApprovalRequest) -> bool {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+            async fn ask(&self, request: ApprovalRequest, _always: Option<&str>) -> Answer {
+                assert_eq!(request.action, "tool_call");
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Answer::Once
+            }
+        }
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        orchestrator.register_tool(Arc::new(NamedTool("write_file")));
+        let asks_first = orchestrator.with_autonomy(Autonomy::AskFirst, &[]);
+
+        assert!(asks_first.run_tool(&call_of("write_file")).await.unwrap_err().to_string().contains("can't ask"));
+
+        let yes = Arc::new(Yes(AtomicUsize::new(0)));
+        let asking = asks_first.with_approver(yes.clone());
+        assert!(asking.run_tool(&call_of("write_file")).await.is_ok());
+        assert_eq!(yes.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn autonomy_holds_the_sub_agent_behind_delegate_task_to_the_same_level() {
+        use crate::tool::delegate::DelegateTool;
+        let mut inner = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        inner.register_tool(Arc::new(NamedTool("write_file")));
+        let mut outer = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        outer.register_tool(Arc::new(DelegateTool::new(inner.clone())));
+
+        let held = outer.with_autonomy(Autonomy::Suggest, &[]);
+        let delegate = held.tools().iter().find(|t| t.spec().name == "delegate_task").unwrap().clone();
+        // `delegate_task` itself is a change, so the caller can't even start it at level 2.
+        assert!(held.run_tool(&call_of("delegate_task")).await.is_err());
+        // And the sub-agent it carries is held too, should it be reached some other way.
+        let inner_held = inner.with_autonomy(Autonomy::Suggest, &[]);
+        assert!(inner_held.run_tool(&call_of("write_file")).await.is_err());
+        assert!(delegate.call(serde_json::json!({ "task": "x" })).await.is_ok());
     }
 
     /// Scripted by what it is offered, and it reports 1+1 tokens per call. Whoever can `delegate_task`

@@ -29,6 +29,7 @@ function toAgent(draft: Draft): AgentSettings {
     canMessageAgents: false,
     canManageTasks: false,
     allowedTools: draft.allowedTools,
+    autonomy: 4,
   };
 }
 

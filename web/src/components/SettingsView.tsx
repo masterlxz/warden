@@ -683,7 +683,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 ...d,
                 agents: [
                   ...d.agents,
-                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null }),
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4 }),
                 ],
               }))
             }
@@ -743,6 +743,15 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     onChange={(e) => patchAgent(a.key, { allowedTools: e.target.checked ? [] : null })}
                   />
                   Limitar as ferramentas
+                </label>
+                <label className="settings-check">
+                  Autonomia
+                  <select value={a.autonomy ?? 4} onChange={(e) => patchAgent(a.key, { autonomy: Number(e.target.value) })}>
+                    <option value={1}>1 — só responde (sem ferramentas)</option>
+                    <option value={2}>2 — sugere, não muda nada sozinho</option>
+                    <option value={3}>3 — pede aprovação a cada mudança</option>
+                    <option value={4}>4 — age sozinho</option>
+                  </select>
                 </label>
               </div>
               {people.length > 0 && (

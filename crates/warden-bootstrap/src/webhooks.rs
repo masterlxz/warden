@@ -256,6 +256,7 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: crate::default_autonomy(),
             owner: owner.map(str::to_string),
             shared_with: Vec::new(),
         }

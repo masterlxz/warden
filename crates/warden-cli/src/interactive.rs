@@ -1998,8 +1998,9 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let message_marker = if a.can_message_agents { " [recados]" } else { "" };
             let tasks_marker = if a.can_manage_tasks { " [tarefas]" } else { "" };
             let tools_marker = a.allowed_tools.as_ref().map(|t| format!(" [tools: {}]", t.len())).unwrap_or_default();
+            let autonomy_marker = if a.autonomy != warden_bootstrap::default_autonomy() { format!(" [autonomia {}]", a.autonomy) } else { String::new() };
             (
-                format!("{} ({}) — {}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker),
+                format!("{} ({}) — {}{}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker, autonomy_marker),
                 Style::default(),
             )
         })
@@ -2085,6 +2086,26 @@ async fn prompt_agent_can_manage_tasks(terminal: &mut CliTerminal, initial: bool
     prompt_agent_flag(terminal, " pode criar e editar tarefas agendadas? (sempre com a sua aprovação) (s/n) ", initial).await
 }
 
+/// 1 to 4, how much the agent may do without asking (P122).
+async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyhow::Result<Option<u8>> {
+    loop {
+        let Some(input) = prompt_field(terminal, " autonomia: 1 só responde, 2 sugere, 3 pede aprovação a cada mudança, 4 age sozinho ", &initial.to_string()).await? else {
+            return Ok(None);
+        };
+        match parse_agent_autonomy(&input) {
+            Ok(level) => return Ok(Some(level)),
+            Err(message) => render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())])?,
+        }
+    }
+}
+
+fn parse_agent_autonomy(input: &str) -> Result<u8, String> {
+    match input.trim().parse::<u8>() {
+        Ok(level) if (1..=4).contains(&level) => Ok(level),
+        _ => Err("use um número de 1 a 4".to_string()),
+    }
+}
+
 /// Loops a single wizard field until it's blank (= every tool) or a comma-separated list of tools
 /// that exist. Returns `Ok(None)` if the user cancels (distinct from `Ok(Some(None))`, "all tools").
 async fn prompt_agent_tools(terminal: &mut CliTerminal, known: &[String], initial: Option<&[String]>) -> anyhow::Result<Option<Option<Vec<String>>>> {
@@ -2160,6 +2181,9 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, false).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(autonomy) = prompt_agent_autonomy(terminal, warden_bootstrap::default_autonomy()).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, None).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
@@ -2174,6 +2198,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         can_message_agents,
         can_manage_tasks,
         allowed_tools,
+        autonomy,
         owner: None,
         shared_with: Vec::new(),
     });
@@ -2211,6 +2236,9 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, current.can_manage_tasks).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(autonomy) = prompt_agent_autonomy(terminal, current.autonomy).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, current.allowed_tools.as_deref()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
@@ -2226,6 +2254,7 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         can_message_agents,
         can_manage_tasks,
         allowed_tools,
+        autonomy,
         owner: None,
         shared_with: current.shared_with.clone(),
     };
@@ -3039,6 +3068,14 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_autonomy_answer_is_a_level_from_one_to_four() {
+        assert_eq!(parse_agent_autonomy(" 3 "), Ok(3));
+        for bad in ["", "0", "5", "-1", "três", "2.5"] {
+            assert!(parse_agent_autonomy(bad).is_err(), "{bad:?}");
+        }
+    }
 
     /// These tests never run a model turn.
     struct NoModel;

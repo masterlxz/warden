@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 144)
+> Última atualização: 2026-10-05 (Sessão 145)
 
 ---
+
+### 2026-10-05 — Sessão 145
+
+- **Objetivo**: primeira fatia do P122, por escolha do usuário entre os caminhos que sobravam: o nível de autonomia por agente. Planejado em Plan mode (4 decisões do usuário: só níveis 1 a 4; agentes existentes em 4; nível 2 recusa com sugestão; sem aprovador, o 3 recusa).
+- **Feito**: `warden_core::autonomy` (`Autonomy`, `authorize`) ligado em `Orchestrator::run_tool`, com `with_autonomy` (só desce) e o gancho `Tool::with_autonomy` para o `delegate_task`; `AgentConfig.autonomy` (default 4, validado 1 a 4); `scope_to_agent` aplica o nível antes de montar os alvos de delegação e tira as tools opt-in no nível 1; `manage_agents` cria no 3, no máximo o nível do criador, e mostra o nível no cartão; DTO do hub, `AgentPayload` do desktop, seletor nas telas de Settings (desktop e web) e pergunta no wizard do CLI. Detalhes em `ARCHITECTURE.md` ("Autonomia por agente").
+- **Testes**: `cargo test --workspace` 1301 verdes (novos: 8 em `autonomy.rs`, 3 no orquestrador, 4 no bootstrap, 2 no hub, 1 do wizard), `hubMap.test.mjs` 16 de 16, `tsc` e builds do desktop e da web. Clippy sem aviso novo (o do `learning_eval.rs` é anterior).
+- **Não verificado**: a tela de Settings com o seletor numa janela; nenhum modelo real reagindo a uma tool recusada nos níveis 2 e 3 (só modelos roteirizados).
+- **Fica no P122**: nível 5, permissões novas, categorias de aprovação por risco. Rodada de testes das telas fica para depois, junto das outras pendências.
 
 ### 2026-10-04 — Sessão 144
 

@@ -710,6 +710,10 @@ pub struct AgentSettingsDto {
     pub can_manage_tasks: bool,
     /// `None` keeps every tool.
     pub allowed_tools: Option<Vec<String>>,
+    /// P122: 1 only answers, 2 suggests, 3 asks before every change, 4 acts on its own. `#[serde(default)]`: a screen
+    /// from before it existed leaves the agent at 4, as it was.
+    #[serde(default = "default_autonomy")]
+    pub autonomy: u8,
     /// P84: members this agent is shared with, by username, or `"*"` for everyone. Empty: the owner's alone.
     #[serde(default)]
     pub shared_with: Vec<String>,
@@ -717,6 +721,10 @@ pub struct AgentSettingsDto {
     /// them (and on every agent in the owner's view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+}
+
+fn default_autonomy() -> u8 {
+    4
 }
 
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`

@@ -220,6 +220,8 @@ export interface AgentSettings {
   /** P92 — the `manage_tasks` tool. */
   canManageTasks: boolean;
   allowedTools: string[] | null;
+  /** P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone. */
+  autonomy: number;
   /** P84 — members this agent is shared with, or ["*"] for everyone. */
   sharedWith?: string[];
   /** P84 — in a member's view, their username on their own agents; absent on the shared ones. */

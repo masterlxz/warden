@@ -83,7 +83,12 @@ struct ToolRules {
     known: Option<Vec<String>>,
     /// The calling agent's own `allowed_tools`: nobody may hand out more than they have.
     caller_limit: Option<Vec<String>>,
+    /// The calling agent's own `autonomy` (P122): an agent it creates never gets more.
+    caller_autonomy: Option<u8>,
 }
+
+/// The `autonomy` an agent made by another agent starts at (P122): it asks before every change.
+const ASK_FIRST_LEVEL: u8 = 3;
 
 #[derive(Clone)]
 pub struct ManageAgentsTool {
@@ -117,6 +122,12 @@ impl ManageAgentsTool {
     /// The calling agent's own `allowed_tools` (`None` = it has every tool, so no cap).
     pub fn with_caller_limit(mut self, limit: Option<Vec<String>>) -> Self {
         self.rules.caller_limit = limit;
+        self
+    }
+
+    /// The calling agent's own `autonomy` (P122), so what it creates starts no freer than it is.
+    pub fn with_caller_autonomy(mut self, level: u8) -> Self {
+        self.rules.caller_autonomy = Some(level);
         self
     }
 
@@ -216,6 +227,7 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
             if config.agents.iter().any(|a| &a.id == id) {
                 anyhow::bail!("an agent named '{id}' already exists — pick another name, or use action 'update'");
             }
+            let level = rules.caller_autonomy.map_or(ASK_FIRST_LEVEL, |caller| caller.min(ASK_FIRST_LEVEL));
             updated.push(AgentConfig {
                 id: id.clone(),
                 persona: persona.clone(),
@@ -226,13 +238,17 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 can_message_agents: false,
                 can_manage_tasks: false,
                 allowed_tools: Some(tools.clone()),
+                // Careful by default: it asks before every change until a person raises it.
+                autonomy: level,
                 owner: None,
                 shared_with: Vec::new(),
             });
             format!(
-                "New agent '{id}'\nModel provider: {}\nTools: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
+                "New agent '{id}'\nModel provider: {}\nTools: {}\nAutonomy {}: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
                 provider_label(provider_id.as_deref()),
-                tools_label(Some(&tools))
+                tools_label(Some(&tools)),
+                level,
+                autonomy_label(level)
             )
         }
         Change::Update { id, persona, provider_id, allowed_tools } => {
@@ -349,6 +365,15 @@ impl ToolRules {
             }
         }
         Ok(tools)
+    }
+}
+
+fn autonomy_label(level: u8) -> &'static str {
+    match level {
+        1 => "only answers, no tools",
+        2 => "suggests, never changes anything itself",
+        3 => "asks before every change",
+        _ => "acts on its own",
     }
 }
 
@@ -518,6 +543,7 @@ mod tests {
             can_message_agents: false,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: crate::default_autonomy(),
             owner: None,
             shared_with: Vec::new(),
         }
@@ -759,6 +785,24 @@ mod tests {
         let detail = approver.asked.lock().unwrap()[0].detail.clone();
         assert!(detail.contains("Tools: read_file, use_skill, read_skill_file, usage_stats, budget, generate_document"), "{detail}");
         assert!(!SAFE_AGENT_TOOLS.iter().any(|t| ["shell", "write_file"].contains(t)));
+    }
+
+    #[tokio::test]
+    async fn a_created_agent_starts_asking_before_every_change_and_never_freer_than_its_creator() {
+        let path = write_config(vec![]);
+        let (tool, approver) = tool_with(&path, true);
+        tool.call(json!({ "action": "create", "id": "fresh", "persona": "p" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path)[0].autonomy, 3);
+        let detail = approver.asked.lock().unwrap()[0].detail.clone();
+        assert!(detail.contains("Autonomy 3: asks before every change"), "{detail}");
+
+        // A creator that only suggests can't hand out more than that, and one at level 4 still starts it at 3.
+        let yes = || -> Arc<dyn Approver> { Arc::new(Scripted { answer: true, asked: Mutex::new(Vec::new()) }) };
+        let as_caller = |level: u8| ManageAgentsTool::new(&path).with_caller_autonomy(level).with_approver(yes()).unwrap();
+        as_caller(2).call(json!({ "action": "create", "id": "careful", "persona": "p" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path)[1].autonomy, 2);
+        as_caller(4).call(json!({ "action": "create", "id": "bold", "persona": "p" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path)[2].autonomy, 3);
     }
 
     #[tokio::test]

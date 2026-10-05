@@ -694,6 +694,24 @@ function AgentCard({
         </span>
       </label>
 
+      <label className="settings-field">
+        <span className="settings-label">Autonomy</span>
+        <select
+          className="settings-input"
+          value={agent.autonomy}
+          onChange={(e) => onChange({ ...agent, autonomy: Number(e.currentTarget.value) })}
+        >
+          <option value={1}>1 — Only answers (no tools)</option>
+          <option value={2}>2 — Suggests (never changes anything itself)</option>
+          <option value={3}>3 — Asks before every change</option>
+          <option value={4}>4 — Acts on its own</option>
+        </select>
+        <span className="settings-hint">
+          Reading tools always work at levels 2 and 3. A delegate never gets more autonomy than the agent that called
+          it. An agent made by another agent starts at 3.
+        </span>
+      </label>
+
       <label className="settings-field settings-checkbox-field">
         <span className="settings-checkbox-row">
           <input
@@ -1161,7 +1179,7 @@ function SettingsView() {
       ...f,
       agents: [
         ...f.agents,
-        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null },
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4 },
       ],
     }));
   }

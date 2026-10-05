@@ -370,6 +370,7 @@ mod tests {
             can_message_agents: message,
             can_manage_tasks: false,
             allowed_tools: None,
+            autonomy: crate::default_autonomy(),
             owner: None,
             shared_with: Vec::new(),
         }
@@ -530,6 +531,32 @@ mod tests {
         assert_ne!(thread_id("a", "b c"), thread_id("a b", "c"));
         let weird = thread_id("../x", "y/z");
         assert!(weird.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+    }
+
+    #[test]
+    fn an_agents_autonomy_level_holds_its_orchestrator_and_takes_the_opt_in_tools_away_at_level_one() {
+        use warden_core::autonomy::Autonomy;
+        let s = setup(false);
+        let mut config = load_config_from_path(&s.config_path, true).unwrap();
+        let ana = config.agents.iter_mut().find(|a| a.id == "ana").unwrap();
+        ana.can_message_agents = true;
+        let scope = |config: &FileConfig| {
+            let extras = AgentExtras { conversations_dir: Some(s.conversations.clone()), on_conversation_changed: None };
+            scope_to_agent(&s.base, config, Some(&s.config_path), "ana", extras).unwrap().orchestrator
+        };
+
+        assert_eq!(scope(&config).autonomy(), Autonomy::Autonomous);
+        assert!(scope(&config).tools().iter().any(|t| t.spec().name == "message_agent"));
+
+        for (level, expected) in [(3, Autonomy::AskFirst), (2, Autonomy::Suggest)] {
+            config.agents.iter_mut().find(|a| a.id == "ana").unwrap().autonomy = level;
+            assert_eq!(scope(&config).autonomy(), expected);
+        }
+
+        config.agents.iter_mut().find(|a| a.id == "ana").unwrap().autonomy = 1;
+        let answer_only = scope(&config);
+        assert_eq!(answer_only.autonomy(), Autonomy::AnswerOnly);
+        assert!(answer_only.tools().is_empty(), "level 1 has no tools, not even the opt-in ones");
     }
 
     #[test]

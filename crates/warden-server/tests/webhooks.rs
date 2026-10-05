@@ -72,6 +72,7 @@ fn agent(id: &str, persona: &str) -> AgentConfig {
         can_message_agents: false,
         can_manage_tasks: false,
         allowed_tools: None,
+        autonomy: warden_bootstrap::default_autonomy(),
         owner: None,
         shared_with: Vec::new(),
     }
