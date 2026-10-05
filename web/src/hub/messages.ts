@@ -222,6 +222,8 @@ export interface AgentSettings {
   allowedTools: string[] | null;
   /** P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone. */
   autonomy: number;
+  /** P122 — the kinds of action (ids, see `approvalCategories.ts`) that need the person's yes even at autonomy 4. */
+  approvalRequired: string[];
   /** P84 — members this agent is shared with, or ["*"] for everyone. */
   sharedWith?: string[];
   /** P84 — in a member's view, their username on their own agents; absent on the shared ones. */
@@ -867,7 +869,7 @@ export type ServerMessage =
   | { type: "spaceList"; requestId: number; spaces: SpaceInfo[] }
   | { type: "userError"; requestId: number; message: string; authRejected: boolean }
   /** P46 — a tool in this browser's chat turn needs the person's yes; answer with `resolveApproval`. */
-  | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string; always?: string }
+  | { type: "approvalRequest"; approvalId: number; target: string; action: string; detail: string; always?: string; category?: string }
   /** The hub stopped waiting (deadline): close the prompt. */
   | { type: "approvalCancelled"; approvalId: number }
   /** An agent left a message for another, or answered one, in one of this browser's conversations. */

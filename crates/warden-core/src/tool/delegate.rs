@@ -78,6 +78,10 @@ impl Tool for DelegateTool {
         Some(Arc::new(Self { orchestrator: self.orchestrator.with_autonomy(level, read_only), jobs: self.jobs.clone() }))
     }
 
+    fn with_approval_rules(&self, required: &[crate::autonomy::Category], classifier: Option<&crate::autonomy::Classifier>) -> Option<Arc<dyn Tool>> {
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_approval_rules(required, classifier.cloned()), jobs: self.jobs.clone() }))
+    }
+
     fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
         Some(Arc::new(Self { orchestrator: self.orchestrator.with_vault(vault.clone()), jobs: self.jobs.clone() }))
     }

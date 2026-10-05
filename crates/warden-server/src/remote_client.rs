@@ -185,7 +185,7 @@ pub enum RemoteEvent {
     NewToken(String),
     ChatEvent { conversation_id: String, event: ChatEventDto },
     /// Ids here are the hub's, per connection.
-    Approval { approval_id: u64, target: String, action: String, detail: String, always: Option<String> },
+    Approval { approval_id: u64, target: String, action: String, detail: String, always: Option<String>, category: Option<String> },
     ApprovalCancelled { approval_id: u64 },
     ConversationsChanged { conversation_id: String },
 }
@@ -476,9 +476,9 @@ impl Core {
             ServerMessage::Pong { .. } => {}
             ServerMessage::AuthError { reason } => return Err(AuthRejected { reason }.into()),
             ServerMessage::ChatEvent { conversation_id, event } => sink.emit(RemoteEvent::ChatEvent { conversation_id, event }),
-            ServerMessage::ApprovalRequest { approval_id, target, action, detail, always } => {
+            ServerMessage::ApprovalRequest { approval_id, target, action, detail, always, category } => {
                 self.approvals.insert(approval_id);
-                sink.emit(RemoteEvent::Approval { approval_id, target, action, detail, always });
+                sink.emit(RemoteEvent::Approval { approval_id, target, action, detail, always, category });
             }
             ServerMessage::ApprovalCancelled { approval_id } => {
                 self.approvals.remove(&approval_id);

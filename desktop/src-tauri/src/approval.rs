@@ -53,6 +53,8 @@ pub struct ApprovalPayload {
     pub detail: String,
     /// What an "always" answer would cover (P103 b), when the ask can be answered that way; the modal then offers it.
     pub always: Option<String>,
+    /// P122: the kind of action this agent has to get approved (`critical_infra`...), when the ask comes from that rule.
+    pub category: Option<String>,
 }
 
 /// Asks through the desktop window: emits `approval-request`, then waits for
@@ -88,7 +90,7 @@ impl Approver for TauriApprover {
         let (reply, answer) = oneshot::channel();
         self.broker.pending.lock().unwrap().insert(id, reply);
         let _guard = PendingGuard { app: self.app.clone(), broker: self.broker.clone(), id };
-        let payload = ApprovalPayload { id, target: request.target, action: request.action, detail: request.detail, always: always.map(str::to_string) };
+        let payload = ApprovalPayload { id, target: request.target, action: request.action, detail: request.detail, always: always.map(str::to_string), category: request.category.map(|c| c.as_str().to_string()) };
         if self.app.emit("approval-request", payload).is_err() {
             return Answer::Reject;
         }

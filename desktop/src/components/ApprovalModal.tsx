@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ApprovalRequest } from "../types";
+import { approvalCategoryLabel } from "../lib/approvalCategories";
 
 /** Asks the user to approve something the AI wants to do (P47: an SSH action on a server with "Ask me
  * before every command" on; P46: creating or changing an agent). Requests queue up (a turn may run several tool calls); the oldest shows first.
@@ -53,6 +54,7 @@ function ApprovalModal() {
     create_agent: "create the agent",
     update_agent: "change the agent",
     delete_agent: "delete the agent",
+    tool_call: "run the tool",
   };
 
   // A paused turn (P4) is not the AI asking for something: a spending limit ran out and the turn waits
@@ -67,6 +69,11 @@ function ApprovalModal() {
             ? `Spending limit reached: ${current.target}`
             : `The AI wants to ${verb[current.action] ?? current.action} ${current.target}`}
         </h2>
+        {current.category && !spendPause && (
+          <p className="approval-category">
+            Asked because this agent has to get "{approvalCategoryLabel(current.category)}" approved.
+          </p>
+        )}
         <pre className="approval-detail">{current.detail}</pre>
         {queue.length > 1 && <p className="settings-hint">{queue.length - 1} more waiting after this one.</p>}
         <div className="approval-actions">

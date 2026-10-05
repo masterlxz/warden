@@ -225,6 +225,8 @@ export interface ApprovalPrompt {
   detail: string;
   /** What "Sempre permitir" would cover (e.g. `git status *`), when this ask can be answered that way (P103 b). */
   always?: string;
+  /** P122 — the kind of action this agent has to get approved (an id of `approvalCategories.ts`), when the ask comes from that rule. */
+  category?: string;
 }
 
 /** `prompt` opens an approval; `cancelled` closes one the hub stopped waiting for. */
@@ -506,8 +508,8 @@ export class ServerConnection {
         for (const listener of this.chatEventListeners) listener(message.event, message.conversationId);
         break;
       case "approvalRequest": {
-        const { approvalId, target, action, detail, always } = message;
-        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail, always } });
+        const { approvalId, target, action, detail, always, category } = message;
+        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail, always, category } });
         break;
       }
       case "approvalCancelled":

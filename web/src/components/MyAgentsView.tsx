@@ -30,6 +30,7 @@ function toAgent(draft: Draft): AgentSettings {
     canManageTasks: false,
     allowedTools: draft.allowedTools,
     autonomy: 4,
+    approvalRequired: [],
   };
 }
 

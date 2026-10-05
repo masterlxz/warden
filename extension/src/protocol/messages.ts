@@ -72,6 +72,8 @@ export interface ApprovalPrompt {
   target: string;
   action: string;
   detail: string;
+  /** P122 — the kind of action this agent has to get approved (`critical_infra`...), when the ask comes from that rule. */
+  category?: string;
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */

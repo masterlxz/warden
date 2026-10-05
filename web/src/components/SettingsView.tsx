@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SettingsError, UserError, type LoadedSettings, type ServerConnection } from "../hub/connection";
+import { APPROVAL_CATEGORIES } from "../hub/approvalCategories";
 import ApiKeysSection from "./ApiKeysSection";
 import AdvancedSection from "./AdvancedSection";
 import MachineSection from "./MachineSection";
@@ -683,7 +684,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 ...d,
                 agents: [
                   ...d.agents,
-                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4 }),
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] }),
                 ],
               }))
             }
@@ -754,6 +755,25 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                   </select>
                 </label>
               </div>
+              <fieldset className="settings-tools">
+                <legend className="skills-hint">Pedir a minha aprovação antes de (mesmo no nível 4):</legend>
+                {APPROVAL_CATEGORIES.map((category) => (
+                  <label key={category.id} className="settings-check">
+                    <input
+                      type="checkbox"
+                      checked={(a.approvalRequired ?? []).includes(category.id)}
+                      onChange={(e) =>
+                        patchAgent(a.key, {
+                          approvalRequired: e.target.checked
+                            ? [...(a.approvalRequired ?? []), category.id]
+                            : (a.approvalRequired ?? []).filter((id) => id !== category.id),
+                        })
+                      }
+                    />
+                    {category.label}
+                  </label>
+                ))}
+              </fieldset>
               {people.length > 0 && (
                 <fieldset className="settings-tools">
                   <legend className="skills-hint">Compartilhar com (a pessoa usa o agente com a memória e as ferramentas dela):</legend>

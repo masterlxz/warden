@@ -191,6 +191,10 @@ void main() {
       final ask = ServerMessage.decode('{"type":"approvalRequest","approvalId":3,"target":"poet","action":"create_agent","detail":"d"}');
       expect(ask, isA<ApprovalRequestMessage>());
       expect((ask as ApprovalRequestMessage).target, 'poet');
+      expect(ask.category, isNull, reason: 'a hub that sends no category');
+      final byRule = ServerMessage.decode(
+          '{"type":"approvalRequest","approvalId":5,"target":"shell","action":"tool_call","detail":"{}","category":"critical_infra"}');
+      expect((byRule as ApprovalRequestMessage).category, 'critical_infra');
       expect((ServerMessage.decode('{"type":"approvalCancelled","approvalId":3}') as ApprovalCancelledMessage).approvalId, 3);
       expect((ServerMessage.decode('{"type":"conversationsChanged","conversationId":"c"}') as ConversationsChangedMessage).conversationId, 'c');
 

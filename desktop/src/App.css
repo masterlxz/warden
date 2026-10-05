@@ -1585,6 +1585,12 @@ body {
   font-size: 1.05em;
 }
 
+.approval-category {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--color-text-muted, inherit);
+}
+
 .approval-detail {
   margin: 0;
   max-height: 40vh;

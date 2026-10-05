@@ -50,7 +50,7 @@ impl CodeEngine for Scripted {
             return Ok(TurnOutcome { session_id: "ses_1".into(), text: "stopped half way".into(), tools_used: vec!["bash".into()] });
         }
         let allowed = match approver {
-            Some(approver) => approver.approve(ApprovalRequest { target: "Repo".into(), action: "bash".into(), detail: "cargo test".into() }).await,
+            Some(approver) => approver.approve(ApprovalRequest::new("Repo", "bash", "cargo test")).await,
             None => false,
         };
         self.approvals.lock().unwrap().push(allowed);

@@ -663,6 +663,7 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
+            approval_required: Vec::new(),
             owner: None,
             shared_with: Vec::new(),
         }

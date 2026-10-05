@@ -714,6 +714,10 @@ pub struct AgentSettingsDto {
     /// from before it existed leaves the agent at 4, as it was.
     #[serde(default = "default_autonomy")]
     pub autonomy: u8,
+    /// P122: the kinds of action that need a person's yes even at autonomy 4, by id (`delete_data`, `spend_money`,
+    /// `critical_infra`, `external_message`, `publish_code`, `important_config`, `elevated_agent`). Empty: none.
+    #[serde(default)]
+    pub approval_required: Vec<String>,
     /// P84: members this agent is shared with, by username, or `"*"` for everyone. Empty: the owner's alone.
     #[serde(default)]
     pub shared_with: Vec<String>,
@@ -2272,6 +2276,10 @@ pub enum ServerMessage {
         /// client then offers a button for it and answers with `ResolveApproval.always`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         always: Option<String>,
+        /// P122: the kind of action this agent has to get approved (`critical_infra`, `delete_data`...), when the ask
+        /// comes from that rule and not from the tool's own. A client that doesn't know the field just doesn't show it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
     },
     /// The hub stopped waiting for `approval_id` (deadline reached): the client should close it.
     ApprovalCancelled {
@@ -2629,7 +2637,7 @@ mod tests {
         assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
 
-        let ask = ServerMessage::ApprovalRequest { approval_id: 3, target: "poet".into(), action: "create_agent".into(), detail: "d".into(), always: None };
+        let ask = ServerMessage::ApprovalRequest { approval_id: 3, target: "poet".into(), action: "create_agent".into(), detail: "d".into(), always: None, category: None };
         let json = serde_json::to_string(&ask).unwrap();
         assert_eq!(json, r#"{"type":"approvalRequest","approvalId":3,"target":"poet","action":"create_agent","detail":"d"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), ask);
@@ -2638,10 +2646,16 @@ mod tests {
         assert_eq!(answer, ClientMessage::ResolveApproval { approval_id: 3, approved: true, always: false });
 
         // P103 b: an ask that can be "always" says what that covers, and the answer can take it.
-        let offered = ServerMessage::ApprovalRequest { approval_id: 4, target: "repo".into(), action: "bash".into(), detail: "git status -s".into(), always: Some("git status *".into()) };
+        let offered = ServerMessage::ApprovalRequest { approval_id: 4, target: "repo".into(), action: "bash".into(), detail: "git status -s".into(), always: Some("git status *".into()), category: None };
         let json = serde_json::to_string(&offered).unwrap();
         assert_eq!(json, r#"{"type":"approvalRequest","approvalId":4,"target":"repo","action":"bash","detail":"git status -s","always":"git status *"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), offered);
+
+        // P122: an ask that comes from an agent's own rule says which kind of action it is.
+        let by_rule = ServerMessage::ApprovalRequest { approval_id: 5, target: "shell".into(), action: "tool_call".into(), detail: "{}".into(), always: None, category: Some("critical_infra".into()) };
+        let json = serde_json::to_string(&by_rule).unwrap();
+        assert_eq!(json, r#"{"type":"approvalRequest","approvalId":5,"target":"shell","action":"tool_call","detail":"{}","category":"critical_infra"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), by_rule);
         let always = serde_json::from_str::<ClientMessage>(r#"{"type":"resolveApproval","approvalId":4,"approved":true,"always":true}"#).unwrap();
         assert_eq!(always, ClientMessage::ResolveApproval { approval_id: 4, approved: true, always: true });
         let cancelled = serde_json::to_string(&ServerMessage::ApprovalCancelled { approval_id: 3 }).unwrap();

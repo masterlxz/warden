@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::autonomy::Autonomy;
+use crate::autonomy::{Autonomy, Category, Classifier};
 use crate::budget::{SpendTurn, TurnBudget};
 use crate::jobs::{JobBoard, JobsGuard};
 use crate::memory::Vault;
@@ -94,6 +94,9 @@ pub struct Orchestrator {
     autonomy: Autonomy,
     /// The tools that change nothing, which levels 2 and 3 let through without a yes.
     read_only_tools: Arc<[String]>,
+    /// The risk categories that need a person's yes even at level 4 (P122), and how a call is put in one. Both only grow.
+    approval_required: Arc<[Category]>,
+    classifier: Option<Classifier>,
 }
 
 impl Orchestrator {
@@ -115,7 +118,33 @@ impl Orchestrator {
             project_briefing: None,
             autonomy: Autonomy::Autonomous,
             read_only_tools: Arc::from([]),
+            approval_required: Arc::from([]),
+            classifier: None,
         }
+    }
+
+    /// Returns a copy that asks a person before any call in `required` (P122), whatever its autonomy level, with
+    /// `classifier` saying which category a call is in (`None` keeps the one it already has). Only ever adds: the
+    /// categories join the ones already asked for, so a nested agent can't be used to get past its caller. The tools
+    /// that carry a nested orchestrator (`delegate_task`) are held to the same rules.
+    pub fn with_approval_rules(&self, required: &[Category], classifier: Option<Classifier>) -> Self {
+        let mut clone = self.clone();
+        let mut all: Vec<Category> = self.approval_required.to_vec();
+        for category in required {
+            if !all.contains(category) {
+                all.push(*category);
+            }
+        }
+        clone.approval_required = Arc::from(all);
+        if classifier.is_some() {
+            clone.classifier = classifier;
+        }
+        for tool in &mut clone.tools {
+            if let Some(held) = tool.with_approval_rules(&clone.approval_required, clone.classifier.as_ref()) {
+                *tool = held;
+            }
+        }
+        clone
     }
 
     /// Returns a copy held to `level` (P122), with `read_only` naming the tools that need no yes at levels 2 and 3.
@@ -738,7 +767,8 @@ impl Orchestrator {
             .iter()
             .find(|t| t.spec().name == tool_call.name)
             .ok_or_else(|| anyhow::anyhow!("model requested unknown tool '{}'", tool_call.name))?;
-        crate::autonomy::authorize(self.autonomy, &self.read_only_tools, self.approver.as_ref(), tool_call).await?;
+        let category = self.classifier.as_ref().and_then(|classify| classify(tool_call));
+        crate::autonomy::authorize(self.autonomy, &self.read_only_tools, &self.approval_required, category, self.approver.as_ref(), tool_call).await?;
         tool.call(tool_call.arguments.clone()).await
     }
 }
@@ -1682,6 +1712,45 @@ mod tests {
         let inner_held = inner.with_autonomy(Autonomy::Suggest, &[]);
         assert!(inner_held.run_tool(&call_of("write_file")).await.is_err());
         assert!(delegate.call(serde_json::json!({ "task": "x" })).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_listed_category_asks_even_at_level_four_and_only_ever_grows() {
+        use crate::tool::{Answer, ApprovalRequest};
+        struct Records(std::sync::Mutex<Vec<ApprovalRequest>>);
+        #[async_trait]
+        impl Approver for Records {
+            async fn approve(&self, _request: ApprovalRequest) -> bool {
+                true
+            }
+            async fn ask(&self, request: ApprovalRequest, _always: Option<&str>) -> Answer {
+                self.0.lock().unwrap().push(request);
+                Answer::Once
+            }
+        }
+        let mut orchestrator = Orchestrator::new(Arc::new(EchoesToolNamesModel), temp_vault());
+        for name in ["shell", "write_file"] {
+            orchestrator.register_tool(Arc::new(NamedTool(name)));
+        }
+        let classify: Classifier = Arc::new(|call: &ToolCall| (call.name == "shell").then_some(Category::CriticalInfra));
+        let records = Arc::new(Records(std::sync::Mutex::new(Vec::new())));
+        let ruled = orchestrator.with_approval_rules(&[Category::CriticalInfra], Some(classify)).with_approver(records.clone());
+
+        assert!(ruled.run_tool(&call_of("write_file")).await.is_ok());
+        assert!(records.0.lock().unwrap().is_empty(), "an unclassified call runs unasked");
+        assert!(ruled.run_tool(&call_of("shell")).await.is_ok());
+        assert_eq!(records.0.lock().unwrap()[0].category, Some(Category::CriticalInfra));
+
+        // More rules join the old ones, and a copy asking for none keeps them.
+        let more = ruled.with_approval_rules(&[Category::DeleteData], None);
+        assert!(more.run_tool(&call_of("shell")).await.is_ok());
+        assert_eq!(records.0.lock().unwrap().len(), 2);
+
+        // Without anyone to ask, the call is refused, not run.
+        let alone = orchestrator.with_approval_rules(&[Category::CriticalInfra], Some(Arc::new(|c: &ToolCall| (c.name == "shell").then_some(Category::CriticalInfra))));
+        assert!(alone.run_tool(&call_of("shell")).await.unwrap_err().to_string().contains("can't ask"));
+        // The original is untouched.
+        assert!(orchestrator.run_tool(&call_of("shell")).await.is_ok());
     }
 
     /// Scripted by what it is offered, and it reports 1+1 tokens per call. Whoever can `delegate_task`

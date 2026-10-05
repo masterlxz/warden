@@ -137,6 +137,11 @@ impl Tool for McpTool {
         }
     }
 
+    fn risk_hints(&self) -> Option<super::RiskHints> {
+        let annotations = self.spec.annotations.as_ref()?;
+        Some(super::RiskHints { read_only: annotations.read_only_hint, destructive: annotations.destructive_hint, open_world: annotations.open_world_hint })
+    }
+
     async fn call(&self, args: Value) -> anyhow::Result<Value> {
         let arguments = match args {
             Value::Object(map) => Some(map),

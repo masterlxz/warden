@@ -293,6 +293,7 @@ pub fn member_agents_view(config: &FileConfig, member: &str) -> Vec<AgentSetting
                 can_manage_tasks: false,
                 allowed_tools: if mine { a.allowed_tools.clone() } else { None },
                 autonomy: a.autonomy,
+                approval_required: a.approval_required.iter().map(|c| c.as_str().to_string()).collect(),
                 shared_with: Vec::new(),
                 owner: mine.then(|| member.to_string()),
             }

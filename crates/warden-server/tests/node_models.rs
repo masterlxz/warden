@@ -110,6 +110,7 @@ fn agent(id: &str, provider: &str) -> AgentConfig {
         can_manage_tasks: false,
         allowed_tools: None,
         autonomy: warden_bootstrap::default_autonomy(),
+        approval_required: Vec::new(),
         owner: None,
         shared_with: Vec::new(),
     }

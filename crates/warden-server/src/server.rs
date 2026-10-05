@@ -574,6 +574,7 @@ async fn handle_own_agent(
                     allowed_tools: agent.allowed_tools,
                     // Never chosen by a member (`save_member_agent` sets it).
                     autonomy: warden_bootstrap::default_autonomy(),
+                    approval_required: Vec::new(),
                     owner: None,
                     shared_with: Vec::new(),
                 };

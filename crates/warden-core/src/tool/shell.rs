@@ -142,7 +142,7 @@ impl Tool for ShellTool {
                 let Some(approver) = &shell.approver else {
                     anyhow::bail!("this project's shell asks the person before every command, and this channel can't ask (use the desktop app or the web)");
                 };
-                let request = ApprovalRequest { target: shell.project.clone(), action: "shell".to_string(), detail: format!("in {}: {command}", cwd.display()) };
+                let request = ApprovalRequest::new(shell.project.clone(), "shell", format!("in {}: {command}", cwd.display()));
                 if !tokio::time::timeout(APPROVAL_TIMEOUT, approver.approve(request)).await.unwrap_or(false) {
                     anyhow::bail!("the person did not approve this command, so it did not run");
                 }

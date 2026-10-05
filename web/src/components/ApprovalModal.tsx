@@ -1,4 +1,5 @@
 import type { ApprovalPrompt } from "../hub/connection";
+import { approvalCategoryLabel } from "../hub/approvalCategories";
 
 interface Props {
   /** Oldest first; the first one is shown. */
@@ -13,6 +14,7 @@ const VERB: Record<string, string> = {
   create_agent: "criar o agente",
   update_agent: "alterar o agente",
   delete_agent: "apagar o agente",
+  tool_call: "usar a ferramenta",
 };
 
 /** Asks the person to approve what the AI wants to do in this browser's turn (P46: creating or
@@ -31,6 +33,9 @@ export default function ApprovalModal({ queue, onAnswer }: Props) {
         <h2 id="approval-title" className="approval-title">
           {spendPause ? `Limite de gasto atingido: ${current.target}` : `A IA quer ${VERB[current.action] ?? current.action} ${current.target}`}
         </h2>
+        {current.category && !spendPause && (
+          <p className="approval-more">Perguntado porque este agente precisa ter aprovado: "{approvalCategoryLabel(current.category)}".</p>
+        )}
         <pre className="approval-detail">{current.detail}</pre>
         {queue.length > 1 && <p className="approval-more">Mais {queue.length - 1} esperando depois deste.</p>}
         <div className="approval-actions">

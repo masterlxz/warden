@@ -2,9 +2,18 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 145)
+> Última atualização: 2026-10-05 (Sessão 146)
 
 ---
+
+### 2026-10-05 — Sessão 146
+
+- **Objetivo**: segunda fatia do P122, a aprovação humana por categoria de risco (o usuário escolheu seguir pelo P122). Planejada em Plan mode; decisões do usuário: classificação por tabela fixa + dicas do MCP + mapa do usuário, lista `approval_required` por agente, categoria em todas as telas (celular e extensão incluídos).
+- **Feito**: `Category` e `Classifier` em `warden_core::autonomy`; `authorize` pergunta no nível 4 quando a categoria da chamada está na lista do agente; `ApprovalRequest.category` (e `ApprovalRequest::new`, que trocou os construtores literais); `Tool::risk_hints` (MCP `annotations`) e `Tool::with_approval_rules` (herança pelo `delegate_task`); `warden-bootstrap/src/risk.rs` (tabela, dicas, mapa `[[tool_categories]]`, `build_classifier`); `AgentConfig.approval_required`, DTO, `categories_from_ids`; `manage_agents` cria com todas as categorias; fiação hub, desktop, web, CLI, celular e extensão; seletor nas telas de Settings (desktop e web) e no wizard do CLI. Detalhes em `ARCHITECTURE.md`.
+- **Testes**: 1315 testes Rust verdes, `hubMap.test.mjs` 16 de 16, `flutter test` das mensagens e das notificações, `tsc` e builds de desktop, web e extensão; clippy só com o aviso antigo de `learning_eval.rs`.
+- **Ambiente**: o `ld` leva segfault ao ligar `warden-server/tests/tls` só em `cargo test --workspace` (repetível; linka bem sozinho), então a suíte rodou em dois blocos. Mesma família do P74/segfaults já registrados, sem mudança de código.
+- **Não verificado**: as telas novas e o diálogo do celular numa janela; nenhum modelo real reagindo a uma tool recusada.
+- **Fica no P122**: nível 5, permissões novas, editor de `[[tool_categories]]`, "sempre permitir" por categoria.
 
 ### 2026-10-05 — Sessão 145
 

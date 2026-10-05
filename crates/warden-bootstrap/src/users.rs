@@ -833,6 +833,7 @@ pub fn save_member_agent(config: &mut FileConfig, owner: &str, original_id: Opti
         allowed_tools: agent.allowed_tools.map(|list| list.into_iter().filter(|t| allowed.contains(t)).collect()),
         // A member never picks a level for their own agent; it stays at what an agent had before levels existed.
         autonomy: crate::default_autonomy(),
+        approval_required: Vec::new(),
         owner: Some(owner.to_string()),
         shared_with: Vec::new(),
     };
@@ -1321,6 +1322,7 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
+            approval_required: Vec::new(),
             owner: owner.map(Into::into),
             shared_with: shared_with.iter().map(|s| s.to_string()).collect(),
         }

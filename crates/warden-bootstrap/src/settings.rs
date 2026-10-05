@@ -218,6 +218,18 @@ fn is_model(id: &str, providers: &[ProviderConfig], combos: &[ComboConfig]) -> b
     providers.iter().any(|p| p.id == id) || combos.iter().any(|c| c.id == id)
 }
 
+/// The risk categories a screen sent by id (P122), each once, or why one isn't a category.
+pub fn categories_from_ids(ids: &[String]) -> Result<Vec<warden_core::autonomy::Category>, String> {
+    let mut categories = Vec::with_capacity(ids.len());
+    for id in ids {
+        let category = warden_core::autonomy::Category::parse(id).ok_or_else(|| format!("'{id}' is not a kind of action an agent can be asked to get approved"))?;
+        if !categories.contains(&category) {
+            categories.push(category);
+        }
+    }
+    Ok(categories)
+}
+
 /// Trims each agent and refuses a nameless or repeated one, or one whose default model names
 /// neither a provider nor a combo.
 pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], combos: &[ComboConfig]) -> Result<Vec<AgentConfig>, String> {
@@ -350,6 +362,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools.clone(),
                 autonomy: a.autonomy,
+                approval_required: a.approval_required.iter().map(|c| c.as_str().to_string()).collect(),
                 shared_with: a.shared_with.clone(),
                 owner: None,
             })
@@ -504,6 +517,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             can_manage_tasks: dto.can_manage_tasks,
             allowed_tools: dto.allowed_tools,
             autonomy: dto.autonomy,
+            approval_required: categories_from_ids(&dto.approval_required)?,
             owner: None,
             shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
         });
@@ -612,6 +626,7 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
+            approval_required: Vec::new(),
             owner: None,
             shared_with: Vec::new(),
         }
@@ -971,6 +986,26 @@ mod tests {
             let err = check_agents(vec![AgentConfig { autonomy: level, ..agent("a") }], &[], &[]).unwrap_err();
             assert!(err.contains("autonomy") && err.contains("1 to 4"), "{err}");
         }
+    }
+
+    #[test]
+    fn the_categories_an_agent_asks_approval_for_round_trip_and_an_unknown_one_is_refused() {
+        use warden_core::autonomy::Category;
+        let old: FileConfig = toml::from_str("[[agents]]\nid = \"pirate\"\npersona = \"p\"\n").unwrap();
+        assert!(old.agents[0].approval_required.is_empty(), "no categories asked for, as before");
+        let with: FileConfig = toml::from_str("[[agents]]\nid = \"a\"\npersona = \"p\"\napproval_required = [\"critical_infra\", \"delete_data\"]\n").unwrap();
+        assert_eq!(with.agents[0].approval_required, [Category::CriticalInfra, Category::DeleteData]);
+
+        let mut update = untouched(&sample());
+        update.agents[0].approval_required = vec!["external_message".into(), "external_message".into(), "publish_code".into()];
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.agents[0].approval_required, [Category::ExternalMessage, Category::PublishCode], "each once, in order");
+        assert_eq!(hub_settings(&saved, Vec::new(), Vec::new()).agents[0].approval_required, ["external_message", "publish_code"]);
+
+        let mut bad = untouched(&sample());
+        bad.agents[0].approval_required = vec!["everything".into()];
+        let err = apply_hub_settings(sample(), bad).unwrap_err();
+        assert!(err.contains("'everything'"), "{err}");
     }
 
     #[test]

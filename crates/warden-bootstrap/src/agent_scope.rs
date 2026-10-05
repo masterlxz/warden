@@ -49,7 +49,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     // P122: held to the agent's level before anything is cloned from it, so a delegate target never gets more.
     let level = Autonomy::from_level(agent.autonomy).unwrap_or(Autonomy::AskFirst);
     let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
-    let orchestrator = orchestrator.with_autonomy(level, &read_only);
+    let classifier = crate::risk::build_classifier(&config.tool_categories, base.tools());
+    let orchestrator = orchestrator.with_autonomy(level, &read_only).with_approval_rules(&agent.approval_required, Some(classifier));
 
     // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
     let agents_revision = AgentsRevision::default();

@@ -78,7 +78,7 @@ impl WsApprover {
         // However this ends — the deadline, or the asker giving up (a code task whose mode was changed while it
         // waited) — a question still open is withdrawn from the person's screen.
         let _withdraw = Withdraw { pending: self.pending.clone(), tx: self.tx.clone(), approval_id };
-        let ask = ServerMessage::ApprovalRequest { approval_id, target: request.target, action: request.action, detail: request.detail, always };
+        let ask = ServerMessage::ApprovalRequest { approval_id, target: request.target, action: request.action, detail: request.detail, always, category: request.category.map(|c| c.as_str().to_string()) };
         if self.tx.send(ask).is_err() {
             return Answer::Reject;
         }
@@ -113,7 +113,7 @@ mod tests {
     use super::*;
 
     fn request() -> ApprovalRequest {
-        ApprovalRequest { target: "poet".into(), action: "create_agent".into(), detail: "New agent 'poet'".into() }
+        ApprovalRequest::new("poet", "create_agent", "New agent 'poet'")
     }
 
     /// Answers the first `ApprovalRequest` that reaches the client with `answer`.
@@ -137,7 +137,7 @@ mod tests {
             let asked = client.await.unwrap();
             assert_eq!(
                 asked,
-                ServerMessage::ApprovalRequest { approval_id: 0, target: "poet".into(), action: "create_agent".into(), detail: "New agent 'poet'".into(), always: None }
+                ServerMessage::ApprovalRequest { approval_id: 0, target: "poet".into(), action: "create_agent".into(), detail: "New agent 'poet'".into(), always: None, category: None }
             );
         }
     }

@@ -110,7 +110,8 @@ describe("a turn's reply", () => {
 describe("agents and projects", () => {
   test("an agent keeps what the picker reads, with the opt-ins defaulting to off", () => {
     const agent = agentFromHub({ id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, allowedTools: null });
-    assert.deepEqual(agent, { id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4 });
+    assert.deepEqual(agent, { id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] });
+    assert.deepEqual(agentFromHub({ id: "a", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null, approvalRequired: ["critical_infra"] }).approvalRequired, ["critical_infra"]);
     assert.deepEqual(agentFromHub({ id: "a", persona: "", providerId: "p", canDelegateToAgents: false, canManageAgents: false, allowedTools: ["shell"], sharedWith: ["ana"] }).sharedWith, ["ana"]);
   });
 

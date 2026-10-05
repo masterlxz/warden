@@ -164,6 +164,8 @@ export interface AgentEntry {
   allowedTools: string[] | null;
   /** P122 — how much the agent may do without asking: 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone. */
   autonomy: number;
+  /** P122 — the kinds of action (ids, see `lib/approvalCategories.ts`) that need your yes even at autonomy 4. */
+  approvalRequired: string[];
   /** P84 — the people this agent is shared with, by username, or ["*"] for everyone. */
   sharedWith?: string[];
 }
@@ -210,6 +212,8 @@ export interface ApprovalRequest {
   detail: string;
   /** What "Always allow" would cover (e.g. `git status *`), when this ask can be answered that way (P103 b). */
   always?: string | null;
+  /** P122 — the kind of action this agent has to get approved (an id of `lib/approvalCategories.ts`), when the ask comes from that rule. */
+  category?: string | null;
 }
 
 /** Mirrors `warden_bootstrap::GitSyncConfig` (P63/P71 v2) — a self-hosted/remote git repo as an

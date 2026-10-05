@@ -91,10 +91,10 @@ impl<R: tauri::Runtime> RemoteSink for TauriSink<R> {
             RemoteEvent::ChatEvent { conversation_id, event } => {
                 let _ = self.app.emit("chat-event", json!({ "conversationId": conversation_id, "event": event }));
             }
-            RemoteEvent::Approval { approval_id, target, action, detail, always } => {
+            RemoteEvent::Approval { approval_id, target, action, detail, always, category } => {
                 let local = self.broker.allocate();
                 self.approvals.lock().unwrap_or_else(|e| e.into_inner()).insert(local, approval_id);
-                let _ = self.app.emit("approval-request", ApprovalPayload { id: local, target, action, detail, always });
+                let _ = self.app.emit("approval-request", ApprovalPayload { id: local, target, action, detail, always, category });
             }
             RemoteEvent::ApprovalCancelled { approval_id } => {
                 let local = self.approvals.lock().unwrap_or_else(|e| e.into_inner()).take_hub(approval_id);
@@ -311,11 +311,12 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: 4,
+            approval_required: Vec::new(),
             shared_with: Vec::new(),
             owner: None,
         })
         .unwrap();
-        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "autonomy", "sharedWith"] {
+        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "autonomy", "approvalRequired", "sharedWith"] {
             assert!(agent.get(field).is_some(), "the agent has no '{field}': {agent}");
         }
         assert!(agent["allowedTools"].is_null(), "null, as the mapper's `string[] | null` says");
@@ -398,12 +399,13 @@ mod tests {
         sink.emit(RemoteEvent::ConversationsChanged { conversation_id: "c1".into() });
         assert_eq!(events("conversations-changed"), vec![json!("c1")], "a bare id, as the local engine sends it");
 
-        sink.emit(RemoteEvent::Approval { approval_id: 5, target: "critic".into(), action: "create_agent".into(), detail: "d".into(), always: Some("git *".into()) });
+        sink.emit(RemoteEvent::Approval { approval_id: 5, target: "critic".into(), action: "create_agent".into(), detail: "d".into(), always: Some("git *".into()), category: Some("critical_infra".into()) });
         let asked = events("approval-request");
         assert_eq!(asked.len(), 1);
         let local = asked[0]["id"].as_u64().unwrap();
         assert_eq!(local, 3, "an id of this app's own space, not the hub's 5");
         assert_eq!((asked[0]["target"].as_str(), asked[0]["action"].as_str(), asked[0]["always"].as_str()), (Some("critic"), Some("create_agent"), Some("git *")));
+        assert_eq!(asked[0]["category"].as_str(), Some("critical_infra"), "the kind of action reaches the modal");
         assert_eq!(approvals.lock().unwrap().take(local), Some(5), "and it is mapped back to the hub's");
         approvals.lock().unwrap().insert(local, 5);
 

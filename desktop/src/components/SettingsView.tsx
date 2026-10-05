@@ -6,6 +6,7 @@ import type { AgentEntry, Combo, GitSyncConfig, McpServer, ProviderEntry, Provid
 import ApiKeysSection from "./ApiKeysSection";
 import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
+import { APPROVAL_CATEGORIES } from "../lib/approvalCategories";
 
 const emptySettings: Settings = {
   providers: [],
@@ -712,6 +713,34 @@ function AgentCard({
         </span>
       </label>
 
+      <div className="settings-field" role="group" aria-label={`Actions ${agent.id || "this agent"} must get approved`}>
+        <span className="settings-label">Always ask me before</span>
+        {APPROVAL_CATEGORIES.map((category) => (
+          <span key={category.id} className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              id={`approval-${agent.id}-${category.id}`}
+              checked={agent.approvalRequired.includes(category.id)}
+              onChange={(e) =>
+                onChange({
+                  ...agent,
+                  approvalRequired: e.currentTarget.checked
+                    ? [...agent.approvalRequired, category.id]
+                    : agent.approvalRequired.filter((id) => id !== category.id),
+                })
+              }
+            />
+            <label htmlFor={`approval-${agent.id}-${category.id}`} title={category.hint}>
+              {category.label}
+            </label>
+          </span>
+        ))}
+        <span className="settings-hint">
+          Even at autonomy 4, a call in a ticked kind waits for your yes. Which tool belongs to which kind is built in;
+          add your own in config.toml with [[tool_categories]].
+        </span>
+      </div>
+
       <label className="settings-field settings-checkbox-field">
         <span className="settings-checkbox-row">
           <input
@@ -1179,7 +1208,7 @@ function SettingsView() {
       ...f,
       agents: [
         ...f.agents,
-        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4 },
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] },
       ],
     }));
   }

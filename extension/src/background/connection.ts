@@ -265,8 +265,8 @@ export class ServerConnection {
         void this.handleToolCallRequest(message.callId, message.tool, message.arguments);
         break;
       case "approvalRequest": {
-        const { approvalId, target, action, detail } = message;
-        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail } });
+        const { approvalId, target, action, detail, category } = message;
+        for (const listener of this.approvalListeners) listener({ kind: "prompt", prompt: { approvalId, target, action, detail, category } });
         break;
       }
       case "approvalCancelled":

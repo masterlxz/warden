@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use warden_core::autonomy::Category;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
@@ -181,7 +182,7 @@ impl ManageAgentsTool {
                  (use the desktop app or the interactive CLI)"
             );
         };
-        let request = ApprovalRequest { target: change.id().to_string(), action: change.action().to_string(), detail };
+        let request = ApprovalRequest::new(change.id(), change.action(), detail);
         let approved = tokio::time::timeout(self.approval_timeout, approver.approve(request)).await.unwrap_or(false);
         if !approved {
             anyhow::bail!("the user did not approve this change to agent '{}'", change.id());
@@ -240,6 +241,8 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 allowed_tools: Some(tools.clone()),
                 // Careful by default: it asks before every change until a person raises it.
                 autonomy: level,
+                // Every kind of risky action needs a person's yes until the person says otherwise.
+                approval_required: Category::ALL.to_vec(),
                 owner: None,
                 shared_with: Vec::new(),
             });
@@ -544,6 +547,7 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
+            approval_required: Vec::new(),
             owner: None,
             shared_with: Vec::new(),
         }
@@ -793,6 +797,7 @@ mod tests {
         let (tool, approver) = tool_with(&path, true);
         tool.call(json!({ "action": "create", "id": "fresh", "persona": "p" })).await.unwrap();
         assert_eq!(agents_on_disk(&path)[0].autonomy, 3);
+        assert_eq!(agents_on_disk(&path)[0].approval_required, Category::ALL.to_vec(), "every kind of risky action needs a yes at first");
         let detail = approver.asked.lock().unwrap()[0].detail.clone();
         assert!(detail.contains("Autonomy 3: asks before every change"), "{detail}");
 

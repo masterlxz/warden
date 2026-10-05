@@ -799,6 +799,9 @@ impl Approver for ChannelApprover {
 fn ask_approval(terminal: &mut CliTerminal, request: &ApprovalRequest, reply: &oneshot::Sender<bool>) -> anyhow::Result<bool> {
     // One card row per line of the detail, so a multi-line command or a whole persona stays readable.
     let mut lines = vec![(format!("alvo: {}", request.target), Style::default()), (format!("ação: {}", request.action), Style::default())];
+    if let Some(category) = request.category {
+        lines.push((format!("categoria: {} (este agente pede aprovação para isso)", category.as_str()), Style::default()));
+    }
     lines.extend(request.detail.lines().map(|line| (line.to_string(), Style::default())));
     lines.push(("aprovar? (s = sim, n = não)".to_string(), dim_style()));
     render_message_card(terminal, "aprovação", Style::default().fg(Color::Rgb(241, 196, 15)), lines)?;
@@ -1999,8 +2002,9 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let tasks_marker = if a.can_manage_tasks { " [tarefas]" } else { "" };
             let tools_marker = a.allowed_tools.as_ref().map(|t| format!(" [tools: {}]", t.len())).unwrap_or_default();
             let autonomy_marker = if a.autonomy != warden_bootstrap::default_autonomy() { format!(" [autonomia {}]", a.autonomy) } else { String::new() };
+            let approval_marker = if a.approval_required.is_empty() { String::new() } else { format!(" [aprova: {}]", a.approval_required.len()) };
             (
-                format!("{} ({}) — {}{}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker, autonomy_marker),
+                format!("{} ({}) — {}{}{}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker, autonomy_marker, approval_marker),
                 Style::default(),
             )
         })
@@ -2099,6 +2103,31 @@ async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyho
     }
 }
 
+/// The kinds of action the agent must have approved even when it acts alone (P122), as ids separated by commas.
+async fn prompt_agent_approval_categories(terminal: &mut CliTerminal, initial: &[warden_core::autonomy::Category]) -> anyhow::Result<Option<Vec<warden_core::autonomy::Category>>> {
+    let all = warden_core::autonomy::Category::ALL.map(|c| c.as_str()).join(", ");
+    let title = format!(" pede aprovação para (separadas por vírgula; em branco = nenhuma): {all} ");
+    let initial_text = initial.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ");
+    loop {
+        let Some(input) = prompt_field(terminal, &title, &initial_text).await? else {
+            return Ok(None);
+        };
+        match parse_approval_categories(&input) {
+            Ok(categories) => return Ok(Some(categories)),
+            Err(message) => render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())])?,
+        }
+    }
+}
+
+/// Blank is none; otherwise ids from `Category::ALL`, each kept once.
+fn parse_approval_categories(input: &str) -> Result<Vec<warden_core::autonomy::Category>, String> {
+    let ids: Vec<String> = input.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect();
+    warden_bootstrap::settings::categories_from_ids(&ids).map_err(|_| {
+        let all = warden_core::autonomy::Category::ALL.map(|c| c.as_str()).join(", ");
+        format!("use só estes nomes, separados por vírgula: {all}")
+    })
+}
+
 fn parse_agent_autonomy(input: &str) -> Result<u8, String> {
     match input.trim().parse::<u8>() {
         Ok(level) if (1..=4).contains(&level) => Ok(level),
@@ -2184,6 +2213,9 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(autonomy) = prompt_agent_autonomy(terminal, warden_bootstrap::default_autonomy()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(approval_required) = prompt_agent_approval_categories(terminal, &[]).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, None).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
@@ -2199,6 +2231,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         can_manage_tasks,
         allowed_tools,
         autonomy,
+        approval_required,
         owner: None,
         shared_with: Vec::new(),
     });
@@ -2239,6 +2272,9 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(autonomy) = prompt_agent_autonomy(terminal, current.autonomy).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(approval_required) = prompt_agent_approval_categories(terminal, &current.approval_required).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
 
     let Some(allowed_tools) = prompt_agent_tools(terminal, &session.tool_names, current.allowed_tools.as_deref()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
@@ -2255,6 +2291,7 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         can_manage_tasks,
         allowed_tools,
         autonomy,
+        approval_required,
         owner: None,
         shared_with: current.shared_with.clone(),
     };
@@ -3068,6 +3105,15 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_approval_categories_answer_is_a_list_of_known_ids() {
+        use warden_core::autonomy::Category;
+        assert_eq!(parse_approval_categories(""), Ok(vec![]));
+        assert_eq!(parse_approval_categories(" critical_infra , delete_data,critical_infra "), Ok(vec![Category::CriticalInfra, Category::DeleteData]));
+        let refused = parse_approval_categories("critical_infra, tudo").unwrap_err();
+        assert!(refused.contains("elevated_agent"), "{refused}");
+    }
 
     #[test]
     fn the_autonomy_answer_is_a_level_from_one_to_four() {

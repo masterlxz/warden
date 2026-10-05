@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::ToolCall;
@@ -47,40 +48,102 @@ impl Autonomy {
     }
 }
 
-/// Decides one tool call under `level`. `read_only` names the tools that never change anything and so never need a
-/// yes. With nobody to ask (a channel that can't), or no answer in time, level 3 refuses — it never runs unasked.
-pub async fn authorize(level: Autonomy, read_only: &[String], approver: Option<&Arc<dyn Approver>>, call: &ToolCall) -> anyhow::Result<()> {
-    authorize_within(level, read_only, approver, call, APPROVAL_TIMEOUT).await
+/// The kinds of action a person may want to approve for an agent that otherwise acts alone (P122, VISAO_AGENTES §38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    /// Deleting data (an agent, a task, an MCP tool that says it destroys).
+    DeleteData,
+    /// Spending money: a paid API, a purchase, a spending limit lifted.
+    SpendMoney,
+    /// Changing infrastructure that matters: a shell, a remote machine, a file copied onto a server.
+    CriticalInfra,
+    /// A message that leaves for a person or a service outside Warden.
+    ExternalMessage,
+    /// Publishing code (a push, a release, a deploy).
+    PublishCode,
+    /// Changing a setting that changes how things behave: a scheduled task.
+    ImportantConfig,
+    /// Creating or raising an agent.
+    ElevatedAgent,
+}
+
+impl Category {
+    pub const ALL: [Category; 7] = [
+        Category::DeleteData,
+        Category::SpendMoney,
+        Category::CriticalInfra,
+        Category::ExternalMessage,
+        Category::PublishCode,
+        Category::ImportantConfig,
+        Category::ElevatedAgent,
+    ];
+
+    /// The id a config file, the wire and the screens use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::DeleteData => "delete_data",
+            Category::SpendMoney => "spend_money",
+            Category::CriticalInfra => "critical_infra",
+            Category::ExternalMessage => "external_message",
+            Category::PublishCode => "publish_code",
+            Category::ImportantConfig => "important_config",
+            Category::ElevatedAgent => "elevated_agent",
+        }
+    }
+
+    pub fn parse(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == id.trim())
+    }
+}
+
+/// Says which risk category a tool call belongs to, if any. Built by the host from what it knows about its tools.
+pub type Classifier = Arc<dyn Fn(&ToolCall) -> Option<Category> + Send + Sync>;
+
+/// Decides one tool call. `read_only` names the tools that never change anything and so never need a yes at levels 2
+/// and 3. `required` are the categories this agent must have approved even at level 4, and `category` is the one this
+/// call belongs to. With nobody to ask (a channel that can't), or no answer in time, a call that needs a yes is refused —
+/// it never runs unasked.
+pub async fn authorize(
+    level: Autonomy,
+    read_only: &[String],
+    required: &[Category],
+    category: Option<Category>,
+    approver: Option<&Arc<dyn Approver>>,
+    call: &ToolCall,
+) -> anyhow::Result<()> {
+    authorize_within(level, read_only, required, category, approver, call, APPROVAL_TIMEOUT).await
 }
 
 async fn authorize_within(
     level: Autonomy,
     read_only: &[String],
+    required: &[Category],
+    category: Option<Category>,
     approver: Option<&Arc<dyn Approver>>,
     call: &ToolCall,
     timeout: Duration,
 ) -> anyhow::Result<()> {
-    if level != Autonomy::AnswerOnly && (level == Autonomy::Autonomous || read_only.contains(&call.name)) {
-        return Ok(());
-    }
-    match level {
-        Autonomy::Autonomous => Ok(()),
+    let needs_category_yes = category.is_some_and(|c| required.contains(&c));
+    let why = match level {
         Autonomy::AnswerOnly => anyhow::bail!("this agent answers in text only and has no tools"),
+        Autonomy::Autonomous if !needs_category_yes => return Ok(()),
+        Autonomy::Autonomous => format!("this kind of action ({}) needs a person's yes for this agent", category.map_or("", Category::as_str)),
+        Autonomy::Suggest | Autonomy::AskFirst if read_only.contains(&call.name) => return Ok(()),
         Autonomy::Suggest => anyhow::bail!(
             "'{}' was not run: this agent only suggests (autonomy level 2). Describe what you would do and let the person decide",
             call.name
         ),
-        Autonomy::AskFirst => {
-            let Some(approver) = approver else {
-                anyhow::bail!("'{}' was not run: it needs a person's yes (autonomy level 3) and this channel can't ask", call.name);
-            };
-            let request = ApprovalRequest { target: call.name.clone(), action: TOOL_CALL_ACTION.to_string(), detail: summarize(&call.arguments) };
-            match tokio::time::timeout(timeout, approver.ask(request, Some(&call.name))).await {
-                Ok(Answer::Once | Answer::Always) => Ok(()),
-                Ok(Answer::Reject) => anyhow::bail!("'{}' was not run: the person said no", call.name),
-                Err(_) => anyhow::bail!("'{}' was not run: nobody answered in time", call.name),
-            }
-        }
+        Autonomy::AskFirst => "it needs a person's yes (autonomy level 3)".to_string(),
+    };
+    let Some(approver) = approver else {
+        anyhow::bail!("'{}' was not run: {why} and this channel can't ask", call.name);
+    };
+    let request = ApprovalRequest { target: call.name.clone(), action: TOOL_CALL_ACTION.to_string(), detail: summarize(&call.arguments), category };
+    match tokio::time::timeout(timeout, approver.ask(request, Some(&call.name))).await {
+        Ok(Answer::Once | Answer::Always) => Ok(()),
+        Ok(Answer::Reject) => anyhow::bail!("'{}' was not run: the person said no", call.name),
+        Err(_) => anyhow::bail!("'{}' was not run: nobody answered in time", call.name),
     }
 }
 
@@ -101,6 +164,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// Level-only checks: no categories asked for.
+    async fn authorize(level: Autonomy, read_only: &[String], approver: Option<&Arc<dyn Approver>>, call: &ToolCall) -> anyhow::Result<()> {
+        super::authorize(level, read_only, &[], None, approver, call).await
+    }
 
     struct Says {
         answer: Answer,
@@ -148,6 +216,56 @@ mod tests {
     async fn level_four_runs_everything_without_asking() {
         let approver: Arc<dyn Approver> = Says::new(Answer::Reject);
         assert!(authorize(Autonomy::Autonomous, &reads(), Some(&approver), &call("write_file")).await.is_ok());
+    }
+
+    #[test]
+    fn a_category_is_written_as_its_snake_case_id_and_nothing_else_parses() {
+        for category in Category::ALL {
+            assert_eq!(Category::parse(category.as_str()), Some(category));
+            assert_eq!(serde_json::to_value(category).unwrap(), json!(category.as_str()));
+            assert_eq!(serde_json::from_value::<Category>(json!(category.as_str())).unwrap(), category);
+        }
+        assert_eq!(Category::parse(" critical_infra "), Some(Category::CriticalInfra));
+        assert_eq!(Category::parse("everything"), None);
+        assert!(serde_json::from_value::<Category>(json!("everything")).is_err());
+    }
+
+    #[tokio::test]
+    async fn level_four_asks_only_for_a_listed_category_and_says_which() {
+        let says = Says::new(Answer::Once);
+        let approver: Arc<dyn Approver> = says.clone();
+        let required = [Category::CriticalInfra];
+        let (read_only, shell) = (reads(), call("shell"));
+        let run = |category| super::authorize(Autonomy::Autonomous, &read_only, &required, category, Some(&approver), &shell);
+
+        assert!(run(None).await.is_ok());
+        assert!(run(Some(Category::DeleteData)).await.is_ok());
+        assert!(says.asked.lock().unwrap().is_empty(), "a category the agent didn't list runs unasked");
+
+        assert!(run(Some(Category::CriticalInfra)).await.is_ok());
+        let asked = says.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0.category, Some(Category::CriticalInfra));
+        assert_eq!(asked[0].0.action, TOOL_CALL_ACTION);
+    }
+
+    #[tokio::test]
+    async fn a_listed_category_is_refused_on_a_no_and_when_there_is_nobody_to_ask() {
+        let no: Arc<dyn Approver> = Says::new(Answer::Reject);
+        let required = [Category::ExternalMessage];
+        let call = call("slack__post");
+        let refused = super::authorize(Autonomy::Autonomous, &[], &required, Some(Category::ExternalMessage), Some(&no), &call).await;
+        assert!(refused.unwrap_err().to_string().contains("said no"));
+        let unasked = super::authorize(Autonomy::Autonomous, &[], &required, Some(Category::ExternalMessage), None, &call).await.unwrap_err().to_string();
+        assert!(unasked.contains("external_message") && unasked.contains("can't ask"), "{unasked}");
+    }
+
+    #[tokio::test]
+    async fn level_three_sends_the_category_along_when_the_call_has_one() {
+        let says = Says::new(Answer::Once);
+        let approver: Arc<dyn Approver> = says.clone();
+        super::authorize(Autonomy::AskFirst, &reads(), &[], Some(Category::DeleteData), Some(&approver), &call("write_file")).await.unwrap();
+        assert_eq!(says.asked.lock().unwrap()[0].0.category, Some(Category::DeleteData));
     }
 
     #[tokio::test]
@@ -199,7 +317,7 @@ mod tests {
             }
         }
         let approver: Arc<dyn Approver> = Arc::new(Silent);
-        let refused = authorize_within(Autonomy::AskFirst, &reads(), Some(&approver), &call("write_file"), Duration::from_millis(30))
+        let refused = authorize_within(Autonomy::AskFirst, &reads(), &[], None, Some(&approver), &call("write_file"), Duration::from_millis(30))
             .await
             .unwrap_err()
             .to_string();

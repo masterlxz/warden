@@ -36,6 +36,14 @@ void main() {
       expect(result.body, 'create_agent: poet — a new agent');
     });
 
+    test('an approval an agent asked for by category says which kind of action it is (P122)', () {
+      final result = notificationContentFor(
+        const ApprovalRequestMessage(3, target: 'shell', action: 'tool_call', detail: '{}', category: 'critical_infra'),
+        serverName: 'hub',
+      );
+      expect(result.body, 'tool_call: shell [critical_infra] — {}');
+    });
+
     test('a chat error is labeled distinctly from a normal reply', () {
       final result = notificationContentFor(
         const ChatErrorMessage('model provider not found'),

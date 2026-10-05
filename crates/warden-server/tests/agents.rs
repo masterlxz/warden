@@ -83,6 +83,7 @@ fn agent(id: &str, persona: &str, manage: bool, message: bool) -> AgentConfig {
         can_manage_tasks: false,
         allowed_tools: None,
         autonomy: warden_bootstrap::default_autonomy(),
+        approval_required: Vec::new(),
         owner: None,
         shared_with: Vec::new(),
     }
@@ -307,4 +308,29 @@ async fn an_agent_at_autonomy_two_only_suggests_and_one_has_no_tools() {
     finish_turn(&mut conn, true).await;
     let seen = hub.seen.lock().unwrap().last().cloned().unwrap();
     assert!(seen.tools.is_empty(), "level 1 is offered no tools: {:?}", seen.tools);
+}
+
+fn set_approval_required(hub: &Hub, agent_id: &str, categories: &[warden_core::autonomy::Category]) {
+    let mut config = load_config_from_path(&hub.config_path, true).unwrap();
+    config.agents.iter_mut().find(|a| a.id == agent_id).unwrap().approval_required = categories.to_vec();
+    save_config(&hub.config_path, &config).unwrap();
+}
+
+#[tokio::test]
+async fn an_agent_that_acts_alone_still_asks_for_the_kind_of_action_it_was_told_to_get_approved() {
+    use warden_core::autonomy::Category;
+    // Without the category the chief creates the agent after the tool's own yes only; with it, the device is asked first.
+    for (required, expected) in [(vec![], vec!["create_agent"]), (vec![Category::ElevatedAgent], vec!["tool_call", "create_agent"])] {
+        let hub = spin_up().await;
+        set_approval_required(&hub, "chief", &required);
+        let mut conn = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+        conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+        let (_, others) = finish_turn(&mut conn, true).await;
+        assert_eq!(asked_actions(&others), expected, "required {required:?}");
+        let by_rule = others.iter().find_map(|m| match m {
+            ServerMessage::ApprovalRequest { action, category, .. } if action == "tool_call" => Some(category.clone()),
+            _ => None,
+        });
+        assert_eq!(by_rule.flatten().as_deref(), if required.is_empty() { None } else { Some("elevated_agent") });
+    }
 }

@@ -19,6 +19,7 @@ export default function ApprovalCard({ prompt, waiting }: Props) {
       <p>
         {prompt.action}: <code>{prompt.target}</code>
       </p>
+      {prompt.category && <p className="approval-detail">Categoria: {prompt.category} (este agente pede aprovação para isso)</p>}
       {prompt.detail && <p className="approval-detail">{prompt.detail}</p>}
       {waiting > 0 && <p className="approval-detail">Mais {waiting} esperando.</p>}
       <div className="approval-actions">

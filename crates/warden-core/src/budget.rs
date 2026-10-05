@@ -162,6 +162,7 @@ impl SpendTurn {
                     exceeded.describe(),
                     allow.join(" and ")
                 ),
+                category: Some(crate::autonomy::Category::SpendMoney),
             };
             if !approver.approve(request).await || self.guard.extend(&exceeded.id).is_err() {
                 return Err(SpendLimitReached(Box::new(exceeded)));

@@ -80,6 +80,7 @@ async fn spin_up_hub(dir: &Path) -> (std::net::SocketAddr, PathBuf) {
         can_manage_tasks: false,
         allowed_tools: None,
         autonomy: warden_bootstrap::default_autonomy(),
+        approval_required: Vec::new(),
         owner: None,
         shared_with: Vec::new(),
     };

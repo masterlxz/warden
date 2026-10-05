@@ -45,6 +45,7 @@ pub mod manage_agents;
 pub mod manage_tasks;
 pub mod member_crypto;
 pub mod recovery;
+pub mod risk;
 pub mod node_model;
 pub mod message_agent;
 pub mod project_scope;
@@ -155,6 +156,11 @@ pub struct AgentConfig {
     /// and a delegate target never gets more than the agent that called it.
     #[serde(default = "default_autonomy")]
     pub autonomy: u8,
+    /// The kinds of action this agent must have a person approve even at autonomy 4 (P122): which tool calls belong to
+    /// which category is the `risk` module's. Empty (the default) asks for none, as an agent always did. Applied in
+    /// code (`Orchestrator::with_approval_rules`), and a delegate target asks for these plus its caller's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_required: Vec<warden_core::autonomy::Category>,
     /// P84: the workspace member this agent belongs to — `None` is the owner's. A member's agent is
     /// only theirs: nobody else sees it or talks to it, and it never gets the `can_*` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -462,6 +468,10 @@ pub struct FileConfig {
     /// `/hooks/<id>` with the webhook's token. The tokens aren't here (they don't sync): see `webhooks`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub webhooks: Vec<webhooks::WebhookConfig>,
+    /// Which risk category a tool's calls belong to (P122, TOML `[[tool_categories]]`), for the tools Warden doesn't
+    /// know (an MCP server's). What an agent's `approval_required` is checked against; see the `risk` module.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_categories: Vec<risk::ToolCategoryConfig>,
     /// What agents may do with each node (P93, TOML `[[nodes]]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<NodeAccessConfig>,
@@ -1680,6 +1690,7 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<Nam
         let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
         let target_orchestrator =
             target_orchestrator.with_autonomy(warden_core::autonomy::Autonomy::from_level(agent.autonomy).unwrap_or(warden_core::autonomy::Autonomy::AskFirst), &read_only);
+        let target_orchestrator = target_orchestrator.with_approval_rules(&agent.approval_required, None);
         let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
         targets.push(NamedSubAgent {
             id: agent.id.clone(),
@@ -2215,9 +2226,11 @@ oauth = true
                 can_manage_tasks: false,
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
                 autonomy: 2,
+                approval_required: vec![warden_core::autonomy::Category::CriticalInfra, warden_core::autonomy::Category::DeleteData],
                 owner: None,
                 shared_with: Vec::new(),
             }],
+            tool_categories: vec![risk::ToolCategoryConfig { tool: "pay".to_string(), category: warden_core::autonomy::Category::SpendMoney }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
             legacy_fallback_providers: Vec::new(),
             legacy_storage_provider: None,
@@ -3113,6 +3126,7 @@ oauth = true
                 can_manage_tasks: false,
                 allowed_tools: None,
                 autonomy: default_autonomy(),
+                approval_required: Vec::new(),
                 owner: None,
                 shared_with: Vec::new(),
             }],
@@ -3241,6 +3255,7 @@ oauth = true
             can_manage_tasks: false,
             allowed_tools: None,
             autonomy: default_autonomy(),
+            approval_required: Vec::new(),
             owner: None,
             shared_with: Vec::new(),
         }

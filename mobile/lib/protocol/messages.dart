@@ -452,6 +452,7 @@ sealed class ServerMessage {
           target: json['target'] as String,
           action: json['action'] as String,
           detail: json['detail'] as String,
+          category: json['category'] as String?,
         ),
       'approvalCancelled' => ApprovalCancelledMessage(json['approvalId'] as int),
       'conversationsChanged' => ConversationsChangedMessage(json['conversationId'] as String),
@@ -771,12 +772,16 @@ final class SettingsErrorMessage extends ServerMessage {
 /// another, an SSH host with approval, a spending-limit pause). No answer before the hub's
 /// deadline (120 s) counts as no.
 final class ApprovalRequestMessage extends ServerMessage {
-  const ApprovalRequestMessage(this.approvalId, {required this.target, required this.action, required this.detail});
+  const ApprovalRequestMessage(this.approvalId, {required this.target, required this.action, required this.detail, this.category});
 
   final int approvalId;
   final String target;
   final String action;
   final String detail;
+
+  /// P122: the kind of action the agent has to get approved (`critical_infra`...), when the ask comes from that rule;
+  /// null from a hub that doesn't send it.
+  final String? category;
 }
 
 /// The hub stopped waiting for [approvalId]: its dialog closes.

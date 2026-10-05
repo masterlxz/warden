@@ -222,7 +222,7 @@ impl ManageTasksTool {
                  (use the desktop app, the web, the phone or the interactive CLI)"
             );
         };
-        let request = ApprovalRequest { target: change.id().to_string(), action: change.action().to_string(), detail };
+        let request = ApprovalRequest::new(change.id(), change.action(), detail);
         let approved = tokio::time::timeout(self.approval_timeout, approver.approve(request)).await.unwrap_or(false);
         if !approved {
             anyhow::bail!("the user did not approve this change to task '{}'", change.id());
@@ -426,6 +426,7 @@ mod tests {
             can_manage_tasks: false,
             allowed_tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
             autonomy: crate::default_autonomy(),
+            approval_required: Vec::new(),
             owner: None,
             shared_with: Vec::new(),
         }

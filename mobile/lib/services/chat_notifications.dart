@@ -35,8 +35,10 @@ bool shouldNotifyFor(AppLifecycleState state) => state != AppLifecycleState.resu
   final (title, rawBody) = switch (message) {
     ChatResponseMessage(:final content) => (serverName, content),
     ChatErrorMessage(:final message) => ('$serverName — Error', message),
-    ApprovalRequestMessage(:final action, :final target, :final detail) =>
-      ('$serverName — Approval needed', '$action: $target${detail.isEmpty ? '' : ' — $detail'}'),
+    ApprovalRequestMessage(:final action, :final target, :final detail, :final category) => (
+        '$serverName — Approval needed',
+        '$action: $target${category == null ? '' : ' [$category]'}${detail.isEmpty ? '' : ' — $detail'}'
+      ),
     _ => (serverName, ''),
   };
   return (title: title, body: _truncate(rawBody));

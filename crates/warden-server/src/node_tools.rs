@@ -100,7 +100,7 @@ impl NodeContext {
         let Some(approver) = &self.approver else {
             anyhow::bail!("node '{}' needs a person's approval for every call, and nobody can be asked here — nothing was run", node.id);
         };
-        let request = ApprovalRequest { target: node.id.clone(), action: action.to_string(), detail };
+        let request = ApprovalRequest::new(node.id.clone(), action, detail);
         if !tokio::time::timeout(APPROVAL_TIMEOUT, approver.approve(request)).await.unwrap_or(false) {
             anyhow::bail!("the user did not approve this on node '{}'", node.id);
         }

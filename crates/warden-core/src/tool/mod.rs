@@ -60,6 +60,17 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool whose nested orchestrator asks for the risk categories in `required`, classified by
+    /// `classifier` (P122), or `None` when it runs no nested agent. Called by `Orchestrator::with_approval_rules`.
+    fn with_approval_rules(&self, _required: &[crate::autonomy::Category], _classifier: Option<&crate::autonomy::Classifier>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
+    /// What the tool's provider says about its risk (P122), when it says anything. See `RiskHints`.
+    fn risk_hints(&self) -> Option<RiskHints> {
+        None
+    }
+
     /// A copy of this tool that reads and writes `vault` instead of the one it was built with, or
     /// `None` when it doesn't touch a vault. Called by `Orchestrator::with_vault` (P84: a person's
     /// own vault): every tool that holds a vault — or a nested orchestrator — overrides it, so the
@@ -124,6 +135,25 @@ pub struct ApprovalRequest {
     pub target: String,
     pub action: String,
     pub detail: String,
+    /// Why a yes is needed beyond what the tool itself would ask (P122): the risk category that agent has to approve.
+    /// `None` for an ask that comes from the tool's own rules.
+    pub category: Option<crate::autonomy::Category>,
+}
+
+impl ApprovalRequest {
+    /// An ask with no risk category, which is what every tool's own rules produce.
+    pub fn new(target: impl Into<String>, action: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self { target: target.into(), action: action.into(), detail: detail.into(), category: None }
+    }
+}
+
+/// What a tool's own provider says about how risky it is (an MCP server's `annotations`). Advice from the server, not a
+/// guarantee: a tool that says nothing is `None`, never "safe".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RiskHints {
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub open_world: Option<bool>,
 }
 
 /// Something that can put an `ApprovalRequest` in front of the user and wait for the answer — a
@@ -247,6 +277,10 @@ impl Tool for NamespacedTool {
 
     fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
         self.inner.with_approver(approver).map(|t| rename_tool(t, self.name.clone()))
+    }
+
+    fn risk_hints(&self) -> Option<RiskHints> {
+        self.inner.risk_hints()
     }
 }
 

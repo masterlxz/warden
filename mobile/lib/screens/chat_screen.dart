@@ -95,6 +95,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('${request.action}: ${request.target}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            if (request.category != null) ...[
+              const SizedBox(height: 4),
+              Text('Category: ${request.category} (this agent asks for approval on this)'),
+            ],
             if (request.detail.isNotEmpty) ...[const SizedBox(height: 8), Text(request.detail)],
           ],
         ),

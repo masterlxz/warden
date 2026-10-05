@@ -189,7 +189,7 @@ impl OpencodeEngine {
                 return true;
             }
             let Some(approver) = approver else { return false };
-            let request = ApprovalRequest { target: target.to_string(), action: ask.permission.clone(), detail: ask.patterns.join(", ") };
+            let request = ApprovalRequest::new(target.to_string(), ask.permission.clone(), ask.patterns.join(", "));
             let covers = Some(ask.always.join(", ")).filter(|c| !c.is_empty());
             tokio::select! {
                 answer = tokio::time::timeout(APPROVAL_TIMEOUT, approver.ask(request, covers.as_deref())) => {
@@ -509,7 +509,7 @@ mod tests {
             let person = approver(yes);
             let (outcome, _) = run(&engine, request(None), Some(person.clone())).await;
             outcome.unwrap();
-            assert_eq!(person.asked.lock().unwrap().as_slice(), [ApprovalRequest { target: "Repo".into(), action: "bash".into(), detail: "cargo test".into() }]);
+            assert_eq!(person.asked.lock().unwrap().as_slice(), [ApprovalRequest::new("Repo", "bash", "cargo test")]);
             let reply: Value = serde_json::from_str(&fake.calls("POST", "/permission/per_1/reply")[0]).unwrap();
             assert_eq!(reply["reply"], if yes { "once" } else { "reject" });
         }

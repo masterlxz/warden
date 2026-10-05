@@ -418,6 +418,9 @@ struct AgentPayload {
     /// P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts on its own — see `AgentConfig::autonomy`.
     #[serde(default = "warden_bootstrap::default_autonomy")]
     autonomy: u8,
+    /// P122 — the kinds of action that need a person's yes even at autonomy 4, by id — see `AgentConfig::approval_required`.
+    #[serde(default)]
+    approval_required: Vec<String>,
     /// P84 — the people this agent is shared with (`"*"` = everyone) — see `AgentConfig::shared_with`.
     #[serde(default)]
     shared_with: Vec<String>,
@@ -556,6 +559,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
                 autonomy: a.autonomy,
+                approval_required: a.approval_required.iter().map(|c| c.as_str().to_string()).collect(),
                 shared_with: a.shared_with,
             })
             .collect(),
@@ -625,11 +629,11 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     }
 
     let combos = check_combos(payload.combos, &providers)?;
-    let agents = check_agents(
-        payload
-            .agents
-            .into_iter()
-            .map(|a| AgentConfig {
+    let owners_agents = payload
+        .agents
+        .into_iter()
+        .map(|a| {
+            Ok(AgentConfig {
                 id: a.id,
                 persona: a.persona,
                 provider_id: Some(a.provider_id),
@@ -639,11 +643,14 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 can_manage_tasks: a.can_manage_tasks,
                 allowed_tools: a.allowed_tools,
                 autonomy: a.autonomy,
+                approval_required: warden_bootstrap::settings::categories_from_ids(&a.approval_required)?,
                 owner: None,
                 shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
             })
-            .chain(existing.agents.iter().filter(|a| a.owner.is_some()).cloned())
-            .collect(),
+        })
+        .collect::<Result<Vec<AgentConfig>, String>>()?;
+    let agents = check_agents(
+        owners_agents.into_iter().chain(existing.agents.iter().filter(|a| a.owner.is_some()).cloned()).collect(),
         &providers,
         &combos,
     )?;
@@ -713,6 +720,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         tasks: existing.tasks,
         // Incoming webhooks (P105) have no Settings screen either (`warden-server webhooks`): dropping them here would delete them.
         webhooks: existing.webhooks,
+        tool_categories: existing.tool_categories,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,
         // People (P84) are managed on the Workspace screen and the hub, not this form.
