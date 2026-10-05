@@ -1018,6 +1018,62 @@ button:focus-visible {
   resize: vertical;
 }
 
+/* Organização (P120): a árvore, só leitura. */
+
+.org-tree,
+.org-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.org-children {
+  margin-left: 1.2em;
+  padding-left: 1em;
+  border-left: 1px solid rgba(127, 127, 127, 0.35);
+}
+
+.org-node {
+  margin: 0.5em 0;
+}
+
+.org-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4em 0.8em;
+  padding: 0.55em 0.8em;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+}
+
+.org-name {
+  font-weight: 600;
+}
+
+.org-role {
+  opacity: 0.8;
+}
+
+.org-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3em;
+}
+
+.org-badge {
+  font-size: 0.8em;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+}
+
+.org-count {
+  margin-left: auto;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
 /* Usage (P78) */
 
 .usage-view {

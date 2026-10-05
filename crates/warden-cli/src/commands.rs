@@ -42,6 +42,8 @@ pub enum Command {
     AgentsList,
     /// `None` is `/agents use none` — clears the session's active agent.
     AgentsUse(Option<String>),
+    /// `/agents tree` — who reports to whom (P120).
+    AgentsTree,
     AgentsCreate,
     AgentsEdit(String),
     AgentsRemove(String),
@@ -130,6 +132,7 @@ pub fn parse_command(input: &str) -> ParseOutcome {
         ("agents", []) => Command::AgentsList,
         ("agents", ["use", "none"]) => Command::AgentsUse(None),
         ("agents", ["use", id]) => Command::AgentsUse(Some(id.to_string())),
+        ("agents", ["tree"]) => Command::AgentsTree,
         ("agents", ["create"]) => Command::AgentsCreate,
         ("agents", ["edit", id]) => Command::AgentsEdit(id.to_string()),
         ("agents", ["remove", id]) => Command::AgentsRemove(id.to_string()),
@@ -196,7 +199,7 @@ const LIMITS_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "off", "reset"];
 const PRICES_SUBCOMMANDS: &[&str] = &["add", "edit", "remove"];
 const MODELS_SUBCOMMANDS: &[&str] = &["use", "reset", "add", "edit", "remove"];
 const COMBOS_SUBCOMMANDS: &[&str] = &["add", "remove"];
-const AGENTS_SUBCOMMANDS: &[&str] = &["use", "create", "edit", "remove"];
+const AGENTS_SUBCOMMANDS: &[&str] = &["use", "tree", "create", "edit", "remove"];
 const SKILLS_SUBCOMMANDS: &[&str] = &["show", "create", "edit", "remove", "path", "file", "attach", "detach"];
 const SSH_SUBCOMMANDS: &[&str] = &["add", "edit", "remove", "on", "off", "test"];
 const SYNC_SUBCOMMANDS: &[&str] = &["push", "pull", "pair", "git"];
@@ -368,6 +371,11 @@ mod tests {
     }
 
     #[test]
+    fn agents_tree_shows_the_organization() {
+        assert!(matches!(assert_recognized("/agents tree"), Command::AgentsTree));
+    }
+
+    #[test]
     fn sync_subcommands_parse_their_arguments() {
         assert!(matches!(assert_recognized("/sync"), Command::SyncStatus));
         assert!(matches!(assert_recognized("/sync push"), Command::SyncPush));
@@ -426,7 +434,7 @@ mod tests {
     #[test]
     fn current_word_completes_a_subcommand_name() {
         assert_eq!(candidates_for("/models u"), vec!["use"]);
-        assert_eq!(candidates_for("/agents "), vec!["create", "edit", "remove", "use"]);
+        assert_eq!(candidates_for("/agents "), vec!["create", "edit", "remove", "tree", "use"]);
         assert_eq!(candidates_for("/skills "), vec!["attach", "create", "detach", "edit", "file", "path", "remove", "show"]);
         assert_eq!(candidates_for("/sync pu"), vec!["pull", "push"]);
         assert_eq!(candidates_for("/sync g"), vec!["git"]);

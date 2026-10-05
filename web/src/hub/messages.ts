@@ -224,6 +224,9 @@ export interface AgentSettings {
   autonomy: number;
   /** P122 — the kinds of action (ids, see `approvalCategories.ts`) that need the person's yes even at autonomy 4. */
   approvalRequired: string[];
+  /** P120 — o cargo e o superior (id de outro agente); só aparecem na tela Organização por enquanto. */
+  role?: string | null;
+  reportsTo?: string | null;
   /** P84 — members this agent is shared with, or ["*"] for everyone. */
   sharedWith?: string[];
   /** P84 — in a member's view, their username on their own agents; absent on the shared ones. */

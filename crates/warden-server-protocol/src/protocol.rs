@@ -718,6 +718,12 @@ pub struct AgentSettingsDto {
     /// `critical_infra`, `external_message`, `publish_code`, `important_config`, `elevated_agent`). Empty: none.
     #[serde(default)]
     pub approval_required: Vec<String>,
+    /// P120: the agent's role in the organization (free text) and the id of the agent it reports to. Only shown for
+    /// now: they change nothing an agent may do. Absent on a member's agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports_to: Option<String>,
     /// P84: members this agent is shared with, by username, or `"*"` for everyone. Empty: the owner's alone.
     #[serde(default)]
     pub shared_with: Vec<String>,

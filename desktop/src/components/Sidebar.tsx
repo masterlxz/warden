@@ -1,5 +1,5 @@
 import type { Conversation, ProjectEntry } from "../types";
-import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
+import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, OrgIcon, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -17,7 +17,8 @@ interface SidebarProps {
   onOpenTasks: () => void;
   onOpenWebhooks: () => void;
   onOpenWorkspace: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace";
+  onOpenOrganization: () => void;
+  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization";
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Which machine the screens use (P102): this computer or a hub. Shown under the brand, not in the collapsed bar. */
@@ -39,6 +40,7 @@ function Sidebar({
   onOpenTasks,
   onOpenWebhooks,
   onOpenWorkspace,
+  onOpenOrganization,
   view,
   collapsed,
   onToggleCollapsed,
@@ -157,6 +159,15 @@ function Sidebar({
         >
           <ProjectsIcon size={17} />
           {!collapsed && "Projects"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "organization" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenOrganization}
+          title="Organization"
+        >
+          <OrgIcon size={17} />
+          {!collapsed && "Organization"}
         </button>
         <button
           type="button"

@@ -166,6 +166,9 @@ export interface AgentEntry {
   autonomy: number;
   /** P122 — the kinds of action (ids, see `lib/approvalCategories.ts`) that need your yes even at autonomy 4. */
   approvalRequired: string[];
+  /** P120 — the agent's role in the organization (free text) and the id of the agent it reports to; only shown for now. */
+  role?: string | null;
+  reportsTo?: string | null;
   /** P84 — the people this agent is shared with, by username, or ["*"] for everyone. */
   sharedWith?: string[];
 }

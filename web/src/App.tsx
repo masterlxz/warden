@@ -14,6 +14,7 @@ import ProjectsView from "./components/ProjectsView";
 import RecoveryCodeView from "./components/RecoveryCodeView";
 import RecoveryNoticeView from "./components/RecoveryNoticeView";
 import SettingsView from "./components/SettingsView";
+import OrganizationView from "./components/OrganizationView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
 import TasksView from "./components/TasksView";
@@ -40,7 +41,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi";
+type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -652,6 +653,9 @@ export default function App() {
           </button>
           {isOwner && (
             <>
+              <button type="button" className={view === "organization" ? "tab tab--active" : "tab"} onClick={() => setView("organization")}>
+                Organização
+              </button>
               <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
                 Tarefas
               </button>
@@ -851,6 +855,8 @@ export default function App() {
           <SyncView conn={conn} />
         ) : view === "settings" ? (
           <SettingsView conn={conn} />
+        ) : view === "organization" ? (
+          <OrganizationView conn={conn} onEdit={() => setView("settings")} />
         ) : (
           <SkillsView
             conn={conn}

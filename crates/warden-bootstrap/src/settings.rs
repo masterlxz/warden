@@ -252,8 +252,12 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], comb
         if warden_core::autonomy::Autonomy::from_level(a.autonomy).is_none() {
             return Err(format!("agent '{id}' has autonomy {}: pick a level from 1 to 4", a.autonomy));
         }
-        checked.push(AgentConfig { id, provider_id, ..a });
+        // P120: a blank role or superior is none, and a stray space doesn't make a different id.
+        let role = a.role.as_deref().and_then(non_empty);
+        let reports_to = a.reports_to.as_deref().and_then(non_empty);
+        checked.push(AgentConfig { id, provider_id, role, reports_to, ..a });
     }
+    crate::org::check_hierarchy(&checked)?;
     Ok(checked)
 }
 
@@ -363,6 +367,8 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 allowed_tools: a.allowed_tools.clone(),
                 autonomy: a.autonomy,
                 approval_required: a.approval_required.iter().map(|c| c.as_str().to_string()).collect(),
+                role: a.role.clone(),
+                reports_to: a.reports_to.clone(),
                 shared_with: a.shared_with.clone(),
                 owner: None,
             })
@@ -518,6 +524,8 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             allowed_tools: dto.allowed_tools,
             autonomy: dto.autonomy,
             approval_required: categories_from_ids(&dto.approval_required)?,
+            role: dto.role,
+            reports_to: dto.reports_to,
             owner: None,
             shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
         });
@@ -527,6 +535,11 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     // hold can't be taken by one of the owner's.
     let member_agents: Vec<AgentConfig> = config.agents.iter().filter(|a| a.owner.is_some()).cloned().collect();
     // `check_agents` refuses a repeated name, so an agent of the owner's can't take one of theirs.
+    // P120: whoever reported to a renamed agent follows its new name, before the hierarchy is checked.
+    let mut agents: Vec<AgentConfig> = agents;
+    for (original, new) in &renames {
+        crate::org::rename_in_reports(&mut agents, original, new.trim());
+    }
     let agents = check_agents(agents.into_iter().chain(member_agents).collect(), &providers, &combos)?;
 
     let removed: Vec<String> = config.agents.iter().filter(|a| a.owner.is_none()).map(|a| a.id.clone()).filter(|id| !kept.contains(id)).collect();
@@ -627,6 +640,8 @@ mod tests {
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: Vec::new(),
         }
@@ -1006,6 +1021,56 @@ mod tests {
         bad.agents[0].approval_required = vec!["everything".into()];
         let err = apply_hub_settings(sample(), bad).unwrap_err();
         assert!(err.contains("'everything'"), "{err}");
+    }
+
+    #[test]
+    fn a_role_and_a_superior_round_trip_and_a_blank_one_is_none() {
+        let old: FileConfig = toml::from_str("[[agents]]\nid = \"pirate\"\npersona = \"p\"\n").unwrap();
+        assert_eq!((old.agents[0].role.clone(), old.agents[0].reports_to.clone()), (None, None));
+
+        let mut update = untouched(&sample());
+        update.agents[1].role = Some("  First mate ".into());
+        update.agents[1].reports_to = Some("pirate".into());
+        update.agents[0].role = Some("   ".into());
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!((saved.agents[1].role.as_deref(), saved.agents[1].reports_to.as_deref()), (Some("First mate"), Some("pirate")));
+        assert_eq!(saved.agents[0].role, None, "a blank role is none");
+        let view = hub_settings(&saved, Vec::new(), Vec::new());
+        assert_eq!((view.agents[1].role.as_deref(), view.agents[1].reports_to.as_deref()), (Some("First mate"), Some("pirate")));
+    }
+
+    #[test]
+    fn a_save_with_a_superior_that_does_not_exist_or_a_circle_is_refused() {
+        let mut ghost = untouched(&sample());
+        ghost.agents[1].reports_to = Some("ghost".into());
+        assert!(apply_hub_settings(sample(), ghost).unwrap_err().contains("doesn't exist"));
+
+        let mut circle = untouched(&sample());
+        circle.agents[0].reports_to = Some("chef".into());
+        circle.agents[1].reports_to = Some("pirate".into());
+        assert!(apply_hub_settings(sample(), circle).unwrap_err().contains("circle"));
+    }
+
+    #[test]
+    fn renaming_a_superior_carries_the_reports_with_it() {
+        let mut base = sample();
+        base.agents[1].reports_to = Some("pirate".into());
+        let mut update = untouched(&base);
+        update.agents[0].id = "captain".into();
+        let saved = apply_hub_settings(base, update).unwrap();
+        assert_eq!(saved.agents[1].reports_to.as_deref(), Some("captain"));
+    }
+
+    #[test]
+    fn removing_an_agent_hands_its_reports_to_its_superior() {
+        let mut config = sample();
+        config.agents.push(agent("cook"));
+        config.agents[1].reports_to = Some("pirate".into());
+        config.agents[2].reports_to = Some("chef".into());
+        crate::remove_agent_references(&mut config, "chef");
+        assert_eq!(config.agents.len(), 2);
+        assert_eq!(config.agents[1].reports_to.as_deref(), Some("pirate"), "cook now reports to chef's superior");
+        assert!(crate::org::check_hierarchy(&config.agents).is_ok());
     }
 
     #[test]

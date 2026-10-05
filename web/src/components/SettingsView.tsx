@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SettingsError, UserError, type LoadedSettings, type ServerConnection } from "../hub/connection";
 import { APPROVAL_CATEGORIES } from "../hub/approvalCategories";
+import { descendantsOf, removeFromOrg, renameInReports } from "../hub/org";
 import ApiKeysSection from "./ApiKeysSection";
 import AdvancedSection from "./AdvancedSection";
 import MachineSection from "./MachineSection";
@@ -436,7 +437,12 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   }
 
   function patchAgent(key: number, patch: Partial<AgentSettings>) {
-    update((d) => ({ ...d, agents: d.agents.map((a) => (a.key === key ? { ...a, ...patch } : a)) }));
+    update((d) => {
+      const before = d.agents.find((a) => a.key === key);
+      const agents = d.agents.map((a) => (a.key === key ? { ...a, ...patch } : a));
+      // P120: quem reportava a um agente renomeado acompanha o nome novo.
+      return { ...d, agents: before && patch.id !== undefined ? renameInReports(agents, before.id, patch.id) : agents };
+    });
   }
 
   function patchLimit(key: number, patch: Partial<LimitSettings>) {
@@ -716,6 +722,21 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     ))}
                   </select>
                 </Field>
+                <Field label="Cargo (opcional)">
+                  <input value={a.role ?? ""} placeholder="ex.: líder de engenharia" onChange={(e) => patchAgent(a.key, { role: e.target.value })} />
+                </Field>
+                <Field label="Reporta a (só aparece na aba Organização)">
+                  <select value={a.reportsTo ?? ""} onChange={(e) => patchAgent(a.key, { reportsTo: e.target.value || null })}>
+                    <option value="">Ninguém</option>
+                    {draft.agents
+                      .filter((other) => other.key !== a.key && !descendantsOf(draft.agents, a.id).has(other.id))
+                      .map((other) => (
+                        <option key={other.key} value={other.id}>
+                          {other.id}
+                        </option>
+                      ))}
+                  </select>
+                </Field>
                 <Field label="Persona" wide>
                   <textarea rows={4} value={a.persona} onChange={(e) => patchAgent(a.key, { persona: e.target.value })} />
                 </Field>
@@ -822,7 +843,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 </fieldset>
               )}
               <div className="skills-actions">
-                <button type="button" className="link-button skills-danger" onClick={() => update((d) => ({ ...d, agents: d.agents.filter((x) => x.key !== a.key) }))}>
+                <button type="button" className="link-button skills-danger" onClick={() => update((d) => ({ ...d, agents: removeFromOrg(d.agents, a.id) }))}>
                   Remover agente
                 </button>
               </div>

@@ -834,6 +834,9 @@ pub fn save_member_agent(config: &mut FileConfig, owner: &str, original_id: Opti
         // A member never picks a level for their own agent; it stays at what an agent had before levels existed.
         autonomy: crate::default_autonomy(),
         approval_required: Vec::new(),
+        // A member's agent is outside the organization.
+        role: None,
+        reports_to: None,
         owner: Some(owner.to_string()),
         shared_with: Vec::new(),
     };
@@ -1323,6 +1326,8 @@ mod tests {
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: owner.map(Into::into),
             shared_with: shared_with.iter().map(|s| s.to_string()).collect(),
         }

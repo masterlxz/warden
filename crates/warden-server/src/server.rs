@@ -575,6 +575,9 @@ async fn handle_own_agent(
                     // Never chosen by a member (`save_member_agent` sets it).
                     autonomy: warden_bootstrap::default_autonomy(),
                     approval_required: Vec::new(),
+                    // A member's agent is outside the organization.
+                    role: None,
+                    reports_to: None,
                     owner: None,
                     shared_with: Vec::new(),
                 };

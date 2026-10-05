@@ -421,6 +421,11 @@ struct AgentPayload {
     /// P122 — the kinds of action that need a person's yes even at autonomy 4, by id — see `AgentConfig::approval_required`.
     #[serde(default)]
     approval_required: Vec<String>,
+    /// P120 — the agent's role in the organization and the agent it reports to; only shown for now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reports_to: Option<String>,
     /// P84 — the people this agent is shared with (`"*"` = everyone) — see `AgentConfig::shared_with`.
     #[serde(default)]
     shared_with: Vec<String>,
@@ -560,6 +565,8 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 allowed_tools: a.allowed_tools,
                 autonomy: a.autonomy,
                 approval_required: a.approval_required.iter().map(|c| c.as_str().to_string()).collect(),
+                role: a.role,
+                reports_to: a.reports_to,
                 shared_with: a.shared_with,
             })
             .collect(),
@@ -644,6 +651,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 allowed_tools: a.allowed_tools,
                 autonomy: a.autonomy,
                 approval_required: warden_bootstrap::settings::categories_from_ids(&a.approval_required)?,
+                role: a.role,
+                reports_to: a.reports_to,
                 owner: None,
                 shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
             })

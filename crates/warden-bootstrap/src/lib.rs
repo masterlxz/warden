@@ -44,6 +44,7 @@ mod config_file;
 pub mod manage_agents;
 pub mod manage_tasks;
 pub mod member_crypto;
+pub mod org;
 pub mod recovery;
 pub mod risk;
 pub mod node_model;
@@ -161,6 +162,14 @@ pub struct AgentConfig {
     /// code (`Orchestrator::with_approval_rules`), and a delegate target asks for these plus its caller's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approval_required: Vec<warden_core::autonomy::Category>,
+    /// P120: this agent's role in the organization ("Head of engineering"), free text. Only shown for now — it changes
+    /// nothing an agent may do. The owner's agents only: a member's never has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// P120: the id of the agent this one reports to, so the organization is a tree (`org::check_hierarchy`: no one
+    /// reports to themselves, to a stranger or in a circle). Only shown for now; the owner's agents only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports_to: Option<String>,
     /// P84: the workspace member this agent belongs to — `None` is the owner's. A member's agent is
     /// only theirs: nobody else sees it or talks to it, and it never gets the `can_*` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -749,6 +758,8 @@ pub struct SshHostEffect {
 /// agent" (the desktop's Settings screen does the same when an agent is deleted there), and a
 /// dangling reference is never left behind: the desktop's `save_settings` rejects one.
 pub fn remove_agent_from(agents: &mut Vec<AgentConfig>, ssh_hosts: &mut [SshHostConfig], agent_id: &str) -> Vec<SshHostEffect> {
+    // P120: the ones that reported to it report to its superior from now on.
+    org::reparent_reports(agents, agent_id);
     agents.retain(|a| a.id != agent_id);
     let mut effects = Vec::new();
     for host in ssh_hosts.iter_mut().filter(|h| h.agents.iter().any(|a| a == agent_id)) {
@@ -2227,6 +2238,8 @@ oauth = true
                 allowed_tools: Some(vec!["read_file".to_string(), "use_skill".to_string()]),
                 autonomy: 2,
                 approval_required: vec![warden_core::autonomy::Category::CriticalInfra, warden_core::autonomy::Category::DeleteData],
+                role: Some("Head of the crew".to_string()),
+                reports_to: None,
                 owner: None,
                 shared_with: Vec::new(),
             }],
@@ -3127,6 +3140,8 @@ oauth = true
                 allowed_tools: None,
                 autonomy: default_autonomy(),
                 approval_required: Vec::new(),
+                role: None,
+                reports_to: None,
                 owner: None,
                 shared_with: Vec::new(),
             }],
@@ -3256,6 +3271,8 @@ oauth = true
             allowed_tools: None,
             autonomy: default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: Vec::new(),
         }

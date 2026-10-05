@@ -95,6 +95,8 @@ fn agent(id: &str, persona: &str, manage: bool) -> AgentConfig {
         allowed_tools: None,
         autonomy: warden_bootstrap::default_autonomy(),
         approval_required: Vec::new(),
+        role: None,
+        reports_to: None,
         owner: None,
         shared_with: Vec::new(),
     }

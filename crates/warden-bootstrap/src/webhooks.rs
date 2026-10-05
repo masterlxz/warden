@@ -258,6 +258,8 @@ mod tests {
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: owner.map(str::to_string),
             shared_with: Vec::new(),
         }

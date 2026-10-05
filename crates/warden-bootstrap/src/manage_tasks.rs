@@ -427,6 +427,8 @@ mod tests {
             allowed_tools: tools.map(|t| t.iter().map(|s| s.to_string()).collect()),
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: Vec::new(),
         }

@@ -121,6 +121,8 @@ async fn spin_up() -> Hub {
             allowed_tools: None,
             autonomy: warden_bootstrap::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: vec!["ana".into()],
         }],
@@ -396,6 +398,8 @@ async fn what_a_member_may_use_is_what_the_owner_shares_and_allows() {
         allowed_tools: Some(vec!["write_file".into(), "read_file".into()]),
         autonomy: 4,
         approval_required: Vec::new(),
+        role: None,
+        reports_to: None,
         shared_with: vec!["*".into()],
         owner: None,
     };

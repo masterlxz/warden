@@ -7,6 +7,7 @@ import ApiKeysSection from "./ApiKeysSection";
 import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 import { APPROVAL_CATEGORIES } from "../lib/approvalCategories";
+import { descendantsOf, removeFromOrg, renameInReports } from "../lib/org";
 
 const emptySettings: Settings = {
   providers: [],
@@ -568,10 +569,13 @@ function AgentCard({
   combos,
   toolNames,
   people,
+  allAgents,
   onChange,
   onDelete,
 }: {
   agent: AgentEntry;
+  /** Every agent of the owner's, for the "Reports to" list. */
+  allAgents: AgentEntry[];
   providers: ProviderEntry[];
   combos: Combo[];
   /** Every tool the running app has, for the "Restrict tools" list. */
@@ -601,6 +605,36 @@ function AgentCard({
           🗑
         </button>
       </div>
+
+      <label className="settings-field">
+        <span className="settings-label">Role</span>
+        <input
+          className="settings-input"
+          type="text"
+          placeholder="Optional, e.g. Head of engineering"
+          value={agent.role ?? ""}
+          onChange={(e) => onChange({ ...agent, role: e.currentTarget.value })}
+        />
+      </label>
+
+      <label className="settings-field">
+        <span className="settings-label">Reports to</span>
+        <select
+          className="settings-select"
+          value={agent.reportsTo ?? ""}
+          onChange={(e) => onChange({ ...agent, reportsTo: e.currentTarget.value || null })}
+        >
+          <option value="">(nobody)</option>
+          {allAgents
+            .filter((other) => other.id !== agent.id && !descendantsOf(allAgents, agent.id).has(other.id))
+            .map((other) => (
+              <option key={other.id} value={other.id}>
+                {other.id}
+              </option>
+            ))}
+        </select>
+        <span className="settings-hint">Shown in the Organization view. It doesn't change what the agent may do.</span>
+      </label>
 
       <label className="settings-field">
         <span className="settings-label">Personality</span>
@@ -1220,7 +1254,13 @@ function SettingsView() {
       const prevId = f.agents[index].id;
       const sshHosts =
         prevId === next.id ? f.sshHosts : f.sshHosts.map((h) => ({ ...h, agents: h.agents.map((a) => (a === prevId ? next.id : a)) }));
-      return { ...f, agents: f.agents.map((a, i) => (i === index ? next : a)), sshHosts };
+      // P120: whoever reported to a renamed agent follows its new name.
+      const agents = renameInReports(
+        f.agents.map((a, i) => (i === index ? next : a)),
+        prevId,
+        next.id,
+      );
+      return { ...f, agents, sshHosts };
     });
   }
 
@@ -1234,7 +1274,8 @@ function SettingsView() {
         const agents = h.agents.filter((a) => a !== removed);
         return { ...h, agents, enabled: agents.length === 0 ? false : h.enabled };
       });
-      return { ...f, agents: f.agents.filter((_, i) => i !== index), sshHosts };
+      // P120: the ones that reported to it report to its superior from now on.
+      return { ...f, agents: removeFromOrg(f.agents, removed), sshHosts };
     });
   }
 
@@ -1451,7 +1492,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} providers={form.providers} combos={form.combos} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} allAgents={form.agents} providers={form.providers} combos={form.combos} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

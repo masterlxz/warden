@@ -243,6 +243,8 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 autonomy: level,
                 // Every kind of risky action needs a person's yes until the person says otherwise.
                 approval_required: Category::ALL.to_vec(),
+                role: None,
+                reports_to: None,
                 owner: None,
                 shared_with: Vec::new(),
             });
@@ -548,6 +550,8 @@ mod tests {
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: Vec::new(),
         }
@@ -808,6 +812,20 @@ mod tests {
         assert_eq!(agents_on_disk(&path)[1].autonomy, 2);
         as_caller(4).call(json!({ "action": "create", "id": "bold", "persona": "p" })).await.unwrap();
         assert_eq!(agents_on_disk(&path)[2].autonomy, 3);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_agent_hands_its_reports_to_its_superior() {
+        let path = write_config(vec![
+            agent("chief", true, true),
+            AgentConfig { reports_to: Some("chief".into()), ..agent("lead", false, false) },
+            AgentConfig { reports_to: Some("lead".into()), ..agent("dev", false, false) },
+        ]);
+        let (tool, _) = tool_with(&path, true);
+        tool.call(json!({ "action": "delete", "id": "lead" })).await.unwrap();
+        let agents = agents_on_disk(&path);
+        assert_eq!(agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["chief", "dev"]);
+        assert_eq!(agents[1].reports_to.as_deref(), Some("chief"));
     }
 
     #[tokio::test]

@@ -664,6 +664,8 @@ mod tests {
             allowed_tools: None,
             autonomy: crate::default_autonomy(),
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             owner: None,
             shared_with: Vec::new(),
         }

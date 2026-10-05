@@ -68,6 +68,8 @@ export interface HubAgent {
   allowedTools: string[] | null;
   autonomy?: number;
   approvalRequired?: string[];
+  role?: string | null;
+  reportsTo?: string | null;
   sharedWith?: string[];
 }
 
@@ -180,6 +182,8 @@ export function agentFromHub(agent: HubAgent): AgentEntry {
     allowedTools: agent.allowedTools,
     autonomy: agent.autonomy ?? 4,
     approvalRequired: agent.approvalRequired ?? [],
+    ...(agent.role ? { role: agent.role } : {}),
+    ...(agent.reportsTo ? { reportsTo: agent.reportsTo } : {}),
     ...(agent.sharedWith && agent.sharedWith.length > 0 ? { sharedWith: agent.sharedWith } : {}),
   };
 }

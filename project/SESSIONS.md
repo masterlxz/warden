@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 146)
+> Última atualização: 2026-10-05 (Sessão 147)
 
 ---
+
+### 2026-10-05 — Sessão 147
+
+- **Objetivo**: primeira fatia do P120, a hierarquia de agentes, por escolha do usuário. Planejada em Plan mode; decisões: campos `role` e `reports_to` no `[[agents]]` **sem efeito nas regras**, árvore só de leitura no desktop, na web e no CLI.
+- **Feito**: `warden-bootstrap/src/org.rs` (`check_hierarchy`, `build_org`, `render_org`, `reparent_reports`, `rename_in_reports`); `AgentConfig.role`/`.reports_to`; `check_agents` normaliza e valida; `remove_agent_from` re-pai os subordinados; `apply_hub_settings` leva o `reports_to` num renomear; DTO do hub e `AgentPayload` do desktop; cartões de agente (Role e Reports to) no Settings do desktop e da web, com a cascata no formulário; wizard `/agents` (cargo e superior), `/agents tree` e o marcador na lista; tela "Organization" no desktop, aba "Organização" na web. Detalhes em `ARCHITECTURE.md`.
+- **Testes**: 1330 testes Rust verdes (em dois blocos, por causa do segfault do `ld` no `tls`), `npm test` do desktop 26 de 26, `tsc` e builds de desktop e web; clippy só com o aviso antigo.
+- **Não verificado**: as telas novas e o wizard do CLI numa janela e num terminal de verdade.
+- **Fica no P120**: escopo de autoridade, teto do gerente, gerentes que criam e dispensam, workers temporários, editar pela árvore.
 
 ### 2026-10-05 — Sessão 146
 

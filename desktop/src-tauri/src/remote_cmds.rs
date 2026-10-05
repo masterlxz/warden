@@ -312,6 +312,8 @@ mod tests {
             allowed_tools: None,
             autonomy: 4,
             approval_required: Vec::new(),
+            role: None,
+            reports_to: None,
             shared_with: Vec::new(),
             owner: None,
         })

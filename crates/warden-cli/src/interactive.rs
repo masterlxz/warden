@@ -1197,6 +1197,7 @@ async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {
         "/combos remove <nome> — remover um combo",
         "/agents — listar os agentes configurados",
         "/agents use <id> | none — usar um agente (ou nenhum) pro resto da sessão",
+        "/agents tree — ver quem reporta a quem",
         "/agents create — criar um agente novo",
         "/agents edit <id> — editar um agente",
         "/agents remove <id> — remover um agente",
@@ -2003,13 +2004,28 @@ async fn cmd_agents_list(terminal: &mut CliTerminal, session: &CliSession) -> an
             let tools_marker = a.allowed_tools.as_ref().map(|t| format!(" [tools: {}]", t.len())).unwrap_or_default();
             let autonomy_marker = if a.autonomy != warden_bootstrap::default_autonomy() { format!(" [autonomia {}]", a.autonomy) } else { String::new() };
             let approval_marker = if a.approval_required.is_empty() { String::new() } else { format!(" [aprova: {}]", a.approval_required.len()) };
+            let org_marker = a.reports_to.as_ref().map(|boss| format!(" [reporta a {boss}]")).unwrap_or_default();
             (
-                format!("{} ({}) — {}{}{}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker, autonomy_marker, approval_marker),
+                format!("{} ({}) — {}{}{}{}{}{}{}{}{}{}", a.id, provider, preview, marker, delegate_marker, manage_marker, message_marker, tasks_marker, tools_marker, autonomy_marker, approval_marker, org_marker),
                 Style::default(),
             )
         })
         .collect();
     render_message_card(terminal, "agentes", accent_style(), lines)
+}
+
+/// Who reports to whom (P120), as a text tree; only the owner's agents (a member's are theirs).
+async fn cmd_agents_tree(terminal: &mut CliTerminal, session: &CliSession) -> anyhow::Result<()> {
+    let config = load_fresh_config(session.config_path.as_deref())?;
+    let tree = warden_bootstrap::org::build_org(&config.agents);
+    if tree.is_empty() {
+        return render_message_card(terminal, "organização", accent_style(), vec![("nenhum agente configurado ainda — use /agents create".to_string(), Style::default())]);
+    }
+    let mut lines: Vec<(String, Style)> = warden_bootstrap::org::render_org(&tree).into_iter().map(|line| (line, Style::default())).collect();
+    if tree.iter().all(|node| node.children.is_empty()) {
+        lines.push(("ninguém reporta a ninguém ainda — /agents edit <id> define o superior".to_string(), dim_style()));
+    }
+    render_message_card(terminal, "organização", accent_style(), lines)
 }
 
 async fn cmd_agents_use(terminal: &mut CliTerminal, session: &mut CliSession, id: Option<String>) -> anyhow::Result<()> {
@@ -2101,6 +2117,23 @@ async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyho
             Err(message) => render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())])?,
         }
     }
+}
+
+/// The agent's role and who it reports to (P120): both blank for none. The superior's id is checked against the
+/// others (and for a circle) when the agent is saved.
+async fn prompt_agent_role_and_superior(
+    terminal: &mut CliTerminal,
+    role: Option<&str>,
+    reports_to: Option<&str>,
+) -> anyhow::Result<Option<(Option<String>, Option<String>)>> {
+    let Some(role) = prompt_field(terminal, " cargo (opcional, texto livre) ", role.unwrap_or("")).await? else {
+        return Ok(None);
+    };
+    let Some(superior) = prompt_field(terminal, " reporta a (id de outro agente; em branco = ninguém) ", reports_to.unwrap_or("")).await? else {
+        return Ok(None);
+    };
+    let blank_is_none = |text: String| Some(text.trim().to_string()).filter(|t| !t.is_empty());
+    Ok(Some((blank_is_none(role), blank_is_none(superior))))
 }
 
 /// The kinds of action the agent must have approved even when it acts alone (P122), as ids separated by commas.
@@ -2221,6 +2254,10 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
 
+    let Some((role, reports_to)) = prompt_agent_role_and_superior(terminal, None, None).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+
     config.agents.push(AgentConfig {
         id: id.clone(),
         persona,
@@ -2232,9 +2269,14 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         allowed_tools,
         autonomy,
         approval_required,
+        role,
+        reports_to,
         owner: None,
         shared_with: Vec::new(),
     });
+    if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
+        return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
+    }
 
     save_config_or_report(session, &config).await?;
     render_message_card(terminal, "agentes", accent_style(), vec![(format!("agente '{id}' criado"), Style::default())])
@@ -2280,6 +2322,10 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
 
+    let Some((role, reports_to)) = prompt_agent_role_and_superior(terminal, current.role.as_deref(), current.reports_to.as_deref()).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+
     let old_id = current.id.clone();
     config.agents[index] = AgentConfig {
         id: new_id.clone(),
@@ -2292,9 +2338,16 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         allowed_tools,
         autonomy,
         approval_required,
+        role,
+        reports_to,
         owner: None,
         shared_with: current.shared_with.clone(),
     };
+    // Whoever reported to it under the old name reports to it under the new one.
+    warden_bootstrap::org::rename_in_reports(&mut config.agents, &old_id, &new_id);
+    if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
+        return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
+    }
     if new_id != old_id && session.agent_id.as_deref() == Some(old_id.as_str()) {
         session.agent_id = Some(new_id.clone());
     }
@@ -2950,6 +3003,7 @@ async fn handle_command(command: Command, terminal: &mut CliTerminal, session: &
         Command::ModelsRemove(id) => cmd_models_remove(terminal, session, id).await,
         Command::AgentsList => cmd_agents_list(terminal, session).await,
         Command::AgentsUse(id) => cmd_agents_use(terminal, session, id).await,
+        Command::AgentsTree => cmd_agents_tree(terminal, session).await,
         Command::AgentsCreate => wizard_agents_create(terminal, session).await,
         Command::AgentsEdit(id) => wizard_agents_edit(terminal, session, id).await,
         Command::AgentsRemove(id) => cmd_agents_remove(terminal, session, id).await,
