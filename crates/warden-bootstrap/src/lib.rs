@@ -1677,10 +1677,13 @@ fn combo_chain(config: &FileConfig, combo: &ComboConfig) -> Vec<(String, Arc<dyn
 /// Returns `None` when there's nothing to delegate to — no agents configured, or every one of
 /// them failed to resolve a valid provider (logged via `eprintln!`, not fatal — one broken agent
 /// shouldn't take down every other agent's ability to delegate).
-fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<NamedSubAgent> {
+fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator, caller: Option<&str>) -> Vec<NamedSubAgent> {
     let mut targets = Vec::new();
+    // P120: a caller that is part of the organization delegates only to the agents below it; one that isn't reaches
+    // every agent, as before the hierarchy existed.
+    let scope: Option<Vec<String>> = caller.filter(|c| org::is_in_hierarchy(&config.agents, c)).map(|c| org::subordinates_of(&config.agents, c));
     // P84: a member's agent is theirs alone — never a target of the owner's chief.
-    for agent in config.agents.iter().filter(|a| a.owner.is_none()) {
+    for agent in config.agents.iter().filter(|a| a.owner.is_none()).filter(|a| scope.as_ref().is_none_or(|scope| scope.contains(&a.id))) {
         let target_orchestrator = match &agent.provider_id {
             Some(provider_id) => {
                 match build_model_for(config, provider_id, None) {
@@ -1713,8 +1716,8 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator) -> Vec<Nam
     targets
 }
 
-pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator) -> Option<Arc<dyn Tool>> {
-    let targets = delegate_targets(config, orchestrator);
+pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestrator, caller: Option<&str>) -> Option<Arc<dyn Tool>> {
+    let targets = delegate_targets(config, orchestrator, caller);
     (!targets.is_empty()).then(|| Arc::new(DelegateToAgentTool::new(targets)) as Arc<dyn Tool>)
 }
 
@@ -1723,22 +1726,26 @@ pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestr
 /// created, edited or deleted an agent), the targets are rebuilt from `config_path` — so an agent
 /// the chief just created can be delegated to in that same turn instead of from the next one. The
 /// rebuilt targets clone the same `orchestrator` the first ones did, so they carry exactly the
-/// same tools and delegation depth. An unreadable config keeps the previous list.
+/// same tools and delegation depth. An unreadable config keeps the previous list. `caller` is the agent delegating
+/// (P120): in the organization it reaches only the agents below it. A caller with nobody below it yet gets no tool, so
+/// the subordinate it creates in the same turn is reachable from the next one.
 pub fn build_live_delegate_to_agent_tool(
     config_path: &Path,
     config: &FileConfig,
     orchestrator: &Orchestrator,
     revision: AgentsRevision,
+    caller: Option<&str>,
 ) -> Option<Arc<dyn Tool>> {
-    let targets = delegate_targets(config, orchestrator);
+    let targets = delegate_targets(config, orchestrator, caller);
     if targets.is_empty() {
         return None;
     }
     let path = config_path.to_path_buf();
     let base = orchestrator.clone();
+    let caller = caller.map(str::to_string);
     let resolver: AgentResolver = Arc::new(move || {
         let config = load_config_from_path(&path, false).ok()?;
-        Some(delegate_targets(&config, &base))
+        Some(delegate_targets(&config, &base, caller.as_deref()))
     });
     Some(Arc::new(DelegateToAgentTool::live(targets, revision, resolver)))
 }
@@ -3321,12 +3328,43 @@ oauth = true
         };
 
         // The chief is narrowed to `read_file` only *after* the targets are built from the full set.
-        let tool = build_delegate_to_agent_tool(&config, &orchestrator).unwrap();
+        let tool = build_delegate_to_agent_tool(&config, &orchestrator, None).unwrap();
         let _chief = orchestrator.with_allowed_tools(Some(&["read_file".to_string()]));
         let ask = |id: &str| serde_json::json!({ "agent_id": id, "task": "go" });
         assert_eq!(tool.call(ask("reader")).await.unwrap()["result"], "read_file");
         assert_eq!(tool.call(ask("ops")).await.unwrap()["result"], "shell");
         assert_eq!(tool.call(ask("open")).await.unwrap()["result"], "read_file,write_file,shell");
+    }
+
+    #[test]
+    fn a_caller_in_the_organization_delegates_only_to_its_subordinates_and_one_outside_it_reaches_everyone() {
+        use warden_core::model::{response_stream, ChatStream, Response};
+        use warden_core::tool::ToolSpec;
+
+        struct Silent;
+        #[async_trait::async_trait]
+        impl ModelProvider for Silent {
+            async fn chat_stream(&self, _messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+                Ok(response_stream(Response { content: String::new(), tool_calls: Vec::new(), usage: None }))
+            }
+        }
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!(
+            "warden-delegate-scope-test-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ))));
+        let orchestrator = Orchestrator::new(Arc::new(Silent), vault);
+        let under = |id: &str, boss: Option<&str>| AgentConfig { reports_to: boss.map(str::to_string), ..agent_config(id, None) };
+        let config = FileConfig {
+            agents: vec![under("boss", None), under("a", Some("boss")), under("a1", Some("a")), under("b", Some("boss")), under("solo", None)],
+            ..FileConfig::default()
+        };
+        let reaches = |caller: Option<&str>| delegate_targets(&config, &orchestrator, caller).into_iter().map(|t| t.id).collect::<Vec<_>>();
+
+        assert_eq!(reaches(Some("boss")), ["a", "a1", "b"], "everyone below it, at any depth, and not itself");
+        assert_eq!(reaches(Some("a")), ["a1"], "its own branch only, not a peer's");
+        assert!(reaches(Some("a1")).is_empty(), "a leaf has nobody below it");
+        assert_eq!(reaches(Some("solo")), ["boss", "a", "a1", "b", "solo"], "outside the organization: as before");
+        assert_eq!(reaches(None), ["boss", "a", "a1", "b", "solo"]);
     }
 
     #[tokio::test]
@@ -3393,7 +3431,7 @@ oauth = true
         let vault = Arc::new(Vault::new(dir.join("vault")));
         let orchestrator = Orchestrator::new(Arc::new(ChiefCreatesThenDelegates), vault).with_delegation_limit(10);
         let revision = AgentsRevision::default();
-        let delegate = build_live_delegate_to_agent_tool(&path, &config, &orchestrator, revision.clone()).unwrap();
+        let delegate = build_live_delegate_to_agent_tool(&path, &config, &orchestrator, revision.clone(), None).unwrap();
         let manage = ManageAgentsTool::new(&path).with_agents_revision(revision);
         let chief = orchestrator.with_tool(delegate).with_tool(Arc::new(manage)).with_approver(Arc::new(Yes));
 
@@ -3440,7 +3478,7 @@ oauth = true
         ))));
         let orchestrator = Orchestrator::new(Arc::new(AsksTwice), vault).with_delegation_limit(1);
         let config = FileConfig { agents: vec![agent_config("helper", None)], ..FileConfig::default() };
-        let chief = orchestrator.with_tool(build_delegate_to_agent_tool(&config, &orchestrator).unwrap());
+        let chief = orchestrator.with_tool(build_delegate_to_agent_tool(&config, &orchestrator, None).unwrap());
 
         let answer = chief.handle_message(&[], "go").await.unwrap().content;
 

@@ -725,7 +725,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 <Field label="Cargo (opcional)">
                   <input value={a.role ?? ""} placeholder="ex.: líder de engenharia" onChange={(e) => patchAgent(a.key, { role: e.target.value })} />
                 </Field>
-                <Field label="Reporta a (só aparece na aba Organização)">
+                <Field label="Reporta a (define o alcance de quem gerencia ou delega: só os de baixo)">
                   <select value={a.reportsTo ?? ""} onChange={(e) => patchAgent(a.key, { reportsTo: e.target.value || null })}>
                     <option value="">Ninguém</option>
                     {draft.agents

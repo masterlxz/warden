@@ -633,7 +633,10 @@ function AgentCard({
               </option>
             ))}
         </select>
-        <span className="settings-hint">Shown in the Organization view. It doesn't change what the agent may do.</span>
+        <span className="settings-hint">
+          Shown in the Organization view. It sets the reach of an agent that manages or delegates to other agents: only the ones
+          that report to it, directly or not. Agents outside the hierarchy delegate as before.
+        </span>
       </label>
 
       <label className="settings-field">

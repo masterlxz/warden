@@ -30,9 +30,10 @@ use warden_core::autonomy::Category;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
-use crate::{load_config_from_path, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
+use crate::{load_config_from_path, org, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
+const MAX_ROLE_CHARS: usize = 80;
 /// Tools that follow `AgentConfig.can_delegate_to_agents`/`can_manage_agents`/`can_message_agents`/
 /// `can_manage_tasks`, never a tool list.
 const FLAG_GATED_TOOLS: [&str; 4] = ["delegate_to_agent", "manage_agents", "message_agent", "manage_tasks"];
@@ -46,10 +47,17 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// re-applied to a freshly read config after they answer.
 #[derive(Debug, Clone, PartialEq)]
 enum Change {
-    /// `allowed_tools: None` = the safe default.
-    Create { id: String, persona: String, provider_id: Option<String>, allowed_tools: Option<Vec<String>> },
-    /// `None` = leave as is. `provider_id: Some(None)` = clear it (an empty string from the model).
-    Update { id: String, persona: Option<String>, provider_id: Option<Option<String>>, allowed_tools: Option<Vec<String>> },
+    /// `allowed_tools: None` = the safe default. `reports_to: None` = the caller (P120).
+    Create { id: String, persona: String, provider_id: Option<String>, allowed_tools: Option<Vec<String>>, role: Option<String>, reports_to: Option<String> },
+    /// `None` = leave as is. `provider_id: Some(None)` = clear it (an empty string from the model); so is `role`.
+    Update {
+        id: String,
+        persona: Option<String>,
+        provider_id: Option<Option<String>>,
+        allowed_tools: Option<Vec<String>>,
+        role: Option<Option<String>>,
+        reports_to: Option<String>,
+    },
     Delete { id: String },
 }
 
@@ -86,6 +94,9 @@ struct ToolRules {
     caller_limit: Option<Vec<String>>,
     /// The calling agent's own `autonomy` (P122): an agent it creates never gets more.
     caller_autonomy: Option<u8>,
+    /// The calling agent (P120): its scope of authority is the agents that report to it, directly or not. `None` (a use
+    /// with no organization, as before) keeps the old rule: nothing with the power to delegate or manage is touched.
+    caller: Option<String>,
 }
 
 /// The `autonomy` an agent made by another agent starts at (P122): it asks before every change.
@@ -132,6 +143,12 @@ impl ManageAgentsTool {
         self
     }
 
+    /// The agent that is calling (P120): it manages only the ones that report to it, directly or not, and never itself.
+    pub fn with_caller(mut self, id: impl Into<String>) -> Self {
+        self.rules.caller = Some(id.into());
+        self
+    }
+
     /// Only tests wait less than the real deadline.
     #[cfg(test)]
     fn with_approval_timeout(mut self, timeout: Duration) -> Self {
@@ -145,14 +162,19 @@ impl ManageAgentsTool {
 
     fn list(&self) -> anyhow::Result<Value> {
         let config = self.load()?;
+        // P120: a caller in an organization sees (and manages) only the agents below it.
+        let scope: Option<Vec<String>> = self.rules.caller.as_deref().map(|caller| org::subordinates_of(&config.agents, caller));
         let agents: Vec<Value> = config
             .agents
             .iter()
             // P84: members' own agents are theirs, not the owner's chief's to see or change.
             .filter(|a| a.owner.is_none())
+            .filter(|a| scope.as_ref().is_none_or(|scope| scope.contains(&a.id)))
             .map(|a| {
                 json!({
                     "id": a.id,
+                    "role": a.role,
+                    "reports_to": a.reports_to,
                     "persona": preview(&a.persona, LIST_PERSONA_PREVIEW_CHARS),
                     "provider_id": a.provider_id,
                     "can_delegate_to_agents": a.can_delegate_to_agents,
@@ -217,10 +239,20 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
     let mut updated = config.agents.clone();
     let mut ssh_hosts = config.ssh_hosts.clone();
     let detail = match change {
-        Change::Create { id, persona, provider_id, allowed_tools } => {
+        Change::Create { id, persona, provider_id, allowed_tools, role, reports_to } => {
             check_id(id)?;
             check_persona(persona)?;
             check_provider(config, provider_id.as_deref())?;
+            let role = check_role(role.as_deref())?;
+            // P120: a new agent reports to whoever created it, or to someone below it; never from outside its scope.
+            let superior = match (&rules.caller, reports_to) {
+                (Some(caller), Some(wanted)) => {
+                    check_superior_in_scope(config, caller, wanted)?;
+                    Some(wanted.clone())
+                }
+                (Some(caller), None) => Some(caller.clone()),
+                (None, wanted) => wanted.clone(),
+            };
             let tools = match allowed_tools {
                 Some(requested) => rules.check(requested)?,
                 None => rules.default_tools(),
@@ -243,34 +275,48 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 autonomy: level,
                 // Every kind of risky action needs a person's yes until the person says otherwise.
                 approval_required: Category::ALL.to_vec(),
-                role: None,
-                reports_to: None,
+                role: role.clone(),
+                reports_to: superior.clone(),
                 owner: None,
                 shared_with: Vec::new(),
             });
+            org::check_hierarchy(&updated).map_err(|why| anyhow::anyhow!(why))?;
             format!(
-                "New agent '{id}'\nModel provider: {}\nTools: {}\nAutonomy {}: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
+                "New agent '{id}'\nRole: {}\nReports to: {}\nModel provider: {}\nTools: {}\nAutonomy {}: {}\nCannot delegate or manage agents (only you can turn that on).\n\nPersona:\n{persona}",
+                role.as_deref().unwrap_or("(none)"),
+                superior.as_deref().unwrap_or("(nobody)"),
                 provider_label(provider_id.as_deref()),
                 tools_label(Some(&tools)),
                 level,
                 autonomy_label(level)
             )
         }
-        Change::Update { id, persona, provider_id, allowed_tools } => {
+        Change::Update { id, persona, provider_id, allowed_tools, role, reports_to } => {
             let Some(index) = config.agents.iter().position(|a| &a.id == id && a.owner.is_none()) else {
                 anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
             };
             let current = &config.agents[index];
-            if current.can_delegate_to_agents || current.can_manage_agents {
-                anyhow::bail!(
-                    "agent '{id}' can delegate or manage agents, so only the user can edit it (Settings or /agents) — \
-                     an agent may not change one with more power than a plain agent"
-                );
-            }
-            if persona.is_none() && provider_id.is_none() && allowed_tools.is_none() {
-                anyhow::bail!("nothing to change — pass 'persona', 'provider_id' and/or 'allowed_tools'");
+            check_authority(config, rules, current, "edit")?;
+            if persona.is_none() && provider_id.is_none() && allowed_tools.is_none() && role.is_none() && reports_to.is_none() {
+                anyhow::bail!("nothing to change — pass 'persona', 'provider_id', 'allowed_tools', 'role' and/or 'reports_to'");
             }
             let mut lines = vec![format!("Change agent '{id}'")];
+            if let Some(new_role) = role {
+                let new_role = check_role(new_role.as_deref())?;
+                lines.push(format!("Role: {} → {}", current.role.as_deref().unwrap_or("(none)"), new_role.as_deref().unwrap_or("(none)")));
+                updated[index].role = new_role;
+            }
+            if let Some(new_superior) = reports_to {
+                // Moving an agent: under the caller or someone below it, and never under the agent itself or its own branch.
+                if let Some(caller) = &rules.caller {
+                    check_superior_in_scope(config, caller, new_superior)?;
+                }
+                if new_superior == id || org::subordinates_of(&config.agents, id).contains(new_superior) {
+                    anyhow::bail!("'{id}' can't report to '{new_superior}': that would put it under itself or one of its own subordinates");
+                }
+                lines.push(format!("Reports to: {} → {new_superior}", current.reports_to.as_deref().unwrap_or("(nobody)")));
+                updated[index].reports_to = Some(new_superior.clone());
+            }
             if let Some(new_provider) = provider_id {
                 check_provider(config, new_provider.as_deref())?;
                 lines.push(format!(
@@ -290,18 +336,14 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 lines.push(format!("\nOld persona:\n{}\n\nNew persona:\n{new_persona}", current.persona));
                 updated[index].persona = new_persona.clone();
             }
+            org::check_hierarchy(&updated).map_err(|why| anyhow::anyhow!(why))?;
             lines.join("\n")
         }
         Change::Delete { id } => {
             let Some(current) = config.agents.iter().find(|a| &a.id == id && a.owner.is_none()) else {
                 anyhow::bail!("no agent named '{id}' — use action 'list' to see the existing ones");
             };
-            if current.can_delegate_to_agents || current.can_manage_agents {
-                anyhow::bail!(
-                    "agent '{id}' can delegate or manage agents, so only the user can delete it (Settings or /agents remove) — \
-                     an agent may not remove one with more power than a plain agent"
-                );
-            }
+            check_authority(config, rules, current, "delete")?;
             let effects = remove_agent_from(&mut updated, &mut ssh_hosts, id);
             let mut lines = vec![
                 format!("Delete agent '{id}' — this cannot be undone"),
@@ -373,6 +415,54 @@ impl ToolRules {
     }
 }
 
+/// Whether the caller may `verb` (edit or delete) `target` (P120). With a caller it has to be one of the agents below
+/// it, and one with the power to delegate or manage agents only if the caller has that power too (the ceiling is the
+/// caller itself); with no caller, nothing that has either power is touched (the rule from before the hierarchy).
+fn check_authority(config: &FileConfig, rules: &ToolRules, target: &AgentConfig, verb: &str) -> anyhow::Result<()> {
+    let id = &target.id;
+    let Some(caller) = &rules.caller else {
+        if target.can_delegate_to_agents || target.can_manage_agents {
+            anyhow::bail!(
+                "agent '{id}' can delegate or manage agents, so only the user can {verb} it (Settings or /agents) — \
+                 an agent may not change one with more power than a plain agent"
+            );
+        }
+        return Ok(());
+    };
+    if !org::subordinates_of(&config.agents, caller).contains(id) {
+        anyhow::bail!(
+            "agent '{id}' is not yours to {verb}: it doesn't report to you, directly or indirectly — you manage only your own \
+             subordinates (see 'list'); anyone else's agents are for the user or their manager"
+        );
+    }
+    let power = config.agents.iter().find(|a| &a.id == caller);
+    if target.can_delegate_to_agents && !power.is_some_and(|c| c.can_delegate_to_agents) {
+        anyhow::bail!("agent '{id}' can delegate to other agents and you can't, so you can't {verb} it — only someone with that power, or the user, can");
+    }
+    if target.can_manage_agents && !power.is_some_and(|c| c.can_manage_agents) {
+        anyhow::bail!("agent '{id}' can manage agents and you can't, so you can't {verb} it — only someone with that power, or the user, can");
+    }
+    Ok(())
+}
+
+/// `wanted` as somebody's superior: the caller itself or one of the agents below it, so an agent is never moved out of
+/// the caller's reach or put under someone the caller has no authority over.
+fn check_superior_in_scope(config: &FileConfig, caller: &str, wanted: &str) -> anyhow::Result<()> {
+    if wanted == caller || org::subordinates_of(&config.agents, caller).iter().any(|a| a == wanted) {
+        return Ok(());
+    }
+    anyhow::bail!("'{wanted}' can't be a superior here: only you or one of your own subordinates can (see 'list')")
+}
+
+/// A role as the model wrote it: trimmed, blank is none, short and on one line.
+fn check_role(role: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(role) = role.map(str::trim).filter(|r| !r.is_empty()) else { return Ok(None) };
+    if role.chars().count() > MAX_ROLE_CHARS || role.chars().any(char::is_control) {
+        anyhow::bail!("role must be at most {MAX_ROLE_CHARS} characters, on one line");
+    }
+    Ok(Some(role.to_string()))
+}
+
 fn autonomy_label(level: u8) -> &'static str {
     match level {
         1 => "only answers, no tools",
@@ -433,6 +523,11 @@ fn preview(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// A text argument (`role`, `reports_to`) from the model: absent = don't touch, empty string = clear, anything else = set.
+fn text_arg(args: &Value, name: &str) -> Option<Option<String>> {
+    args.get(name).and_then(Value::as_str).map(|s| Some(s.trim().to_string()).filter(|s| !s.is_empty()))
+}
+
 /// `provider_id` from the model: absent = don't touch, empty string = clear, anything else = set.
 fn provider_arg(args: &Value) -> Option<Option<String>> {
     args.get("provider_id").and_then(Value::as_str).map(|s| Some(s.trim().to_string()).filter(|s| !s.is_empty()))
@@ -458,7 +553,10 @@ impl Tool for ManageAgentsTool {
                           own model). Use it only when the user asks to create, change or remove an agent. Every \
                           create/update/delete is shown to the user, who must approve it (a delete shows the whole \
                           persona that will be lost); you cannot give any agent the power to delegate or manage other \
-                          agents, and you cannot delete one that has it. A new agent starts with read-only tools \
+                          agents. You manage only the agents that report to you, directly or through someone else \
+                          (see 'list'), never yourself, your superior or your peers; one of them that can delegate or \
+                          manage agents is yours to change only if you have that power too. A new agent reports to \
+                          you (or to one of your subordinates, with 'reports_to') and starts with read-only tools \
                           unless you list others. It can be picked as the conversation's agent from the user's next \
                           message; if you have delegate_to_agent, you can delegate to it right away. Start with \
                           'list' to see what exists."
@@ -480,6 +578,16 @@ impl Tool for ManageAgentsTool {
                         "type": "string",
                         "description": "Which configured model provider it uses (see 'available_provider_ids' in \
                                         'list'). Leave out for the default; on update, an empty string clears it."
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "The agent's role in the organization, e.g. 'PostgreSQL specialist'. Optional; \
+                                        on update an empty string clears it."
+                    },
+                    "reports_to": {
+                        "type": "string",
+                        "description": "Who the agent reports to: you (the default on create) or one of your own \
+                                        subordinates. On update it moves the agent there."
                     },
                     "allowed_tools": {
                         "type": "array",
@@ -513,9 +621,23 @@ impl Tool for ManageAgentsTool {
             "delete" => Change::Delete { id },
             "create" => {
                 let persona = persona.ok_or_else(|| anyhow::anyhow!("missing required 'persona' argument"))?;
-                Change::Create { id, persona, provider_id: provider_arg(&args).flatten(), allowed_tools: allowed_tools_arg(&args)? }
+                Change::Create {
+                    id,
+                    persona,
+                    provider_id: provider_arg(&args).flatten(),
+                    allowed_tools: allowed_tools_arg(&args)?,
+                    role: text_arg(&args, "role").flatten(),
+                    reports_to: text_arg(&args, "reports_to").flatten(),
+                }
             }
-            _ => Change::Update { id, persona, provider_id: provider_arg(&args), allowed_tools: allowed_tools_arg(&args)? },
+            _ => Change::Update {
+                id,
+                persona,
+                provider_id: provider_arg(&args),
+                allowed_tools: allowed_tools_arg(&args)?,
+                role: text_arg(&args, "role"),
+                reports_to: text_arg(&args, "reports_to").flatten(),
+            },
         };
         self.change(change).await
     }
@@ -812,6 +934,125 @@ mod tests {
         assert_eq!(agents_on_disk(&path)[1].autonomy, 2);
         as_caller(4).call(json!({ "action": "create", "id": "bold", "persona": "p" })).await.unwrap();
         assert_eq!(agents_on_disk(&path)[2].autonomy, 3);
+    }
+
+    /// An organization to manage inside: `boss` (delegates, manages) over `a` (manages) and `b`; `a` over `a1`, `a2` (delegates) and, under
+    /// `a1`, `a11`; and `solo`, outside it.
+    fn organization() -> PathBuf {
+        let under = |boss: &str, agent: AgentConfig| AgentConfig { reports_to: Some(boss.into()), ..agent };
+        write_config(vec![
+            agent("boss", true, true),
+            under("boss", agent("a", false, true)),
+            under("boss", agent("b", false, false)),
+            under("a", agent("a1", false, false)),
+            under("a", agent("a2", true, false)),
+            under("a1", agent("a11", false, false)),
+            agent("solo", false, false),
+        ])
+    }
+
+    fn as_caller(path: &Path, caller: &str) -> (Arc<dyn Tool>, Arc<Scripted>) {
+        let approver = Arc::new(Scripted { answer: true, asked: Mutex::new(Vec::new()) });
+        (ManageAgentsTool::new(path).with_caller(caller).with_approver(approver.clone()).unwrap(), approver)
+    }
+
+    #[tokio::test]
+    async fn a_manager_changes_and_removes_only_the_agents_below_it_and_never_itself() {
+        let path = organization();
+        let (tool, approver) = as_caller(&path, "a");
+        for (target, why) in [("b", "a peer"), ("boss", "its superior"), ("a", "itself"), ("solo", "someone outside the organization")] {
+            for action in ["update", "delete"] {
+                let err = tool.call(json!({ "action": action, "id": target, "persona": "p" })).await.unwrap_err().to_string();
+                assert!(err.contains("is not yours to") && err.contains("report to you"), "{action} {target} ({why}): {err}");
+            }
+        }
+        assert!(approver.asked.lock().unwrap().is_empty(), "a refused request never costs the person a prompt");
+
+        // Direct and indirect subordinates are its to change.
+        tool.call(json!({ "action": "update", "id": "a1", "persona": "new persona" })).await.unwrap();
+        tool.call(json!({ "action": "update", "id": "a11", "persona": "deeper" })).await.unwrap();
+        tool.call(json!({ "action": "delete", "id": "a11" })).await.unwrap();
+        let agents = agents_on_disk(&path);
+        assert_eq!(agents.iter().find(|x| x.id == "a1").unwrap().persona, "new persona");
+        assert!(!agents.iter().any(|x| x.id == "a11"));
+    }
+
+    #[tokio::test]
+    async fn a_subordinate_with_a_power_is_the_managers_only_if_the_manager_has_that_power() {
+        let path = organization();
+        // `a2` can delegate; `a` can't.
+        for action in ["update", "delete"] {
+            let err = as_caller(&path, "a").0.call(json!({ "action": action, "id": "a2", "persona": "p" })).await.unwrap_err().to_string();
+            assert!(err.contains("can delegate to other agents and you can't"), "{err}");
+        }
+        // `boss` can, and `a2` is below it through `a`.
+        as_caller(&path, "boss").0.call(json!({ "action": "update", "id": "a2", "persona": "changed by the boss" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path).iter().find(|x| x.id == "a2").unwrap().persona, "changed by the boss");
+        // Even then no power is granted: the flags stay as they were.
+        assert!(agents_on_disk(&path).iter().find(|x| x.id == "a2").unwrap().can_delegate_to_agents);
+    }
+
+    #[tokio::test]
+    async fn a_new_agent_reports_to_its_creator_or_to_someone_below_it() {
+        let path = organization();
+        let (tool, approver) = as_caller(&path, "a");
+        tool.call(json!({ "action": "create", "id": "fresh", "persona": "p", "role": "  Tester " })).await.unwrap();
+        tool.call(json!({ "action": "create", "id": "deep", "persona": "p", "reports_to": "a1" })).await.unwrap();
+        let agents = agents_on_disk(&path);
+        let fresh = agents.iter().find(|x| x.id == "fresh").unwrap();
+        assert_eq!((fresh.reports_to.as_deref(), fresh.role.as_deref()), (Some("a"), Some("Tester")));
+        assert_eq!(agents.iter().find(|x| x.id == "deep").unwrap().reports_to.as_deref(), Some("a1"));
+        let card = approver.asked.lock().unwrap()[0].detail.clone();
+        assert!(card.contains("Role: Tester") && card.contains("Reports to: a"), "{card}");
+
+        for outside in ["b", "boss", "solo"] {
+            let err = tool.call(json!({ "action": "create", "id": "x", "persona": "p", "reports_to": outside })).await.unwrap_err().to_string();
+            assert!(err.contains("can't be a superior here"), "{outside}: {err}");
+        }
+        let long = "r".repeat(81);
+        assert!(tool.call(json!({ "action": "create", "id": "x", "persona": "p", "role": long })).await.unwrap_err().to_string().contains("role must be"));
+    }
+
+    #[tokio::test]
+    async fn moving_an_agent_stays_inside_the_managers_reach_and_never_under_its_own_branch() {
+        let path = organization();
+        let (tool, approver) = as_caller(&path, "a");
+        // `a11` is below `a1`, so `a1` can't be put under it.
+        let err = tool.call(json!({ "action": "update", "id": "a1", "reports_to": "a11" })).await.unwrap_err().to_string();
+        assert!(err.contains("under itself or one of its own subordinates"), "inside its own branch: {err}");
+        tool.call(json!({ "action": "update", "id": "a11", "reports_to": "a2", "role": "Moved" })).await.unwrap();
+        let moved = agents_on_disk(&path).into_iter().find(|x| x.id == "a11").unwrap();
+        assert_eq!((moved.reports_to.as_deref(), moved.role.as_deref()), (Some("a2"), Some("Moved")));
+        let card = approver.asked.lock().unwrap()[0].detail.clone();
+        assert!(card.contains("Reports to: a1 → a2") && card.contains("Role: (none) → Moved"), "{card}");
+
+        let err = tool.call(json!({ "action": "update", "id": "a1", "reports_to": "b" })).await.unwrap_err().to_string();
+        assert!(err.contains("can't be a superior here"), "out of reach: {err}");
+        let err = tool.call(json!({ "action": "update", "id": "a1", "reports_to": "a1" })).await.unwrap_err().to_string();
+        assert!(err.contains("under itself"), "{err}");
+        // An empty role clears it.
+        tool.call(json!({ "action": "update", "id": "a11", "role": "" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path).into_iter().find(|x| x.id == "a11").unwrap().role, None);
+    }
+
+    #[tokio::test]
+    async fn a_manager_lists_only_its_own_scope() {
+        let path = organization();
+        let listed = |caller: &str| {
+            let tool = ManageAgentsTool::new(&path).with_caller(caller);
+            async move {
+                let result = tool.call(json!({ "action": "list" })).await.unwrap();
+                result["agents"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(listed("a").await, ["a1", "a2", "a11"]);
+        assert_eq!(listed("boss").await, ["a", "b", "a1", "a2", "a11"]);
+        assert!(listed("a11").await.is_empty());
+        assert!(listed("solo").await.is_empty());
+        // With no caller (the rule from before the organization) it lists everything.
+        let all = ManageAgentsTool::new(&path).call(json!({ "action": "list" })).await.unwrap();
+        assert_eq!(all["agents"].as_array().unwrap().len(), 7);
+        assert_eq!(all["agents"][3]["reports_to"], json!("a"));
     }
 
     #[tokio::test]

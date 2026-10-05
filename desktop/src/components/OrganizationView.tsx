@@ -43,8 +43,8 @@ function Node({ node }: { node: OrgNode<AgentEntry> }) {
   );
 }
 
-/** P120 — who reports to whom, read only. The role and the superior are set on each agent in Settings; for now this
- * is only a picture of them, and nothing here changes what an agent may do. */
+/** P120 — who reports to whom, read only. The role and the superior are set on each agent in Settings; the tree sets
+ * the reach of an agent that manages (`manage_agents`) or delegates (`delegate_to_agent`). */
 function OrganizationView({ agents, onEdit }: { agents: AgentEntry[]; onEdit: () => void }) {
   const tree = buildOrg(agents);
   const nobodyReports = tree.every((node) => node.children.length === 0);
@@ -53,7 +53,8 @@ function OrganizationView({ agents, onEdit }: { agents: AgentEntry[]; onEdit: ()
     <div className="settings-view">
       <h2 className="settings-title">Organization</h2>
       <p className="settings-hint">
-        Who reports to whom among your agents. It is only a picture for now: it doesn't change what any agent may do.
+        Who reports to whom among your agents. An agent that manages or delegates to other agents reaches only the ones below it; an agent
+        outside the hierarchy delegates as before. Every change an agent makes still waits for your yes.
       </p>
 
       {tree.length === 0 ? (

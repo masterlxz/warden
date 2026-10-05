@@ -59,8 +59,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     let tools_allowed = level != Autonomy::AnswerOnly;
     if tools_allowed && agent.can_delegate_to_agents {
         extra.extend(match config_path {
-            Some(path) => build_live_delegate_to_agent_tool(path, config, &orchestrator, agents_revision.clone()),
-            None => build_delegate_to_agent_tool(config, &orchestrator),
+            Some(path) => build_live_delegate_to_agent_tool(path, config, &orchestrator, agents_revision.clone(), Some(&agent.id)),
+            None => build_delegate_to_agent_tool(config, &orchestrator, Some(&agent.id)),
         });
     }
     if let Some(path) = config_path.filter(|_| tools_allowed) {
@@ -72,6 +72,7 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
                     .with_known_tools(known_tools)
                     .with_caller_limit(agent.allowed_tools.clone())
                     .with_caller_autonomy(level.level())
+                    .with_caller(agent.id.clone())
                     .with_agents_revision(agents_revision),
             ));
         }

@@ -163,7 +163,7 @@ impl MessageAgentTool {
         }
         let config = self.load()?;
         self.check_recipient(&config, to)?;
-        let Some(target) = delegate_targets(&config, &self.base).into_iter().find(|t| t.id == to) else {
+        let Some(target) = delegate_targets(&config, &self.base, None).into_iter().find(|t| t.id == to) else {
             anyhow::bail!("agent '{to}' can't be reached right now (its model provider is missing or invalid)");
         };
 

@@ -198,8 +198,12 @@ async fn manage_agents_asks_the_chatting_device_and_only_a_yes_saves() {
         assert!(detail.contains("You critique."));
         assert!(matches!(reply, ServerMessage::ChatResponse { .. }), "got {reply:?}");
 
-        let saved = load_config_from_path(&hub.config_path, true).unwrap().agents.iter().any(|a| a.id == "critic");
-        assert_eq!(saved, approve);
+        let agents = load_config_from_path(&hub.config_path, true).unwrap().agents;
+        assert_eq!(agents.iter().any(|a| a.id == "critic"), approve);
+        // P120: the agent the chief creates reports to the chief.
+        if approve {
+            assert_eq!(agents.iter().find(|a| a.id == "critic").unwrap().reports_to.as_deref(), Some("chief"));
+        }
     }
 }
 

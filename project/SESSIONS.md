@@ -2,9 +2,18 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 147)
+> Última atualização: 2026-10-05 (Sessão 148)
 
 ---
+
+### 2026-10-05 — Sessão 148
+
+- **Objetivo**: segunda fatia do P120, o escopo de autoridade (o usuário escolheu seguir pelo P120 de novo). Planejada em Plan mode; decisões do usuário: escopo = só a subárvore; teto = o poder do próprio gerente; `delegate_to_agent` também segue a hierarquia (quem está fora dela, como antes).
+- **Feito**: `org::subordinates_of` e `is_in_hierarchy`; `ManageAgentsTool::with_caller` (passado por `scope_to_agent`), com `check_authority` (escopo e teto), `check_superior_in_scope`, `check_role`, `role` e `reports_to` em `create` e `update`, `list` filtrado e o cartão de aprovação com cargo e superior; `delegate_targets` e as duas `build_*delegate_to_agent_tool` recebem o chamador; textos de ajuda das telas. Detalhes em `ARCHITECTURE.md` ("Escopo de autoridade").
+- **Testes**: 1339 testes Rust verdes (em dois blocos), `tsc` e builds de desktop e web; clippy só com o aviso antigo. Novos: `org.rs` (3), `manage_agents` (5), `delegate_targets` (1); o hub confirma que o agente criado pelo `chief` reporta a ele.
+- **Não verificado**: um modelo real gerenciando uma subárvore (só ferramentas chamadas à mão e modelos roteirizados); as telas com os textos novos numa janela.
+- **Consequência**: configuração plana + agente que gerencia = ele cria, mas só edita e apaga o que criar depois (ou o que a pessoa colocar embaixo dele).
+- **Fica no P120**: workers temporários e tarefas (P123), editar pela árvore, abrir conversa/tarefas/atividade, hierarquia por pessoa (P84).
 
 ### 2026-10-05 — Sessão 147
 

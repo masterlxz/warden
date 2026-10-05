@@ -102,6 +102,27 @@ fn label(node: &OrgNode) -> String {
     }
 }
 
+/// Every agent below `id`, at any depth, in the order of the file: the scope of authority of `id` (P120). The agent
+/// itself, its superior and its peers aren't in it. Only the owner's agents count.
+pub fn subordinates_of(agents: &[AgentConfig], id: &str) -> Vec<String> {
+    let mut below: HashSet<&str> = HashSet::new();
+    let mut queue = vec![id];
+    while let Some(current) = queue.pop() {
+        for agent in agents.iter().filter(|a| a.owner.is_none() && a.reports_to.as_deref() == Some(current)) {
+            if agent.id != id && below.insert(agent.id.as_str()) {
+                queue.push(agent.id.as_str());
+            }
+        }
+    }
+    agents.iter().filter(|a| below.contains(a.id.as_str())).map(|a| a.id.clone()).collect()
+}
+
+/// Whether `id` is part of the organization: it has a superior or someone reports to it. An agent outside it is on
+/// its own, and the rules that follow the hierarchy leave it as it was before the hierarchy existed.
+pub fn is_in_hierarchy(agents: &[AgentConfig], id: &str) -> bool {
+    agents.iter().filter(|a| a.owner.is_none()).any(|a| (a.id == id && a.reports_to.is_some()) || a.reports_to.as_deref() == Some(id))
+}
+
 /// An agent is leaving: whoever reported to it reports to its superior instead (or to nobody, if it had none).
 /// Call before the agent is dropped from `agents`.
 pub fn reparent_reports(agents: &mut [AgentConfig], removed_id: &str) {
@@ -230,6 +251,40 @@ mod tests {
         let mut top = vec![agent("boss", None, None), agent("dev", None, Some("boss"))];
         reparent_reports(&mut top, "boss");
         assert_eq!(top[1].reports_to, None, "the top one had no superior to hand them to");
+    }
+
+    #[test]
+    fn the_scope_of_an_agent_is_everyone_below_it_and_nobody_else() {
+        let agents = [
+            agent("boss", None, None),
+            agent("a", None, Some("boss")),
+            agent("b", None, Some("boss")),
+            agent("a1", None, Some("a")),
+            agent("a2", None, Some("a")),
+            agent("a11", None, Some("a1")),
+            members("hers"),
+        ];
+        assert_eq!(subordinates_of(&agents, "a"), ["a1", "a2", "a11"], "any depth, in the order of the file");
+        assert_eq!(subordinates_of(&agents, "boss"), ["a", "b", "a1", "a2", "a11"]);
+        assert!(subordinates_of(&agents, "a11").is_empty(), "a leaf has no scope");
+        assert!(subordinates_of(&agents, "b").is_empty(), "a peer's branch isn't mine");
+        assert!(subordinates_of(&agents, "ghost").is_empty());
+    }
+
+    #[test]
+    fn a_circle_that_got_past_the_check_does_not_loop_the_scope() {
+        let agents = [agent("a", None, Some("b")), agent("b", None, Some("a"))];
+        assert_eq!(subordinates_of(&agents, "a"), ["b"], "a is never in its own scope");
+    }
+
+    #[test]
+    fn an_agent_is_in_the_hierarchy_when_it_has_a_superior_or_reports() {
+        let agents = [agent("boss", None, None), agent("dev", None, Some("boss")), agent("solo", None, None), members("hers")];
+        assert!(is_in_hierarchy(&agents, "boss"), "someone reports to it");
+        assert!(is_in_hierarchy(&agents, "dev"), "it has a superior");
+        assert!(!is_in_hierarchy(&agents, "solo"));
+        assert!(!is_in_hierarchy(&agents, "hers"));
+        assert!(!is_in_hierarchy(&agents, "ghost"));
     }
 
     #[test]

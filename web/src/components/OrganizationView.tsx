@@ -46,7 +46,7 @@ function Node({ node }: { node: OrgNode<AgentSettings> }) {
 }
 
 /** P120 — quem reporta a quem entre os agentes, só leitura. O cargo e o superior se definem em cada agente, em
- * Configurações; por enquanto isto é só um retrato, e nada aqui muda o que um agente pode fazer. */
+ * Configurações; a árvore define o alcance de quem gerencia (`manage_agents`) e delega (`delegate_to_agent`). */
 export default function OrganizationView({ conn, onEdit }: { conn: ServerConnection | null; onEdit: () => void }) {
   const [agents, setAgents] = useState<AgentSettings[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +76,7 @@ export default function OrganizationView({ conn, onEdit }: { conn: ServerConnect
   return (
     <div className="usage-view">
       <div className="skills-toolbar">
-        <span className="skills-hint">Quem reporta a quem entre os seus agentes. É só um retrato por enquanto: não muda o que nenhum agente pode fazer.</span>
+        <span className="skills-hint">Quem reporta a quem entre os seus agentes. Quem gerencia ou delega a outros agentes alcança só os que estão abaixo dele; quem está fora da hierarquia delega como antes. Toda mudança feita por um agente ainda espera o seu sim.</span>
         <button type="button" className="link-button" onClick={() => void load()} disabled={!conn}>
           Atualizar
         </button>
