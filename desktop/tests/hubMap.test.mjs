@@ -10,10 +10,12 @@ import {
   conversationFromSummary,
   decorateLastAnswer,
   expectReply,
+  expectVaultReply,
   mergeConversations,
   messagesFromHistory,
   projectFromHub,
   turnFromReply,
+  usageFromReport,
 } from "../src/lib/hubMap.ts";
 
 const summary = (id, updatedAt, extra = {}) => ({ id, title: `title ${id}`, createdAt: 1, updatedAt, ...extra });
@@ -136,5 +138,35 @@ describe("the chat message", () => {
     const both = chatMessage({ ...base, creating: true, projectId: "tax", workdir: "/srv/work" });
     assert.equal(both.projectId, "tax");
     assert.equal("workdir" in both, false, "a project has its own folder");
+  });
+});
+
+describe("the hub's usage report", () => {
+  const total = { promptTokens: 7, completionTokens: 3, totalTokens: 10 };
+
+  test("feeds the token tiles and the spending panels, with no split by agent or provider", () => {
+    const limit = { id: "daily" };
+    const recent = { windowHours: 24, byModel: [], byChannel: [], byProvider: [], byAgent: [], byPerson: [] };
+    const { summary, spend } = usageFromReport({ total, conversationCount: 2, messageCount: 5, limitsEnabled: true, limits: [limit], recent, ledgerError: "disk full" });
+    assert.deepEqual(summary, { conversationCount: 2, messageCount: 5, total, byAgent: [], byProvider: [] });
+    assert.deepEqual(spend, { limitsEnabled: true, limits: [limit], recent, ledgerError: "disk full" });
+  });
+
+  test("a hub with the limits off has no recent spending and no ledger error", () => {
+    const { spend } = usageFromReport({ total, conversationCount: 0, messageCount: 0, limitsEnabled: false, limits: [] });
+    assert.deepEqual(spend, { limitsEnabled: false, limits: [], recent: null, ledgerError: null });
+  });
+});
+
+describe("a vault reply", () => {
+  test("a vaultError keeps the conflict flag, which the screen turns into reload or overwrite", () => {
+    assert.throws(() => expectVaultReply({ type: "vaultError", requestId: 1, message: "changed", conflict: true }, "vaultSaved"), { message: "changed", conflict: true });
+    assert.throws(() => expectVaultReply({ type: "vaultError", requestId: 1, message: "no such note" }, "vaultNote"), { message: "no such note", conflict: false });
+  });
+
+  test("the expected reply passes, another refusal is still an error", () => {
+    const ok = { type: "vaultSaved", requestId: 1, version: "v2" };
+    assert.equal(expectVaultReply(ok, "vaultSaved"), ok);
+    assert.throws(() => expectVaultReply({ type: "settingsError", message: "no" }, "vaultSaved"), /no/);
   });
 });

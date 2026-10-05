@@ -87,7 +87,9 @@ async fn spin_up_hub(dir: &Path) -> (std::net::SocketAddr, PathBuf) {
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), KEY, "Test Hub", Arc::new(orchestrator), dir.join("hub-conversations"), dir.join("hub-devices.json"))
         .await
         .unwrap()
-        .with_settings(Arc::new(TestHost { path: config_path.clone() }));
+        .with_settings(Arc::new(TestHost { path: config_path.clone() }))
+        .with_tasks(warden_bootstrap::tasks::TaskStore::new(dir.join("hub-tasks")), false)
+        .with_webhooks(dir.join("hub-webhook-tokens.json"));
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
     (addr, config_path)
@@ -255,6 +257,63 @@ async fn the_commands_the_screens_call_drive_a_real_hub_through_the_ipc() {
     until("the token to sign in", || events(&seen, "remote-hub-state")[before..].iter().any(|e| e["state"]["state"] == "connected")).await;
     let again = ipc(&webview, "remote_request", json!({ "message": { "type": "listConversations" } })).await.unwrap();
     assert_eq!(again["type"], "conversationList");
+
+    // The other screens, asked of the hub: the names and replies `lib/hub.ts` and `hubMap.ts` read.
+    let ask = |message: Value| ipc(&webview, "remote_request", json!({ "message": message }));
+    let saved = ask(json!({ "type": "saveVaultNote", "path": "notes/a.md", "content": "one" })).await.unwrap();
+    assert_eq!(saved["type"], "vaultSaved", "{saved}");
+    let version = saved["version"].as_str().unwrap().to_string();
+    assert_eq!(ask(json!({ "type": "listVaultFiles" })).await.unwrap()["files"], json!(["notes/a.md"]));
+    let note = ask(json!({ "type": "readVaultNote", "path": "notes/a.md" })).await.unwrap();
+    assert_eq!((note["type"].as_str(), note["content"].as_str(), note["version"].as_str()), (Some("vaultNote"), Some("one"), Some(version.as_str())));
+    let hits = ask(json!({ "type": "searchVault", "query": "one" })).await.unwrap();
+    assert_eq!((hits["type"].as_str(), hits["hits"][0]["path"].as_str(), hits["hits"][0]["lineNumber"].as_u64()), (Some("vaultSearchResults"), Some("notes/a.md"), Some(1)));
+    let stale = ask(json!({ "type": "saveVaultNote", "path": "notes/a.md", "content": "two", "expectedVersion": "not-the-version" })).await.unwrap();
+    assert_eq!((stale["type"].as_str(), stale["conflict"].as_bool()), (Some("vaultError"), Some(true)), "a stale save says conflict, which the screen turns into reload or overwrite: {stale}");
+    let deleted = ask(json!({ "type": "deleteVaultNote", "path": "notes/a.md", "expectedVersion": version })).await.unwrap();
+    assert_eq!(deleted["type"], "vaultOk");
+
+    let skill = json!({ "name": "greet", "description": "Say hello", "body": "Say hello.", "agents": [] });
+    assert_eq!(ask(json!({ "type": "saveSkill", "skill": skill, "overwrite": false })).await.unwrap()["type"], "skillOk");
+    let skills = ask(json!({ "type": "listSkills" })).await.unwrap();
+    assert_eq!((skills["type"].as_str(), skills["skills"][0]["name"].as_str()), (Some("skillList"), Some("greet")));
+    assert_eq!(ask(json!({ "type": "deleteSkill", "name": "greet" })).await.unwrap()["type"], "skillOk");
+
+    let usage = ask(json!({ "type": "requestUsage", "tzOffsetMinutes": -180 })).await.unwrap();
+    assert_eq!(usage["type"], "usageReport", "{usage}");
+    for field in ["total", "conversationCount", "messageCount", "limitsEnabled", "limits"] {
+        assert!(usage["report"].get(field).is_some(), "the Usage screen reads `{field}`: {usage}");
+    }
+    // The scripted model reports no tokens, so there are no model calls to count: the shape is what matters here.
+    assert_eq!(usage["report"]["messageCount"], json!(0), "{usage}");
+    assert_eq!(usage["report"]["total"]["totalTokens"], json!(0), "{usage}");
+
+    // Tasks and webhooks: the list is open, every change carries the pairing key the person typed for it.
+    let tasks = ask(json!({ "type": "listTasks" })).await.unwrap();
+    assert_eq!((tasks["type"].as_str(), tasks["tasks"].as_array().map(Vec::len), tasks["runsHere"].is_boolean()), (Some("taskList"), Some(0), true), "{tasks}");
+    let task = json!({ "id": "daily", "prompt": "Say hi", "every": "1d", "enabled": true });
+    // A refusal is an ordinary reply ending in `Error`, whose `message` is what `expectReply` throws.
+    let wrong = ask(json!({ "type": "saveTask", "pairingKey": "not-the-key", "task": task })).await.unwrap();
+    assert_eq!((wrong["type"].as_str(), wrong["message"].as_str()), (Some("taskError"), Some("wrong pairing key")), "{wrong}");
+    assert_eq!(ask(json!({ "type": "listTasks" })).await.unwrap()["tasks"].as_array().map(Vec::len), Some(0), "nothing was saved");
+    let made = ask(json!({ "type": "saveTask", "pairingKey": KEY, "task": task })).await.unwrap();
+    assert_eq!((made["type"].as_str(), made["tasks"][0]["id"].as_str()), (Some("taskList"), Some("daily")), "{made}");
+    let paused = ask(json!({ "type": "setTaskEnabled", "pairingKey": KEY, "id": "daily", "enabled": false })).await.unwrap();
+    assert_eq!(paused["tasks"][0]["enabled"], json!(false));
+    let gone = ask(json!({ "type": "deleteTask", "pairingKey": KEY, "id": "daily" })).await.unwrap();
+    assert_eq!(gone["tasks"].as_array().map(Vec::len), Some(0));
+    let hooks = ask(json!({ "type": "listWebhooks" })).await.unwrap();
+    assert_eq!((hooks["type"].as_str(), hooks["servesHere"].is_boolean()), (Some("webhookList"), true), "{hooks}");
+    let hook = json!({ "id": "build", "prompt": "Why did it fail?", "enabled": true, "auth": "token" });
+    let saved = ask(json!({ "type": "saveWebhook", "pairingKey": KEY, "webhook": hook })).await.unwrap();
+    assert_eq!((saved["type"].as_str(), saved["webhooks"][0]["conversation"].as_str()), (Some("webhookList"), Some("task-hook-build")), "{saved}");
+    let credential = ask(json!({ "type": "createWebhookCredential", "pairingKey": KEY, "id": "build" })).await.unwrap();
+    assert_eq!((credential["type"].as_str(), credential["id"].as_str(), credential["kind"].as_str()), (Some("webhookCreated"), Some("build"), Some("token")), "{credential}");
+    assert!(credential["credential"].as_str().is_some_and(|c| !c.is_empty()) && credential["webhooks"][0]["credential"] == "token", "{credential}");
+    let revoked = ask(json!({ "type": "revokeWebhookCredential", "pairingKey": KEY, "id": "build" })).await.unwrap();
+    assert!(revoked["webhooks"][0].get("credential").is_none(), "{revoked}");
+    let removed = ask(json!({ "type": "deleteWebhook", "pairingKey": KEY, "id": "build" })).await.unwrap();
+    assert_eq!(removed["webhooks"].as_array().map(Vec::len), Some(0));
 
     // Signing out forgets the token: the next connection has to ask.
     ipc(&webview, "remote_disconnect", json!({ "forget": true })).await.unwrap();

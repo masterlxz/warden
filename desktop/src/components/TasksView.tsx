@@ -1,41 +1,27 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEntry } from "../types";
+import type { AgentEntry, RunMessage, Task, TaskInfo, TaskList } from "../types";
+import { hubTasks } from "../lib/hub";
+import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
-/** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
-interface Task {
-  id: string;
-  agentId?: string;
-  prompt: string;
-  every?: string;
-  cron?: string;
-  once?: string;
-  timezone?: string;
-  enabled: boolean;
+/** Where the tasks live: this computer's `config.toml`, or the hub in use. The hub's changes ask for its pairing key. */
+interface TaskApi {
+  list: () => Promise<TaskList>;
+  save: (originalId: string | null, task: Task) => Promise<TaskList>;
+  setEnabled: (id: string, enabled: boolean) => Promise<TaskList>;
+  remove: (id: string) => Promise<TaskList>;
+  run: (id: string) => Promise<TaskList>;
+  history: (id: string) => Promise<RunMessage[]>;
 }
 
-/** Mirrors `TaskInfoDto`: a task and where it stands on this machine. */
-interface TaskInfo extends Task {
-  nextRunAtMs?: number;
-  lastRunAtMs?: number;
-  lastFinishedAtMs?: number;
-  lastError?: string;
-  running: boolean;
-  scheduleError?: string;
-}
-
-/** Mirrors `task_cmds::TaskListPayload`. */
-interface TaskList {
-  tasks: TaskInfo[];
-  runHere: boolean;
-  hubRunning: boolean;
-}
-
-interface TaskMessage {
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-}
+const localTasks: TaskApi = {
+  list: () => invoke<TaskList>("list_tasks"),
+  save: (originalId, task) => invoke<TaskList>("save_task", { originalId, task }),
+  setEnabled: (id, enabled) => invoke<TaskList>("set_task_enabled_cmd", { id, enabled }),
+  remove: (id) => invoke<TaskList>("delete_task", { id }),
+  run: (id) => invoke<TaskList>("run_task_now", { id }),
+  history: (id) => invoke<RunMessage[]>("task_history", { id }),
+};
 
 type ScheduleKind = "every" | "cron" | "once";
 
@@ -87,15 +73,16 @@ function editorFor(task: TaskInfo): EditorState {
 }
 
 /** A task's conversation on this machine, read-only: the last answer, and the rest on request. */
-function TaskHistory({ id, refreshKey }: { id: string; refreshKey: number }) {
-  const [messages, setMessages] = useState<TaskMessage[] | null>(null);
+function TaskHistory({ id, refreshKey, api }: { id: string; refreshKey: number; api: TaskApi }) {
+  const [messages, setMessages] = useState<RunMessage[] | null>(null);
   const [all, setAll] = useState(false);
 
   useEffect(() => {
-    invoke<TaskMessage[]>("task_history", { id })
+    api
+      .history(id)
       .then(setMessages)
       .catch(() => setMessages([]));
-  }, [id, refreshKey]);
+  }, [id, refreshKey, api]);
 
   if (messages === null) return <p className="settings-hint">Loading…</p>;
   if (messages.length === 0) return <p className="settings-hint">No runs on this computer yet. If another hub runs it, open its conversation from the web or the phone.</p>;
@@ -124,7 +111,9 @@ function TaskHistory({ id, refreshKey }: { id: string; refreshKey: number }) {
  * remove and "run now" as `warden-server tasks` and the web's Tasks tab, on this machine's
  * `config.toml` (which syncs). Whether this computer runs them on schedule is a switch of its own.
  */
-function TasksView({ agents }: { agents: AgentEntry[] }) {
+function TasksView({ agents, remote = false }: { agents: AgentEntry[]; remote?: boolean }) {
+  const { askKey, dialog } = usePairingKey();
+  const api = useMemo(() => (remote ? hubTasks(askKey) : localTasks), [remote, askKey]);
   const [list, setList] = useState<TaskList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -134,13 +123,14 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(() => {
-    invoke<TaskList>("list_tasks")
+    api
+      .list()
       .then((next) => {
         setList(next);
         setRefreshKey((k) => k + 1);
       })
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [api]);
 
   useEffect(load, [load]);
 
@@ -152,14 +142,15 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
     return () => window.clearInterval(timer);
   }, [anyRunning, load]);
 
-  async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
+  /** Runs one change and shows the list it answers with. False when it failed, or when the person declined to give the key. */
+  async function act(change: () => Promise<TaskList>): Promise<boolean> {
     setError(null);
     try {
-      setList(await invoke<TaskList>(command, args));
+      setList(await change());
       setRefreshKey((k) => k + 1);
       return true;
     } catch (err) {
-      setError(String(err));
+      if (!(err instanceof KeyCancelled)) setError(String(err));
       return false;
     }
   }
@@ -167,7 +158,7 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
   async function handleSave() {
     if (!editor) return;
     setSaving(true);
-    const saved = await act("save_task", { originalId: editor.originalId ?? null, task: fromEditor(editor) });
+    const saved = await act(() => api.save(editor.originalId ?? null, fromEditor(editor)));
     setSaving(false);
     if (saved) setEditor(null);
   }
@@ -189,25 +180,38 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
       </p>
       {error && <p className="settings-error-banner">{error}</p>}
 
-      <section className="settings-section">
-        <label className="settings-field settings-checkbox-field">
-          <span className="settings-checkbox-row">
-            <input
-              type="checkbox"
-              checked={list?.runHere ?? false}
-              disabled={list === null}
-              onChange={(e) => void act("set_run_tasks_here", { enabled: e.currentTarget.checked })}
-            />
-            <span className="settings-label">Run scheduled tasks on this computer</span>
-          </span>
-          <span className="settings-hint">
-            Only while this computer's embedded hub is on (Workspace). The task list syncs to your other machines, so turn
-            this on in one place only — the one that's always up, like a server running{" "}
-            <code>warden-server serve --run-tasks</code>, or this computer.
-            {list?.runHere && !list.hubRunning && " The embedded hub is off right now, so nothing runs on schedule."}
-          </span>
-        </label>
-      </section>
+      {remote ? (
+        list && (
+          <p className="settings-hint">
+            {list.runHere
+              ? "This hub runs the tasks on schedule."
+              : "This hub is not running tasks on schedule: it only keeps the list, and \"Run now\" still works. It runs them when started with --run-tasks."}
+          </p>
+        )
+      ) : (
+        <section className="settings-section">
+          <label className="settings-field settings-checkbox-field">
+            <span className="settings-checkbox-row">
+              <input
+                type="checkbox"
+                checked={list?.runHere ?? false}
+                disabled={list === null}
+                onChange={(e) => {
+                  const enabled = e.currentTarget.checked;
+                  void act(() => invoke<TaskList>("set_run_tasks_here", { enabled }));
+                }}
+              />
+              <span className="settings-label">Run scheduled tasks on this computer</span>
+            </span>
+            <span className="settings-hint">
+              Only while this computer's embedded hub is on (Workspace). The task list syncs to your other machines, so turn
+              this on in one place only — the one that's always up, like a server running{" "}
+              <code>warden-server serve --run-tasks</code>, or this computer.
+              {list?.runHere && !list.hubRunning && " The embedded hub is off right now, so nothing runs on schedule."}
+            </span>
+          </label>
+        </section>
+      )}
 
       {editor && (
         <div className="provider-card skill-editor">
@@ -308,7 +312,7 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
                     {confirmDelete === task.id ? (
                       <>
                         <span className="settings-hint">Delete this task? Its conversation stays.</span>
-                        <button type="button" className="provider-delete-btn" onClick={() => void act("delete_task", { id: task.id }).then(() => setConfirmDelete(null))}>
+                        <button type="button" className="provider-delete-btn" onClick={() => void act(() => api.remove(task.id)).then(() => setConfirmDelete(null))}>
                           Delete
                         </button>
                         <button type="button" className="settings-browse-btn" onClick={() => setConfirmDelete(null)}>
@@ -320,10 +324,10 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
                         <button type="button" className="settings-browse-btn" onClick={() => setExpanded(expanded === task.id ? null : task.id)}>
                           {expanded === task.id ? "Hide result" : "Last result"}
                         </button>
-                        <button type="button" className="settings-browse-btn" disabled={task.running} onClick={() => void act("run_task_now", { id: task.id })}>
+                        <button type="button" className="settings-browse-btn" disabled={task.running} onClick={() => void act(() => api.run(task.id))}>
                           Run now
                         </button>
-                        <button type="button" className="settings-browse-btn" onClick={() => void act("set_task_enabled_cmd", { id: task.id, enabled: !task.enabled })}>
+                        <button type="button" className="settings-browse-btn" onClick={() => void act(() => api.setEnabled(task.id, !task.enabled))}>
                           {task.enabled ? "Pause" : "Resume"}
                         </button>
                         <button type="button" className="settings-browse-btn" onClick={() => setEditor(editorFor(task))}>
@@ -347,12 +351,13 @@ function TasksView({ agents }: { agents: AgentEntry[] }) {
                 </p>
                 <p className="settings-hint">{statusLine(task)}</p>
                 {task.lastError && <p className="settings-hint">Error: {task.lastError}</p>}
-                {expanded === task.id && <TaskHistory id={task.id} refreshKey={refreshKey} />}
+                {expanded === task.id && <TaskHistory id={task.id} refreshKey={refreshKey} api={api} />}
               </div>
             ))}
           </div>
         )}
       </section>
+      {dialog}
     </div>
   );
 }

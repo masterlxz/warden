@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MarkdownLink } from "./MessageBubble";
+import { hubVault } from "../lib/hub";
 
 interface TreeNode {
   name: string;
@@ -127,7 +128,26 @@ type Open =
   | { kind: "note"; path: string; note: VaultNote; draft: string | null }
   | { kind: "new"; path: string; draft: string };
 
-function VaultView() {
+/** The five calls the screen makes. Either this computer's vault (`vault_cmds.rs`) or the one of the hub in use. */
+interface VaultApi {
+  list: () => Promise<string[]>;
+  read: (path: string) => Promise<VaultNote>;
+  save: (path: string, content: string, expectedVersion: string | null) => Promise<string>;
+  remove: (path: string, expectedVersion: string) => Promise<void>;
+  search: (query: string) => Promise<VaultSearchHit[]>;
+}
+
+const localVault: VaultApi = {
+  list: () => invoke<string[]>("list_vault_files"),
+  read: (path) => invoke<VaultNote>("read_vault_note", { path }),
+  save: (path, content, expectedVersion) => invoke<string>("save_vault_note", { path, content, expectedVersion }),
+  remove: (path, expectedVersion) => invoke("delete_vault_note", { path, expectedVersion }),
+  search: (query) => invoke<VaultSearchHit[]>("search_vault", { query }),
+};
+
+/** `remote`: the vault is the hub's (P102). The caller remounts the screen (`key`) when the machine changes. */
+function VaultView({ remote = false }: { remote?: boolean }) {
+  const api = remote ? hubVault : localVault;
   const [files, setFiles] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -138,7 +158,8 @@ function VaultView() {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   function refresh() {
-    invoke<string[]>("list_vault_files")
+    api
+      .list()
       .then(setFiles)
       .catch((err) => setError(errorOf(err).message));
   }
@@ -159,7 +180,8 @@ function VaultView() {
     setActionError(null);
     setConfirmDelete(false);
     setOpen({ kind: "loading", path });
-    invoke<VaultNote>("read_vault_note", { path })
+    api
+      .read(path)
       .then((note) => setOpen((cur) => (cur.kind === "loading" && cur.path === path ? { kind: "note", path, note, draft: null } : cur)))
       .catch((err) => setOpen((cur) => (cur.kind === "loading" && cur.path === path ? { kind: "error", path, error: errorOf(err).message } : cur)));
   }
@@ -184,8 +206,8 @@ function VaultView() {
     try {
       let expectedVersion = open.kind === "note" ? open.note.version : null;
       // Overwriting after a conflict: save over whatever is on disk now.
-      if (overwrite) expectedVersion = (await invoke<VaultNote>("read_vault_note", { path })).version;
-      const version = await invoke<string>("save_vault_note", { path, content, expectedVersion });
+      if (overwrite) expectedVersion = (await api.read(path)).version;
+      const version = await api.save(path, content, expectedVersion);
       setOpen({ kind: "note", path, note: { content, version }, draft: null });
       if (open.kind === "new") refresh();
     } catch (err) {
@@ -200,7 +222,7 @@ function VaultView() {
     setSaving(true);
     setActionError(null);
     try {
-      await invoke("delete_vault_note", { path: open.path, expectedVersion: open.note.version });
+      await api.remove(open.path, open.note.version);
       setConfirmDelete(false);
       setOpen({ kind: "none" });
       refresh();
@@ -219,7 +241,8 @@ function VaultView() {
       setHits(null);
       return;
     }
-    invoke<VaultSearchHit[]>("search_vault", { query: text })
+    api
+      .search(text)
       .then(setHits)
       .catch((err) => setError(errorOf(err).message));
   }

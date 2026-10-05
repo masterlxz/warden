@@ -3,15 +3,35 @@
 // `hubMap.ts`. Everything here asks the hub in use; "this computer" is simply not calling these.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Attachment, AgentEntry, ChatMessage, ProjectEntry } from "../types";
+import type {
+  Attachment,
+  AgentEntry,
+  ChatMessage,
+  ProjectEntry,
+  RunMessage,
+  SkillEntry,
+  SpendStatus,
+  Task,
+  TaskInfo,
+  TaskList,
+  UsageSummary,
+  Webhook,
+  WebhookAuth,
+  WebhookCreated,
+  WebhookInfo,
+  WebhookList,
+} from "../types";
 import {
   agentFromHub,
   chatMessage,
   expectReply,
+  expectVaultReply,
   messagesFromHistory,
   projectFromHub,
   turnFromReply,
+  usageFromReport,
   type HubAgent,
+  type HubUsageReport,
   type HubConversationSummary,
   type HubHistoryMessage,
   type HubProject,
@@ -108,3 +128,136 @@ export async function hubChat(args: {
 export function hubSend(message: Record<string, unknown>): Promise<void> {
   return invoke("remote_send", { message });
 }
+
+/** The hub's usage and spending, with the day split at this computer's midnight. One report feeds the three parts of the
+ * screen, so it is asked once and kept until a limit is extended. */
+export function hubUsage(): { summary: () => Promise<UsageSummary>; spend: () => Promise<SpendStatus>; extend: (limitId: string) => Promise<void> } {
+  let cached: Promise<ReturnType<typeof usageFromReport>> | null = null;
+  const report = () => {
+    cached ??= ask<{ type: string; report: HubUsageReport }>({ type: "requestUsage", tzOffsetMinutes: -new Date().getTimezoneOffset() }, "usageReport")
+      .then((reply) => usageFromReport(reply.report))
+      .catch((err) => {
+        cached = null;
+        throw err;
+      });
+    return cached;
+  };
+  return {
+    summary: async () => (await report()).summary,
+    spend: async () => (await report()).spend,
+    extend: async (limitId) => {
+      await ask({ type: "extendLimit", limitId }, "limitExtended");
+      cached = null;
+    },
+  };
+}
+
+/** The skills of the hub in use. The hub has no messages for a skill's attached files or for drafting one with a model,
+ * so the screen leaves those out on a hub. */
+export const hubSkills = {
+  async list(): Promise<SkillEntry[]> {
+    return (await ask<{ type: string; skills: SkillEntry[] }>({ type: "listSkills" }, "skillList")).skills;
+  },
+  async save(skill: SkillEntry, overwrite: boolean): Promise<void> {
+    await ask({ type: "saveSkill", skill, overwrite }, "skillOk");
+  },
+  async remove(name: string): Promise<void> {
+    await ask({ type: "deleteSkill", name }, "skillOk");
+  },
+};
+
+/** Asks the person for the hub's pairing key (rejects if they decline). The hub wants it for every change to its tasks and
+ * webhooks, and this app never keeps it. */
+type KeyAsker = (reason: string) => Promise<string>;
+
+interface HubTaskReply {
+  type: string;
+  tasks: TaskInfo[];
+  runsHere: boolean;
+}
+
+const taskList = (reply: HubTaskReply): TaskList => ({ tasks: reply.tasks, runHere: reply.runsHere, hubRunning: true });
+
+/** The scheduled tasks of the hub in use. Listing is open; every change asks for the pairing key. Whether the hub runs them
+ * on schedule is its own setting, so the screen shows it and doesn't change it. */
+export function hubTasks(askKey: KeyAsker) {
+  const change = async (reason: string, message: Record<string, unknown>) =>
+    taskList(await ask<HubTaskReply>({ ...message, pairingKey: await askKey(reason) }, "taskList"));
+  return {
+    async list(): Promise<TaskList> {
+      return taskList(await ask<HubTaskReply>({ type: "listTasks" }, "taskList"));
+    },
+    save: (originalId: string | null, task: Task) => change("Saving this task changes the hub.", { type: "saveTask", ...(originalId ? { originalId } : {}), task }),
+    setEnabled: (id: string, enabled: boolean) => change(`${enabled ? "Resuming" : "Pausing"} ${id} changes the hub.`, { type: "setTaskEnabled", id, enabled }),
+    remove: (id: string) => change(`Deleting ${id} changes the hub.`, { type: "deleteTask", id }),
+    run: (id: string) => change(`Running ${id} now starts a run on the hub.`, { type: "runTask", id }),
+    /** The task's conversation is `task-<id>`, which the hub gives to any device. */
+    async history(id: string): Promise<RunMessage[]> {
+      return (await hubHistory(`task-${id}`)).map(({ role, content, createdAt }) => ({ role, content, createdAt }));
+    },
+  };
+}
+
+interface HubWebhookReply {
+  type: string;
+  webhooks: WebhookInfo[];
+  servesHere: boolean;
+}
+
+/** The incoming webhooks of the hub in use (the owner's). `hubUrl` is the address of the hub's web interface, where
+ * `/hooks/<id>` is served. Listing is open; every change asks for the pairing key. */
+export function hubWebhooks(askKey: KeyAsker, hubUrl: string | undefined) {
+  const listOf = (reply: HubWebhookReply): WebhookList => ({ webhooks: reply.webhooks, hubRunning: reply.servesHere, ...(hubUrl ? { hubUrl } : {}) });
+  const change = async (reason: string, message: Record<string, unknown>) =>
+    listOf(await ask<HubWebhookReply>({ ...message, pairingKey: await askKey(reason) }, "webhookList"));
+  return {
+    async list(): Promise<WebhookList> {
+      return listOf(await ask<HubWebhookReply>({ type: "listWebhooks" }, "webhookList"));
+    },
+    save: (originalId: string | null, webhook: Webhook) => change("Saving this webhook changes the hub.", { type: "saveWebhook", ...(originalId ? { originalId } : {}), webhook }),
+    setEnabled: (id: string, enabled: boolean) => change(`${enabled ? "Resuming" : "Pausing"} ${id} changes the hub.`, { type: "setWebhookEnabled", id, enabled }),
+    remove: (id: string) => change(`Deleting ${id} changes the hub.`, { type: "deleteWebhook", id }),
+    revoke: (id: string) => change(`Revoking the credential of ${id} changes the hub.`, { type: "revokeWebhookCredential", id }),
+    /** The credential comes back once, in this reply, and is not sent again. */
+    async makeCredential(id: string): Promise<WebhookCreated> {
+      const reply = await ask<HubWebhookReply & { id: string; credential: string; kind: WebhookAuth }>(
+        { type: "createWebhookCredential", id, pairingKey: await askKey(`A new credential for ${id} replaces the old one at once.`) },
+        "webhookCreated",
+      );
+      return { id: reply.id, credential: reply.credential, kind: reply.kind, list: listOf(reply) };
+    },
+    async history(conversation: string): Promise<RunMessage[]> {
+      return (await hubHistory(conversation)).map(({ role, content, createdAt }) => ({ role, content, createdAt }));
+    },
+  };
+}
+
+async function askVault<T extends { type: string }>(message: Record<string, unknown>, ...types: string[]): Promise<T> {
+  return expectVaultReply<T>(await invoke<unknown>("remote_request", { message }), ...types);
+}
+
+/** The vault of the hub in use, with the same five calls `vault_cmds.rs` gives for this computer's. A failure is
+ * `{ message, conflict }`, the shape `VaultView` already reads. */
+export const hubVault = {
+  async list(): Promise<string[]> {
+    return (await askVault<{ type: string; files: string[] }>({ type: "listVaultFiles" }, "vaultFileList")).files;
+  },
+  async read(path: string): Promise<{ content: string; version: string }> {
+    const reply = await askVault<{ type: string; content: string; version: string }>({ type: "readVaultNote", path }, "vaultNote");
+    return { content: reply.content, version: reply.version };
+  },
+  /** Creates the note when `expectedVersion` is null. Returns the new version. */
+  async save(path: string, content: string, expectedVersion: string | null): Promise<string> {
+    const reply = await askVault<{ type: string; version: string }>(
+      { type: "saveVaultNote", path, content, ...(expectedVersion ? { expectedVersion } : {}) },
+      "vaultSaved",
+    );
+    return reply.version;
+  },
+  async remove(path: string, expectedVersion: string): Promise<void> {
+    await askVault({ type: "deleteVaultNote", path, expectedVersion }, "vaultOk");
+  },
+  async search(query: string): Promise<{ path: string; lineNumber: number; line: string }[]> {
+    return (await askVault<{ type: string; hits: { path: string; lineNumber: number; line: string }[] }>({ type: "searchVault", query }, "vaultSearchResults")).hits;
+  },
+};

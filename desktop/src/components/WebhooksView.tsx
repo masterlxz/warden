@@ -1,49 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEntry } from "../types";
+import type { AgentEntry, RunMessage, Webhook, WebhookAuth, WebhookCreated, WebhookInfo, WebhookList } from "../types";
+import { hubWebhooks } from "../lib/hub";
+import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
-/** How a webhook's caller proves itself: a bearer token, or an HMAC signature of the body (GitHub, Stripe style). */
-type WebhookAuth = "token" | "hmac";
-
-/** Mirrors `WebhookDto` (P105): one incoming webhook, as `[[webhooks]]` keeps it. */
-interface Webhook {
-  id: string;
-  agentId?: string;
-  prompt: string;
-  enabled: boolean;
-  auth: WebhookAuth;
+/** Where the webhooks live: this computer's `config.toml` and credentials, or the hub in use. The hub's changes ask for
+ * its pairing key. */
+interface WebhookApi {
+  list: () => Promise<WebhookList>;
+  save: (originalId: string | null, webhook: Webhook) => Promise<WebhookList>;
+  setEnabled: (id: string, enabled: boolean) => Promise<WebhookList>;
+  remove: (id: string) => Promise<WebhookList>;
+  revoke: (id: string) => Promise<WebhookList>;
+  makeCredential: (id: string) => Promise<WebhookCreated>;
+  /** `id` is the webhook's, `conversation` its conversation's (`task-hook-<id>`). */
+  history: (id: string, conversation: string) => Promise<RunMessage[]>;
 }
 
-/** Mirrors `WebhookInfoDto`: a webhook and what this machine knows about its credential. */
-interface WebhookInfo extends Webhook {
-  /** What it has: absent means no credential, so it takes no calls. */
-  credential?: WebhookAuth;
-  shown?: string;
-  createdAtMs?: number;
-  lastUsedAtMs?: number;
-  conversation: string;
-}
-
-/** Mirrors `webhook_cmds::WebhookListPayload`. */
-interface WebhookList {
-  webhooks: WebhookInfo[];
-  hubRunning: boolean;
-  hubUrl?: string;
-}
-
-/** Mirrors `webhook_cmds::WebhookCreatedPayload`: the credential is shown once, here. */
-interface WebhookCreated {
-  id: string;
-  credential: string;
-  kind: WebhookAuth;
-  list: WebhookList;
-}
-
-interface WebhookMessage {
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-}
+const localWebhooks: WebhookApi = {
+  list: () => invoke<WebhookList>("list_webhooks"),
+  save: (originalId, webhook) => invoke<WebhookList>("save_webhook", { originalId, webhook }),
+  setEnabled: (id, enabled) => invoke<WebhookList>("set_webhook_enabled_cmd", { id, enabled }),
+  remove: (id) => invoke<WebhookList>("delete_webhook", { id }),
+  revoke: (id) => invoke<WebhookList>("revoke_webhook_credential", { id }),
+  makeCredential: (id) => invoke<WebhookCreated>("create_webhook_credential", { id }),
+  history: (id) => invoke<RunMessage[]>("webhook_history", { id }),
+};
 
 interface EditorState {
   originalId?: string;
@@ -75,15 +57,16 @@ function statusLine(hook: WebhookInfo): string {
 }
 
 /** A webhook's conversation on this machine, read-only: the last answer, and the rest on request. */
-function WebhookHistory({ id, refreshKey }: { id: string; refreshKey: number }) {
-  const [messages, setMessages] = useState<WebhookMessage[] | null>(null);
+function WebhookHistory({ hook, refreshKey, api }: { hook: WebhookInfo; refreshKey: number; api: WebhookApi }) {
+  const [messages, setMessages] = useState<RunMessage[] | null>(null);
   const [all, setAll] = useState(false);
 
   useEffect(() => {
-    invoke<WebhookMessage[]>("webhook_history", { id })
+    api
+      .history(hook.id, hook.conversation)
       .then(setMessages)
       .catch(() => setMessages([]));
-  }, [id, refreshKey]);
+  }, [hook.id, hook.conversation, refreshKey, api]);
 
   if (messages === null) return <p className="settings-hint">Loading…</p>;
   if (messages.length === 0) return <p className="settings-hint">No calls on this computer yet. If another hub takes it, open its conversation from the web or the phone.</p>;
@@ -113,7 +96,9 @@ function WebhookHistory({ id, refreshKey }: { id: string; refreshKey: number }) 
  * `warden-server webhooks` and the web's Webhooks tab, on this machine's `config.toml` and credentials file. A new
  * credential is shown once, here, and never again.
  */
-function WebhooksView({ agents }: { agents: AgentEntry[] }) {
+function WebhooksView({ agents, remote = false, hubUrl }: { agents: AgentEntry[]; remote?: boolean; hubUrl?: string }) {
+  const { askKey, dialog } = usePairingKey();
+  const api = useMemo(() => (remote ? hubWebhooks(askKey, hubUrl) : localWebhooks), [remote, askKey, hubUrl]);
   const [list, setList] = useState<WebhookList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -125,13 +110,14 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(() => {
-    invoke<WebhookList>("list_webhooks")
+    api
+      .list()
       .then((next) => {
         setList(next);
         setRefreshKey((k) => k + 1);
       })
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [api]);
 
   useEffect(load, [load]);
 
@@ -141,14 +127,15 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  async function act(command: string, args: Record<string, unknown>): Promise<boolean> {
+  /** Runs one change and shows the list it answers with. False when it failed, or when the person declined to give the key. */
+  async function act(change: () => Promise<WebhookList>): Promise<boolean> {
     setError(null);
     try {
-      setList(await invoke<WebhookList>(command, args));
+      setList(await change());
       setRefreshKey((k) => k + 1);
       return true;
     } catch (err) {
-      setError(String(err));
+      if (!(err instanceof KeyCancelled)) setError(String(err));
       return false;
     }
   }
@@ -156,20 +143,20 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
   async function makeCredential(hook: WebhookInfo) {
     setError(null);
     try {
-      const made = await invoke<WebhookCreated>("create_webhook_credential", { id: hook.id });
+      const made = await api.makeCredential(hook.id);
       setList(made.list);
       setRefreshKey((k) => k + 1);
       setCreated({ id: made.id, credential: made.credential, kind: made.kind });
       setCopied(false);
     } catch (err) {
-      setError(String(err));
+      if (!(err instanceof KeyCancelled)) setError(String(err));
     }
   }
 
   async function handleSave() {
     if (!editor) return;
     setSaving(true);
-    const saved = await act("save_webhook", { originalId: editor.originalId ?? null, webhook: editor.webhook });
+    const saved = await act(() => api.save(editor.originalId ?? null, editor.webhook));
     setSaving(false);
     if (saved) setEditor(null);
   }
@@ -203,7 +190,9 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
       </p>
       {list && !list.hubRunning && (
         <p className="settings-hint">
-          Calls only arrive while this computer's embedded hub is on (Workspace). Until then these are just the requests kept in the configuration.
+          {remote
+            ? "This hub is not taking webhook calls right now: these are just the requests kept in its configuration."
+            : "Calls only arrive while this computer's embedded hub is on (Workspace). Until then these are just the requests kept in the configuration."}
         </p>
       )}
       {error && <p className="settings-error-banner">{error}</p>}
@@ -222,7 +211,7 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
           ) : (
             <p className="settings-hint">
               Paste it as the <em>Secret</em> of the webhook on GitHub (content type application/json) with the address <code>{addressOf(created.id)}</code>, as the
-              endpoint's signing secret on Stripe, or as the app's Signing Secret on Slack. A plain token doesn't open this webhook. This computer keeps the secret in the clear, in{" "}
+              endpoint's signing secret on Stripe, or as the app's Signing Secret on Slack. A plain token doesn't open this webhook. {remote ? "The hub keeps" : "This computer keeps"} the secret in the clear, in{" "}
               <code>webhook_tokens.json</code> (mode 0600): checking a signature means making one.
             </p>
           )}
@@ -319,7 +308,7 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
                     {confirmDelete === hook.id ? (
                       <>
                         <span className="settings-hint">Delete this webhook and its credential? Its conversation stays.</span>
-                        <button type="button" className="provider-delete-btn" onClick={() => void act("delete_webhook", { id: hook.id }).then(() => setConfirmDelete(null))}>
+                        <button type="button" className="provider-delete-btn" onClick={() => void act(() => api.remove(hook.id)).then(() => setConfirmDelete(null))}>
                           Delete
                         </button>
                         <button type="button" className="settings-browse-btn" onClick={() => setConfirmDelete(null)}>
@@ -335,11 +324,11 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
                           {hook.credential === hook.auth ? (hook.auth === "token" ? "Replace token" : "Replace secret") : hook.auth === "token" ? "Make token" : "Make secret"}
                         </button>
                         {hook.credential && (
-                          <button type="button" className="settings-browse-btn" onClick={() => void act("revoke_webhook_credential", { id: hook.id })}>
+                          <button type="button" className="settings-browse-btn" onClick={() => void act(() => api.revoke(hook.id))}>
                             Revoke
                           </button>
                         )}
-                        <button type="button" className="settings-browse-btn" onClick={() => void act("set_webhook_enabled_cmd", { id: hook.id, enabled: !hook.enabled })}>
+                        <button type="button" className="settings-browse-btn" onClick={() => void act(() => api.setEnabled(hook.id, !hook.enabled))}>
                           {hook.enabled ? "Pause" : "Resume"}
                         </button>
                         <button type="button" className="settings-browse-btn" onClick={() => setEditor(editorFor(hook))}>
@@ -362,12 +351,13 @@ function WebhooksView({ agents }: { agents: AgentEntry[] }) {
                   POST {addressOf(hook.id)} · {authNames[hook.auth]} · {hook.agentId ? `agent ${hook.agentId}` : "no agent"}
                 </p>
                 <p className="settings-hint">{statusLine(hook)}</p>
-                {expanded === hook.id && <WebhookHistory id={hook.id} refreshKey={refreshKey} />}
+                {expanded === hook.id && <WebhookHistory hook={hook} refreshKey={refreshKey} api={api} />}
               </div>
             ))}
           </div>
         )}
       </section>
+      {dialog}
     </div>
   );
 }

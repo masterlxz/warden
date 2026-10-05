@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { UsageByKey, UsageSummary } from "../types";
+import type { RecentSpend, SpendBucket, SpendStatus, UsageByKey, UsageSummary } from "../types";
+import { hubUsage } from "../lib/hub";
 
 /** `1,284` up to 999, `12.9K`/`1.2M` beyond — the stat-tile contract's "auto-compact" value
  * format, so a heavy user's token count never wraps a tile onto two lines. */
@@ -46,50 +47,18 @@ function UsageBreakdown({ title, entries, emptyKeyLabel }: { title: string; entr
   );
 }
 
-/** Mirrors `warden_server_protocol::protocol::LimitStatusDto` — the same shape the web UI gets. */
-interface LimitStatus {
-  id: string;
-  scope: string;
-  windowHours: number;
-  usedTokens: number;
-  maxTokens: number | null;
-  usedCostUsd: number;
-  maxCostUsd: number | null;
-  fraction: number;
-  warn: boolean;
-  exceeded: boolean;
-  unpricedCalls: number;
-  freesUpInMinutes: number | null;
-  extendTokens: number;
-  extendCostUsd: number;
+/** Where the numbers come from: this computer's guard and conversations, or the hub in use. */
+interface UsageSource {
+  summary: () => Promise<UsageSummary>;
+  spend: () => Promise<SpendStatus>;
+  extend: (limitId: string) => Promise<void>;
 }
 
-/** Mirrors `SpendBucketDto` (P10): one model, channel, provider, agent or person in the ledger. */
-interface SpendBucket {
-  key: string;
-  calls: number;
-  tokens: number;
-  costUsd: number;
-  unpricedCalls: number;
-}
-
-/** Mirrors `RecentSpendDto`: what the ledger still holds, which only reaches back `windowHours` (the longest
- * limit). An empty `key` is a call with no provider, agent or person on record. */
-interface RecentSpend {
-  windowHours: number;
-  byModel: SpendBucket[];
-  byChannel: SpendBucket[];
-  byProvider: SpendBucket[];
-  byAgent: SpendBucket[];
-  byPerson: SpendBucket[];
-}
-
-interface SpendStatus {
-  limitsEnabled: boolean;
-  limits: LimitStatus[];
-  recent: RecentSpend | null;
-  ledgerError: string | null;
-}
+const localUsage: UsageSource = {
+  summary: () => invoke<UsageSummary>("usage_summary"),
+  spend: () => invoke<SpendStatus>("spend_status"),
+  extend: (limitId) => invoke("extend_spend_limit", { limitId }),
+};
 
 function usd(value: number): string {
   return `$${value.toFixed(value < 1 ? 4 : 2)}`;
@@ -128,14 +97,15 @@ function SpendTable({ title, buckets, keyLabel, emptyLabel }: { title: string; b
 }
 
 /** What the spending ledger holds, split five ways, in dollars (P10). Reads the same status as the limits above it. */
-function RecentSpending() {
+function RecentSpending({ source }: { source: UsageSource }) {
   const [recent, setRecent] = useState<RecentSpend | null>(null);
 
   useEffect(() => {
-    invoke<SpendStatus>("spend_status")
+    source
+      .spend()
       .then((status) => setRecent(status.recent))
       .catch(() => setRecent(null));
-  }, []);
+  }, [source]);
 
   if (recent === null || recent.byModel.length === 0) return null;
   const hours = recent.windowHours;
@@ -164,24 +134,25 @@ function RecentSpending() {
 /** Where each spending limit (P4) stands, with "Allow more" on one that's running out — the same
  * grant the pause dialog makes mid-turn. The meter's fill carries severity (accent → warning →
  * danger), always next to an icon and a label, never color alone. */
-function SpendingLimits() {
+function SpendingLimits({ source }: { source: UsageSource }) {
   const [status, setStatus] = useState<SpendStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [extending, setExtending] = useState<string | null>(null);
 
   function refresh() {
-    invoke<SpendStatus>("spend_status")
+    source
+      .spend()
       .then(setStatus)
       .catch((err) => setError(String(err)));
   }
 
-  useEffect(refresh, []);
+  useEffect(refresh, [source]);
 
   async function extend(limitId: string) {
     setExtending(limitId);
     setError(null);
     try {
-      await invoke("extend_spend_limit", { limitId });
+      await source.extend(limitId);
       refresh();
     } catch (err) {
       setError(String(err));
@@ -258,7 +229,9 @@ function SpendingLimits() {
   );
 }
 
-function UsageView() {
+/** `remote`: the numbers are the hub's (P102). The caller remounts the screen (`key`) when the machine changes. */
+function UsageView({ remote = false }: { remote?: boolean }) {
+  const source = useMemo(() => (remote ? hubUsage() : localUsage), [remote]);
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -266,10 +239,11 @@ function UsageView() {
   // `SettingsView`) rather than cached in `App` — a dashboard showing yesterday's numbers right
   // after sending a message would be worse than the extra disk read.
   useEffect(() => {
-    invoke<UsageSummary>("usage_summary")
+    source
+      .summary()
       .then(setSummary)
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [source]);
 
   if (error) {
     return (
@@ -293,8 +267,8 @@ function UsageView() {
       <div className="settings-view">
         <h2 className="settings-title">Usage</h2>
         <p className="settings-hint">No usage recorded yet — send a message to see stats here.</p>
-        <SpendingLimits />
-        <RecentSpending />
+        <SpendingLimits source={source} />
+        <RecentSpending source={source} />
       </div>
     );
   }
@@ -303,12 +277,12 @@ function UsageView() {
     <div className="settings-view">
       <h2 className="settings-title">Usage</h2>
       <p className="settings-hint">
-        Token usage across every conversation saved on this device. Dollar amounts come from the spending ledger, for
+        Token usage across every conversation saved {remote ? "on the hub" : "on this device"}. Dollar amounts come from the spending ledger, for
         models that have a price in Settings: in the limits and in the recent spending below.
       </p>
 
-      <SpendingLimits />
-      <RecentSpending />
+      <SpendingLimits source={source} />
+      <RecentSpending source={source} />
 
       <div className="usage-stat-grid">
         <StatTile label="Total tokens" value={summary.total.totalTokens} />

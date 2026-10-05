@@ -255,6 +255,52 @@ export interface UsageSummary {
   byProvider: UsageByKey[];
 }
 
+/** Mirrors `warden_server_protocol::protocol::LimitStatusDto` — the same shape the web UI gets. */
+export interface LimitStatus {
+  id: string;
+  scope: string;
+  windowHours: number;
+  usedTokens: number;
+  maxTokens: number | null;
+  usedCostUsd: number;
+  maxCostUsd: number | null;
+  fraction: number;
+  warn: boolean;
+  exceeded: boolean;
+  unpricedCalls: number;
+  freesUpInMinutes: number | null;
+  extendTokens: number;
+  extendCostUsd: number;
+}
+
+/** Mirrors `SpendBucketDto` (P10): one model, channel, provider, agent or person in the ledger. */
+export interface SpendBucket {
+  key: string;
+  calls: number;
+  tokens: number;
+  costUsd: number;
+  unpricedCalls: number;
+}
+
+/** Mirrors `RecentSpendDto`: what the ledger still holds, which only reaches back `windowHours` (the longest
+ * limit). An empty `key` is a call with no provider, agent or person on record. */
+export interface RecentSpend {
+  windowHours: number;
+  byModel: SpendBucket[];
+  byChannel: SpendBucket[];
+  byProvider: SpendBucket[];
+  byAgent: SpendBucket[];
+  byPerson: SpendBucket[];
+}
+
+/** The Usage screen's limits and recent spending: `spend_status` here, the hub's `UsageReport` there. */
+export interface SpendStatus {
+  limitsEnabled: boolean;
+  limits: LimitStatus[];
+  recent: RecentSpend | null;
+  ledgerError: string | null;
+}
+
 /** Mirrors `warden_server::PairedDevice` (via `workspace_cmds::PairedDeviceInfo`) — one row of the
  * "Workspace" nav view's device list (Fase 9.6). `firstSeenMs`/`lastSeenMs` are epoch
  * milliseconds. Assumes the desktop app runs on the same machine as the `warden-server` hub whose
@@ -284,6 +330,79 @@ export interface DiscoveredHub {
   serverName: string;
   /** Set when the hub only accepts wss:// (P36) — the URL to pair with instead of ws://host:port. */
   secureUrl: string | null;
+}
+
+/** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
+export interface Task {
+  id: string;
+  agentId?: string;
+  prompt: string;
+  every?: string;
+  cron?: string;
+  once?: string;
+  timezone?: string;
+  enabled: boolean;
+}
+
+/** Mirrors `TaskInfoDto`: a task and where it stands on the machine that runs it. */
+export interface TaskInfo extends Task {
+  nextRunAtMs?: number;
+  lastRunAtMs?: number;
+  lastFinishedAtMs?: number;
+  lastError?: string;
+  running: boolean;
+  scheduleError?: string;
+}
+
+/** Mirrors `task_cmds::TaskListPayload`; on a hub, `runHere` is its `runsHere` and `hubRunning` is always true. */
+export interface TaskList {
+  tasks: TaskInfo[];
+  runHere: boolean;
+  hubRunning: boolean;
+}
+
+/** One message of a task's or a webhook's conversation, for the read-only history. */
+export interface RunMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+}
+
+/** How a webhook's caller proves itself: a bearer token, or an HMAC signature of the body (GitHub, Stripe style). */
+export type WebhookAuth = "token" | "hmac";
+
+/** Mirrors `WebhookDto` (P105): one incoming webhook, as `[[webhooks]]` keeps it. */
+export interface Webhook {
+  id: string;
+  agentId?: string;
+  prompt: string;
+  enabled: boolean;
+  auth: WebhookAuth;
+}
+
+/** Mirrors `WebhookInfoDto`: a webhook and what the machine that serves it knows about its credential. */
+export interface WebhookInfo extends Webhook {
+  /** What it has: absent means no credential, so it takes no calls. */
+  credential?: WebhookAuth;
+  shown?: string;
+  createdAtMs?: number;
+  lastUsedAtMs?: number;
+  conversation: string;
+}
+
+/** Mirrors `webhook_cmds::WebhookListPayload`; on a hub, `hubRunning` is its `servesHere` and `hubUrl` its address. */
+export interface WebhookList {
+  webhooks: WebhookInfo[];
+  hubRunning: boolean;
+  hubUrl?: string;
+}
+
+/** Mirrors `webhook_cmds::WebhookCreatedPayload`: the credential is shown once, here. */
+export interface WebhookCreated {
+  id: string;
+  credential: string;
+  kind: WebhookAuth;
+  list: WebhookList;
 }
 
 /** Mirrors `hub_cmds::HubPayload` (P102) — a hub this computer is a client of: a name and the address of the web

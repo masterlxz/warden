@@ -605,19 +605,19 @@ function App() {
       {view === "settings" ? (
         <SettingsView />
       ) : view === "usage" ? (
-        <UsageView />
+        <UsageView key={activeHubId ?? "local"} remote={remote} />
       ) : view === "sync" ? (
         <SyncView />
       ) : view === "vault" ? (
-        <VaultView />
+        <VaultView key={activeHubId ?? "local"} remote={remote} />
       ) : view === "skills" ? (
-        <SkillsView agents={settings.agents} providers={settings.providers} activeProvider={settings.activeProvider} />
+        <SkillsView key={activeHubId ?? "local"} remote={remote} agents={settings.agents} providers={settings.providers} activeProvider={settings.activeProvider} />
       ) : view === "projects" ? (
         <ProjectsView onChanged={loadProjects} />
       ) : view === "tasks" ? (
-        <TasksView agents={settings.agents} />
+        <TasksView key={activeHubId ?? "local"} remote={remote} agents={settings.agents} />
       ) : view === "webhooks" ? (
-        <WebhooksView agents={settings.agents} />
+        <WebhooksView key={activeHubId ?? "local"} remote={remote} hubUrl={hubs.find((h) => h.id === activeHubId)?.url} agents={settings.agents} />
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : (

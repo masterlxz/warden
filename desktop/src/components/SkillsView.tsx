@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentEntry, ProviderEntry, SkillEntry } from "../types";
 import { diffLines, hasChanges, withContext } from "./skillDiff";
+import { hubSkills } from "../lib/hub";
 
 /** What the editor form is doing: `new` (name editable, refuses a taken name) or `edit` (name
  * locked, overwrites). `fromAi` only drives the "review before saving" hint. */
@@ -169,15 +170,27 @@ function SkillFiles({ skillName }: { skillName: string }) {
   );
 }
 
+/** Where the skills live: this computer's vault, or the hub in use. */
+const localSkills = {
+  list: () => invoke<SkillEntry[]>("list_skills"),
+  save: (skill: SkillEntry, overwrite: boolean) => invoke<void>("save_skill", { skill, overwrite }),
+  remove: (name: string) => invoke<void>("delete_skill", { name }),
+};
+
+/** `remote`: the skills are the hub's (P102), without attached files or drafting, which the hub has no messages for.
+ * The caller remounts the screen (`key`) when the machine changes. */
 function SkillsView({
   agents,
   providers,
   activeProvider,
+  remote = false,
 }: {
   agents: AgentEntry[];
   providers: ProviderEntry[];
   activeProvider: string;
+  remote?: boolean;
 }) {
+  const api = remote ? hubSkills : localSkills;
   const [skills, setSkills] = useState<SkillEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -190,7 +203,8 @@ function SkillsView({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   function refresh() {
-    invoke<SkillEntry[]>("list_skills")
+    api
+      .list()
       .then((list) => {
         setSkills(list);
         setLoadError(null);
@@ -214,10 +228,7 @@ function SkillsView({
   async function handleAccept(skill: SkillEntry) {
     setError(null);
     try {
-      await invoke("save_skill", {
-        skill: { name: skill.name, description: skill.description, body: skill.body, agents: skill.agents },
-        overwrite: true,
-      });
+      await api.save({ name: skill.name, description: skill.description, body: skill.body, agents: skill.agents }, true);
       refresh();
     } catch (err) {
       setError(String(err));
@@ -247,7 +258,7 @@ function SkillsView({
       const accepting = editor.skill.proposed && editor.accept;
       const { proposed, source, proposedAt, ...rest } = editor.skill;
       const skill = proposed && !accepting ? editor.skill : rest;
-      await invoke("save_skill", { skill, overwrite: editor.mode === "edit" });
+      await api.save(skill, editor.mode === "edit");
       setEditor(null);
       setPrompt("");
       refresh();
@@ -261,7 +272,7 @@ function SkillsView({
   async function handleDelete(name: string) {
     setError(null);
     try {
-      await invoke("delete_skill", { name });
+      await api.remove(name);
       setConfirmDelete(null);
       refresh();
     } catch (err) {
@@ -296,50 +307,52 @@ function SkillsView({
       {loadError && <p className="settings-error-banner">{loadError}</p>}
       {error && <p className="settings-error-banner">{error}</p>}
 
-      <section className="settings-section">
-        <div className="settings-section-header">
-          <h3 className="settings-section-title">Describe a skill</h3>
-        </div>
-        <label className="settings-field">
-          <span className="settings-hint">
-            Say roughly what it should do — the AI writes a draft you can review and edit before saving.
-          </span>
-          <textarea
-            className="settings-input settings-textarea"
-            rows={3}
-            placeholder="e.g. 'How to review a pull request: check tests first, then naming, then security, and answer with a short verdict plus a bullet list of issues.'"
-            value={prompt}
-            onChange={(e) => setPrompt(e.currentTarget.value)}
-          />
-        </label>
-        {providers.length > 1 && (
+      {!remote && (
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Describe a skill</h3>
+          </div>
           <label className="settings-field">
-            <span className="settings-label">Model</span>
-            <select
-              className="settings-select"
-              value={draftProvider}
-              onChange={(e) => setDraftProvider(e.currentTarget.value)}
-            >
-              <option value="">Active provider{activeProvider ? ` (${activeProvider})` : ""}</option>
-              {providers
-                .filter((p) => p.id !== activeProvider)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id}
-                  </option>
-                ))}
-            </select>
+            <span className="settings-hint">
+              Say roughly what it should do — the AI writes a draft you can review and edit before saving.
+            </span>
+            <textarea
+              className="settings-input settings-textarea"
+              rows={3}
+              placeholder="e.g. 'How to review a pull request: check tests first, then naming, then security, and answer with a short verdict plus a bullet list of issues.'"
+              value={prompt}
+              onChange={(e) => setPrompt(e.currentTarget.value)}
+            />
           </label>
-        )}
-        <button
-          type="button"
-          className="settings-save-btn"
-          onClick={handleGenerate}
-          disabled={generating || prompt.trim() === ""}
-        >
-          {generating ? "Drafting…" : "Generate draft"}
-        </button>
-      </section>
+          {providers.length > 1 && (
+            <label className="settings-field">
+              <span className="settings-label">Model</span>
+              <select
+                className="settings-select"
+                value={draftProvider}
+                onChange={(e) => setDraftProvider(e.currentTarget.value)}
+              >
+                <option value="">Active provider{activeProvider ? ` (${activeProvider})` : ""}</option>
+                {providers
+                  .filter((p) => p.id !== activeProvider)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.id}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            className="settings-save-btn"
+            onClick={handleGenerate}
+            disabled={generating || prompt.trim() === ""}
+          >
+            {generating ? "Drafting…" : "Generate draft"}
+          </button>
+        </section>
+      )}
 
       {editor && (
         <div className="provider-card skill-editor">
@@ -423,7 +436,7 @@ function SkillsView({
             </label>
           )}
 
-          {editor.mode === "edit" ? (
+          {remote ? null : editor.mode === "edit" ? (
             <SkillFiles skillName={editor.skill.name} />
           ) : (
             <span className="settings-hint">Save the skill first, then you can attach files to it.</span>

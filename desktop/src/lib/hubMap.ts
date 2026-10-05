@@ -3,7 +3,19 @@
 // `Conversation`, `ChatMessage`, a turn's reply, `AgentEntry` and `ProjectEntry`, and `tests/hubMap.test.mjs` runs them
 // with Node. The wire shapes mirror `crates/warden-server-protocol/src/protocol.rs`.
 
-import type { AgentEntry, Attachment, ChatMessage, Conversation, ProjectEntry, ProviderFallback, Usage } from "../types";
+import type {
+  AgentEntry,
+  Attachment,
+  ChatMessage,
+  Conversation,
+  LimitStatus,
+  ProjectEntry,
+  ProviderFallback,
+  RecentSpend,
+  SpendStatus,
+  Usage,
+  UsageSummary,
+} from "../types";
 
 /** The hub's `UserInfoDto`, only the part this app reads. */
 export interface HubUser {
@@ -199,4 +211,40 @@ export function chatMessage(args: {
     ...(args.creating && args.projectId ? { projectId: args.projectId } : {}),
     ...(args.creating && !args.projectId && args.workdir ? { workdir: args.workdir } : {}),
   };
+}
+
+/** The hub's `UsageReportDto`, the part this app reads. */
+export interface HubUsageReport {
+  total: Usage;
+  conversationCount: number;
+  messageCount: number;
+  limitsEnabled: boolean;
+  limits: LimitStatus[];
+  recent?: RecentSpend;
+  ledgerError?: string;
+}
+
+/** The Usage screen's two kinds of numbers out of one report. The hub doesn't split tokens by agent or provider (its
+ * dollars are split in `recent`), so those two lists are empty and the screen hides them. */
+export function usageFromReport(report: HubUsageReport): { summary: UsageSummary; spend: SpendStatus } {
+  return {
+    summary: { conversationCount: report.conversationCount, messageCount: report.messageCount, total: report.total, byAgent: [], byProvider: [] },
+    spend: { limitsEnabled: report.limitsEnabled, limits: report.limits, recent: report.recent ?? null, ledgerError: report.ledgerError ?? null },
+  };
+}
+
+/** What a vault screen rejects with, whichever machine it asks. `conflict`: the note changed since it was opened. */
+export interface VaultFailure {
+  message: string;
+  conflict: boolean;
+}
+
+/** Like `expectReply`, but a `vaultError` keeps its `conflict` flag, which the screen turns into "reload or overwrite". */
+export function expectVaultReply<T extends { type: string }>(reply: unknown, ...types: string[]): T {
+  const r = (reply ?? {}) as { type?: string; message?: string; conflict?: boolean };
+  if (r.type === "vaultError") {
+    const failure: VaultFailure = { message: r.message ?? "the hub refused", conflict: r.conflict === true };
+    throw failure;
+  }
+  return expectReply<T>(reply, ...types);
 }
