@@ -2,9 +2,18 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-04 (Sessão 142)
+> Última atualização: 2026-10-04 (Sessão 144)
 
 ---
+
+### 2026-10-04 — Sessão 144
+
+- **Objetivo**: religar as outras telas do desktop a um hub escolhido (o que sobrava do P102 fora da verificação), a pedido do usuário.
+- **Feito**: **Cofre, Uso, Skills, Tarefas e Webhooks** usam o hub em uso (`App.tsx` passa `remote` e remonta a tela por `key` ao trocar de máquina; "este computador" segue como antes). Cada tela ganhou uma interface (`VaultApi`, `UsageSource`, `TaskApi`, `WebhookApi`, e o par `localSkills`/`hubSkills`) com a implementação local (`invoke`) e a do hub (`lib/hub.ts`). Os tipos de gasto, tarefa e webhook foram para `types.ts`. **Tarefas e Webhooks**: toda mudança exige a chave de pareamento do hub, e o app não a guarda (decisão do usuário: **pedir a cada mudança**); o `PairingKeyDialog` (`usePairingKey`) a pede para uma mudança e a descarta; cancelar não mostra erro. A lista, o histórico (a conversa `task-<id>` / `task-hook-<id>` pelo `requestHistory`) e a conta que o hub avisa seguem sem chave.
+- **O que as telas deixam de mostrar no hub**: Uso sem a divisão de tokens por agente e por provedor (o hub só divide os dólares, em "Recent spending"); Skills sem arquivos anexados nem "Generate draft" (o hub não tem mensagem para eles); Tarefas sem o interruptor "rodar aqui" (é uma opção do hub, mostrada em texto).
+- **Testes**: `hubMap.test.mjs` (20 de 20: o `conflict` do cofre e o relatório de uso) e o `remote_ipc_test.rs`, que agora passa pelo IPC contra um hub real o cofre (salvar, ler, buscar, conflito de versão, apagar), as skills, o relatório de uso, as tarefas (chave errada recusada e nada salvo; salvar, pausar, apagar) e os webhooks (salvar, credencial, revogar, apagar). Achado: um hub sem `with_tasks` responde `taskError: "this hub keeps no scheduled tasks"`.
+- **Não verificado**: nenhuma dessas telas foi vista numa janela do Tauri; o `PairingKeyDialog` nunca foi desenhado.
+- **Fica**: Settings, Sync e Workspace seguem sendo deste computador (Sync e Workspace tratam do próprio aparelho por natureza; Settings é a maior fatia e ainda sem decisão).
 
 ### 2026-10-04 — Sessão 143
 
