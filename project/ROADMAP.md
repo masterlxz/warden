@@ -315,6 +315,16 @@ começada. Duas frentes independentes (ver P27 em `PENDING.md`), mesmo padrão j
 Quando isso for retomado, vale perguntar ao usuário qual das duas frentes puxar primeiro — o
 próprio usuário já sinalizou (Sessão 38) que o MCP é o caminho mais rápido de ligar hoje.
 
+**Referência pedida em 2026-10-06 (Sessão 152)**: o usuário quer algo no estilo da integração do
+Claude com o Slack — criar bots e responder dentro do Discord, "pela pessoa". Isso é **requisito
+novo, ainda não escopado**: as duas frentes acima cobrem o bot respondendo **como ele mesmo**, não
+agindo **como o usuário** (com a conta/identidade dele). Antes de implementar, decidir: (a) bot
+próprio vs. agir com a identidade do usuário (o Discord proíbe automatizar conta de usuário
+comum, os termos de uso só permitem bot/aplicação; checar antes de qualquer desenho); (b) se
+mensagem enviada em nome do usuário passa por aprovação explícita (categoria `external_message`
+do classificador de risco, ver `ARCHITECTURE.md`, e o raciocínio do P76); (c) onde fica o
+histórico por canal/DM. Sem urgência, nada começado.
+
 ### Sub-agentes autônomos
 
 Agentes que criam outros agentes recursivamente para tarefas complexas.

@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 151)
+> Última atualização: 2026-10-06 (Sessão 152)
 
 ---
+
+### 2026-10-06 — Sessão 152
+
+- **Objetivo**: o usuário perguntou sobre a integração com o Discord (como o Claude tem com o Slack: bots, responder pela pessoa) e se estava documentada; só consulta, sem implementar.
+- **Feito**: confirmado que só há plano (P27, `ROADMAP.md`, `STUDIES.md`), nenhum código. Registrado o requisito novo "agir pela pessoa" no P27 e na seção do Discord do `ROADMAP.md`, com as decisões a tomar antes (bot vs. identidade do usuário, aprovação, histórico por canal/DM). Antes, `git pull` trouxe o trabalho até `ca85a94`.
+- **Agentes e modelo por delegação**: o usuário pediu que, ao delegar ou um agente invocar outro, dê para escolher **o agente e também o modelo**. Registrado como requisito explícito no P123 (`PENDING.md`) com o que já existe (argumento `model`, Sessão 149) e as lacunas (só com 2+ ids, sem políticas nomeadas, sem limite de modelos por agente, delegação síncrona sem registro, usuário não dita o modelo, conferir o aninhado).
+- **Threads (P125)**: o usuário pediu respostas a uma mensagem específica virando uma conversa à parte, como no Slack, na tela de Agents, no Chat e (talvez) no Code. Registrado como P125 em `PENDING.md`, só com as perguntas em aberto (modelo de dados, contexto do modelo, quem responde, interface, canais externos).
+- **Não feito**: nenhum código, build ou teste.
 
 ### 2026-10-05 — Sessão 151
 
