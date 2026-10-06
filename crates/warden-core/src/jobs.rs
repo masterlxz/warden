@@ -257,6 +257,41 @@ impl JobBoard {
         id
     }
 
+    /// Runs a delegation the caller waits for (no `background`) as a recorded task too (P123), so its agent and model show on the
+    /// tasks screen like a background one. It takes no slot — the caller is already waiting on it, and a slot held by a task
+    /// waiting on its own subtask could starve — and isn't listed as a job. Without a recorder it just runs `work`.
+    pub async fn run_recorded<F>(&self, draft: TaskDraft, work: F) -> anyhow::Result<String>
+    where
+        F: Future<Output = anyhow::Result<(String, Option<Usage>)>>,
+    {
+        let Some((recorder, context)) = &self.recording else {
+            return work.await.map(|(text, _)| text);
+        };
+        let id = recorder.created(&TaskSpec {
+            group: context.group.clone(),
+            owner: context.owner.clone(),
+            assignee: draft.assignee,
+            objective: draft.objective,
+            model: draft.model,
+            channel: context.channel.clone(),
+            parent: context.parent.clone(),
+        });
+        let mut cancel = CancelOnDrop { recorder: recorder.clone(), id: id.clone(), armed: true };
+        recorder.running(&id);
+        let outcome = work.await;
+        cancel.armed = false;
+        match outcome {
+            Ok((text, usage)) => {
+                recorder.finished(&id, TaskOutcome::Done { result: text.clone(), usage });
+                Ok(text)
+            }
+            Err(err) => {
+                recorder.finished(&id, TaskOutcome::Failed { error: format!("{err:#}") });
+                Err(err)
+            }
+        }
+    }
+
     /// Queues `work` and returns its id (`job-1`, `job-2`, ...) right away, without waiting. `label`
     /// is only for listings — typically which agent runs it and a short piece of the task.
     pub fn spawn<F>(&self, label: String, work: F) -> String
@@ -546,6 +581,42 @@ mod tests {
         let listed = board.list();
         let task = listed[0].task.as_ref().unwrap();
         assert_eq!((task.task_id.as_str(), task.assignee.as_str(), task.model.as_deref(), task.total_tokens), ("t1", "writer", Some("fast"), Some(7)));
+    }
+
+    #[tokio::test]
+    async fn a_delegation_the_caller_waits_for_is_recorded_too_without_taking_a_slot_or_being_listed() {
+        let (board, log) = recording_board(1);
+        // The only slot is taken, and the synchronous one still runs.
+        let held = board.spawn("held".into(), std::future::pending::<anyhow::Result<String>>());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let text = board.run_recorded(draft("writer"), async { Ok(("sync text".to_string(), Some(Usage { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }))) }).await.unwrap();
+
+        assert_eq!(text, "sync text");
+        assert_eq!(log.lines(), ["created t1 writer model=fast group=g1 owner=Some(\"chief\")", "running t1", "done t1 sync text tokens=2"]);
+        assert_eq!(board.list().len(), 1, "only the background job is listed");
+        assert_eq!(board.state(&held), Some(JobState::Running));
+        board.abort_unfinished();
+    }
+
+    #[tokio::test]
+    async fn a_waited_for_delegation_that_fails_or_is_dropped_is_recorded_as_failed_or_cancelled() {
+        let (board, log) = recording_board(1);
+        let err = board.run_recorded(draft("bad"), async { anyhow::bail!("model exploded") }).await.unwrap_err();
+        assert!(err.to_string().contains("model exploded"));
+
+        let dropped = board.run_recorded(draft("slow"), std::future::pending());
+        assert!(tokio::time::timeout(Duration::from_millis(20), dropped).await.is_err());
+
+        let lines = log.lines();
+        assert!(lines[2].starts_with("failed t1") && lines[2].contains("model exploded"), "{lines:?}");
+        assert_eq!(lines.last().unwrap(), "cancelled t2");
+    }
+
+    #[tokio::test]
+    async fn without_a_recorder_run_recorded_just_runs_the_work() {
+        let board = JobBoard::new(1);
+        assert_eq!(board.run_recorded(draft("w"), async { Ok(("plain".to_string(), None)) }).await.unwrap(), "plain");
     }
 
     #[tokio::test]

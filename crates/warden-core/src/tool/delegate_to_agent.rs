@@ -238,6 +238,18 @@ impl Tool for DelegateToAgentTool {
             }));
         }
 
+        // Waited for, but still a task in the log when the turn has one (P123): who did it, on which model, at what cost.
+        if let Some(board) = &self.jobs {
+            let draft = TaskDraft { assignee: agent.id.clone(), objective: task.to_string(), model: model_id };
+            let (persona, owned_task) = (agent.persona.clone(), task.to_string());
+            let text = board
+                .run_recorded(draft, async move {
+                    let outcome = orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
+                    Ok((outcome.content, outcome.usage))
+                })
+                .await?;
+            return Ok(json!({ "result": text }));
+        }
         let result = orchestrator.handle_turn(&[], task, Vec::new(), agent.persona.as_deref()).await?;
         Ok(json!({ "result": result.content }))
     }

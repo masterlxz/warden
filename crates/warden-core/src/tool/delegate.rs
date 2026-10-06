@@ -35,6 +35,8 @@ pub struct DelegateTool {
 #[derive(Clone)]
 pub struct ModelChoices {
     pub ids: Vec<String>,
+    /// What a choice is for, by id (the named policies, "fast", "reasoning"...): shown to the agent next to the ids.
+    pub hints: Vec<(String, String)>,
     pub resolve: ModelResolver,
 }
 
@@ -43,12 +45,13 @@ pub type ModelResolver = Arc<dyn Fn(&str) -> anyhow::Result<Arc<dyn ModelProvide
 
 /// The `model` argument of a delegation: which provider or combo does this task.
 pub fn model_property(choices: &ModelChoices) -> Value {
-    json!({
-        "type": "string",
-        "enum": choices.ids,
-        "description": "Which model does this task. Leave it out to use the default one. Pick a faster or cheaper model for \
-            simple work and a stronger one for hard reasoning or code: you decide task by task."
-    })
+    let mut description = "Which model does this task. Leave it out to use the default one. Pick a faster or cheaper model for \
+        simple work and a stronger one for hard reasoning or code: you decide task by task."
+        .to_string();
+    for (id, hint) in &choices.hints {
+        description.push_str(&format!("\n- {id}: {hint}"));
+    }
+    json!({ "type": "string", "enum": choices.ids, "description": description })
 }
 
 /// The model a call asked for, or `None` for the default. An id that isn't one of the choices is refused, naming the ones that are.
@@ -179,8 +182,19 @@ impl Tool for DelegateTool {
             }));
         }
 
-        // Sub-agent's token usage is dropped here, not rolled up into the parent conversation's
-        // total — Tool::call only returns serde_json::Value, not a MessageOutcome.
+        // Sub-agent's token usage is not rolled up into the parent conversation's total — Tool::call only returns
+        // serde_json::Value, not a MessageOutcome. With a task log (P123) it is recorded on the task instead.
+        if let Some(board) = &self.jobs {
+            let draft = TaskDraft { assignee: helper_name(&args), objective: task.to_string(), model: model_id };
+            let owned_task = task.to_string();
+            let text = board
+                .run_recorded(draft, async move {
+                    let outcome = orchestrator.handle_message(&[], &owned_task).await?;
+                    Ok((outcome.content, outcome.usage))
+                })
+                .await?;
+            return Ok(json!({ "result": text }));
+        }
         let result = orchestrator.handle_message(&[], task).await?;
         Ok(json!({ "result": result.content }))
     }
@@ -237,6 +251,7 @@ mod tests {
     fn two_models() -> ModelChoices {
         ModelChoices {
             ids: vec!["fast".to_string(), "strong".to_string()],
+            hints: vec![("strong".to_string(), "hard reasoning and code".to_string())],
             resolve: Arc::new(|id| match id {
                 "fast" | "strong" => Ok(Arc::new(FixedAnswerModel { answer: format!("answered by {id}") }) as Arc<dyn ModelProvider>),
                 other => anyhow::bail!("no model {other}"),
@@ -265,6 +280,40 @@ mod tests {
         assert!(plain.spec().parameters["properties"].get("model").is_none(), "no choices, no argument");
         assert!(plain.call(json!({ "task": "x", "model": "fast" })).await.unwrap_err().to_string().contains("can't choose a model"));
         assert_eq!(tool.spec().parameters["properties"]["model"]["enum"], json!(["fast", "strong"]));
+    }
+
+    #[tokio::test]
+    async fn the_spec_tells_the_agent_what_each_named_choice_is_for() {
+        let default = Arc::new(FixedAnswerModel { answer: "d".to_string() });
+        let tool = DelegateTool::new(Orchestrator::new(default, temp_vault())).with_models(two_models());
+        let description = tool.spec().parameters["properties"]["model"]["description"].as_str().unwrap().to_string();
+        assert!(description.contains("- strong: hard reasoning and code") && !description.contains("- fast:"), "{description}");
+    }
+
+    #[tokio::test]
+    async fn a_delegation_waited_for_is_recorded_with_its_model_when_the_turn_keeps_a_task_log() {
+        #[derive(Default)]
+        struct Lines(std::sync::Mutex<Vec<String>>);
+        impl crate::jobs::TaskRecorder for Lines {
+            fn created(&self, task: &crate::jobs::TaskSpec) -> String {
+                self.0.lock().unwrap().push(format!("created {} model={}", task.assignee, task.model.as_deref().unwrap_or("-")));
+                "t1".to_string()
+            }
+            fn running(&self, _id: &str) {}
+            fn finished(&self, _id: &str, outcome: crate::jobs::TaskOutcome) {
+                self.0.lock().unwrap().push(format!("finished {}", matches!(outcome, crate::jobs::TaskOutcome::Done { .. })));
+            }
+        }
+        let log = Arc::new(Lines::default());
+        let context = crate::jobs::TaskContext { group: "g".into(), owner: None, channel: "cli".into(), parent: None, depth: 0 };
+        let board = JobBoard::recording(2, log.clone(), context);
+        let default = Arc::new(FixedAnswerModel { answer: "d".to_string() });
+        let tool = DelegateTool::new(Orchestrator::new(default, temp_vault())).with_models(two_models()).with_jobs(&board).unwrap();
+
+        let result = tool.call(json!({ "task": "x", "model": "strong", "name": "reviewer" })).await.unwrap();
+
+        assert_eq!(result["result"], "answered by strong");
+        assert_eq!(*log.0.lock().unwrap(), ["created reviewer model=strong", "finished true"]);
     }
 
     /// Proves P46's core claim end-to-end: a chain of orchestrators three deep (root → level-1 →

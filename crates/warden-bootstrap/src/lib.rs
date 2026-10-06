@@ -272,6 +272,18 @@ pub struct ComboConfig {
     pub providers: Vec<String>,
 }
 
+/// One named model policy (P123): a word a delegating agent can say instead of a provider id — "fast", "cheap", "reasoning",
+/// "code", "multimodal" — that `model` (a provider or a combo) answers. `description` is what the agent reads to know when to
+/// pick it. Shares one namespace with providers and combos.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPolicyConfig {
+    pub id: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 /// Config for `warden_sync::GitSyncEngine` (P63, v1) — a self-hosted/remote git repo (Gitea,
 /// GitHub, ...) as an alternative to Arweave/TruthID for syncing the vault, for whoever doesn't
 /// want that dependency. HTTPS + token only in v1 (SSH/deploy-key is v2); the token is only ever
@@ -426,6 +438,10 @@ pub struct FileConfig {
     /// with `providers`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub combos: Vec<ComboConfig>,
+    /// Named model policies (P123): "fast", "cheap", "reasoning"... each answered by a provider or combo, offered to an agent
+    /// that delegates alongside the plain ids. No UI — config.toml only, same posture as `delegate_max_depth`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_policies: Vec<ModelPolicyConfig>,
     /// P79's global reserve list, from before the combos replaced it (Sessão 105). Read and
     /// turned into a combo on load (`migrate_legacy_fallbacks`), never written back.
     #[serde(default, skip_serializing, rename = "fallback_providers")]
@@ -668,6 +684,16 @@ pub fn rename_provider_cascade(config: &mut FileConfig, old_id: &str, new_id: &s
             }
         }
     }
+    repoint_policies(config, old_id, new_id);
+}
+
+/// A model policy (P123) that answered with `old_id` answers with `new_id` now.
+fn repoint_policies(config: &mut FileConfig, old_id: &str, new_id: &str) {
+    for policy in &mut config.model_policies {
+        if policy.model == old_id {
+            policy.model = new_id.to_string();
+        }
+    }
 }
 
 /// Clears every reference to a provider id that's about to be removed from `config` — same
@@ -689,6 +715,7 @@ pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
     for id in emptied {
         remove_combo(config, &id);
     }
+    config.model_policies.retain(|p| p.model != removed_id);
 }
 
 /// `rename_provider_cascade` for a combo (P90): the active model and every agent that named it.
@@ -706,11 +733,13 @@ pub fn rename_combo(config: &mut FileConfig, old_id: &str, new_id: &str) {
             agent.provider_id = Some(new_id.to_string());
         }
     }
+    repoint_policies(config, old_id, new_id);
 }
 
 /// Removes a combo and every reference to it (P90).
 pub fn remove_combo(config: &mut FileConfig, id: &str) {
     config.combos.retain(|c| c.id != id);
+    config.model_policies.retain(|p| p.model != id);
     if config.active_provider.as_deref() == Some(id) {
         config.active_provider = None;
     }
@@ -1985,12 +2014,32 @@ fn build_delegating_orchestrator(
 /// The models an agent may choose between for each task it delegates (P123): every configured provider and combo, by id.
 /// `None` when there is nothing to choose between (fewer than two), so no `model` argument is offered.
 pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
-    let ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect();
+    let mut ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect();
+    // The named policies (P123) come after the plain ids; one that clashes with an id or points at nothing is left out.
+    let mut policies: Vec<&ModelPolicyConfig> = Vec::new();
+    for policy in &config.model_policies {
+        let clashes = ids.contains(&policy.id) || policies.iter().any(|p| p.id == policy.id);
+        if clashes || !ids.contains(&policy.model) {
+            eprintln!("note: model policy '{}' clashes with another model or names '{}', which isn't a provider or combo — skipped\n", policy.id, policy.model);
+            continue;
+        }
+        policies.push(policy);
+    }
+    ids.extend(policies.iter().map(|p| p.id.clone()));
     if ids.len() < 2 {
         return None;
     }
+    let hints = policies.iter().map(|p| (p.id.clone(), if p.description.is_empty() { format!("the same as '{}'", p.model) } else { p.description.clone() })).collect();
+    let routes: Vec<(String, String)> = policies.iter().map(|p| (p.id.clone(), p.model.clone())).collect();
     let snapshot = snapshot_config(config)?;
-    Some(ModelChoices { ids, resolve: Arc::new(move |id| build_model_for(&snapshot, id, None)) })
+    Some(ModelChoices {
+        ids,
+        hints,
+        resolve: Arc::new(move |id| {
+            let target = routes.iter().find(|(policy, _)| policy == id).map_or(id, |(_, model)| model.as_str());
+            build_model_for(&snapshot, target, None)
+        }),
+    })
 }
 
 /// A copy of `config` a closure can keep. `FileConfig` isn't `Clone`; a round trip through its own file format is how this crate copies one.
@@ -2283,6 +2332,7 @@ oauth = true
                 node: None,
             }],
             active_provider: Some("ollama-local".to_string()),
+            model_policies: vec![ModelPolicyConfig { id: "cheap".to_string(), model: "ollama-local".to_string(), description: "simple work".to_string() }],
             mcp_servers: vec![
                 McpServerConfig::Stdio {
                     name: "anchor".to_string(),
@@ -3434,6 +3484,8 @@ oauth = true
     /// `manager` delegates to `worker` ("work") in the background; each reads its job. Writes down what every turn was offered.
     struct Hierarchy {
         offered: Arc<std::sync::Mutex<Offers>>,
+        /// The `model` the manager asks for when it delegates to the worker, if any.
+        worker_model: Option<&'static str>,
     }
 
     /// What each turn was offered: its first message, and its tools with their parameters.
@@ -3451,11 +3503,17 @@ oauth = true
             let results = messages.iter().filter(|m| m.role == Role::Tool).count();
             self.offered.lock().unwrap().push((first.clone(), tools.iter().map(|t| (t.name.clone(), t.parameters.clone())).collect()));
             let call = |name: &str, arguments: serde_json::Value| ToolCall { id: "c".into(), name: name.into(), arguments, thought_signature: None };
-            let delegate = |to: &str, task: &str| call("delegate_to_agent", serde_json::json!({ "agent_id": to, "task": task, "background": true }));
+            let delegate = |to: &str, task: &str, model: Option<&str>| {
+                let mut arguments = serde_json::json!({ "agent_id": to, "task": task, "background": true });
+                if let Some(model) = model {
+                    arguments["model"] = model.into();
+                }
+                call("delegate_to_agent", arguments)
+            };
             let read = call("jobs", serde_json::json!({ "action": "result", "job_id": "job-1" }));
             let calls = match (first.as_str(), results) {
-                ("go", 0) => vec![delegate("manager", "manage")],
-                ("manage", 0) if tools.iter().any(|t| t.name == "delegate_to_agent") => vec![delegate("worker", "work")],
+                ("go", 0) => vec![delegate("manager", "manage", None)],
+                ("manage", 0) if tools.iter().any(|t| t.name == "delegate_to_agent") => vec![delegate("worker", "work", self.worker_model)],
                 ("go" | "manage", 1) => vec![read],
                 _ => Vec::new(),
             };
@@ -3466,16 +3524,21 @@ oauth = true
 
     /// `boss` (delegates) over `manager` (may delegate, unless `manager_delegates` is false) over `worker`, run from the boss's turn.
     async fn run_hierarchy(manager_delegates: bool) -> (Vec<agent_tasks::AgentTask>, Offers) {
+        run_hierarchy_with(manager_delegates, None, FileConfig::default()).await
+    }
+
+    /// `run_hierarchy`, with the models of `extra` (providers, combos, policies) in the config and the manager asking for `worker_model`.
+    async fn run_hierarchy_with(manager_delegates: bool, worker_model: Option<&'static str>, extra: FileConfig) -> (Vec<agent_tasks::AgentTask>, Offers) {
         let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
         let dir = std::env::temp_dir().join(format!("warden-hierarchy-test-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let log = dir.join("agent_tasks.jsonl");
-        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: offered.clone() }), Arc::new(Vault::new(dir.join("vault"))));
+        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: offered.clone(), worker_model }), Arc::new(Vault::new(dir.join("vault"))));
         base.register_tool(Arc::new(JobsTool::new()));
         let base = base.with_parallel_jobs(2).with_task_recorder(Arc::new(agent_tasks::FileTaskRecorder::new(&log)));
         let under = |id: &str, boss: Option<&str>, delegates: bool| AgentConfig { reports_to: boss.map(str::to_string), can_delegate_to_agents: delegates, ..agent_config(id, None) };
         let config = FileConfig {
             agents: vec![under("boss", None, true), under("manager", Some("boss"), manager_delegates), under("worker", Some("manager"), false)],
-            ..FileConfig::default()
+            ..extra
         };
         let boss = scope_to_agent(&base, &config, None, "boss", AgentExtras::default()).unwrap();
         assert_eq!(boss.orchestrator.handle_message(&[], "go").await.unwrap().content, "go done");
@@ -3504,6 +3567,87 @@ oauth = true
         assert!(!worker_tools.iter().any(|n| n == "delegate_to_agent" || n == "jobs"), "{worker_tools:?}");
     }
 
+    /// Two providers that never answer (nothing listens there) and a named policy over one of them, so a task can be given a model
+    /// without any real call going out.
+    fn models_with_policy() -> FileConfig {
+        let local = |id: &str| ProviderConfig {
+            id: id.to_string(),
+            kind: Provider::OpenaiCompatible,
+            api_key: None,
+            base_url: Some("http://127.0.0.1:9/v1".to_string()),
+            model: Some("m".to_string()),
+            node: None,
+        };
+        FileConfig {
+            providers: vec![local("small"), local("big")],
+            model_policies: vec![ModelPolicyConfig { id: "reasoning".into(), model: "big".into(), description: "hard problems".into() }],
+            ..FileConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_named_policy_is_offered_beside_the_ids_with_what_it_is_for_and_answers_with_its_model() {
+        let choices = model_choices(&models_with_policy()).expect("two providers and a policy");
+        assert_eq!(choices.ids, ["small", "big", "reasoning"]);
+        assert_eq!(choices.hints, [("reasoning".to_string(), "hard problems".to_string())]);
+        assert!(warden_core::tool::delegate::model_property(&choices)["description"].as_str().unwrap().contains("- reasoning: hard problems"));
+        assert_eq!((choices.resolve)("reasoning").unwrap().model_id(), "m");
+        assert!((choices.resolve)("ghost").is_err());
+
+        // A policy that clashes with an id, repeats one, or names nothing is left out; a lone provider plus a policy is a choice.
+        let mut config = models_with_policy();
+        let policy = |id: &str, model: &str| ModelPolicyConfig { id: id.into(), model: model.into(), description: String::new() };
+        config.model_policies = vec![policy("small", "big"), policy("code", "ghost"), policy("fast", "small"), policy("fast", "big")];
+        let choices = model_choices(&config).unwrap();
+        assert_eq!((choices.ids.clone(), choices.hints.clone()), (vec!["small".to_string(), "big".into(), "fast".into()], vec![("fast".to_string(), "the same as 'small'".to_string())]));
+        config.providers.truncate(1);
+        config.model_policies = vec![policy("fast", "small")];
+        assert_eq!(model_choices(&config).unwrap().ids, ["small", "fast"]);
+        config.model_policies.clear();
+        assert!(model_choices(&config).is_none(), "one model and no policy is no choice");
+    }
+
+    #[test]
+    fn a_policy_follows_the_model_it_names_when_that_is_renamed_and_goes_when_it_is_removed() {
+        let mut config = models_with_policy();
+        rename_provider_cascade(&mut config, "big", "bigger");
+        assert_eq!(config.model_policies[0].model, "bigger");
+        remove_provider_references(&mut config, "bigger");
+        assert!(config.model_policies.is_empty());
+
+        let mut config = models_with_policy();
+        config.model_policies.push(ModelPolicyConfig { id: "fast".into(), model: "mix".into(), description: String::new() });
+        config.combos = vec![combo("mix", &["small"])];
+        rename_combo(&mut config, "mix", "blend");
+        assert_eq!(config.model_policies[1].model, "blend");
+        remove_combo(&mut config, "blend");
+        assert_eq!(config.model_policies.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["reasoning"]);
+    }
+
+    #[test]
+    fn model_policies_are_read_from_config_toml_and_written_back() {
+        let text = "[[providers]]\nid = \"a\"\nkind = \"gemini\"\n[[model_policies]]\nid = \"cheap\"\nmodel = \"a\"\ndescription = \"simple work\"\n";
+        let config: FileConfig = toml::from_str(text).unwrap();
+        assert_eq!(config.model_policies, [ModelPolicyConfig { id: "cheap".into(), model: "a".into(), description: "simple work".into() }]);
+        assert!(toml::to_string(&config).unwrap().contains("[[model_policies]]"));
+        assert!(!toml::to_string(&FileConfig::default()).unwrap().contains("model_policies"));
+    }
+
+    /// P123: the manager reached in the background is offered the models and the policies too, and the one it picks for its own subtask is
+    /// the one recorded on that subtask — the choice holds down the whole chain, not only at the first level.
+    #[tokio::test]
+    async fn the_model_a_nested_agent_chooses_for_its_subtask_is_offered_and_recorded() {
+        let (tasks, offered) = run_hierarchy_with(true, Some("reasoning"), models_with_policy()).await;
+
+        let manager_tools: Vec<&(String, serde_json::Value)> = offered.iter().filter(|(first, _)| first == "manage").flat_map(|(_, tools)| tools).collect();
+        let delegate = manager_tools.iter().find(|(name, _)| name == "delegate_to_agent").expect("the manager was given delegate_to_agent");
+        assert_eq!(delegate.1["properties"]["model"]["enum"], serde_json::json!(["small", "big", "reasoning"]));
+
+        let by = |name: &str| tasks.iter().find(|t| t.assignee == name).unwrap_or_else(|| panic!("no task for {name}: {tasks:?}"));
+        assert_eq!(by("worker").model.as_deref(), Some("reasoning"));
+        assert_eq!(by("manager").model, None, "the boss chose none for the manager");
+    }
+
     #[tokio::test]
     async fn an_agent_that_may_not_delegate_is_not_given_the_tool_in_its_background_task() {
         let (tasks, offered) = run_hierarchy(false).await;
@@ -3517,7 +3661,7 @@ oauth = true
     async fn an_agent_that_may_delegate_gets_the_tool_only_when_a_task_runs_not_when_the_targets_are_built() {
         // The spawner is lazy: building the targets must not build anyone's own delegation tool.
         let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-lazy-delegation-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
-        let orchestrator = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default() }), vault);
+        let orchestrator = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default(), worker_model: None }), vault);
         let config = FileConfig { agents: vec![AgentConfig { can_delegate_to_agents: true, ..agent_config("manager", None) }, agent_config("plain", None)], ..FileConfig::default() };
         let targets = delegate_targets(&config, &orchestrator, None);
         let by = |id: &str| targets.iter().find(|t| t.id == id).unwrap();

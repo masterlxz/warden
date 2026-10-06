@@ -687,6 +687,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         None => None,
     };
 
+    // Named model policies (P123) have no Settings screen yet (config.toml only): carry forward the ones whose model this save kept.
+    let model_policies = existing.model_policies.iter().filter(|p| providers.iter().any(|x| x.id == p.model) || combos.iter().any(|c| c.id == p.model)).cloned().collect();
+
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`
         // is empty (see `resolve_model_provider` in warden-bootstrap) — once this screen has
@@ -714,6 +717,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         },
         providers,
         active_provider,
+        model_policies,
         combos,
         legacy_fallback_providers: Vec::new(),
         mcp_servers,

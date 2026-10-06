@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-06 — Sessão 153
+
+- **Objetivo**: fechar as lacunas do requisito "escolher o agente e o modelo por delegação" (P123, pedido da Sessão 152): (b) políticas nomeadas, (d) delegação síncrona sem registro e (f) o `model` chegando ao agente aninhado. Ficaram de fora (a), que é só a regra "dois ou mais ids" (com um id só não há o que escolher), (c), limitar quais modelos um agente escolhe (P122), e (e), o usuário ditar o modelo por fora.
+- **Feito**: (b) `[[model_policies]]` no `config.toml` (`ModelPolicyConfig { id, model, description }`): o nome entra no enum do `model` depois dos ids, a descrição aparece para o agente (`ModelChoices.hints`) e o nome resolve para o provedor ou combo; política que repete um id, que repete outra ou que aponta para o nada é pulada com aviso; renomear ou remover o provedor ou combo leva a política junto (`rename_provider_cascade`, `rename_combo`, `remove_*`), e o Save do desktop preserva as políticas cujo modelo sobrou. (d) `JobBoard::run_recorded`: a delegação sem `background` vira tarefa no log (agente, modelo, tokens, falhou ou cancelada), sem pegar vaga na fila e fora da lista de `jobs`; usada por `delegate_task` e `delegate_to_agent`. (f) teste de três agentes: o gerente aninhado recebe `model` com as políticas no enum e o modelo que escolhe para o worker é o gravado na subtarefa.
+- **Testes**: 1382 testes Rust verdes, clippy sem aviso novo (só o antigo de `learning_eval`). Novos: 3 em `jobs.rs` (síncrona registrada sem vaga, falha e cancelamento, sem recorder), 2 em `delegate.rs` (dicas na spec, síncrona registrada com o modelo), 4 no bootstrap (política na lista e resolução, cascata, leitura e escrita do TOML, aninhamento).
+- **Não verificado**: um modelo real escolhendo uma política; a tela "Agent work" mostrando as tarefas síncronas numa janela. Políticas só por `config.toml`, sem tela.
+- **Fica no P123**: (c) limitar os modelos por agente (P122), (e) o usuário ditar o modelo, "pausado", cancelar pela tela, tela para editar as políticas, CLI/celular/extensão.
+
 ### 2026-10-06 — Sessão 152
 
 - **Objetivo**: o usuário perguntou sobre a integração com o Discord (como o Claude tem com o Slack: bots, responder pela pessoa) e se estava documentada; só consulta, sem implementar.
