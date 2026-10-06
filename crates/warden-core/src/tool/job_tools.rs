@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::jobs::{JobBoard, JobState, TaskDraft};
+use crate::jobs::{JobBoard, JobState, TaskDraft, TaskLink};
 use crate::model::Usage;
 use crate::tool::{Tool, ToolSpec};
 
@@ -45,6 +45,21 @@ where
     F: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
 {
     let job_id = board.spawn_task(label, draft, work);
+    json!({
+        "job_id": job_id,
+        "status": "started",
+        "next": "Carry on; read the outcome later with the 'jobs' tool (action 'result', this job_id)."
+    })
+}
+
+/// Like `start_task`, for a task that runs a turn of its own: `work` is handed the task's `TaskLink` (when the board records), so that
+/// turn can start subtasks under it (`Orchestrator::with_parent_task`).
+pub fn start_task_with<F, W>(board: &JobBoard, label: String, draft: TaskDraft, work: F) -> Value
+where
+    F: FnOnce(Option<TaskLink>) -> W + Send + 'static,
+    W: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
+{
+    let job_id = board.spawn_task_with(label, draft, work);
     json!({
         "job_id": job_id,
         "status": "started",
@@ -153,7 +168,8 @@ impl Tool for JobsTool {
                     anyhow::anyhow!("unknown job_id '{id}' — this turn's jobs: {}", if known.is_empty() { "(none)".to_string() } else { known })
                 };
                 let wait = args.get("wait").and_then(Value::as_bool).unwrap_or(true);
-                let state = if wait { board.wait(id).await } else { board.state(id) };
+                // A task's own agent waiting for a subtask shows as "waiting for agent" meanwhile (P123).
+                let state = if wait { board.wait_as_parent(id).await } else { board.state(id) };
                 Ok(outcome(id, &state.ok_or_else(unknown)?))
             }
             other => anyhow::bail!("unknown action '{other}' — use 'list' or 'result'"),

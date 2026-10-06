@@ -544,7 +544,7 @@ export interface NodeInfo {
 
 /** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
 /** Onde uma tarefa delegada está (P123). */
-export type AgentTaskState = "pending" | "running" | "done" | "failed" | "cancelled";
+export type AgentTaskState = "pending" | "running" | "waiting" | "done" | "failed" | "cancelled";
 
 /** Espelha `AgentTaskDto` (P123): uma tarefa que um agente delegou em segundo plano. `group` é comum às tarefas que um turno começou. */
 export interface AgentTask {
@@ -554,6 +554,8 @@ export interface AgentTask {
   owner?: string | null;
   /** Quem faz o trabalho, ou o nome dado a um ajudante temporário. */
   assignee: string;
+  /** A tarefa de que esta é subtarefa, quando o agente dela a começou de dentro de outra tarefa. */
+  parentId?: string | null;
   objective: string;
   model?: string | null;
   channel: string;

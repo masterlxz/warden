@@ -11,6 +11,7 @@ function GroupHeader({ group }: { group: TaskGroup }) {
   const parts = [
     counts.done > 0 && `${counts.done} concluída${counts.done > 1 ? "s" : ""}`,
     counts.running > 0 && `${counts.running} em andamento`,
+    counts.waiting > 0 && `${counts.waiting} aguardando agente`,
     counts.pending > 0 && `${counts.pending} pendente${counts.pending > 1 ? "s" : ""}`,
     counts.failed > 0 && `${counts.failed} falhou`,
     counts.cancelled > 0 && `${counts.cancelled} cancelada${counts.cancelled > 1 ? "s" : ""}`,
@@ -40,12 +41,12 @@ function GroupHeader({ group }: { group: TaskGroup }) {
   );
 }
 
-function TaskRow({ task, now }: { task: AgentTask; now: number }) {
+function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: number }) {
   const [open, setOpen] = useState(false);
   const detail = task.state === "done" ? task.result : task.error;
   const duration = durationLabel(task, now);
   return (
-    <li className={`agent-work-task agent-work-task--${task.state}`}>
+    <li className={`agent-work-task agent-work-task--${task.state}`} style={depth > 0 ? { marginLeft: `${depth * 1.4}em` } : undefined}>
       <button type="button" className="agent-work-task-line" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="agent-work-mark" title={STATE_LABEL[task.state]} aria-label={STATE_LABEL[task.state]}>
           {STATE_MARK[task.state]}
@@ -115,8 +116,8 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
         <section key={group.group} className="agent-work-group">
           <GroupHeader group={group} />
           <ul className="agent-work-list">
-            {group.tasks.map((task) => (
-              <TaskRow key={task.id} task={task} now={now} />
+            {group.rows.map(({ task, depth }) => (
+              <TaskItem key={task.id} task={task} depth={depth} now={now} />
             ))}
           </ul>
         </section>

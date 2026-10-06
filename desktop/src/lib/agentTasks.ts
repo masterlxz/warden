@@ -3,12 +3,20 @@
 
 import type { AgentTask, AgentTaskState } from "../types";
 
+/** A task as the list shows it: how many levels under the turn's own agent it sits (0 for the tasks the agent started itself). */
+export interface TaskRow {
+  task: AgentTask;
+  depth: number;
+}
+
 export interface TaskGroup {
   group: string;
   /** The agent that delegated, if there was one. */
   owner: string | null;
   /** Oldest first, in the order the turn started them. */
   tasks: AgentTask[];
+  /** The same tasks as a tree flattened for display: each one followed by its subtasks. */
+  rows: TaskRow[];
   total: number;
   /** Done, failed or cancelled: no longer waiting for anything. */
   finished: number;
@@ -17,7 +25,7 @@ export interface TaskGroup {
   percent: number;
   /** Tokens the tasks that reported any used. */
   totalTokens: number;
-  /** Something in the group is still pending or running. */
+  /** Something in the group is still pending, running or waiting for another agent. */
   active: boolean;
   createdAtMs: number;
 }
@@ -25,6 +33,7 @@ export interface TaskGroup {
 export const STATE_LABEL: Record<AgentTaskState, string> = {
   pending: "Pending",
   running: "Running",
+  waiting: "Waiting for agent",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -34,12 +43,29 @@ export const STATE_LABEL: Record<AgentTaskState, string> = {
 export const STATE_MARK: Record<AgentTaskState, string> = {
   pending: "○",
   running: "◐",
+  waiting: "◉",
   done: "✓",
   failed: "⚠",
   cancelled: "⏹",
 };
 
-const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, done: 0, failed: 0, cancelled: 0 });
+const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, done: 0, failed: 0, cancelled: 0 });
+
+/** The tasks of one group as a tree: each task followed by its subtasks, the subtasks one level deeper. A task whose parent isn't in the
+ * group (or a loop that shouldn't exist) is shown at the top rather than lost. */
+function treeRows(ordered: AgentTask[]): TaskRow[] {
+  const ids = new Set(ordered.map((t) => t.id));
+  const rows: TaskRow[] = [];
+  const seen = new Set<string>();
+  const add = (task: AgentTask, depth: number) => {
+    seen.add(task.id);
+    rows.push({ task, depth });
+    for (const child of ordered) if (child.parentId === task.id && !seen.has(child.id)) add(child, depth + 1);
+  };
+  for (const task of ordered) if (!task.parentId || !ids.has(task.parentId)) add(task, 0);
+  for (const task of ordered) if (!seen.has(task.id)) add(task, 0);
+  return rows;
+}
 
 /** The tasks grouped by the turn that started them, the newest group first. A state this app doesn't know counts as pending. */
 export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
@@ -59,12 +85,13 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
       group,
       owner: ordered.find((t) => t.owner)?.owner ?? null,
       tasks: ordered,
+      rows: treeRows(ordered),
       total: ordered.length,
       finished,
       counts,
       percent: Math.round((finished / ordered.length) * 100),
       totalTokens: ordered.reduce((sum, t) => sum + (t.totalTokens ?? 0), 0),
-      active: counts.pending + counts.running > 0,
+      active: counts.pending + counts.running + counts.waiting > 0,
       createdAtMs: ordered[0].createdAtMs,
     });
   }

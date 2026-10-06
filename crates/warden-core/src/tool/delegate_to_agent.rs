@@ -8,7 +8,7 @@ use crate::budget::TurnBudget;
 use crate::jobs::{JobBoard, TaskDraft};
 use crate::orchestrator::Orchestrator;
 use crate::tool::delegate::{model_property, pick_model, ModelChoices};
-use crate::tool::job_tools::{background_property, job_label, start_task, wants_background};
+use crate::tool::job_tools::{background_property, job_label, start_task_with, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// One addressable target for `DelegateToAgentTool` (P46's opt-in "chief" mechanism) — a
@@ -214,7 +214,12 @@ impl Tool for DelegateToAgentTool {
         if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
             let (persona, owned_task) = (agent.persona.clone(), task.to_string());
             let draft = TaskDraft { assignee: agent.id.clone(), objective: task.to_string(), model: model_id };
-            return Ok(start_task(board, job_label(&agent.id, task), draft, async move {
+            return Ok(start_task_with(board, job_label(&agent.id, task), draft, move |link| async move {
+                // The turn of a task may start subtasks of its own, recorded under it (P123).
+                let orchestrator = match link {
+                    Some(link) => orchestrator.with_parent_task(link),
+                    None => orchestrator,
+                };
                 let outcome = orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
                 Ok((outcome.content, outcome.usage))
             }));

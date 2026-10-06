@@ -3,12 +3,20 @@
 
 import type { AgentTask, AgentTaskState } from "./messages";
 
+/** Uma tarefa como a lista a mostra: quantos níveis abaixo do agente do turno ela está (0 para as que o próprio agente começou). */
+export interface TaskRow {
+  task: AgentTask;
+  depth: number;
+}
+
 export interface TaskGroup {
   group: string;
   /** O agente que delegou, se houve. */
   owner: string | null;
   /** Da mais antiga à mais nova, na ordem em que o turno as começou. */
   tasks: AgentTask[];
+  /** As mesmas tarefas como árvore achatada para mostrar: cada uma seguida das suas subtarefas. */
+  rows: TaskRow[];
   total: number;
   /** Concluídas, falhas ou canceladas: nada mais a esperar. */
   finished: number;
@@ -25,6 +33,7 @@ export interface TaskGroup {
 export const STATE_LABEL: Record<AgentTaskState, string> = {
   pending: "Pendente",
   running: "Em andamento",
+  waiting: "Aguardando agente",
   done: "Concluída",
   failed: "Falhou",
   cancelled: "Cancelada",
@@ -33,12 +42,29 @@ export const STATE_LABEL: Record<AgentTaskState, string> = {
 export const STATE_MARK: Record<AgentTaskState, string> = {
   pending: "○",
   running: "◐",
+  waiting: "◉",
   done: "✓",
   failed: "⚠",
   cancelled: "⏹",
 };
 
-const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, done: 0, failed: 0, cancelled: 0 });
+const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, done: 0, failed: 0, cancelled: 0 });
+
+/** As tarefas de um grupo como árvore: cada tarefa seguida das suas subtarefas, um nível abaixo. Uma tarefa cujo pai não está no grupo
+ * (ou um laço que não deveria existir) aparece no topo em vez de se perder. */
+function treeRows(ordered: AgentTask[]): TaskRow[] {
+  const ids = new Set(ordered.map((t) => t.id));
+  const rows: TaskRow[] = [];
+  const seen = new Set<string>();
+  const add = (task: AgentTask, depth: number) => {
+    seen.add(task.id);
+    rows.push({ task, depth });
+    for (const child of ordered) if (child.parentId === task.id && !seen.has(child.id)) add(child, depth + 1);
+  };
+  for (const task of ordered) if (!task.parentId || !ids.has(task.parentId)) add(task, 0);
+  for (const task of ordered) if (!seen.has(task.id)) add(task, 0);
+  return rows;
+}
 
 /** As tarefas agrupadas pelo turno que as começou, o grupo mais novo primeiro. Um estado desconhecido conta como pendente. */
 export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
@@ -58,12 +84,13 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
       group,
       owner: ordered.find((t) => t.owner)?.owner ?? null,
       tasks: ordered,
+      rows: treeRows(ordered),
       total: ordered.length,
       finished,
       counts,
       percent: Math.round((finished / ordered.length) * 100),
       totalTokens: ordered.reduce((sum, t) => sum + (t.totalTokens ?? 0), 0),
-      active: counts.pending + counts.running > 0,
+      active: counts.pending + counts.running + counts.waiting > 0,
       createdAtMs: ordered[0].createdAtMs,
     });
   }

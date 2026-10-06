@@ -55,6 +55,8 @@ pub struct TaskSpec {
     pub objective: String,
     pub model: Option<String>,
     pub channel: String,
+    /// The task this one is a part of (P123): its agent started this as a subtask. `None` for a task a turn's own agent started.
+    pub parent: Option<String>,
 }
 
 /// How a recorded task ended.
@@ -72,6 +74,10 @@ pub trait TaskRecorder: Send + Sync {
     fn created(&self, task: &TaskSpec) -> String;
     fn running(&self, id: &str);
     fn finished(&self, id: &str, outcome: TaskOutcome);
+    /// The task's agent is waiting for another agent (a subtask it started): shown as "waiting for agent" until `resumed`.
+    fn waiting(&self, _id: &str) {}
+    /// The wait that `waiting` announced is over: the task is running again.
+    fn resumed(&self, _id: &str) {}
 }
 
 /// What a turn tells its board about itself, to place the tasks it starts.
@@ -80,6 +86,24 @@ pub struct TaskContext {
     pub group: String,
     pub owner: Option<String>,
     pub channel: String,
+    /// The task whose agent this turn is (P123): what the tasks started here are subtasks of. `None` on the root turn.
+    pub parent: Option<String>,
+    /// How deep this turn is: 0 for the root, 1 for the turn of a task, 2 for the turn of a subtask.
+    pub depth: u8,
+}
+
+/// What the work of a recorded task is handed so the turn it runs can start subtasks of its own (P123): where it sits in the tree, and
+/// how to record under it. Only exists when the board records.
+#[derive(Clone)]
+pub struct TaskLink {
+    pub task_id: String,
+    pub group: String,
+    /// Who does the task: the owner of the subtasks its turn starts, when that turn has no agent of its own.
+    pub assignee: String,
+    /// The depth of the turn that runs this task.
+    pub depth: u8,
+    pub max_parallel: usize,
+    pub recorder: Arc<dyn TaskRecorder>,
 }
 
 /// What a recorded job adds to its row in `JobBoard::list`.
@@ -141,6 +165,7 @@ impl Drop for CancelOnDrop {
 /// not finished when the turn ends (or is cancelled). Nothing here is persisted.
 pub struct JobBoard {
     slots: Arc<Semaphore>,
+    max_parallel: usize,
     jobs: Mutex<Vec<Job>>,
     /// Where the tasks of this turn are recorded (P123), and the turn they belong to. `None`: jobs stay in memory.
     recording: Option<(Arc<dyn TaskRecorder>, TaskContext)>,
@@ -149,12 +174,14 @@ pub struct JobBoard {
 impl JobBoard {
     /// `max_parallel` is clamped to at least 1, so a job always eventually gets to run.
     pub fn new(max_parallel: usize) -> Arc<Self> {
-        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel.max(1))), jobs: Mutex::new(Vec::new()), recording: None })
+        let max_parallel = max_parallel.max(1);
+        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel)), max_parallel, jobs: Mutex::new(Vec::new()), recording: None })
     }
 
     /// Like `new`, with every task started through `spawn_task` recorded by `recorder` as part of `context`'s turn.
     pub fn recording(max_parallel: usize, recorder: Arc<dyn TaskRecorder>, context: TaskContext) -> Arc<Self> {
-        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel.max(1))), jobs: Mutex::new(Vec::new()), recording: Some((recorder, context)) })
+        let max_parallel = max_parallel.max(1);
+        Arc::new(Self { slots: Arc::new(Semaphore::new(max_parallel)), max_parallel, jobs: Mutex::new(Vec::new()), recording: Some((recorder, context)) })
     }
 
     /// Like `spawn`, for work that is a task (P123): when the board records, the task is written as pending now, running
@@ -164,8 +191,18 @@ impl JobBoard {
     where
         F: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
     {
+        self.spawn_task_with(label, draft, move |_| work)
+    }
+
+    /// Like `spawn_task`, for work that runs a turn of its own: `work` is handed the `TaskLink` of the task (when the board
+    /// records), so that turn can start subtasks under it. Without a recorder it gets `None`, and nothing nests.
+    pub fn spawn_task_with<F, W>(&self, label: String, draft: TaskDraft, work: F) -> String
+    where
+        F: FnOnce(Option<TaskLink>) -> W + Send + 'static,
+        W: Future<Output = anyhow::Result<(String, Option<Usage>)>> + Send + 'static,
+    {
         let Some((recorder, context)) = &self.recording else {
-            return self.spawn(label, async move { work.await.map(|(text, _)| text) });
+            return self.spawn(label, async move { work(None).await.map(|(text, _)| text) });
         };
         let task_id = recorder.created(&TaskSpec {
             group: context.group.clone(),
@@ -174,7 +211,16 @@ impl JobBoard {
             objective: draft.objective.clone(),
             model: draft.model.clone(),
             channel: context.channel.clone(),
+            parent: context.parent.clone(),
         });
+        let link = TaskLink {
+            task_id: task_id.clone(),
+            group: context.group.clone(),
+            assignee: draft.assignee.clone(),
+            depth: context.depth + 1,
+            max_parallel: self.max_parallel,
+            recorder: recorder.clone(),
+        };
         let usage_slot = Arc::new(Mutex::new(None));
         let (state_tx, state_rx) = watch::channel(JobState::Queued);
         let slots = self.slots.clone();
@@ -189,7 +235,7 @@ impl JobBoard {
             };
             state_tx.send_replace(JobState::Running);
             recorder.running(&id);
-            let outcome = work.await;
+            let outcome = work(Some(link)).await;
             cancel.armed = false;
             match outcome {
                 Ok((text, used)) => {
@@ -271,6 +317,21 @@ impl JobBoard {
         };
         let finished = state.wait_for(JobState::is_finished).await.map(|s| s.clone());
         Some(finished.unwrap_or_else(|_| JobState::Failed("the job stopped without a result (it panicked)".to_string())))
+    }
+
+    /// Like `wait`, for the agent of a task that is waiting on a subtask (P123): when this board belongs to a task and `id` hasn't
+    /// finished yet, the task is shown as waiting for an agent until the wait is over.
+    pub async fn wait_as_parent(&self, id: &str) -> Option<JobState> {
+        let parent = self.recording.as_ref().and_then(|(recorder, context)| context.parent.clone().map(|task| (recorder.clone(), task)));
+        match parent {
+            Some((recorder, task)) if self.state(id).is_some_and(|state| !state.is_finished()) => {
+                recorder.waiting(&task);
+                let outcome = self.wait(id).await;
+                recorder.resumed(&task);
+                outcome
+            }
+            _ => self.wait(id).await,
+        }
     }
 
     /// Stops every job that has not finished. Finished ones keep their result.
@@ -436,12 +497,21 @@ mod tests {
         fn created(&self, task: &TaskSpec) -> String {
             let mut lines = self.0.lock().unwrap();
             let id = format!("t{}", lines.iter().filter(|l| l.starts_with("created")).count() + 1);
-            lines.push(format!("created {id} {} model={} group={} owner={:?}", task.assignee, task.model.as_deref().unwrap_or("-"), task.group, task.owner));
+            let parent = task.parent.as_ref().map(|p| format!(" parent={p}")).unwrap_or_default();
+            lines.push(format!("created {id} {} model={} group={} owner={:?}{parent}", task.assignee, task.model.as_deref().unwrap_or("-"), task.group, task.owner));
             id
         }
 
         fn running(&self, id: &str) {
             self.0.lock().unwrap().push(format!("running {id}"));
+        }
+
+        fn waiting(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("waiting {id}"));
+        }
+
+        fn resumed(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("resumed {id}"));
         }
 
         fn finished(&self, id: &str, outcome: TaskOutcome) {
@@ -455,7 +525,7 @@ mod tests {
 
     fn recording_board(max: usize) -> (Arc<JobBoard>, Arc<Log>) {
         let log = Arc::new(Log(Mutex::new(Vec::new())));
-        let context = TaskContext { group: "g1".into(), owner: Some("chief".into()), channel: "desktop".into() };
+        let context = TaskContext { group: "g1".into(), owner: Some("chief".into()), channel: "desktop".into(), parent: None, depth: 0 };
         (JobBoard::recording(max, log.clone(), context), log)
     }
 
@@ -514,6 +584,63 @@ mod tests {
         drop(JobsGuard(board.clone()));
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(!log.lines().iter().any(|l| l.starts_with("cancelled")), "{:?}", log.lines());
+    }
+
+    #[tokio::test]
+    async fn the_work_of_a_task_is_handed_a_link_to_start_subtasks_under_it() {
+        let (board, log) = recording_board(3);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let id = board.spawn_task_with("manager".into(), draft("manager"), move |link| async move {
+            let link = link.expect("a recording board hands over the link");
+            // The turn of the task builds its own board from the link, as the orchestrator does.
+            let child = JobBoard::recording(
+                link.max_parallel,
+                link.recorder.clone(),
+                TaskContext { group: link.group.clone(), owner: Some(link.assignee.clone()), channel: "desktop".into(), parent: Some(link.task_id.clone()), depth: link.depth },
+            );
+            let sub = child.spawn_task("helper".into(), draft("helper"), async { Ok(("helped".to_string(), None)) });
+            let state = child.wait_as_parent(&sub).await;
+            tx.send((link.task_id, link.depth, link.max_parallel, state)).unwrap();
+            Ok(("managed".to_string(), None))
+        });
+
+        board.wait(&id).await;
+        let (task_id, depth, max_parallel, state) = rx.await.unwrap();
+        assert_eq!((task_id.as_str(), depth, max_parallel), ("t1", 1, 3));
+        assert_eq!(state, Some(JobState::Done("helped".to_string())));
+        let lines = log.lines();
+        let created = lines.iter().find(|l| l.starts_with("created t2 helper")).unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(created.ends_with("group=g1 owner=Some(\"manager\") parent=t1"), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_task_waiting_on_a_subtask_is_told_waiting_and_then_resumed_and_only_when_it_really_waits() {
+        let (board, log) = recording_board(2);
+        let parent_context = TaskContext { group: "g1".into(), owner: Some("manager".into()), channel: "desktop".into(), parent: Some("p1".into()), depth: 1 };
+        let child = JobBoard::recording(2, log.clone(), parent_context);
+
+        // A subtask that has to be waited for.
+        let slow = child.spawn_task("slow".into(), draft("slow"), async {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            Ok(("late".to_string(), None))
+        });
+        assert_eq!(child.wait_as_parent(&slow).await, Some(JobState::Done("late".to_string())));
+        let lines = log.lines();
+        let waiting = lines.iter().position(|l| l == "waiting p1").expect("it was told waiting");
+        let resumed = lines.iter().position(|l| l == "resumed p1").expect("and resumed");
+        assert!(waiting < resumed && lines.iter().position(|l| l.starts_with("done t1")).unwrap() < resumed, "{lines:?}");
+
+        // A subtask that finished already: nothing to wait for, so no waiting is announced.
+        let quick = child.spawn_task("quick".into(), draft("quick"), async { Ok(("now".to_string(), None)) });
+        child.wait(&quick).await;
+        let before = log.lines().len();
+        child.wait_as_parent(&quick).await;
+        assert_eq!(log.lines().len(), before);
+
+        // The root board has no parent task, so it never announces a wait.
+        let id = board.spawn_task("root job".into(), draft("a"), async { Ok(("ok".to_string(), None)) });
+        board.wait_as_parent(&id).await;
+        assert_eq!(log.lines().iter().filter(|l| l.starts_with("waiting")).count(), 1, "{:?}", log.lines());
     }
 
     #[tokio::test]

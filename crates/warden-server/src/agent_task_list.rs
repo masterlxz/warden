@@ -14,6 +14,7 @@ fn to_dto(task: AgentTask) -> AgentTaskDto {
         group: task.group,
         owner: task.owner,
         assignee: task.assignee,
+        parent_id: task.parent_id,
         objective: task.objective,
         model: task.model,
         channel: task.channel,

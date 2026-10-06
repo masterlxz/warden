@@ -354,7 +354,7 @@ export interface Task {
 }
 
 /** Where a delegated task is (P123). */
-export type AgentTaskState = "pending" | "running" | "done" | "failed" | "cancelled";
+export type AgentTaskState = "pending" | "running" | "waiting" | "done" | "failed" | "cancelled";
 
 /** Mirrors `AgentTaskDto` (P123): a task an agent delegated in the background. `group` is shared by the tasks one turn started. */
 export interface AgentTask {
@@ -364,6 +364,8 @@ export interface AgentTask {
   owner?: string | null;
   /** The agent that does the work, or the name given to a temporary helper. */
   assignee: string;
+  /** The task this one is a subtask of, when its agent started it from inside another task. */
+  parentId?: string | null;
   objective: string;
   /** The provider or combo chosen for this task. */
   model?: string | null;

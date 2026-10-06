@@ -7,7 +7,7 @@ use crate::budget::TurnBudget;
 use crate::jobs::{JobBoard, TaskDraft};
 use crate::model::ModelProvider;
 use crate::orchestrator::Orchestrator;
-use crate::tool::job_tools::{background_property, job_label, start_task, wants_background};
+use crate::tool::job_tools::{background_property, job_label, start_task_with, wants_background};
 use crate::tool::{Tool, ToolSpec};
 
 /// Delegates a scoped, self-contained task to a fresh sub-agent — its own `Orchestrator`
@@ -168,7 +168,12 @@ impl Tool for DelegateTool {
             let owned_task = task.to_string();
             let name = helper_name(&args);
             let draft = TaskDraft { assignee: name.clone(), objective: task.to_string(), model: model_id };
-            return Ok(start_task(board, job_label(&name, task), draft, async move {
+            return Ok(start_task_with(board, job_label(&name, task), draft, move |link| async move {
+                // The turn of a task may start subtasks of its own, recorded under it (P123).
+                let orchestrator = match link {
+                    Some(link) => orchestrator.with_parent_task(link),
+                    None => orchestrator,
+                };
                 let outcome = orchestrator.handle_message(&[], &owned_task).await?;
                 Ok((outcome.content, outcome.usage))
             }));

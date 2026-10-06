@@ -33,7 +33,7 @@ async fn spin_up(log: Option<PathBuf>) -> String {
 }
 
 fn spec(assignee: &str, group: &str, model: Option<&str>) -> TaskSpec {
-    TaskSpec { group: group.into(), owner: Some("chief".into()), assignee: assignee.into(), objective: format!("do the {assignee} part"), model: model.map(str::to_string), channel: "desktop".into() }
+    TaskSpec { group: group.into(), owner: Some("chief".into()), assignee: assignee.into(), objective: format!("do the {assignee} part"), model: model.map(str::to_string), channel: "desktop".into(), parent: None }
 }
 
 async fn list(url: &str) -> Vec<warden_server_protocol::protocol::AgentTaskDto> {
@@ -71,6 +71,24 @@ async fn the_tasks_in_the_log_are_listed_newest_first_with_their_state_model_and
     assert_eq!(backend.objective, "do the backend part");
     assert!(backend.started_at_ms.is_some() && backend.finished_at_ms.is_some());
     assert!(tasks.iter().find(|t| t.assignee == "docs").unwrap().started_at_ms.is_none());
+}
+
+#[tokio::test]
+async fn a_subtask_lists_its_parent_and_a_task_waiting_for_it_is_waiting() {
+    let log = std::env::temp_dir().join(format!("warden-agent-task-nest-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())).join("agent_tasks.jsonl");
+    let recorder = FileTaskRecorder::new(&log);
+    let manager = recorder.created(&spec("manager", "turn-1", None));
+    recorder.running(&manager);
+    let helper = recorder.created(&TaskSpec { parent: Some(manager.clone()), owner: Some("manager".into()), ..spec("helper", "turn-1", None) });
+    recorder.running(&helper);
+    recorder.waiting(&manager);
+
+    let tasks = list(&spin_up(Some(log)).await).await;
+
+    let manager = tasks.iter().find(|t| t.assignee == "manager").unwrap();
+    let helper = tasks.iter().find(|t| t.assignee == "helper").unwrap();
+    assert_eq!((manager.state.as_str(), manager.parent_id.as_deref()), ("waiting", None));
+    assert_eq!((helper.state.as_str(), helper.parent_id.as_deref(), helper.group.as_str()), ("running", Some(manager.id.as_str()), "turn-1"));
 }
 
 #[tokio::test]

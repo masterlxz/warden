@@ -33,6 +33,8 @@ pub enum TaskState {
     /// Queued, waiting for a free slot under the limit of tasks running at once.
     Pending,
     Running,
+    /// The task's agent is waiting for another agent: a subtask it started (P123).
+    Waiting,
     Done,
     Failed,
     /// The turn ended (or was cancelled) before it finished, or its runner disappeared.
@@ -49,6 +51,7 @@ impl TaskState {
         match self {
             TaskState::Pending => "pending",
             TaskState::Running => "running",
+            TaskState::Waiting => "waiting",
             TaskState::Done => "done",
             TaskState::Failed => "failed",
             TaskState::Cancelled => "cancelled",
@@ -66,6 +69,9 @@ pub struct AgentTask {
     pub owner: Option<String>,
     /// The agent that does the work, or the name given to a temporary helper.
     pub assignee: String,
+    /// The task this one is a subtask of, when its agent started it from inside another task (P123).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub objective: String,
     /// The provider or combo chosen for this task, if the delegating agent chose one.
     pub model: Option<String>,
@@ -85,8 +91,10 @@ pub struct AgentTask {
 #[serde(tag = "e", rename_all = "snake_case")]
 enum Event {
     /// The whole task as it was at this moment: how a task is created, and how a compacted log keeps it.
-    Task { task: AgentTask },
+    Task { task: Box<AgentTask> },
     Running { id: String, at: u64 },
+    Waiting { id: String, at: u64 },
+    Resumed { id: String, at: u64 },
     Finished { id: String, at: u64, state: TaskState, result: Option<String>, error: Option<String>, usage: Option<Usage> },
 }
 
@@ -139,7 +147,7 @@ impl FileTaskRecorder {
         let tasks = read_agent_tasks(&self.path);
         let mut text = String::new();
         for task in tasks.into_iter().rev() {
-            if let Ok(line) = serde_json::to_string(&Event::Task { task }) {
+            if let Ok(line) = serde_json::to_string(&Event::Task { task: Box::new(task) }) {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -156,11 +164,12 @@ impl TaskRecorder for FileTaskRecorder {
         let now = now_ms();
         let id = format!("at-{now}-{}-{}", std::process::id(), self.next.fetch_add(1, Ordering::Relaxed));
         self.append(&Event::Task {
-            task: AgentTask {
+            task: Box::new(AgentTask {
                 id: id.clone(),
                 group: spec.group.clone(),
                 owner: spec.owner.clone(),
                 assignee: spec.assignee.clone(),
+                parent_id: spec.parent.clone(),
                 objective: clip(&spec.objective, MAX_OBJECTIVE_CHARS),
                 model: spec.model.clone(),
                 channel: spec.channel.clone(),
@@ -171,13 +180,21 @@ impl TaskRecorder for FileTaskRecorder {
                 created_at_ms: now,
                 started_at_ms: None,
                 finished_at_ms: None,
-            },
+            }),
         });
         id
     }
 
     fn running(&self, id: &str) {
         self.append(&Event::Running { id: id.to_string(), at: now_ms() });
+    }
+
+    fn waiting(&self, id: &str) {
+        self.append(&Event::Waiting { id: id.to_string(), at: now_ms() });
+    }
+
+    fn resumed(&self, id: &str) {
+        self.append(&Event::Resumed { id: id.to_string(), at: now_ms() });
     }
 
     fn finished(&self, id: &str, outcome: TaskOutcome) {
@@ -201,13 +218,24 @@ fn read_agent_tasks_at(path: &Path, now: u64) -> Vec<AgentTask> {
     for event in text.lines().filter_map(|line| serde_json::from_str::<Event>(line).ok()) {
         match event {
             Event::Task { task } => match tasks.iter_mut().find(|t| t.id == task.id) {
-                Some(existing) => *existing = task,
-                None => tasks.push(task),
+                Some(existing) => *existing = *task,
+                None => tasks.push(*task),
             },
             Event::Running { id, at } => {
                 if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished()) {
                     task.state = TaskState::Running;
                     task.started_at_ms = Some(at);
+                }
+            }
+            Event::Waiting { id, at } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished()) {
+                    task.state = TaskState::Waiting;
+                    task.started_at_ms = task.started_at_ms.or(Some(at));
+                }
+            }
+            Event::Resumed { id, .. } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && t.state == TaskState::Waiting) {
+                    task.state = TaskState::Running;
                 }
             }
             Event::Finished { id, at, state, result, error, usage } => {
@@ -251,7 +279,73 @@ mod tests {
             objective: "write the thing".into(),
             model: Some("fast".into()),
             channel: "desktop".into(),
+            parent: None,
         }
+    }
+
+    #[test]
+    fn a_task_waiting_for_a_subtask_is_shown_waiting_and_runs_again_when_it_resumes() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let manager = recorder.created(&spec("manager", "g"));
+        recorder.running(&manager);
+        let helper = recorder.created(&TaskSpec { parent: Some(manager.clone()), ..spec("helper", "g") });
+        recorder.running(&helper);
+
+        recorder.waiting(&manager);
+        let tasks = read_agent_tasks(&log);
+        let state_of = |tasks: &[AgentTask], id: &str| tasks.iter().find(|t| t.id == id).unwrap().state;
+        assert_eq!(state_of(&tasks, &manager), TaskState::Waiting);
+        assert_eq!(state_of(&tasks, &helper), TaskState::Running);
+        assert_eq!(tasks.iter().find(|t| t.id == helper).unwrap().parent_id.as_deref(), Some(manager.as_str()));
+        assert_eq!(tasks.iter().find(|t| t.id == manager).unwrap().parent_id, None);
+
+        recorder.finished(&helper, TaskOutcome::Done { result: "ok".into(), usage: None });
+        recorder.resumed(&manager);
+        assert_eq!(state_of(&read_agent_tasks(&log), &manager), TaskState::Running);
+
+        recorder.finished(&manager, TaskOutcome::Done { result: "all".into(), usage: None });
+        assert_eq!(state_of(&read_agent_tasks(&log), &manager), TaskState::Done);
+    }
+
+    #[test]
+    fn a_resume_that_arrives_late_does_not_reopen_a_finished_task_and_a_wait_after_the_end_is_ignored() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+        recorder.finished(&id, TaskOutcome::Cancelled);
+        recorder.waiting(&id);
+        recorder.resumed(&id);
+        assert_eq!(read_agent_tasks(&log)[0].state, TaskState::Cancelled);
+    }
+
+    #[test]
+    fn a_task_left_waiting_long_ago_is_shown_as_cancelled() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+        recorder.waiting(&id);
+        let tasks = read_agent_tasks_at(&log, now_ms() + STALE_AFTER_MS + 1000);
+        assert_eq!(tasks[0].state, TaskState::Cancelled);
+        assert_eq!(read_agent_tasks(&log)[0].state, TaskState::Waiting);
+    }
+
+    #[test]
+    fn compacting_keeps_the_parent_and_a_waiting_state() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let manager = recorder.created(&spec("manager", "g"));
+        recorder.running(&manager);
+        recorder.created(&TaskSpec { parent: Some(manager.clone()), ..spec("helper", "g") });
+        recorder.waiting(&manager);
+        let before = read_agent_tasks(&log);
+        {
+            let _held = recorder.write.lock().unwrap();
+            recorder.compact();
+        }
+        assert_eq!(read_agent_tasks(&log), before);
     }
 
     #[test]

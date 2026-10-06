@@ -18,7 +18,7 @@ describe("grouping the tasks of a turn", () => {
     assert.equal(group.total, 5);
     assert.equal(group.finished, 3);
     assert.equal(group.percent, 60);
-    assert.deepEqual(group.counts, { pending: 1, running: 1, done: 2, failed: 1, cancelled: 0 });
+    assert.deepEqual(group.counts, { pending: 1, running: 1, waiting: 0, done: 2, failed: 1, cancelled: 0 });
     assert.equal(group.totalTokens, 150);
     assert.equal(group.active, true);
     assert.equal(group.owner, "chief");
@@ -40,6 +40,30 @@ describe("grouping the tasks of a turn", () => {
     const [group] = groupTasks([task("a", "g", "paused")]);
     assert.equal(group.counts.pending, 1);
     assert.deepEqual(groupTasks([]), []);
+  });
+});
+
+describe("subtasks", () => {
+  test("a task is followed by its subtasks, one level deeper, and the progress counts the whole tree", () => {
+    const [group] = groupTasks([
+      task("manager", "g", "waiting", { createdAtMs: 1 }),
+      task("helper-a", "g", "done", { parentId: "manager", createdAtMs: 2 }),
+      task("helper-b", "g", "running", { parentId: "manager", createdAtMs: 3 }),
+      task("other", "g", "done", { createdAtMs: 4 }),
+      task("deep", "g", "pending", { parentId: "helper-b", createdAtMs: 5 }),
+    ]);
+    assert.deepEqual(group.rows.map((r) => [r.task.id, r.depth]), [["manager", 0], ["helper-a", 1], ["helper-b", 1], ["deep", 2], ["other", 0]]);
+    assert.equal(group.total, 5);
+    assert.equal(group.finished, 2);
+    assert.equal(group.counts.waiting, 1);
+    assert.equal(group.active, true, "a task waiting for an agent is still active");
+  });
+
+  test("a subtask whose parent is missing is shown at the top, and a loop does not hang", () => {
+    const [group] = groupTasks([task("orphan", "g", "done", { parentId: "ghost", createdAtMs: 1 })]);
+    assert.deepEqual(group.rows.map((r) => [r.task.id, r.depth]), [["orphan", 0]]);
+    const [loop] = groupTasks([task("a", "g", "done", { parentId: "b", createdAtMs: 1 }), task("b", "g", "done", { parentId: "a", createdAtMs: 2 })]);
+    assert.equal(loop.rows.length, 2, "both are shown once");
   });
 });
 

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::autonomy::{Autonomy, Category, Classifier};
 use crate::budget::{SpendTurn, TurnBudget};
-use crate::jobs::{JobBoard, JobsGuard, TaskContext, TaskRecorder};
+use crate::jobs::{JobBoard, JobsGuard, TaskContext, TaskLink, TaskRecorder};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, Role, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
@@ -99,7 +99,12 @@ pub struct Orchestrator {
     classifier: Option<Classifier>,
     /// Where the background jobs of a turn are kept as records (P123), or `None` for jobs that stay in memory.
     task_recorder: Option<Arc<dyn TaskRecorder>>,
+    /// Set on the turn of a background task (P123): where that task sits in the tree, so the subtasks it starts are recorded under it.
+    task_link: Option<TaskLink>,
 }
+
+/// How many levels of background tasks a turn can start: the root's tasks, and the subtasks of those, and no further (P123).
+pub const MAX_TASK_DEPTH: u8 = 2;
 
 impl Orchestrator {
     pub fn new(model: Arc<dyn ModelProvider>, vault: Arc<Vault>) -> Self {
@@ -123,7 +128,14 @@ impl Orchestrator {
             approval_required: Arc::from([]),
             classifier: None,
             task_recorder: None,
+            task_link: None,
         }
+    }
+
+    /// Returns a copy that is the turn of a background task (P123): it may start subtasks of its own, recorded under `link`'s task, in its
+    /// group, up to `MAX_TASK_DEPTH` levels down. It keeps the recorder and the parallel limit the task's board had.
+    pub fn with_parent_task(&self, link: TaskLink) -> Self {
+        Self { task_recorder: Some(link.recorder.clone()), job_limit: Some(link.max_parallel), task_link: Some(link), ..self.clone() }
     }
 
     /// Returns a copy whose turns record the background jobs they start (P123) with `recorder`: each delegated task
@@ -331,14 +343,31 @@ impl Orchestrator {
         if !self.tools.iter().any(|t| t.spec().name == "jobs") {
             return None;
         }
+        // A turn deep enough in the tree of tasks starts none of its own (P123).
+        let depth = self.task_link.as_ref().map_or(0, |link| link.depth);
+        if depth >= MAX_TASK_DEPTH {
+            return None;
+        }
         let board = match &self.task_recorder {
             Some(recorder) => {
                 static TURNS: AtomicU64 = AtomicU64::new(0);
                 let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-                let context = TaskContext {
-                    group: format!("turn-{nanos}-{}", TURNS.fetch_add(1, Ordering::Relaxed)),
-                    owner: self.agent_id.clone(),
-                    channel: self.spend_ctx.channel.clone(),
+                let context = match &self.task_link {
+                    // The turn of a task: what it starts are subtasks, in the same group, owned by its agent.
+                    Some(link) => TaskContext {
+                        group: link.group.clone(),
+                        owner: self.agent_id.clone().or_else(|| Some(link.assignee.clone())),
+                        channel: self.spend_ctx.channel.clone(),
+                        parent: Some(link.task_id.clone()),
+                        depth,
+                    },
+                    None => TaskContext {
+                        group: format!("turn-{nanos}-{}", TURNS.fetch_add(1, Ordering::Relaxed)),
+                        owner: self.agent_id.clone(),
+                        channel: self.spend_ctx.channel.clone(),
+                        parent: None,
+                        depth: 0,
+                    },
                 };
                 JobBoard::recording(limit, recorder.clone(), context)
             }
@@ -596,7 +625,8 @@ impl Orchestrator {
         // Background jobs belong to the turn's root only: a sub-agent's tools stay unbound, so it
         // can't start jobs that would outlive its own short turn. Held until the turn ends (or its
         // future is dropped), which cancels the jobs nobody collected.
-        let _jobs = if self.charged { None } else { turn.attach_jobs() };
+        // The exception (P123): the turn of a background task, which may start subtasks of its own (see `with_parent_task`).
+        let _jobs = if self.charged && self.task_link.is_none() { None } else { turn.attach_jobs() };
         turn.run_turn(history, next, query, system_prompt, on_event).await
     }
 
@@ -1527,6 +1557,140 @@ mod tests {
         chief.handle_message(&[], "go again").await.unwrap();
         let all = records.created.lock().unwrap().clone();
         assert_ne!(all[3].group, first_turn[0].group, "the next turn is a new group");
+    }
+
+    /// Three layers in one script, told apart by the first message: the chief ("go") starts a background manager, the manager ("manage")
+    /// starts two background helpers and reads them, a helper ("leaf ...") just answers. Records what each layer was offered.
+    struct ThreeLayers {
+        offered: Arc<std::sync::Mutex<Offers>>,
+    }
+
+    /// What each layer was offered: its first message, and the tools.
+    type Offers = Vec<(String, Vec<String>)>;
+
+    #[async_trait]
+    impl ModelProvider for ThreeLayers {
+        async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let first = messages.iter().find(|m| m.role == Role::User).map(|m| m.content.clone()).unwrap_or_default();
+            let tool_results = messages.iter().filter(|m| m.role == Role::Tool).count();
+            let background_offered = tools.iter().find(|t| t.name == "delegate_task").is_some_and(|t| t.parameters["properties"].get("background").is_some());
+            self.offered.lock().unwrap().push((first.clone(), tools.iter().map(|t| t.name.clone()).chain(background_offered.then(|| "<background>".to_string())).collect()));
+            let call = |id: &str, name: &str, arguments: Value| ToolCall { id: id.into(), name: name.into(), arguments, thought_signature: None };
+            let say = |content: &str| Response { content: content.to_string(), tool_calls: Vec::new(), usage: None };
+            let response = match (first.as_str(), tool_results) {
+                ("go", 0) => Response { content: String::new(), tool_calls: vec![call("m", "delegate_task", json!({ "task": "manage", "name": "manager", "background": true }))], usage: None },
+                ("go", 1) => Response { content: String::new(), tool_calls: vec![call("r", "jobs", json!({ "action": "result", "job_id": "job-1" }))], usage: None },
+                ("go", _) => say("chief done"),
+                ("manage", 0) => Response {
+                    content: String::new(),
+                    tool_calls: ["a", "b"].iter().map(|n| call(n, "delegate_task", json!({ "task": format!("leaf {n}"), "name": format!("helper {n}"), "background": true }))).collect(),
+                    usage: None,
+                },
+                ("manage", 2) => Response {
+                    content: String::new(),
+                    tool_calls: (1..=2).map(|n| call(&format!("r{n}"), "jobs", json!({ "action": "result", "job_id": format!("job-{n}") }))).collect(),
+                    usage: None,
+                },
+                ("manage", _) => say("manager done"),
+                _ => say("leaf done"),
+            };
+            Ok(response_stream(response))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_may_start_subtasks_one_level_down_and_no_further_and_waits_for_them_visibly() {
+        use crate::jobs::{TaskOutcome, TaskRecorder, TaskSpec};
+        use crate::tool::delegate::DelegateTool;
+        use crate::tool::job_tools::JobsTool;
+
+        #[derive(Default)]
+        struct Events(std::sync::Mutex<Vec<String>>);
+        impl TaskRecorder for Events {
+            fn created(&self, task: &TaskSpec) -> String {
+                let mut events = self.0.lock().unwrap();
+                let id = format!("t{}", events.iter().filter(|e| e.starts_with("created")).count() + 1);
+                events.push(format!("created {id} {} parent={} group={} owner={}", task.assignee, task.parent.as_deref().unwrap_or("-"), task.group, task.owner.as_deref().unwrap_or("-")));
+                id
+            }
+            fn running(&self, id: &str) {
+                self.0.lock().unwrap().push(format!("running {id}"));
+            }
+            fn waiting(&self, id: &str) {
+                self.0.lock().unwrap().push(format!("waiting {id}"));
+            }
+            fn resumed(&self, id: &str) {
+                self.0.lock().unwrap().push(format!("resumed {id}"));
+            }
+            fn finished(&self, id: &str, outcome: TaskOutcome) {
+                let word = match outcome {
+                    TaskOutcome::Done { .. } => "done",
+                    TaskOutcome::Failed { .. } => "failed",
+                    TaskOutcome::Cancelled => "cancelled",
+                };
+                self.0.lock().unwrap().push(format!("{word} {id}"));
+            }
+        }
+
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn ModelProvider> = Arc::new(ThreeLayers { offered: offered.clone() });
+        // chief → (sub1: manager, which can delegate once more) → (sub2: a helper that can't).
+        let mut sub2 = Orchestrator::new(model.clone(), temp_vault());
+        sub2.register_tool(Arc::new(JobsTool::new()));
+        let mut sub1 = Orchestrator::new(model.clone(), temp_vault());
+        sub1.register_tool(Arc::new(JobsTool::new()));
+        sub1.register_tool(Arc::new(DelegateTool::new(sub2)));
+        let mut chief = Orchestrator::new(model, temp_vault());
+        chief.register_tool(Arc::new(JobsTool::new()));
+        chief.register_tool(Arc::new(DelegateTool::new(sub1)));
+        let events = Arc::new(Events::default());
+        let chief = chief.with_parallel_jobs(3).with_agent(Some("chief".to_string())).with_task_recorder(events.clone());
+
+        assert_eq!(chief.handle_message(&[], "go").await.unwrap().content, "chief done");
+
+        let log = events.0.lock().unwrap().clone();
+        let created: Vec<&String> = log.iter().filter(|e| e.starts_with("created")).collect();
+        assert_eq!(created.len(), 3, "{log:?}");
+        let group = created[0].split(" group=").nth(1).unwrap().split(' ').next().unwrap();
+        assert!(created[0].starts_with("created t1 manager parent=-") && created[0].ends_with("owner=chief"), "{log:?}");
+        assert!(created[1].starts_with("created t2 helper a parent=t1") && created[1].contains(&format!("group={group}")) && created[1].ends_with("owner=manager"), "{log:?}");
+        assert!(created[2].starts_with("created t3 helper b parent=t1") && created[2].contains(&format!("group={group}")), "{log:?}");
+
+        // The manager is told waiting while it reads its helpers, and resumed once it has them; all three end done.
+        let at = |needle: &str| log.iter().position(|e| e == needle).unwrap_or_else(|| panic!("no {needle} in {log:?}"));
+        assert!(at("running t1") < at("waiting t1") && at("waiting t1") < at("resumed t1") && at("resumed t1") < at("done t1"), "{log:?}");
+        assert!(at("done t2") < at("resumed t1") || at("done t3") < at("resumed t1"), "it resumes after a helper finished: {log:?}");
+        for id in ["t1", "t2", "t3"] {
+            at(&format!("done {id}"));
+        }
+
+        // What each layer was offered: background at the first two layers, and not for the helper.
+        let offered = offered.lock().unwrap().clone();
+        let tools_of = |first: &str| offered.iter().filter(|(f, _)| f == first).flat_map(|(_, tools)| tools.clone()).collect::<Vec<_>>();
+        assert!(tools_of("go").contains(&"<background>".to_string()));
+        assert!(tools_of("manage").contains(&"<background>".to_string()) && tools_of("manage").contains(&"jobs".to_string()), "a task may start subtasks");
+        assert!(!tools_of("leaf a").contains(&"<background>".to_string()) && !tools_of("leaf a").contains(&"jobs".to_string()), "a subtask may not: {:?}", tools_of("leaf a"));
+    }
+
+    #[tokio::test]
+    async fn without_a_recorder_a_task_does_not_start_subtasks() {
+        use crate::tool::delegate::DelegateTool;
+        use crate::tool::job_tools::JobsTool;
+
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model: Arc<dyn ModelProvider> = Arc::new(ThreeLayers { offered: offered.clone() });
+        let mut sub1 = Orchestrator::new(model.clone(), temp_vault());
+        sub1.register_tool(Arc::new(JobsTool::new()));
+        sub1.register_tool(Arc::new(DelegateTool::new(Orchestrator::new(model.clone(), temp_vault()))));
+        let mut chief = Orchestrator::new(model, temp_vault());
+        chief.register_tool(Arc::new(JobsTool::new()));
+        chief.register_tool(Arc::new(DelegateTool::new(sub1)));
+
+        chief.with_parallel_jobs(3).handle_message(&[], "go").await.unwrap();
+
+        let offered = offered.lock().unwrap().clone();
+        let manager_tools: Vec<String> = offered.iter().filter(|(f, _)| f == "manage").flat_map(|(_, t)| t.clone()).collect();
+        assert!(!manager_tools.contains(&"<background>".to_string()), "no log, no nesting: {manager_tools:?}");
     }
 
     #[tokio::test]

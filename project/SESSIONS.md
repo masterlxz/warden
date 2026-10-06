@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 149)
+> Última atualização: 2026-10-05 (Sessão 150)
 
 ---
+
+### 2026-10-05 — Sessão 150
+
+- **Objetivo**: segunda fatia do P123, subtarefas aninhadas e o estado "aguardando agente", a pedido do usuário. Planejada em Plan mode; decisões: **um nível extra** (gerente → tarefa → subtarefa) e "aguardando" **só enquanto o agente da tarefa espera uma subtarefa**.
+- **Feito**: `TaskLink`, `TaskContext { parent, depth }`, `TaskSpec.parent`, `TaskRecorder::{waiting, resumed}`, `JobBoard::spawn_task_with` e `wait_as_parent`; `Orchestrator::with_parent_task`, `MAX_TASK_DEPTH` e o portão novo de `attach_jobs`; `jobs result` com espera avisa o pai; os dois delegadores passam o vínculo; log com `parent_id`, estado `waiting` e os eventos novos; `parentId` no protocolo; árvore e estado nas duas telas (`rows` em `groupTasks`). Detalhes em `ARCHITECTURE.md`.
+- **Testes**: 1368 testes Rust verdes (em dois blocos), `npm test` do desktop 34 de 34, `tsc` e builds; clippy só com o aviso antigo. Um teste de três camadas confirma pais, grupo, a ordem `running` → `waiting` → `resumed` → `done` e que o nível 2 não recebe jobs.
+- **Não verificado**: as telas numa janela; um modelo real aninhando tarefas.
+- **Fica no P123**: "pausado", agentes nomeados abrindo subtarefas, cancelar pela tela, políticas nomeadas de modelo, CLI/celular/extensão.
 
 ### 2026-10-05 — Sessão 149
 

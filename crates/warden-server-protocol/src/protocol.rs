@@ -737,8 +737,8 @@ fn default_autonomy() -> u8 {
     4
 }
 
-/// One task an agent delegated in the background (P123), as the screens list it. `state` is `pending`, `running`, `done`,
-/// `failed` or `cancelled`; `group` is shared by the tasks one turn started, which is what a progress is counted over.
+/// One task an agent delegated in the background (P123), as the screens list it. `state` is `pending`, `running`, `waiting` (its
+/// agent waits for a subtask), `done`, `failed` or `cancelled`; `group` is shared by the tasks one turn started, which is what a progress is counted over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTaskDto {
@@ -749,6 +749,9 @@ pub struct AgentTaskDto {
     pub owner: Option<String>,
     /// The agent that does the work, or the name given to a temporary helper.
     pub assignee: String,
+    /// The task this one is a subtask of (P123), when its agent started it from inside another task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub objective: String,
     /// The provider or combo chosen for this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2693,6 +2696,7 @@ mod tests {
             group: "turn-1".into(),
             owner: Some("chief".into()),
             assignee: "backend".into(),
+            parent_id: Some("at-0".into()),
             objective: "build the API".into(),
             model: Some("strong".into()),
             channel: "desktop".into(),
@@ -2710,7 +2714,7 @@ mod tests {
         let json = serde_json::to_string(&reply).unwrap();
         assert_eq!(
             json,
-            r#"{"type":"agentTaskList","requestId":4,"tasks":[{"id":"at-1","group":"turn-1","owner":"chief","assignee":"backend","objective":"build the API","model":"strong","channel":"desktop","state":"done","result":"done","promptTokens":10,"completionTokens":5,"totalTokens":15,"createdAtMs":1,"startedAtMs":2,"finishedAtMs":3}]}"#
+            r#"{"type":"agentTaskList","requestId":4,"tasks":[{"id":"at-1","group":"turn-1","owner":"chief","assignee":"backend","parentId":"at-0","objective":"build the API","model":"strong","channel":"desktop","state":"done","result":"done","promptTokens":10,"completionTokens":5,"totalTokens":15,"createdAtMs":1,"startedAtMs":2,"finishedAtMs":3}]}"#
         );
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
 
