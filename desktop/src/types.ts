@@ -354,7 +354,10 @@ export interface Task {
 }
 
 /** Where a delegated task is (P123). */
-export type AgentTaskState = "pending" | "running" | "waiting" | "done" | "failed" | "cancelled";
+export type AgentTaskState = "pending" | "running" | "waiting" | "paused" | "done" | "failed" | "cancelled";
+
+/** What a person can do to a running task from the screen. */
+export type AgentTaskAction = "pause" | "resume" | "cancel";
 
 /** Mirrors `AgentTaskDto` (P123): a task an agent delegated in the background. `group` is shared by the tasks one turn started. */
 export interface AgentTask {
@@ -379,6 +382,8 @@ export interface AgentTask {
   createdAtMs: number;
   startedAtMs?: number | null;
   finishedAtMs?: number | null;
+  /** Running in the process that answered, so it can be paused, resumed or stopped from here. */
+  controllable?: boolean;
 }
 
 /** Mirrors `TaskInfoDto`: a task and where it stands on the machine that runs it. */

@@ -544,7 +544,10 @@ export interface NodeInfo {
 
 /** Mirrors `TaskDto` (P92): one scheduled task. Exactly one of `every`, `cron` and `once`. */
 /** Onde uma tarefa delegada está (P123). */
-export type AgentTaskState = "pending" | "running" | "waiting" | "done" | "failed" | "cancelled";
+export type AgentTaskState = "pending" | "running" | "waiting" | "paused" | "done" | "failed" | "cancelled";
+
+/** O que dá para fazer com uma tarefa em andamento, pela tela. */
+export type AgentTaskAction = "pause" | "resume" | "cancel";
 
 /** Espelha `AgentTaskDto` (P123): uma tarefa que um agente delegou em segundo plano. `group` é comum às tarefas que um turno começou. */
 export interface AgentTask {
@@ -568,6 +571,8 @@ export interface AgentTask {
   createdAtMs: number;
   startedAtMs?: number | null;
   finishedAtMs?: number | null;
+  /** Roda no processo do hub que respondeu: dá para pausar, retomar ou parar por aqui. */
+  controllable?: boolean;
 }
 
 export interface Task {
@@ -750,6 +755,8 @@ export type ClientMessage =
   | { type: "listTasks"; requestId: number }
   /** P123 — o trabalho que os agentes passaram uns aos outros em segundo plano, respondido por `agentTaskList`. */
   | { type: "listAgentTasks"; requestId: number }
+  /** Pausa, retoma ou para (`pause`, `resume`, `cancel`) uma tarefa que roda no hub, com as subtarefas. Dono; pede a chave de pareamento. */
+  | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
   | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
   | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
   | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }

@@ -1,7 +1,7 @@
 // P123 — o trabalho que os agentes passam uns aos outros, como a aba "Trabalho dos agentes" mostra: as tarefas que um turno
 // começou formam um grupo, com um progresso contado sobre elas. Espelha `desktop/src/lib/agentTasks.ts`.
 
-import type { AgentTask, AgentTaskState } from "./messages";
+import type { AgentTask, AgentTaskAction, AgentTaskState } from "./messages";
 
 /** Uma tarefa como a lista a mostra: quantos níveis abaixo do agente do turno ela está (0 para as que o próprio agente começou). */
 export interface TaskRow {
@@ -34,6 +34,7 @@ export const STATE_LABEL: Record<AgentTaskState, string> = {
   pending: "Pendente",
   running: "Em andamento",
   waiting: "Aguardando agente",
+  paused: "Pausada",
   done: "Concluída",
   failed: "Falhou",
   cancelled: "Cancelada",
@@ -43,12 +44,32 @@ export const STATE_MARK: Record<AgentTaskState, string> = {
   pending: "○",
   running: "◐",
   waiting: "◉",
+  paused: "⏸",
   done: "✓",
   failed: "⚠",
   cancelled: "⏹",
 };
 
-const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, done: 0, failed: 0, cancelled: 0 });
+const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, paused: 0, done: 0, failed: 0, cancelled: 0 });
+
+/** O que dá para fazer com esta tarefa agora: só a que roda no processo do hub que respondeu. A que ainda não começou só pode ser parada;
+ * a pausada pode ser retomada. */
+export function actionsFor(task: AgentTask): AgentTaskAction[] {
+  if (!task.controllable) return [];
+  switch (task.state) {
+    case "pending":
+      return ["cancel"];
+    case "running":
+    case "waiting":
+      return ["pause", "cancel"];
+    case "paused":
+      return ["resume", "cancel"];
+    default:
+      return [];
+  }
+}
+
+export const ACTION_LABEL: Record<AgentTaskAction, string> = { pause: "Pausar", resume: "Retomar", cancel: "Parar" };
 
 /** As tarefas de um grupo como árvore: cada tarefa seguida das suas subtarefas, um nível abaixo. Uma tarefa cujo pai não está no grupo
  * (ou um laço que não deveria existir) aparece no topo em vez de se perder. */
@@ -90,7 +111,7 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
       counts,
       percent: Math.round((finished / ordered.length) * 100),
       totalTokens: ordered.reduce((sum, t) => sum + (t.totalTokens ?? 0), 0),
-      active: counts.pending + counts.running + counts.waiting > 0,
+      active: counts.pending + counts.running + counts.waiting + counts.paused > 0,
       createdAtMs: ordered[0].createdAtMs,
     });
   }

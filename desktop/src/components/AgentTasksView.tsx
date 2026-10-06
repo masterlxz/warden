@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentTask } from "../types";
-import { hubAgentTasks } from "../lib/hub";
-import { durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../lib/agentTasks";
+import type { AgentTask, AgentTaskAction } from "../types";
+import { hubAgentTasks, hubControlAgentTask } from "../lib/hub";
+import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../lib/agentTasks";
+import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
 const REFRESH_MS = 3000;
 const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -13,6 +14,7 @@ function GroupHeader({ group }: { group: TaskGroup }) {
     counts.done > 0 && `${counts.done} done`,
     counts.running > 0 && `${counts.running} running`,
     counts.waiting > 0 && `${counts.waiting} waiting for an agent`,
+    counts.paused > 0 && `${counts.paused} paused`,
     counts.pending > 0 && `${counts.pending} pending`,
     counts.failed > 0 && `${counts.failed} failed`,
     counts.cancelled > 0 && `${counts.cancelled} cancelled`,
@@ -42,10 +44,12 @@ function GroupHeader({ group }: { group: TaskGroup }) {
   );
 }
 
-function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: number }) {
+function TaskItem({ task, depth, now, busy, onAction }: { task: AgentTask; depth: number; now: number; busy: boolean; onAction: (task: AgentTask, action: AgentTaskAction) => void }) {
   const [open, setOpen] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
   const detail = task.state === "done" ? task.result : task.error;
   const duration = durationLabel(task, now);
+  const actions = actionsFor(task);
   return (
     <li className={`agent-work-task agent-work-task--${task.state}`} style={depth > 0 ? { marginLeft: `${depth * 1.4}em` } : undefined}>
       <button type="button" className="agent-work-task-line" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -60,6 +64,32 @@ function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: n
           {task.totalTokens != null && <span>{formatTokens(task.totalTokens)} tok</span>}
         </span>
       </button>
+      {actions.length > 0 && (
+        <div className="agent-work-actions">
+          {actions.map((action) =>
+            action === "cancel" ? (
+              confirmStop ? (
+                <span key={action} className="agent-work-actions">
+                  <button type="button" className="provider-delete-btn" disabled={busy} onClick={() => { setConfirmStop(false); onAction(task, action); }}>
+                    Stop it{task.parentId ? "" : " and its subtasks"}
+                  </button>
+                  <button type="button" className="settings-browse-btn" onClick={() => setConfirmStop(false)}>
+                    Keep it
+                  </button>
+                </span>
+              ) : (
+                <button key={action} type="button" className="settings-browse-btn" disabled={busy} onClick={() => setConfirmStop(true)}>
+                  {ACTION_LABEL[action]}
+                </button>
+              )
+            ) : (
+              <button key={action} type="button" className="settings-browse-btn" disabled={busy} onClick={() => onAction(task, action)}>
+                {ACTION_LABEL[action]}
+              </button>
+            ),
+          )}
+        </div>
+      )}
       {open && (
         <div className="agent-work-detail">
           <p className="settings-hint">Task</p>
@@ -79,12 +109,15 @@ function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: n
 }
 
 /** P123 — the work agents delegated to each other in the background: who is doing what, how far each manager's batch is,
- * and what it cost. Read only; it refreshes while it is open. For this computer it reads the log the engine writes, and for
- * a hub in use it asks the hub. */
+ * and what it cost. It refreshes while it is open. For this computer it reads the log the engine writes, and for a hub in use it
+ * asks the hub. A task still running there can be paused, resumed or stopped (with its subtasks); on a hub that asks for the
+ * pairing key, like any change to it. */
 function AgentTasksView({ remote = false }: { remote?: boolean }) {
   const [tasks, setTasks] = useState<AgentTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [busy, setBusy] = useState<string | null>(null);
+  const { askKey, dialog } = usePairingKey();
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +134,26 @@ function AgentTasksView({ remote = false }: { remote?: boolean }) {
     const timer = window.setInterval(() => void load(), REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  const control = useCallback(
+    async (task: AgentTask, action: AgentTaskAction) => {
+      setBusy(task.id);
+      try {
+        if (remote) {
+          setTasks(await hubControlAgentTask(askKey, task.id, action));
+        } else {
+          await invoke("control_agent_task", { taskId: task.id, action });
+          await load();
+        }
+        setError(null);
+      } catch (err) {
+        if (!(err instanceof KeyCancelled)) setError(String(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [remote, askKey, load],
+  );
 
   const groups = useMemo(() => groupTasks(tasks ?? []), [tasks]);
 
@@ -121,11 +174,12 @@ function AgentTasksView({ remote = false }: { remote?: boolean }) {
           <GroupHeader group={group} />
           <ul className="agent-work-list">
             {group.rows.map(({ task, depth }) => (
-              <TaskItem key={task.id} task={task} depth={depth} now={now} />
+              <TaskItem key={task.id} task={task} depth={depth} now={now} busy={busy === task.id} onAction={(t, action) => void control(t, action)} />
             ))}
           </ul>
         </section>
       ))}
+      {dialog}
     </div>
   );
 }

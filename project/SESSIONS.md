@@ -6,6 +6,15 @@
 
 ---
 
+### 2026-10-06 — Sessão 154
+
+- **Objetivo**: o item 2 da lista, pausar e cancelar uma tarefa de agente pela tela (P123), a pedido do usuário, que pediu para **não fazer testes manuais** (ver telas) nesta rodada.
+- **Feito**: no core, `PauseGate`, `TaskControls`/`task_controls()` (registro por processo com `AbortHandle`, pai e portão), `TaskOutcome::Stopped`, `TaskRecorder::{paused, unpaused}` e o portão no laço do `Orchestrator` antes de cada chamada ao modelo; parar leva as subtarefas, pausar também. No log, estado `paused` e eventos novos; `control_agent_task` com as regras (pausar só em andamento ou aguardando, retomar só pausada). Protocolo: `ControlAgentTask` com a chave de pareamento (só do dono) e `controllable` no `AgentTaskDto`; o servidor espera o fim do parar para responder com a lista já em "cancelled". Desktop: comando `control_agent_task` (sem chave, é o motor do próprio app) e botões na tela, com confirmação no parar; web: botões e o pedido da chave.
+- **Testes**: 1388 Rust verdes, `npm test` do desktop 36 de 36, `tsc` e builds de desktop e web, clippy sem aviso novo. Novos: 4 no `jobs.rs` (parar, parar a árvore, pausar e retomar, pausar a árvore), 1 no log (pausada, espera por cima, parada), 1 de hub de ponta a ponta (chave errada, pausar, retomar, parar e as recusas), protocolo, 2 do desktop.
+- **Não verificado**: as telas numa janela (os botões, a confirmação, o pedido da chave na web); a pausa com um modelo real no meio de uma chamada longa; o hub com vários dispositivos controlando a mesma tarefa.
+- **Fica no P123**: CLI/celular/extensão sem tela; limitar os modelos por agente (P122); o usuário ditar o modelo; tela para as políticas; a delegação síncrona não tem botão.
+- **Deslize**: duas vezes pus código por Bash (um `sed` na Sessão 153 e um `printf >>` no teste do desktop), contra a regra de editar por Edit/Write; o teste do desktop acabou lido e revisado com o Read e o resto passou pelo Edit.
+
 ### 2026-10-06 — Sessão 153
 
 - **Objetivo**: fechar as lacunas do requisito "escolher o agente e o modelo por delegação" (P123, pedido da Sessão 152): (b) políticas nomeadas, (d) delegação síncrona sem registro e (f) o `model` chegando ao agente aninhado. Ficaram de fora (a), que é só a regra "dois ou mais ids" (com um id só não há o que escolher), (c), limitar quais modelos um agente escolhe (P122), e (e), o usuário ditar o modelo por fora.

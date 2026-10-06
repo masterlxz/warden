@@ -738,7 +738,7 @@ fn default_autonomy() -> u8 {
 }
 
 /// One task an agent delegated in the background (P123), as the screens list it. `state` is `pending`, `running`, `waiting` (its
-/// agent waits for a subtask), `done`, `failed` or `cancelled`; `group` is shared by the tasks one turn started, which is what a progress is counted over.
+/// agent waits for a subtask), `paused` (a person paused it), `done`, `failed` or `cancelled`; `group` is shared by the tasks one turn started, which is what a progress is counted over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTaskDto {
@@ -773,6 +773,10 @@ pub struct AgentTaskDto {
     pub started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<u64>,
+    /// This task is running in the process that answered, so it can be paused, resumed or stopped from a screen
+    /// (`ControlAgentTask`). A task of another process or one that has finished isn't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub controllable: bool,
 }
 
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`
@@ -1580,6 +1584,15 @@ pub enum ClientMessage {
     /// only, for the owner: a member gets an empty list.
     ListAgentTasks {
         request_id: u64,
+    },
+    /// Pauses, resumes or stops (`action`: `pause`, `resume` or `cancel`) a task agents delegated (P123) that is running on this
+    /// hub; the subtasks below it follow. Owner only and asks for the pairing key, like any change. Answered by the updated
+    /// `AgentTaskList`, or by `TaskError` (a task that isn't running here, or a wrong key).
+    ControlAgentTask {
+        request_id: u64,
+        pairing_key: String,
+        task_id: String,
+        action: String,
     },
     /// Creates a task, or replaces `original_id` with it (a rename when the ids differ).
     SaveTask {
@@ -2709,8 +2722,9 @@ mod tests {
             created_at_ms: 1,
             started_at_ms: Some(2),
             finished_at_ms: Some(3),
+            controllable: false,
         };
-        let reply = ServerMessage::AgentTaskList { request_id: 4, tasks: vec![task] };
+        let reply = ServerMessage::AgentTaskList { request_id: 4, tasks: vec![task.clone()] };
         let json = serde_json::to_string(&reply).unwrap();
         assert_eq!(
             json,
@@ -2721,6 +2735,14 @@ mod tests {
         // A pending task has none of the fields that come later.
         let pending: AgentTaskDto = serde_json::from_str(r#"{"id":"a","group":"g","assignee":"x","objective":"o","channel":"cli","state":"pending","createdAtMs":9}"#).unwrap();
         assert_eq!((pending.owner, pending.total_tokens, pending.started_at_ms), (None, None, None));
+
+        // A running task of this process says it can be controlled, and the control message is asked with the pairing key.
+        let running = serde_json::to_string(&AgentTaskDto { state: "running".into(), controllable: true, ..task }).unwrap();
+        assert!(running.contains(r#""controllable":true"#), "{running}");
+        let control = ClientMessage::ControlAgentTask { request_id: 5, pairing_key: "k".into(), task_id: "at-1".into(), action: "pause".into() };
+        let json = serde_json::to_string(&control).unwrap();
+        assert_eq!(json, r#"{"type":"controlAgentTask","requestId":5,"pairingKey":"k","taskId":"at-1","action":"pause"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), control);
     }
 
     #[test]

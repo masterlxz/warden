@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::{watch, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::model::Usage;
 
@@ -66,6 +68,8 @@ pub enum TaskOutcome {
     Failed { error: String },
     /// The turn ended (or was cancelled) before it finished.
     Cancelled,
+    /// A person stopped it from a screen (`TaskControls::cancel`).
+    Stopped,
 }
 
 /// Keeps the tasks the background jobs run as records that outlive the turn (P123). Implemented by the host
@@ -78,6 +82,137 @@ pub trait TaskRecorder: Send + Sync {
     fn waiting(&self, _id: &str) {}
     /// The wait that `waiting` announced is over: the task is running again.
     fn resumed(&self, _id: &str) {}
+    /// A person paused the task from a screen (`TaskControls::pause`): shown as paused until `unpaused` (or the end).
+    fn paused(&self, _id: &str) {}
+    /// A person lifted the pause (`TaskControls::resume`): the task is running again.
+    fn unpaused(&self, _id: &str) {}
+}
+
+/// The switch that pauses the turn of one task (P123). The turn looks at it before each model call, so a paused task
+/// finishes the call it is in and then waits until it is resumed.
+#[derive(Clone)]
+pub struct PauseGate(Arc<watch::Sender<bool>>);
+
+impl PauseGate {
+    pub fn new() -> Self {
+        Self(Arc::new(watch::channel(false).0))
+    }
+
+    pub fn set(&self, paused: bool) {
+        self.0.send_replace(paused);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    /// Returns at once when not paused; otherwise when the pause is lifted.
+    pub async fn until_resumed(&self) {
+        let mut state = self.0.subscribe();
+        let _ = state.wait_for(|paused| !*paused).await;
+    }
+}
+
+impl Default for PauseGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct Control {
+    parent: Option<String>,
+    abort: AbortHandle,
+    gate: PauseGate,
+    stopped: Arc<AtomicBool>,
+    recorder: Arc<dyn TaskRecorder>,
+}
+
+/// The background tasks running in this process that a person can pause, resume or stop from a screen (P123). A task of another
+/// process (a CLI session, another machine) isn't here, and neither is one that has finished.
+#[derive(Default)]
+pub struct TaskControls {
+    tasks: Mutex<HashMap<String, Control>>,
+}
+
+/// The one registry of this process: the screens of a hub or desktop reach the tasks its orchestrator started through it.
+pub fn task_controls() -> &'static TaskControls {
+    static CONTROLS: OnceLock<TaskControls> = OnceLock::new();
+    CONTROLS.get_or_init(TaskControls::default)
+}
+
+impl TaskControls {
+    fn register(&self, id: &str, control: Control) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        tasks.retain(|_, c| !c.abort.is_finished());
+        tasks.insert(id.to_string(), control);
+    }
+
+    /// Whether `id` is a task of this process that is still going.
+    pub fn is_controllable(&self, id: &str) -> bool {
+        self.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|c| !c.abort.is_finished())
+    }
+
+    /// `id` and every task below it, as far as this registry knows them.
+    fn branch(tasks: &HashMap<String, Control>, id: &str) -> Vec<String> {
+        let mut ids = vec![id.to_string()];
+        let mut at = 0;
+        while at < ids.len() {
+            let parent = ids[at].clone();
+            let children: Vec<String> = tasks.iter().filter(|(own, c)| c.parent.as_deref() == Some(parent.as_str()) && !ids.contains(own)).map(|(own, _)| own.to_string()).collect();
+            ids.extend(children);
+            at += 1;
+        }
+        ids
+    }
+
+    /// Stops the task and the subtasks below it; each is recorded as stopped by a person. `false` when `id` isn't running here.
+    pub fn cancel(&self, id: &str) -> bool {
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(root) = tasks.get(id).filter(|c| !c.abort.is_finished()) else { return false };
+        for own in Self::branch(&tasks, id) {
+            if let Some(control) = tasks.get(&own) {
+                control.stopped.store(true, Ordering::SeqCst);
+            }
+        }
+        // The subtasks go with it: dropping the turn of the task drops the jobs it started.
+        root.abort.abort();
+        true
+    }
+
+    /// Pauses the task and the subtasks below it: each finishes the model call it is in and waits. `false` when `id` isn't running here.
+    pub fn pause(&self, id: &str) -> bool {
+        self.set_paused(id, true)
+    }
+
+    /// Lifts the pause of the task and of the subtasks below it. `false` when `id` isn't running here.
+    pub fn resume(&self, id: &str) -> bool {
+        self.set_paused(id, false)
+    }
+
+    fn set_paused(&self, id: &str, paused: bool) -> bool {
+        let affected: Vec<(String, Arc<dyn TaskRecorder>)> = {
+            let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+            if !tasks.get(id).is_some_and(|c| !c.abort.is_finished()) {
+                return false;
+            }
+            let ids = Self::branch(&tasks, id);
+            ids.into_iter()
+                .filter_map(|own| tasks.get(&own).filter(|c| !c.abort.is_finished() && c.gate.is_paused() != paused).map(|c| {
+                    c.gate.set(paused);
+                    (own, c.recorder.clone())
+                }))
+                .collect()
+        };
+        // Recorded after the lock is let go: the recorder writes a file.
+        for (own, recorder) in affected {
+            if paused {
+                recorder.paused(&own);
+            } else {
+                recorder.unpaused(&own);
+            }
+        }
+        true
+    }
 }
 
 /// What a turn tells its board about itself, to place the tasks it starts.
@@ -104,6 +239,8 @@ pub struct TaskLink {
     pub depth: u8,
     pub max_parallel: usize,
     pub recorder: Arc<dyn TaskRecorder>,
+    /// Looked at before each model call of the turn that runs the task, so a person can pause it.
+    pub gate: PauseGate,
 }
 
 /// What a recorded job adds to its row in `JobBoard::list`.
@@ -147,12 +284,21 @@ struct CancelOnDrop {
     recorder: Arc<dyn TaskRecorder>,
     id: String,
     armed: bool,
+    /// Set by `TaskControls::cancel`: it was a person who stopped it, not the end of the turn.
+    stopped: Arc<AtomicBool>,
+}
+
+impl CancelOnDrop {
+    fn new(recorder: Arc<dyn TaskRecorder>, id: String, stopped: Arc<AtomicBool>) -> Self {
+        Self { recorder, id, armed: true, stopped }
+    }
 }
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if self.armed {
-            self.recorder.finished(&self.id, TaskOutcome::Cancelled);
+            let outcome = if self.stopped.load(Ordering::SeqCst) { TaskOutcome::Stopped } else { TaskOutcome::Cancelled };
+            self.recorder.finished(&self.id, outcome);
         }
     }
 }
@@ -220,13 +366,17 @@ impl JobBoard {
             depth: context.depth + 1,
             max_parallel: self.max_parallel,
             recorder: recorder.clone(),
+            gate: PauseGate::new(),
         };
         let usage_slot = Arc::new(Mutex::new(None));
         let (state_tx, state_rx) = watch::channel(JobState::Queued);
         let slots = self.slots.clone();
         let (recorder, id, usage) = (recorder.clone(), task_id.clone(), usage_slot.clone());
+        let recorder_for_controls = recorder.clone();
+        let (gate, stopped) = (link.gate.clone(), Arc::new(AtomicBool::new(false)));
+        let own_stopped = stopped.clone();
         let handle = tokio::spawn(async move {
-            let mut cancel = CancelOnDrop { recorder: recorder.clone(), id: id.clone(), armed: true };
+            let mut cancel = CancelOnDrop::new(recorder.clone(), id.clone(), own_stopped);
             let Ok(_slot) = slots.acquire_owned().await else {
                 cancel.armed = false;
                 recorder.finished(&id, TaskOutcome::Failed { error: "the job queue was closed".to_string() });
@@ -250,6 +400,8 @@ impl JobBoard {
                 }
             }
         });
+
+        task_controls().register(&task_id, Control { parent: context.parent.clone(), abort: handle.abort_handle(), gate, stopped, recorder: recorder_for_controls });
 
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         let id = format!("job-{}", jobs.len() + 1);
@@ -276,7 +428,7 @@ impl JobBoard {
             channel: context.channel.clone(),
             parent: context.parent.clone(),
         });
-        let mut cancel = CancelOnDrop { recorder: recorder.clone(), id: id.clone(), armed: true };
+        let mut cancel = CancelOnDrop::new(recorder.clone(), id.clone(), Arc::new(AtomicBool::new(false)));
         recorder.running(&id);
         let outcome = work.await;
         cancel.armed = false;
@@ -554,7 +706,12 @@ mod tests {
                 TaskOutcome::Done { result, usage } => format!("done {id} {result} tokens={}", usage.map_or(0, |u| u.total_tokens)),
                 TaskOutcome::Failed { error } => format!("failed {id} {error}"),
                 TaskOutcome::Cancelled => format!("cancelled {id}"),
+                TaskOutcome::Stopped => format!("stopped {id}"),
             });
+        }
+
+        fn paused(&self, id: &str) {
+            self.0.lock().unwrap().push(format!("paused {id}"));
         }
     }
 
@@ -581,6 +738,156 @@ mod tests {
         let listed = board.list();
         let task = listed[0].task.as_ref().unwrap();
         assert_eq!((task.task_id.as_str(), task.assignee.as_str(), task.model.as_deref(), task.total_tokens), ("t1", "writer", Some("fast"), Some(7)));
+    }
+
+    /// A recorder whose ids carry a prefix of the test's own: the registry of controls is shared by the whole process.
+    struct Prefixed {
+        prefix: &'static str,
+        next: std::sync::atomic::AtomicUsize,
+        lines: Mutex<Vec<String>>,
+    }
+
+    impl Prefixed {
+        fn new(prefix: &'static str) -> Arc<Self> {
+            Arc::new(Self { prefix, next: Default::default(), lines: Mutex::new(Vec::new()) })
+        }
+
+        fn lines(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+
+        fn note(&self, what: &str, id: &str) {
+            self.lines.lock().unwrap().push(format!("{what} {id}"));
+        }
+    }
+
+    impl TaskRecorder for Prefixed {
+        fn created(&self, _task: &TaskSpec) -> String {
+            format!("{}-{}", self.prefix, self.next.fetch_add(1, Ordering::SeqCst) + 1)
+        }
+        fn running(&self, id: &str) {
+            self.note("running", id);
+        }
+        fn paused(&self, id: &str) {
+            self.note("paused", id);
+        }
+        fn unpaused(&self, id: &str) {
+            self.note("unpaused", id);
+        }
+        fn finished(&self, id: &str, outcome: TaskOutcome) {
+            self.note(
+                match outcome {
+                    TaskOutcome::Done { .. } => "done",
+                    TaskOutcome::Failed { .. } => "failed",
+                    TaskOutcome::Cancelled => "cancelled",
+                    TaskOutcome::Stopped => "stopped",
+                },
+                id,
+            );
+        }
+    }
+
+    fn board_of(recorder: &Arc<Prefixed>, parent: Option<&str>) -> Arc<JobBoard> {
+        let context = TaskContext { group: "g".into(), owner: None, channel: "desktop".into(), parent: parent.map(str::to_string), depth: u8::from(parent.is_some()) };
+        JobBoard::recording(4, recorder.clone(), context)
+    }
+
+    #[tokio::test]
+    async fn a_task_a_person_stops_is_recorded_as_stopped_and_stops_being_controllable() {
+        let recorder = Prefixed::new("stop");
+        let board = board_of(&recorder, None);
+        let job = board.spawn_task("w".into(), draft("w"), std::future::pending());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(task_controls().is_controllable("stop-1"));
+
+        assert!(task_controls().cancel("stop-1"));
+        board.wait(&job).await;
+
+        assert_eq!(recorder.lines(), ["running stop-1", "stopped stop-1"]);
+        assert!(!task_controls().is_controllable("stop-1"));
+        assert!(!task_controls().cancel("stop-1"), "nothing to stop any more");
+        assert!(!task_controls().cancel("never-heard-of"));
+    }
+
+    #[tokio::test]
+    async fn stopping_a_task_stops_the_subtasks_its_turn_started() {
+        let recorder = Prefixed::new("tree");
+        let board = board_of(&recorder, None);
+        let (inner_recorder, ready) = (recorder.clone(), Arc::new(tokio::sync::Notify::new()));
+        let signal = ready.clone();
+        let job = board.spawn_task("manager".into(), draft("manager"), async move {
+            // The turn of the manager: it keeps its own board, as a turn does, and starts a subtask on it.
+            let own = JobsGuard(board_of(&inner_recorder, Some("tree-1")));
+            own.0.spawn_task("helper".into(), draft("helper"), std::future::pending());
+            signal.notify_one();
+            std::future::pending::<()>().await;
+            Ok((String::new(), None))
+        });
+        ready.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(task_controls().cancel("tree-1"));
+        board.wait(&job).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let lines = recorder.lines();
+        assert!(lines.contains(&"stopped tree-1".to_string()) && lines.contains(&"stopped tree-2".to_string()), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn a_paused_task_waits_before_its_next_step_and_goes_on_when_resumed() {
+        let recorder = Prefixed::new("pause");
+        let board = board_of(&recorder, None);
+        let steps = Arc::new(AtomicUsize::new(0));
+        let counted = steps.clone();
+        let job = board.spawn_task_with("w".into(), draft("w"), move |link| async move {
+            let gate = link.unwrap().gate;
+            for _ in 0..50 {
+                gate.until_resumed().await;
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok(("done".to_string(), None))
+        });
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        assert!(task_controls().pause("pause-1"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let held = steps.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(steps.load(Ordering::SeqCst), held, "it made no step while paused");
+        assert!(task_controls().pause("pause-1"), "pausing twice is fine");
+
+        assert!(task_controls().resume("pause-1"));
+        assert_eq!(board.wait(&job).await, Some(JobState::Done("done".to_string())));
+        // Told once each, even though it was asked twice.
+        assert_eq!(recorder.lines().iter().filter(|l| l.starts_with("paused")).count(), 1);
+        assert_eq!(recorder.lines().iter().filter(|l| l.starts_with("unpaused")).count(), 1);
+        assert!(!task_controls().pause("pause-1"), "a finished task can't be paused");
+    }
+
+    #[tokio::test]
+    async fn pausing_a_task_pauses_the_subtasks_below_it() {
+        let recorder = Prefixed::new("branch");
+        let board = board_of(&recorder, None);
+        let (inner, ready) = (recorder.clone(), Arc::new(tokio::sync::Notify::new()));
+        let signal = ready.clone();
+        board.spawn_task("manager".into(), draft("manager"), async move {
+            let own = JobsGuard(board_of(&inner, Some("branch-1")));
+            own.0.spawn_task("helper".into(), draft("helper"), std::future::pending());
+            signal.notify_one();
+            std::future::pending::<()>().await;
+            Ok((String::new(), None))
+        });
+        ready.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(task_controls().pause("branch-1"));
+        let lines = recorder.lines();
+        assert!(lines.contains(&"paused branch-1".to_string()) && lines.contains(&"paused branch-2".to_string()), "{lines:?}");
+        assert!(task_controls().resume("branch-2"), "a subtask can be resumed on its own");
+        assert_eq!(recorder.lines().last().unwrap(), "unpaused branch-2");
+        board.abort_unfinished();
     }
 
     #[tokio::test]

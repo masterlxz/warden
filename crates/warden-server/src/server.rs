@@ -1634,6 +1634,13 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::ListAgentTasks { request_id }) => {
                     let _ = tx.send(crate::agent_task_list::handle_list_agent_tasks(agent_tasks.as_deref().map(|p| p.as_path()), member.is_none(), request_id));
                 }
+                Ok(ClientMessage::ControlAgentTask { request_id, pairing_key, task_id, action }) => {
+                    let (log, auth_key, is_owner, reply_tx) = (agent_tasks.clone(), auth_key.clone(), member.is_none(), tx.clone());
+                    tokio::spawn(async move {
+                        let reply = crate::agent_task_list::handle_control_agent_task(log.as_deref().map(|p| p.as_path()), is_owner, &auth_key, request_id, &pairing_key, &task_id, &action).await;
+                        let _ = reply_tx.send(reply);
+                    });
+                }
                 Ok(ClientMessage::ListTasks { request_id }) => {
                     let _ = tx.send(handle_list_tasks(tasks.as_ref(), settings.as_deref(), request_id));
                 }

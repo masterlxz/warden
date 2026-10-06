@@ -32,6 +32,7 @@ import {
   type NodeInfo,
   type NodeFolder,
   type AgentTask,
+  type AgentTaskAction,
   type DirListing,
   type ProjectDto,
   type SkillDto,
@@ -830,6 +831,14 @@ export class ServerConnection {
   /** O trabalho que os agentes passaram uns aos outros em segundo plano (P123), do mais novo ao mais antigo. Só leitura. */
   async listAgentTasks(): Promise<AgentTask[]> {
     const reply = await this.request((requestId) => ({ type: "listAgentTasks", requestId }));
+    if (reply.type !== "agentTaskList") throw new Error("resposta inesperada do hub");
+    return reply.tasks;
+  }
+
+  /** Pausa, retoma ou para uma tarefa delegada que roda no hub (P123), com as subtarefas abaixo dela. Pede a chave de pareamento; rejeita
+   * com `TaskError` (chave errada, ou a tarefa não roda aí). Devolve a lista atualizada. */
+  async controlAgentTask(pairingKey: string, taskId: string, action: AgentTaskAction): Promise<AgentTask[]> {
+    const reply = await this.request((requestId) => ({ type: "controlAgentTask", requestId, pairingKey, taskId, action }));
     if (reply.type !== "agentTaskList") throw new Error("resposta inesperada do hub");
     return reply.tasks;
   }

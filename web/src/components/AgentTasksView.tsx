@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ServerConnection } from "../hub/connection";
-import type { AgentTask } from "../hub/messages";
-import { durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../hub/agentTasks";
+import { TaskError, type ServerConnection } from "../hub/connection";
+import type { AgentTask, AgentTaskAction } from "../hub/messages";
+import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../hub/agentTasks";
 
 const REFRESH_MS = 3000;
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
@@ -12,6 +12,7 @@ function GroupHeader({ group }: { group: TaskGroup }) {
     counts.done > 0 && `${counts.done} concluída${counts.done > 1 ? "s" : ""}`,
     counts.running > 0 && `${counts.running} em andamento`,
     counts.waiting > 0 && `${counts.waiting} aguardando agente`,
+    counts.paused > 0 && `${counts.paused} pausada${counts.paused > 1 ? "s" : ""}`,
     counts.pending > 0 && `${counts.pending} pendente${counts.pending > 1 ? "s" : ""}`,
     counts.failed > 0 && `${counts.failed} falhou`,
     counts.cancelled > 0 && `${counts.cancelled} cancelada${counts.cancelled > 1 ? "s" : ""}`,
@@ -41,10 +42,11 @@ function GroupHeader({ group }: { group: TaskGroup }) {
   );
 }
 
-function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: number }) {
+function TaskItem({ task, depth, now, onAsk }: { task: AgentTask; depth: number; now: number; onAsk: (task: AgentTask, action: AgentTaskAction) => void }) {
   const [open, setOpen] = useState(false);
   const detail = task.state === "done" ? task.result : task.error;
   const duration = durationLabel(task, now);
+  const actions = actionsFor(task);
   return (
     <li className={`agent-work-task agent-work-task--${task.state}`} style={depth > 0 ? { marginLeft: `${depth * 1.4}em` } : undefined}>
       <button type="button" className="agent-work-task-line" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -59,6 +61,15 @@ function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: n
           {task.totalTokens != null && <span>{formatTokens(task.totalTokens)} tok</span>}
         </span>
       </button>
+      {actions.length > 0 && (
+        <div className="agent-work-actions">
+          {actions.map((action) => (
+            <button key={action} type="button" className="link-button" onClick={() => onAsk(task, action)}>
+              {ACTION_LABEL[action]}
+            </button>
+          ))}
+        </div>
+      )}
       {open && (
         <div className="agent-work-detail">
           <p className="skills-hint">Tarefa</p>
@@ -78,11 +89,16 @@ function TaskItem({ task, depth, now }: { task: AgentTask; depth: number; now: n
 }
 
 /** P123 — o trabalho que os agentes passaram uns aos outros em segundo plano: quem faz o quê, até onde foi o lote de cada
- * gerente e quanto custou. Só leitura; atualiza enquanto a aba está aberta. */
+ * gerente e quanto custou. Atualiza enquanto a aba está aberta. Uma tarefa que ainda roda no hub pode ser pausada, retomada ou
+ * parada (com as subtarefas), e isso pede a chave de pareamento, como toda mudança no hub. */
 export default function AgentTasksView({ conn }: { conn: ServerConnection | null }) {
   const [tasks, setTasks] = useState<AgentTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [asking, setAsking] = useState<{ task: AgentTask; action: AgentTaskAction } | null>(null);
+  const [pairingKey, setPairingKey] = useState("");
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     if (!conn) return;
@@ -101,6 +117,61 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
     return () => window.clearInterval(timer);
   }, [load]);
 
+  function cancelKey() {
+    setAsking(null);
+    setPairingKey("");
+    setKeyError(null);
+  }
+
+  async function confirm() {
+    if (!conn || !asking) return;
+    setBusy(true);
+    setKeyError(null);
+    try {
+      setTasks(await conn.controlAgentTask(pairingKey, asking.task.id, asking.action));
+      setError(null);
+      cancelKey();
+    } catch (err) {
+      if (err instanceof TaskError && err.authRejected) {
+        setKeyError("Chave de pareamento errada.");
+      } else {
+        cancelKey();
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const keyPrompt = asking && (
+    <form
+      className="settings-confirm devices-confirm"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void confirm();
+      }}
+    >
+      <p>
+        {ACTION_LABEL[asking.action]} a tarefa de <strong>{asking.task.assignee}</strong>
+        {asking.action === "cancel" ? " (e as subtarefas dela)" : ""}.
+      </p>
+      <label className="settings-field">
+        Chave de pareamento do hub
+        <input type="password" autoComplete="current-password" autoFocus value={pairingKey} onChange={(e) => setPairingKey(e.target.value)} />
+        <span className="field-hint">A mesma do primeiro login. É pedida a cada mudança.</span>
+      </label>
+      {keyError && <p className="error-banner">{keyError}</p>}
+      <div className="skills-actions">
+        <button type="submit" className="primary-button" disabled={busy || pairingKey.trim() === "" || !conn}>
+          {busy ? "Aguarde…" : "Confirmar"}
+        </button>
+        <button type="button" className="link-button" disabled={busy} onClick={cancelKey}>
+          Cancelar
+        </button>
+      </div>
+    </form>
+  );
+
   const groups = useMemo(() => groupTasks(tasks ?? []), [tasks]);
 
   return (
@@ -110,6 +181,7 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
         agente, e o modelo, de cada tarefa.
       </p>
       {error && <p className="error-banner">{error}</p>}
+      {keyPrompt}
       {tasks === null && !error && <p className="skills-hint">Carregando…</p>}
       {tasks !== null && groups.length === 0 && <p className="skills-hint">Nada ainda. Quando um agente delega uma tarefa com "background", ela aparece aqui.</p>}
       {groups.map((group) => (
@@ -117,7 +189,7 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
           <GroupHeader group={group} />
           <ul className="agent-work-list">
             {group.rows.map(({ task, depth }) => (
-              <TaskItem key={task.id} task={task} depth={depth} now={now} />
+              <TaskItem key={task.id} task={task} depth={depth} now={now} onAsk={(t, action) => { setError(null); setKeyError(null); setAsking({ task: t, action }); }} />
             ))}
           </ul>
         </section>

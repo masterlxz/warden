@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { durationLabel, formatTokens, groupTasks } from "../src/lib/agentTasks.ts";
+import { actionsFor, durationLabel, formatTokens, groupTasks } from "../src/lib/agentTasks.ts";
 
 const task = (id, group, state, extra = {}) => ({ id, group, owner: "chief", assignee: id, objective: `do ${id}`, channel: "desktop", state, createdAtMs: 1000, ...extra });
 
@@ -18,7 +18,7 @@ describe("grouping the tasks of a turn", () => {
     assert.equal(group.total, 5);
     assert.equal(group.finished, 3);
     assert.equal(group.percent, 60);
-    assert.deepEqual(group.counts, { pending: 1, running: 1, waiting: 0, done: 2, failed: 1, cancelled: 0 });
+    assert.deepEqual(group.counts, { pending: 1, running: 1, waiting: 0, paused: 0, done: 2, failed: 1, cancelled: 0 });
     assert.equal(group.totalTokens, 150);
     assert.equal(group.active, true);
     assert.equal(group.owner, "chief");
@@ -37,7 +37,7 @@ describe("grouping the tasks of a turn", () => {
   });
 
   test("a state this app doesn't know counts as pending, and no tasks is no groups", () => {
-    const [group] = groupTasks([task("a", "g", "paused")]);
+    const [group] = groupTasks([task("a", "g", "some-new-state")]);
     assert.equal(group.counts.pending, 1);
     assert.deepEqual(groupTasks([]), []);
   });
@@ -78,5 +78,24 @@ describe("how a task is shown", () => {
     assert.equal(durationLabel(task("a", "g", "running", { startedAtMs: 1000 }), 5000), "4s");
     assert.equal(durationLabel(task("a", "g", "done", { startedAtMs: 0, finishedAtMs: 125000 }), 999999), "2m 05s");
     assert.equal(durationLabel(task("a", "g", "done", { startedAtMs: 0, finishedAtMs: 3780000 }), 0), "1h 03m");
+  });
+});
+
+describe("what a person can do to a task", () => {
+  test("only a task running in the answering process can be controlled, and the actions follow its state", () => {
+    const mine = (state) => task("a", "g", state, { controllable: true });
+    assert.deepEqual(actionsFor(mine("pending")), ["cancel"]);
+    assert.deepEqual(actionsFor(mine("running")), ["pause", "cancel"]);
+    assert.deepEqual(actionsFor(mine("waiting")), ["pause", "cancel"]);
+    assert.deepEqual(actionsFor(mine("paused")), ["resume", "cancel"]);
+    for (const state of ["done", "failed", "cancelled"]) assert.deepEqual(actionsFor(mine(state)), []);
+    assert.deepEqual(actionsFor(task("a", "g", "running")), [], "a task of another process has no controls");
+  });
+
+  test("a paused task still counts as active work", () => {
+    const [group] = groupTasks([task("a", "g", "paused"), task("b", "g", "done")]);
+    assert.equal(group.active, true);
+    assert.equal(group.counts.paused, 1);
+    assert.equal(group.finished, 1);
   });
 });

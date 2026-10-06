@@ -91,6 +91,65 @@ async fn a_subtask_lists_its_parent_and_a_task_waiting_for_it_is_waiting() {
     assert_eq!((helper.state.as_str(), helper.parent_id.as_deref(), helper.group.as_str()), ("running", Some(manager.id.as_str()), "turn-1"));
 }
 
+/// Sends `message` and returns the first answer that is a task list or a task error.
+async fn ask(conn: &mut ServerConnection, message: ClientMessage) -> ServerMessage {
+    conn.send(&message).await.unwrap();
+    loop {
+        match conn.recv().await.unwrap().expect("connection closed") {
+            reply @ (ServerMessage::AgentTaskList { .. } | ServerMessage::TaskError { .. }) => return reply,
+            _ => continue,
+        }
+    }
+}
+
+fn control(request_id: u64, key: &str, task_id: &str, action: &str) -> ClientMessage {
+    ClientMessage::ControlAgentTask { request_id, pairing_key: key.into(), task_id: task_id.into(), action: action.into() }
+}
+
+#[tokio::test]
+async fn the_owner_pauses_resumes_and_stops_a_task_running_on_the_hub_and_is_told_why_when_it_cannot() {
+    use warden_core::jobs::{JobBoard, TaskContext};
+
+    let log = std::env::temp_dir().join(format!("warden-agent-task-control-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())).join("agent_tasks.jsonl");
+    let recorder = Arc::new(FileTaskRecorder::new(&log));
+    // One task really running in this process (what the hub's orchestrator would have started), and one only the log knows.
+    let board = JobBoard::recording(2, recorder.clone(), TaskContext { group: "turn-1".into(), owner: Some("chief".into()), channel: "desktop".into(), parent: None, depth: 0 });
+    board.spawn_task("backend: build".into(), warden_core::jobs::TaskDraft { assignee: "backend".into(), objective: "build".into(), model: None }, std::future::pending());
+    let elsewhere = recorder.created(&spec("elsewhere", "turn-0", None));
+    recorder.running(&elsewhere);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let url = spin_up(Some(log)).await;
+    let mut conn = ServerConnection::connect(&url, "web-1", "Browser", "test-key").await.unwrap();
+    let tasks = list(&url).await;
+    let mine = tasks.iter().find(|t| t.assignee == "backend").unwrap();
+    assert!(mine.controllable && !tasks.iter().find(|t| t.assignee == "elsewhere").unwrap().controllable);
+    let id = mine.id.clone();
+    let state_of = |reply: ServerMessage, assignee: &str| match reply {
+        ServerMessage::AgentTaskList { tasks, .. } => tasks.into_iter().find(|t| t.assignee == assignee).map(|t| (t.state, t.error, t.controllable)).unwrap(),
+        other => panic!("expected the list, got {other:?}"),
+    };
+    let refusal = |reply: ServerMessage| match reply {
+        ServerMessage::TaskError { message, auth_rejected, .. } => (message, auth_rejected),
+        other => panic!("expected an error, got {other:?}"),
+    };
+
+    // A wrong key changes nothing.
+    assert_eq!(refusal(ask(&mut conn, control(1, "wrong", &id, "pause")).await), ("wrong pairing key".to_string(), true));
+
+    assert_eq!(state_of(ask(&mut conn, control(2, "test-key", &id, "pause")).await, "backend"), ("paused".to_string(), None, true));
+    assert!(refusal(ask(&mut conn, control(3, "test-key", &id, "pause")).await).0.contains("already paused"));
+    assert_eq!(state_of(ask(&mut conn, control(4, "test-key", &id, "resume")).await, "backend").0, "running");
+    assert!(refusal(ask(&mut conn, control(5, "test-key", &id, "resume")).await).0.contains("isn't paused"));
+    assert!(refusal(ask(&mut conn, control(6, "test-key", &elsewhere, "cancel")).await).0.contains("isn't running on this machine"));
+    assert!(refusal(ask(&mut conn, control(7, "test-key", &id, "explode")).await).0.contains("unknown action"));
+    assert!(refusal(ask(&mut conn, control(8, "test-key", "at-nope", "cancel")).await).0.contains("no task"));
+
+    let (state, error, controllable) = state_of(ask(&mut conn, control(9, "test-key", &id, "cancel")).await, "backend");
+    assert_eq!((state.as_str(), error.as_deref(), controllable), ("cancelled", Some("stopped by a person"), false));
+    assert!(refusal(ask(&mut conn, control(10, "test-key", &id, "pause")).await).0.contains("already ended"));
+}
+
 #[tokio::test]
 async fn a_hub_with_no_log_or_no_tasks_lists_nothing() {
     assert!(list(&spin_up(None).await).await.is_empty());

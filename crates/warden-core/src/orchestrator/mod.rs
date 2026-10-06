@@ -711,6 +711,10 @@ impl Orchestrator {
         let is_client_tool = |name: &str| client_tools.iter().any(|spec| spec.name == name);
 
         for _ in 0..MAX_TOOL_ITERATIONS {
+            // The turn of a task a person paused (P123) waits here, between two calls, until it is resumed.
+            if let Some(link) = &self.task_link {
+                link.gate.until_resumed().await;
+            }
             // Before anything is spent: may pause to ask for more room, or end the turn. Checked on
             // every call rather than once per turn, so a loop can't burn past a limit meanwhile.
             let meter = match spend {
@@ -1531,7 +1535,7 @@ mod tests {
                 let word = match outcome {
                     TaskOutcome::Done { .. } => "done",
                     TaskOutcome::Failed { .. } => "failed",
-                    TaskOutcome::Cancelled => "cancelled",
+                    TaskOutcome::Cancelled | TaskOutcome::Stopped => "cancelled",
                 };
                 self.ended.lock().unwrap().push(format!("{id} {word}"));
             }
@@ -1626,7 +1630,7 @@ mod tests {
                 let word = match outcome {
                     TaskOutcome::Done { .. } => "done",
                     TaskOutcome::Failed { .. } => "failed",
-                    TaskOutcome::Cancelled => "cancelled",
+                    TaskOutcome::Cancelled | TaskOutcome::Stopped => "cancelled",
                 };
                 self.0.lock().unwrap().push(format!("{word} {id}"));
             }

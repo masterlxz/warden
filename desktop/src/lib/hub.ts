@@ -7,6 +7,7 @@ import type {
   Attachment,
   AgentEntry,
   AgentTask,
+  AgentTaskAction,
   ChatMessage,
   ProjectEntry,
   RunMessage,
@@ -202,6 +203,14 @@ export function hubTasks(askKey: KeyAsker) {
 /** The work agents delegated to each other on the hub in use (P123), newest first. Read only, so no pairing key. */
 export async function hubAgentTasks(): Promise<AgentTask[]> {
   return (await ask<{ type: string; tasks: AgentTask[] }>({ type: "listAgentTasks" }, "agentTaskList")).tasks;
+}
+
+/** Pauses, resumes or stops a task running on the hub in use (P123), with the subtasks below it. It changes what the hub is doing, so it
+ * asks for the pairing key. Returns the hub's updated list. */
+export async function hubControlAgentTask(askKey: KeyAsker, taskId: string, action: AgentTaskAction): Promise<AgentTask[]> {
+  const reason = `${action === "cancel" ? "Stopping" : action === "pause" ? "Pausing" : "Resuming"} a task changes what the hub is doing.`;
+  const message = { type: "controlAgentTask", taskId, action, pairingKey: await askKey(reason) };
+  return (await ask<{ type: string; tasks: AgentTask[] }>(message, "agentTaskList")).tasks;
 }
 
 interface HubWebhookReply {

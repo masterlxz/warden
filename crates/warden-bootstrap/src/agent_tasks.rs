@@ -26,7 +26,7 @@ pub const STALE_AFTER_MS: u64 = 6 * 60 * 60 * 1000;
 const MAX_OBJECTIVE_CHARS: usize = 2000;
 const MAX_RESULT_CHARS: usize = 4000;
 
-/// Where a task is. "Waiting for an agent" and "paused" are not here yet: they need agents answering each other and a real pause.
+/// Where a task is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
@@ -35,6 +35,8 @@ pub enum TaskState {
     Running,
     /// The task's agent is waiting for another agent: a subtask it started (P123).
     Waiting,
+    /// A person paused it from a screen: it finishes the model call it is in and waits to be resumed (P123).
+    Paused,
     Done,
     Failed,
     /// The turn ended (or was cancelled) before it finished, or its runner disappeared.
@@ -52,6 +54,7 @@ impl TaskState {
             TaskState::Pending => "pending",
             TaskState::Running => "running",
             TaskState::Waiting => "waiting",
+            TaskState::Paused => "paused",
             TaskState::Done => "done",
             TaskState::Failed => "failed",
             TaskState::Cancelled => "cancelled",
@@ -87,6 +90,51 @@ pub struct AgentTask {
     pub finished_at_ms: Option<u64>,
 }
 
+/// What a person can do to a task from a screen (P123).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskControl {
+    Pause,
+    Resume,
+    Cancel,
+}
+
+impl TaskControl {
+    /// The word screens send: `pause`, `resume` or `cancel`.
+    pub fn parse(action: &str) -> Result<Self, String> {
+        match action {
+            "pause" => Ok(TaskControl::Pause),
+            "resume" => Ok(TaskControl::Resume),
+            "cancel" => Ok(TaskControl::Cancel),
+            other => Err(format!("unknown action '{other}' — use pause, resume or cancel")),
+        }
+    }
+}
+
+/// Pauses, resumes or stops the task `id` of the log at `log` when it is running in this process, with the subtasks below it. The refusals
+/// say why: not running here (another process, or it already ended), or not in a state the action fits.
+pub fn control_agent_task(log: &Path, id: &str, action: TaskControl) -> Result<(), String> {
+    let controls = warden_core::jobs::task_controls();
+    let task = read_agent_tasks(log).into_iter().find(|t| t.id == id).ok_or_else(|| format!("no task '{id}'"))?;
+    if task.state.is_finished() {
+        return Err(format!("the task already ended ({})", task.state.as_str()));
+    }
+    if !controls.is_controllable(id) {
+        return Err("this task isn't running on this machine, so it can't be controlled from here".to_string());
+    }
+    match (action, task.state) {
+        (TaskControl::Pause, TaskState::Paused) => return Err("the task is already paused".to_string()),
+        (TaskControl::Pause, TaskState::Pending) => return Err("the task hasn't started: cancel it, or wait for it to start".to_string()),
+        (TaskControl::Resume, state) if state != TaskState::Paused => return Err("the task isn't paused".to_string()),
+        _ => {}
+    }
+    let done = match action {
+        TaskControl::Pause => controls.pause(id),
+        TaskControl::Resume => controls.resume(id),
+        TaskControl::Cancel => controls.cancel(id),
+    };
+    done.then_some(()).ok_or_else(|| "the task ended just now".to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "e", rename_all = "snake_case")]
 enum Event {
@@ -95,6 +143,8 @@ enum Event {
     Running { id: String, at: u64 },
     Waiting { id: String, at: u64 },
     Resumed { id: String, at: u64 },
+    Paused { id: String, at: u64 },
+    Unpaused { id: String, at: u64 },
     Finished { id: String, at: u64, state: TaskState, result: Option<String>, error: Option<String>, usage: Option<Usage> },
 }
 
@@ -197,8 +247,17 @@ impl TaskRecorder for FileTaskRecorder {
         self.append(&Event::Resumed { id: id.to_string(), at: now_ms() });
     }
 
+    fn paused(&self, id: &str) {
+        self.append(&Event::Paused { id: id.to_string(), at: now_ms() });
+    }
+
+    fn unpaused(&self, id: &str) {
+        self.append(&Event::Unpaused { id: id.to_string(), at: now_ms() });
+    }
+
     fn finished(&self, id: &str, outcome: TaskOutcome) {
         let (state, result, error, usage) = match outcome {
+            TaskOutcome::Stopped => (TaskState::Cancelled, None, Some("stopped by a person".to_string()), None),
             TaskOutcome::Done { result, usage } => (TaskState::Done, Some(clip(&result, MAX_RESULT_CHARS)), None, usage),
             TaskOutcome::Failed { error } => (TaskState::Failed, None, Some(clip(&error, MAX_RESULT_CHARS)), None),
             TaskOutcome::Cancelled => (TaskState::Cancelled, None, Some("the turn ended before it finished".to_string()), None),
@@ -227,10 +286,22 @@ fn read_agent_tasks_at(path: &Path, now: u64) -> Vec<AgentTask> {
                     task.started_at_ms = Some(at);
                 }
             }
+            // A pause outranks a wait: the task stays paused until a person lifts it.
             Event::Waiting { id, at } => {
-                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished()) {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished() && t.state != TaskState::Paused) {
                     task.state = TaskState::Waiting;
                     task.started_at_ms = task.started_at_ms.or(Some(at));
+                }
+            }
+            Event::Paused { id, at } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && !t.state.is_finished()) {
+                    task.state = TaskState::Paused;
+                    task.started_at_ms = task.started_at_ms.or(Some(at));
+                }
+            }
+            Event::Unpaused { id, .. } => {
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == id && t.state == TaskState::Paused) {
+                    task.state = TaskState::Running;
                 }
             }
             Event::Resumed { id, .. } => {
@@ -306,6 +377,34 @@ mod tests {
 
         recorder.finished(&manager, TaskOutcome::Done { result: "all".into(), usage: None });
         assert_eq!(state_of(&read_agent_tasks(&log), &manager), TaskState::Done);
+    }
+
+    #[test]
+    fn a_task_a_person_pauses_stays_paused_through_a_wait_until_it_is_lifted_and_one_they_stop_says_so() {
+        let log = temp_log();
+        let recorder = FileTaskRecorder::new(&log);
+        let state = |id: &str| read_agent_tasks(&log).into_iter().find(|t| t.id == id).unwrap();
+        let id = recorder.created(&spec("a", "g"));
+        recorder.running(&id);
+
+        recorder.paused(&id);
+        assert_eq!(state(&id).state, TaskState::Paused);
+        // The agent was waiting for a subtask that ends meanwhile: still paused.
+        recorder.waiting(&id);
+        recorder.resumed(&id);
+        assert_eq!(state(&id).state, TaskState::Paused);
+        recorder.unpaused(&id);
+        assert_eq!(state(&id).state, TaskState::Running);
+        assert!(!TaskState::Paused.is_finished() && TaskState::Paused.as_str() == "paused");
+
+        recorder.paused(&id);
+        recorder.finished(&id, TaskOutcome::Stopped);
+        let stopped = state(&id);
+        assert_eq!((stopped.state, stopped.error.as_deref()), (TaskState::Cancelled, Some("stopped by a person")));
+        // A late unpause or pause doesn't reopen it.
+        recorder.unpaused(&id);
+        recorder.paused(&id);
+        assert_eq!(state(&id).state, TaskState::Cancelled);
     }
 
     #[test]

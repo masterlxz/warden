@@ -1158,6 +1158,16 @@ button:focus-visible {
   opacity: 0.85;
 }
 
+.agent-work-actions {
+  display: inline-flex;
+  gap: 0.4em;
+  margin: 0.25em 0 0 2em;
+}
+
+.agent-work-task--paused .agent-work-mark {
+  opacity: 0.7;
+}
+
 .agent-work-detail {
   padding: 0.4em 0.6em 0.6em 2em;
 }

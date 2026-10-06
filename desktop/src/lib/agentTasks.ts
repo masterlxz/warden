@@ -1,7 +1,7 @@
 // P123 — the work agents delegate to each other, as the "Agent work" screen shows it: the tasks one turn started are a group,
 // with a progress counted over them. Pure, so it can be tested without a window.
 
-import type { AgentTask, AgentTaskState } from "../types";
+import type { AgentTask, AgentTaskAction, AgentTaskState } from "../types";
 
 /** A task as the list shows it: how many levels under the turn's own agent it sits (0 for the tasks the agent started itself). */
 export interface TaskRow {
@@ -25,7 +25,7 @@ export interface TaskGroup {
   percent: number;
   /** Tokens the tasks that reported any used. */
   totalTokens: number;
-  /** Something in the group is still pending, running or waiting for another agent. */
+  /** Something in the group is still pending, running, waiting for another agent or paused. */
   active: boolean;
   createdAtMs: number;
 }
@@ -34,6 +34,7 @@ export const STATE_LABEL: Record<AgentTaskState, string> = {
   pending: "Pending",
   running: "Running",
   waiting: "Waiting for agent",
+  paused: "Paused",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
@@ -44,12 +45,32 @@ export const STATE_MARK: Record<AgentTaskState, string> = {
   pending: "○",
   running: "◐",
   waiting: "◉",
+  paused: "⏸",
   done: "✓",
   failed: "⚠",
   cancelled: "⏹",
 };
 
-const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, done: 0, failed: 0, cancelled: 0 });
+const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, paused: 0, done: 0, failed: 0, cancelled: 0 });
+
+/** What a person can do to this task right now: only a task running in the process that answered can be controlled. A task that
+ * hasn't started can only be stopped; a paused one can be resumed. */
+export function actionsFor(task: AgentTask): AgentTaskAction[] {
+  if (!task.controllable) return [];
+  switch (task.state) {
+    case "pending":
+      return ["cancel"];
+    case "running":
+    case "waiting":
+      return ["pause", "cancel"];
+    case "paused":
+      return ["resume", "cancel"];
+    default:
+      return [];
+  }
+}
+
+export const ACTION_LABEL: Record<AgentTaskAction, string> = { pause: "Pause", resume: "Resume", cancel: "Stop" };
 
 /** The tasks of one group as a tree: each task followed by its subtasks, the subtasks one level deeper. A task whose parent isn't in the
  * group (or a loop that shouldn't exist) is shown at the top rather than lost. */
@@ -91,7 +112,7 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
       counts,
       percent: Math.round((finished / ordered.length) * 100),
       totalTokens: ordered.reduce((sum, t) => sum + (t.totalTokens ?? 0), 0),
-      active: counts.pending + counts.running + counts.waiting > 0,
+      active: counts.pending + counts.running + counts.waiting + counts.paused > 0,
       createdAtMs: ordered[0].createdAtMs,
     });
   }
