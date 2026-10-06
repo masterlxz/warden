@@ -19,7 +19,7 @@ use warden_core::model::openai::OpenAiProvider;
 use warden_core::model::{Attachment, FallbackProvider, Message, ModelProvider, Usage};
 use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::tool::delegate::DelegateTool;
-use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, NamedSubAgent};
+use warden_core::tool::delegate_to_agent::{AgentResolver, AgentsRevision, DelegateToAgentTool, DelegationSpawner, NamedSubAgent};
 use warden_core::tool::delegate::ModelChoices;
 use warden_core::tool::job_tools::JobsTool;
 use warden_core::tool::document::GenerateDocumentTool;
@@ -1684,6 +1684,8 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator, caller: Op
     // P120: a caller that is part of the organization delegates only to the agents below it; one that isn't reaches
     // every agent, as before the hierarchy existed.
     let scope: Option<Vec<String>> = caller.filter(|c| org::is_in_hierarchy(&config.agents, c)).map(|c| org::subordinates_of(&config.agents, c));
+    // One copy of the config for every agent that may delegate itself (P123), made only when there is one.
+    let snapshot = config.agents.iter().any(|a| a.owner.is_none() && a.can_delegate_to_agents).then(|| snapshot_config(config)).flatten();
     // P84: a member's agent is theirs alone — never a target of the owner's chief.
     for agent in config.agents.iter().filter(|a| a.owner.is_none()).filter(|a| scope.as_ref().is_none_or(|scope| scope.contains(&a.id))) {
         let target_orchestrator = match &agent.provider_id {
@@ -1700,19 +1702,30 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator, caller: Op
         };
         // The delegated agent sees its own skills (P72 c) and only its own tools (P46), not the
         // chief's — which is why `orchestrator` must reach this function unrestricted.
-        let target_orchestrator =
-            target_orchestrator.with_agent(Some(agent.id.clone())).with_allowed_tools(agent.allowed_tools.as_deref());
+        let modeled = target_orchestrator.with_agent(Some(agent.id.clone()));
         // P122: its own level too — and never above the caller's, which `orchestrator` already carries.
         let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
-        let target_orchestrator =
-            target_orchestrator.with_autonomy(warden_core::autonomy::Autonomy::from_level(agent.autonomy).unwrap_or(warden_core::autonomy::Autonomy::AskFirst), &read_only);
-        let target_orchestrator = target_orchestrator.with_approval_rules(&agent.approval_required, None);
+        let level = warden_core::autonomy::Autonomy::from_level(agent.autonomy).unwrap_or(warden_core::autonomy::Autonomy::AskFirst);
+        let capped = |o: Orchestrator| o.with_autonomy(level, &read_only).with_approval_rules(&agent.approval_required, None);
+        // What this agent would delegate from: its own model and limits, but every tool, so each of ITS targets is narrowed to its own.
+        let nested_base = capped(modeled.clone());
+        let target_orchestrator = capped(modeled.with_allowed_tools(agent.allowed_tools.as_deref()));
+        // P123: an agent that may delegate builds its own `delegate_to_agent` when a background task of it starts, reaching only
+        // whoever the hierarchy lets it reach. Built then, not now, so the tools of every agent aren't built up front.
+        let delegation: Option<DelegationSpawner> = match (&snapshot, agent.can_delegate_to_agents) {
+            (Some(snapshot), true) => {
+                let (snapshot, id) = (snapshot.clone(), agent.id.clone());
+                Some(Arc::new(move || build_delegate_to_agent_tool(&snapshot, &nested_base, Some(&id))))
+            }
+            _ => None,
+        };
         let persona = (!agent.persona.trim().is_empty()).then(|| agent.persona.clone());
         targets.push(NamedSubAgent {
             id: agent.id.clone(),
             description: agent.persona.clone(),
             orchestrator: target_orchestrator,
             persona,
+            delegation,
         });
     }
     targets
@@ -1976,10 +1989,14 @@ pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
     if ids.len() < 2 {
         return None;
     }
-    // `FileConfig` isn't `Clone`; a round trip through its own file format is how this crate copies one.
-    let snapshot: FileConfig = toml::from_str(&toml::to_string(config).ok()?).ok()?;
-    let snapshot = Arc::new(snapshot);
+    let snapshot = snapshot_config(config)?;
     Some(ModelChoices { ids, resolve: Arc::new(move |id| build_model_for(&snapshot, id, None)) })
+}
+
+/// A copy of `config` a closure can keep. `FileConfig` isn't `Clone`; a round trip through its own file format is how this crate copies one.
+fn snapshot_config(config: &FileConfig) -> Option<Arc<FileConfig>> {
+    let copy: FileConfig = toml::from_str(&toml::to_string(config).ok()?).ok()?;
+    Some(Arc::new(copy))
 }
 
 /// Where the log of delegated tasks is written (P123): `WARDEN_AGENT_TASKS` (a file path) wins over the default location,
@@ -3411,6 +3428,101 @@ oauth = true
         assert!(reaches(Some("a1")).is_empty(), "a leaf has nobody below it");
         assert_eq!(reaches(Some("solo")), ["boss", "a", "a1", "b", "solo"], "outside the organization: as before");
         assert_eq!(reaches(None), ["boss", "a", "a1", "b", "solo"]);
+    }
+
+    /// Three agents in one script, told apart by the task they are given: `boss` ("go") delegates to `manager` ("manage") in the background, and
+    /// `manager` delegates to `worker` ("work") in the background; each reads its job. Writes down what every turn was offered.
+    struct Hierarchy {
+        offered: Arc<std::sync::Mutex<Offers>>,
+    }
+
+    /// What each turn was offered: its first message, and its tools with their parameters.
+    type Offers = Vec<(String, Vec<(String, serde_json::Value)>)>;
+
+    #[async_trait::async_trait]
+    impl ModelProvider for Hierarchy {
+        async fn chat_stream(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<warden_core::tool::ToolSpec>,
+        ) -> anyhow::Result<warden_core::model::ChatStream> {
+            use warden_core::model::{response_stream, Response, Role, ToolCall};
+            let first = messages.iter().find(|m| m.role == Role::User).map(|m| m.content.clone()).unwrap_or_default();
+            let results = messages.iter().filter(|m| m.role == Role::Tool).count();
+            self.offered.lock().unwrap().push((first.clone(), tools.iter().map(|t| (t.name.clone(), t.parameters.clone())).collect()));
+            let call = |name: &str, arguments: serde_json::Value| ToolCall { id: "c".into(), name: name.into(), arguments, thought_signature: None };
+            let delegate = |to: &str, task: &str| call("delegate_to_agent", serde_json::json!({ "agent_id": to, "task": task, "background": true }));
+            let read = call("jobs", serde_json::json!({ "action": "result", "job_id": "job-1" }));
+            let calls = match (first.as_str(), results) {
+                ("go", 0) => vec![delegate("manager", "manage")],
+                ("manage", 0) if tools.iter().any(|t| t.name == "delegate_to_agent") => vec![delegate("worker", "work")],
+                ("go" | "manage", 1) => vec![read],
+                _ => Vec::new(),
+            };
+            let content = if calls.is_empty() { format!("{first} done") } else { String::new() };
+            Ok(response_stream(Response { content, tool_calls: calls, usage: None }))
+        }
+    }
+
+    /// `boss` (delegates) over `manager` (may delegate, unless `manager_delegates` is false) over `worker`, run from the boss's turn.
+    async fn run_hierarchy(manager_delegates: bool) -> (Vec<agent_tasks::AgentTask>, Offers) {
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let dir = std::env::temp_dir().join(format!("warden-hierarchy-test-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let log = dir.join("agent_tasks.jsonl");
+        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: offered.clone() }), Arc::new(Vault::new(dir.join("vault"))));
+        base.register_tool(Arc::new(JobsTool::new()));
+        let base = base.with_parallel_jobs(2).with_task_recorder(Arc::new(agent_tasks::FileTaskRecorder::new(&log)));
+        let under = |id: &str, boss: Option<&str>, delegates: bool| AgentConfig { reports_to: boss.map(str::to_string), can_delegate_to_agents: delegates, ..agent_config(id, None) };
+        let config = FileConfig {
+            agents: vec![under("boss", None, true), under("manager", Some("boss"), manager_delegates), under("worker", Some("manager"), false)],
+            ..FileConfig::default()
+        };
+        let boss = scope_to_agent(&base, &config, None, "boss", AgentExtras::default()).unwrap();
+        assert_eq!(boss.orchestrator.handle_message(&[], "go").await.unwrap().content, "go done");
+        let offered = offered.lock().unwrap().clone();
+        (agent_tasks::read_agent_tasks(&log), offered)
+    }
+
+    #[tokio::test]
+    async fn a_manager_delegated_to_in_the_background_delegates_to_its_own_subordinates_and_the_tree_is_recorded() {
+        let (tasks, offered) = run_hierarchy(true).await;
+
+        let by = |name: &str| tasks.iter().find(|t| t.assignee == name).unwrap_or_else(|| panic!("no task for {name}: {tasks:?}"));
+        let (manager, worker) = (by("manager"), by("worker"));
+        assert_eq!((manager.parent_id.as_deref(), manager.owner.as_deref()), (None, Some("boss")));
+        assert_eq!((worker.parent_id.as_deref(), worker.owner.as_deref(), worker.group.as_str()), (Some(manager.id.as_str()), Some("manager"), manager.group.as_str()));
+        assert!(tasks.iter().all(|t| t.state == agent_tasks::TaskState::Done), "{tasks:?}");
+
+        // The manager's own `delegate_to_agent` reaches the worker and only the worker (its subordinates, not the boss or itself).
+        let manager_turn: Vec<&(String, serde_json::Value)> = offered.iter().filter(|(first, _)| first == "manage").flat_map(|(_, tools)| tools).collect();
+        let delegate = manager_turn.iter().find(|(name, _)| name == "delegate_to_agent").expect("the manager was given delegate_to_agent");
+        assert_eq!(delegate.1["properties"]["agent_id"]["enum"], serde_json::json!(["worker"]));
+        assert!(delegate.1["properties"].get("background").is_some(), "and can start it in the background");
+
+        // The worker's turn is the deepest: no delegation, no jobs.
+        let worker_tools: Vec<String> = offered.iter().filter(|(first, _)| first == "work").flat_map(|(_, tools)| tools.iter().map(|(n, _)| n.clone())).collect();
+        assert!(!worker_tools.iter().any(|n| n == "delegate_to_agent" || n == "jobs"), "{worker_tools:?}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_may_not_delegate_is_not_given_the_tool_in_its_background_task() {
+        let (tasks, offered) = run_hierarchy(false).await;
+
+        assert!(!offered.iter().filter(|(first, _)| first == "manage").flat_map(|(_, tools)| tools).any(|(name, _)| name == "delegate_to_agent"));
+        assert!(!tasks.iter().any(|t| t.assignee == "worker"), "nothing was delegated to the worker: {tasks:?}");
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_may_delegate_gets_the_tool_only_when_a_task_runs_not_when_the_targets_are_built() {
+        // The spawner is lazy: building the targets must not build anyone's own delegation tool.
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-lazy-delegation-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let orchestrator = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default() }), vault);
+        let config = FileConfig { agents: vec![AgentConfig { can_delegate_to_agents: true, ..agent_config("manager", None) }, agent_config("plain", None)], ..FileConfig::default() };
+        let targets = delegate_targets(&config, &orchestrator, None);
+        let by = |id: &str| targets.iter().find(|t| t.id == id).unwrap();
+        assert!(by("manager").delegation.is_some(), "an agent that may delegate can build its tool when a task of it runs");
+        assert!(by("plain").delegation.is_none());
     }
 
     #[tokio::test]

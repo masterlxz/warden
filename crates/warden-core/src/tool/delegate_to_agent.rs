@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::budget::TurnBudget;
 use crate::jobs::{JobBoard, TaskDraft};
-use crate::orchestrator::Orchestrator;
+use crate::orchestrator::{Orchestrator, MAX_TASK_DEPTH};
 use crate::tool::delegate::{model_property, pick_model, ModelChoices};
 use crate::tool::job_tools::{background_property, job_label, start_task_with, wants_background};
 use crate::tool::{Tool, ToolSpec};
@@ -29,7 +29,13 @@ pub struct NamedSubAgent {
     pub orchestrator: Orchestrator,
     /// Passed to `handle_turn` as the system prompt, same as any other named-agent turn.
     pub persona: Option<String>,
+    /// For an agent that may itself delegate (P123): how to build its own `delegate_to_agent`, called only when a background task of
+    /// this agent starts — so the tools of every agent aren't built up front. `None`: the agent can't delegate.
+    pub delegation: Option<DelegationSpawner>,
 }
+
+/// Builds the `delegate_to_agent` tool of one agent (P123), reaching whoever that agent may delegate to.
+pub type DelegationSpawner = Arc<dyn Fn() -> Option<Arc<dyn Tool>> + Send + Sync>;
 
 /// Bumped whenever the set of configured agents changes mid-turn (`manage_agents` creating,
 /// editing or deleting one), so a `DelegateToAgentTool` built earlier in the same turn knows its
@@ -212,12 +218,19 @@ impl Tool for DelegateToAgentTool {
         };
 
         if let (Some(board), true) = (&self.jobs, wants_background(&args)) {
-            let (persona, owned_task) = (agent.persona.clone(), task.to_string());
+            let (persona, owned_task, delegation) = (agent.persona.clone(), task.to_string(), agent.delegation.clone());
             let draft = TaskDraft { assignee: agent.id.clone(), objective: task.to_string(), model: model_id };
             return Ok(start_task_with(board, job_label(&agent.id, task), draft, move |link| async move {
-                // The turn of a task may start subtasks of its own, recorded under it (P123).
+                // The turn of a task may start subtasks of its own, recorded under it (P123): an agent that may delegate gets its own
+                // `delegate_to_agent` for them, while this turn can still start background tasks (not in a subtask's turn).
                 let orchestrator = match link {
-                    Some(link) => orchestrator.with_parent_task(link),
+                    Some(link) => {
+                        let orchestrator = match delegation.filter(|_| link.depth < MAX_TASK_DEPTH).and_then(|spawn| spawn()) {
+                            Some(tool) => orchestrator.with_tool(tool),
+                            None => orchestrator,
+                        };
+                        orchestrator.with_parent_task(link)
+                    }
                     None => orchestrator,
                 };
                 let outcome = orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
@@ -266,7 +279,110 @@ mod tests {
             description: persona.unwrap_or("").to_string(),
             orchestrator: Orchestrator::new(model, temp_vault()),
             persona: persona.map(str::to_string),
+            delegation: None,
         }
+    }
+
+    /// A chief that delegates "go" to the agent `manager` — in the background, or not, as `background` says — and reads the job.
+    struct Chief {
+        background: bool,
+    }
+
+    #[async_trait]
+    impl ModelProvider for Chief {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let results = messages.iter().filter(|m| m.role == Role::Tool).count();
+            let call = |name: &str, arguments: serde_json::Value| crate::model::ToolCall { id: "c".into(), name: name.into(), arguments, thought_signature: None };
+            let response = match (results, self.background) {
+                (0, true) => Response { content: String::new(), tool_calls: vec![call("delegate_to_agent", json!({ "agent_id": "manager", "task": "go", "background": true }))], usage: None },
+                (0, false) => Response { content: String::new(), tool_calls: vec![call("delegate_to_agent", json!({ "agent_id": "manager", "task": "go" }))], usage: None },
+                (1, true) => Response { content: String::new(), tool_calls: vec![call("jobs", json!({ "action": "result", "job_id": "job-1" }))], usage: None },
+                _ => Response { content: "chief done".to_string(), tool_calls: Vec::new(), usage: None },
+            };
+            Ok(response_stream(response))
+        }
+    }
+
+    /// The manager: answers, and writes down which tools its turn was offered.
+    struct Manager {
+        offered: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for Manager {
+        async fn chat_stream(&self, _messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            self.offered.lock().unwrap().extend(tools.into_iter().map(|t| t.name));
+            Ok(response_stream(Response { content: "manager done".to_string(), tool_calls: Vec::new(), usage: None }))
+        }
+    }
+
+    struct Spawned;
+
+    #[async_trait]
+    impl Tool for Spawned {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec { name: "manager_delegate".to_string(), description: String::new(), parameters: json!({}) }
+        }
+
+        async fn call(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(json!({}))
+        }
+    }
+
+    struct Nothing;
+
+    impl crate::jobs::TaskRecorder for Nothing {
+        fn created(&self, _task: &crate::jobs::TaskSpec) -> String {
+            "t".to_string()
+        }
+        fn running(&self, _id: &str) {}
+        fn finished(&self, _id: &str, _outcome: crate::jobs::TaskOutcome) {}
+    }
+
+    /// A chief with jobs, a `delegate_to_agent` to a manager that may delegate, and (with `record`) a task log. Returns what the manager's turn
+    /// was offered, and how many times its delegation tool was built.
+    async fn run_chief(background: bool, record: bool, with_delegation: bool) -> (Vec<String>, usize) {
+        let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut manager_orchestrator = Orchestrator::new(Arc::new(Manager { offered: offered.clone() }), temp_vault());
+        manager_orchestrator.register_tool(Arc::new(crate::tool::job_tools::JobsTool::new()));
+        let counter = built.clone();
+        let delegation: Option<DelegationSpawner> = with_delegation.then(|| {
+            Arc::new(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some(Arc::new(Spawned) as Arc<dyn Tool>)
+            }) as DelegationSpawner
+        });
+        let target = NamedSubAgent { id: "manager".into(), description: String::new(), orchestrator: manager_orchestrator, persona: None, delegation };
+        let mut chief = Orchestrator::new(Arc::new(Chief { background }), temp_vault());
+        chief.register_tool(Arc::new(DelegateToAgentTool::new(vec![target])));
+        chief.register_tool(Arc::new(crate::tool::job_tools::JobsTool::new()));
+        let mut chief = chief.with_parallel_jobs(2);
+        if record {
+            chief = chief.with_task_recorder(Arc::new(Nothing));
+        }
+        assert_eq!(chief.handle_message(&[], "go").await.unwrap().content, "chief done");
+        let offered = offered.lock().unwrap().clone();
+        (offered, built.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_may_delegate_gets_its_own_delegate_tool_in_the_turn_of_its_background_task() {
+        let (offered, built) = run_chief(true, true, true).await;
+        assert!(offered.contains(&"manager_delegate".to_string()), "{offered:?}");
+        assert_eq!(built, 1);
+    }
+
+    #[tokio::test]
+    async fn it_does_not_get_it_in_a_synchronous_delegation_without_a_task_log_or_when_it_may_not_delegate() {
+        let (offered, built) = run_chief(false, true, true).await;
+        assert!(!offered.contains(&"manager_delegate".to_string()) && built == 0, "synchronous: {offered:?} {built}");
+
+        let (offered, built) = run_chief(true, false, true).await;
+        assert!(!offered.contains(&"manager_delegate".to_string()) && built == 0, "no log, no link: {offered:?} {built}");
+
+        let (offered, _) = run_chief(true, true, false).await;
+        assert!(!offered.contains(&"manager_delegate".to_string()), "no spawner: {offered:?}");
     }
 
     #[tokio::test]
@@ -318,6 +434,7 @@ mod tests {
             description: "You are a pirate. PERSONA_MARKER".to_string(),
             orchestrator,
             persona: Some("You are a pirate. PERSONA_MARKER".to_string()),
+            delegation: None,
         }]);
 
         let result = tool.call(json!({ "agent_id": "pirate", "task": "say hi" })).await.unwrap();

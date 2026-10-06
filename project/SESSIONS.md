@@ -2,9 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-05 (Sessão 150)
+> Última atualização: 2026-10-05 (Sessão 151)
 
 ---
+
+### 2026-10-05 — Sessão 151
+
+- **Objetivo**: terceira fatia do P123, agentes nomeados abrindo subtarefas (a maior lacuna da fatia 2), a pedido do usuário. Planejada em Plan mode.
+- **Feito**: `NamedSubAgent.delegation` (`DelegationSpawner`) e o ramo em segundo plano de `DelegateToAgentTool` que, com vínculo e `link.depth < MAX_TASK_DEPTH`, dá ao agente a sua `delegate_to_agent` antes de `with_parent_task`; no bootstrap, `delegate_targets` monta o spawner (preguiçoso) para o agente com `can_delegate_to_agents`, com a base dele limitada pelo nível e pelas categorias dele, e `snapshot_config` (a cópia por TOML, que `model_choices` também usa). Detalhes em `ARCHITECTURE.md`.
+- **Testes**: 1373 testes Rust verdes (em dois blocos); clippy só com o aviso antigo. Novos: 2 no core e 3 no bootstrap (a hierarquia de três agentes com o log em arquivo, o agente sem a flag, o spawner preguiçoso).
+- **Não verificado**: um modelo real num fluxo de três agentes; as telas com a árvore dos agentes nomeados numa janela.
+- **Fica no P123**: "pausado", cancelar pela tela, políticas nomeadas de modelo, CLI/celular/extensão.
 
 ### 2026-10-05 — Sessão 150
 
