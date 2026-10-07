@@ -7,7 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
-import type { AgentTask, AgentTaskAction, ApprovalPrompt, ConversationSummary, DirListing, HubAgents, OrgEdit, SkillDto } from "../protocol/messages";
+import type { AgentTask, AgentTaskAction, ApprovalPrompt, ConversationSummary, DirListing, HubAgents, OrgEdit, SkillDto, ThreadParent } from "../protocol/messages";
 import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
@@ -28,6 +28,8 @@ export type PopupRequest =
   | { type: "selectConversation"; conversationId: string }
   /** P78 — an empty conversation, created on the hub by its first message. */
   | { type: "newConversation" }
+  /** P125 — opens the thread of a message (the existing one, or an empty one the first reply creates). */
+  | { type: "openThread"; conversationId: string; messageId: string }
   | { type: "renameConversation"; conversationId: string; title: string }
   | { type: "deleteConversation"; conversationId: string }
   /** P87 — the agent the next turns speak as (`null`: none). */
@@ -67,6 +69,8 @@ export interface ConversationState {
   agentId: string | null;
   /** P102 — the open conversation's working folder, or the one a new conversation will start in (`null`: none). */
   workdir: string | null;
+  /** P125 — set when the open conversation is a thread: the message it came from. */
+  threadParent: ThreadParent | null;
 }
 
 export interface GetStatusResponse extends ConversationState {

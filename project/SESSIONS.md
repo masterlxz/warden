@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-07 — Sessão 161
+
+- **Objetivo**: a segunda fatia do P125 (threads), escolhida pelo usuário: a extensão e o celular, em tela cheia em vez de painel. O hub não mudou.
+- **Desenho**: os dois clientes têm uma conversa aberta por vez, então a thread é só abrir outra conversa. Uma thread nova é um **rascunho** (`threadDraft`, id novo e o vínculo) que o hub só conhece com a primeira resposta, que leva `threadOf` e **nenhuma pasta** (o hub herda a da pai). Rascunho abandonado é descartado ao abrir outra conversa. Sem thread dentro de thread; a lista esconde as filhas; ao abrir ou ao apagar, a conversa escolhida é a primeira que não é thread.
+- **Extensão**: `protocol/threads.ts` (puro), `ChatEntry.id`, `HistoryMessage.id`, `ThreadParent`, `openThread` no background, `threadParent` no estado, barra "← Voltar à conversa" no lugar da `ConversationBar`, botão "Responder em thread" e chip de respostas no `ChatView`. Depois de cada resposta o background relê o histórico para dar id às mensagens novas (`attachMessageIds`).
+- **Celular**: `ThreadParent`, `ConversationSummary.parent`/`replies`, `HistoryEntry.id`, `ChatMessage.threadOf`; `ChatTranscript` com `openThread`, `closeThread`, `threadParent`, `threads`, `visibleConversations` e `withMessageIds`; `ChatScreen` com a barra de voltar e o link sob o balão. Sem segunda instância do `ChatTranscript`, que o plano temia.
+- **Testes**: extensão `npm test` 48 (7 novos) e `tsc`; celular pelo Docker: `flutter analyze` limpo e 191 testes (7 novos em `chat_transcript_test.dart`). Rust não foi tocado.
+- **Não verificado**: as telas numa janela (extensão e celular), um modelo real respondendo numa thread.
+- **Fica**: o que está em `PENDING.md` (P125): desktop local, CLI, bots, Code, agente da thread, resumo de volta, notificação.
+
 ### 2026-10-07 — Sessão 160
 
 - **Objetivo**: o P125, threads (responder a uma mensagem e abrir uma conversa à parte), planejado em Plan mode. O usuário escolheu: contexto = a conversa até a mensagem-pai mais a thread; primeira fatia = web e desktop em modo hub; o mesmo agente responde e nada volta para a principal.

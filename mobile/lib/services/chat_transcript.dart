@@ -8,17 +8,45 @@ import 'device_id.dart';
 enum EntryRole { user, assistant, error }
 
 class ChatEntry {
-  const ChatEntry(this.role, this.text, {this.attachments = const []});
+  const ChatEntry(this.role, this.text, {this.attachments = const [], this.id});
 
   final EntryRole role;
   final String text;
   final List<Attachment> attachments;
+
+  /// P125 — the hub's id for the message, which a thread hangs from. Null until the history is read again after the
+  /// message is sent or answered.
+  final String? id;
+
+  ChatEntry withId(String id) => ChatEntry(role, text, attachments: attachments, id: id);
 }
+
+/// P125 — a message's thread: its conversation and how many messages the person sent in it.
+class ThreadInfo {
+  const ThreadInfo(this.conversationId, this.replies);
+
+  final String conversationId;
+  final int replies;
+}
+
+/// P125 — the ids of the hub's [history] given to the [entries] on screen that don't have one (the answer that has
+/// just arrived). Only when the entries, errors left out (the hub doesn't keep them), are as many as the history:
+/// otherwise a turn is on the way and the positions don't match, so the entries stay as they are.
+List<ChatEntry> withMessageIds(List<ChatEntry> entries, List<HistoryEntry> history) {
+  if (entries.where((e) => e.role != EntryRole.error).length != history.length) return entries;
+  var next = 0;
+  return [
+    for (final e in entries)
+      if (e.role == EntryRole.error) e else _withHubId(e, history[next++].id),
+  ];
+}
+
+ChatEntry _withHubId(ChatEntry entry, String? id) => id != null && entry.id == null ? entry.withId(id) : entry;
 
 /// What [ChatTranscript] needs from the hub — `ServerConnection` in the app, a fake in tests, so
 /// the transcript can be tested without a WebSocket.
 abstract interface class ConversationBackend {
-  void sendChat(String message, {String? conversationId, String? agentId, String? workdir});
+  void sendChat(String message, {String? conversationId, String? agentId, String? workdir, ThreadParent? threadOf});
   Future<List<String>> listAgentIds();
   Future<DirListMessage> listDirs([String? path]);
   Future<List<HistoryEntry>> fetchHistory({int? limit, String? conversationId});
@@ -77,8 +105,38 @@ class ChatTranscript extends ChangeNotifier {
   String? _conversationsError;
   bool _disposed = false;
 
+  /// P125 — a thread opened here whose first reply hasn't been sent: the hub only learns of it (and of what it hangs
+  /// from) with that reply.
+  ({String id, ThreadParent parent})? _threadDraft;
+
   List<ChatEntry> get entries => List.unmodifiable(_entries);
   List<ConversationSummary> get conversations => List.unmodifiable(_conversations);
+
+  /// P125 — the conversations the list shows: threads are left out, they show from the message they came from.
+  List<ConversationSummary> get visibleConversations => List.unmodifiable(_conversations.where((c) => c.parent == null));
+
+  /// P125 — what the open conversation hangs from, when it is a thread (on the hub already, or still a draft).
+  ThreadParent? get threadParent {
+    final draft = _threadDraft;
+    if (draft != null && draft.id == _activeId) return draft.parent;
+    for (final c in _conversations) {
+      if (c.id == _activeId) return c.parent;
+    }
+    return null;
+  }
+
+  /// P125 — the threads of the open conversation, by the id of the message they hang from. A message has at most one;
+  /// if a race between two devices made two, the one with more replies counts.
+  Map<String, ThreadInfo> get threads {
+    final found = <String, ThreadInfo>{};
+    for (final c in _conversations) {
+      final parent = c.parent;
+      if (parent == null || parent.conversationId != _activeId) continue;
+      final known = found[parent.messageId];
+      if (known == null || c.replies > known.replies) found[parent.messageId] = ThreadInfo(c.id, c.replies);
+    }
+    return found;
+  }
   String get activeConversationId => _activeId;
 
   /// The open conversation's title — null for a new one the hub doesn't have yet.
@@ -110,7 +168,7 @@ class ChatTranscript extends ChangeNotifier {
     final list = await refreshConversations();
     if (_disposed) return;
     if (list != null && !list.any((c) => c.id == _activeId) && !_pending.containsKey(_activeId)) {
-      _activeId = list.isEmpty ? _newConversationId() : list.first.id;
+      _activeId = _firstVisible(list)?.id ?? _newConversationId();
     }
     _restoreAgent(_activeId);
     // A folder picked while the list was loading stays; only a conversation the hub has brings its own.
@@ -200,7 +258,7 @@ class ChatTranscript extends ChangeNotifier {
       final history = await backend.fetchHistory(limit: historyLimit, conversationId: conversationId);
       loaded = [
         for (final m in history)
-          ChatEntry(m.fromUser ? EntryRole.user : EntryRole.assistant, m.content, attachments: m.attachments),
+          ChatEntry(m.fromUser ? EntryRole.user : EntryRole.assistant, m.content, attachments: m.attachments, id: m.id),
       ];
     } catch (e) {
       loaded = [ChatEntry(EntryRole.error, "Couldn't load earlier messages: $e")];
@@ -215,9 +273,56 @@ class ChatTranscript extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// P125 — the message just answered has no id on screen yet; reads the history again to give it one, so a thread can
+  /// hang from it.
+  Future<void> _attachMessageIds(String conversationId) async {
+    List<HistoryEntry> history;
+    try {
+      history = await backend.fetchHistory(limit: historyLimit, conversationId: conversationId);
+    } catch (_) {
+      return;
+    }
+    if (_disposed || _activeId != conversationId) return;
+    final next = withMessageIds(_entries, history);
+    if (identical(next, _entries)) return;
+    _entries
+      ..clear()
+      ..addAll(next);
+    notifyListeners();
+  }
+
+  /// P125 — the first conversation of [list] that is not a thread.
+  ConversationSummary? _firstVisible(List<ConversationSummary> list) {
+    for (final c in list) {
+      if (c.parent == null) return c;
+    }
+    return null;
+  }
+
+  /// P125 — opens the thread of the message [messageId] of the open conversation: the one it has, or an empty one the
+  /// first reply creates. Not from inside a thread, and not before the hub has given the message an id.
+  void openThread(String messageId) {
+    if (threadParent != null) return;
+    final existing = threads[messageId];
+    if (existing != null) {
+      open(existing.conversationId);
+      return;
+    }
+    final id = _newConversationId();
+    _threadDraft = (id: id, parent: ThreadParent(conversationId: _activeId, messageId: messageId));
+    open(id);
+  }
+
+  /// P125 — back to the conversation the open thread came from.
+  void closeThread() {
+    final parent = threadParent;
+    if (parent != null) open(parent.conversationId);
+  }
+
   /// Shows [conversationId]: empty right away, then its transcript once the hub answers.
   void open(String conversationId) {
     if (conversationId == _activeId) return;
+    if (_threadDraft != null && _threadDraft!.id != conversationId) _threadDraft = null;
     _activeId = conversationId;
     _entries.clear();
     _restoreAgent(conversationId);
@@ -245,7 +350,7 @@ class ChatTranscript extends ChangeNotifier {
     await backend.deleteConversation(conversationId);
     final list = await refreshConversations();
     if (conversationId == _activeId) {
-      open(list != null && list.isNotEmpty ? list.first.id : _newConversationId());
+      open((list == null ? null : _firstVisible(list))?.id ?? _newConversationId());
     }
   }
 
@@ -267,6 +372,7 @@ class ChatTranscript extends ChangeNotifier {
     _pending.remove(id);
     if (id == _activeId) _entries.add(entry);
     notifyListeners();
+    if (id == _activeId && entry.role == EntryRole.assistant) unawaited(_attachMessageIds(id));
     // New title/order — and a conversation started here now exists on the hub.
     unawaited(refreshConversations());
   }
@@ -281,16 +387,28 @@ class ChatTranscript extends ChangeNotifier {
     _pending[id] = trimmed;
     // The folder only counts when the conversation is created, which is this message.
     String? creatingIn;
+    ThreadParent? threadOf;
     if (!_conversations.any((c) => c.id == id)) {
-      creatingIn = _workdir;
+      // P125 — a thread's first reply carries the link; the hub gives it the parent's folder and project, so no folder.
+      final draft = _threadDraft;
+      threadOf = draft != null && draft.id == id ? draft.parent : null;
+      creatingIn = threadOf == null ? _workdir : null;
       final now = DateTime.now().millisecondsSinceEpoch;
       _conversations = [
-        ConversationSummary(id: id, title: titleFrom(trimmed), createdAt: now, updatedAt: now, agentId: _agentId, workdir: creatingIn),
+        ConversationSummary(
+          id: id,
+          title: titleFrom(trimmed),
+          createdAt: now,
+          updatedAt: now,
+          agentId: _agentId,
+          workdir: creatingIn,
+          parent: threadOf,
+        ),
         ..._conversations,
       ];
     }
     notifyListeners();
-    backend.sendChat(trimmed, conversationId: id, agentId: _agentId, workdir: creatingIn);
+    backend.sendChat(trimmed, conversationId: id, agentId: _agentId, workdir: creatingIn, threadOf: threadOf);
     return true;
   }
 

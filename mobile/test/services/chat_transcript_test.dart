@@ -26,11 +26,15 @@ class FakeBackend implements ConversationBackend {
   final listedDirs = <String?>[];
 
   @override
-  void sendChat(String message, {String? conversationId, String? agentId, String? workdir}) {
+  void sendChat(String message, {String? conversationId, String? agentId, String? workdir, ThreadParent? threadOf}) {
     sent.add((message, conversationId));
     sentAgents.add(agentId);
     sentWorkdirs.add(workdir);
+    sentThreadOf.add(threadOf);
   }
+
+  /// The thread link each sent turn carried, in order (P125).
+  final sentThreadOf = <ThreadParent?>[];
 
   @override
   Future<DirListMessage> listDirs([String? path]) async {
@@ -436,6 +440,117 @@ void main() {
 
       expect(transcript.conversationsError, contains('hub is down'));
       expect(transcript.send('hello'), isTrue);
+    });
+  });
+
+  group('threads (P125)', () {
+    ConversationSummary threadOf(String id, String parent, String messageId, int replies) => ConversationSummary(
+          id: id,
+          title: 'thread $id',
+          createdAt: 0,
+          updatedAt: 0,
+          parent: ThreadParent(conversationId: parent, messageId: messageId),
+          replies: replies,
+        );
+
+    test('the list leaves the threads out and they show from the message they came from', () async {
+      backend.conversations = [summary('main'), threadOf('t1', 'main', 'm1', 2), threadOf('t2', 'other', 'm9', 1)];
+      backend.histories['main'] = [const HistoryEntry(id: 'm1', fromUser: true, content: 'q')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      expect(transcript.visibleConversations.map((c) => c.id), ['main']);
+      expect(transcript.threads.keys, ['m1']);
+      expect(transcript.threads['m1']!.replies, 2);
+      expect(transcript.entries.single.id, 'm1');
+      expect(transcript.threadParent, isNull);
+    });
+
+    test('opening one that has no thread yet starts an empty conversation; its first reply carries the link and no folder', () async {
+      backend.conversations = [ConversationSummary(id: 'main', title: 'main', createdAt: 0, updatedAt: 0, workdir: '/srv')];
+      backend.histories['main'] = [const HistoryEntry(id: 'm1', fromUser: false, content: 'a')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      transcript.openThread('m1');
+      expect(transcript.activeConversationId, 'new-0');
+      expect(transcript.entries, isEmpty);
+      expect(transcript.threadParent?.messageId, 'm1');
+
+      transcript.send('and then?');
+      expect(backend.sentThreadOf.last?.conversationId, 'main');
+      expect(backend.sentThreadOf.last?.messageId, 'm1');
+      expect(backend.sentWorkdirs.last, isNull, reason: 'the hub gives the thread the parent folder');
+      expect(transcript.visibleConversations.map((c) => c.id), ['main'], reason: 'a thread never shows in the list, even before the hub has it');
+    });
+
+    test('a message that has a thread opens it, and back returns to the conversation', () async {
+      backend.conversations = [summary('main'), threadOf('t1', 'main', 'm1', 1)];
+      backend.histories['main'] = [const HistoryEntry(id: 'm1', fromUser: false, content: 'a')];
+      backend.histories['t1'] = [const HistoryEntry(id: 't1-0', fromUser: true, content: 'side')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      transcript.openThread('m1');
+      await settle();
+      expect(transcript.activeConversationId, 't1');
+      expect(transcript.entries.single.text, 'side');
+      expect(transcript.threadParent?.conversationId, 'main');
+
+      transcript.openThread('t1-0');
+      expect(transcript.activeConversationId, 't1', reason: 'no thread inside a thread');
+
+      transcript.closeThread();
+      await settle();
+      expect(transcript.activeConversationId, 'main');
+    });
+
+    test('leaving an unsent thread drops its draft', () async {
+      backend.conversations = [summary('main')];
+      backend.histories['main'] = [const HistoryEntry(id: 'm1', fromUser: false, content: 'a')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      transcript.openThread('m1');
+      transcript.closeThread();
+      await settle();
+      transcript.openThread('m1');
+      expect(transcript.activeConversationId, 'new-1', reason: 'a new draft, not the abandoned one');
+    });
+
+    test('starts on the first conversation that is not a thread', () async {
+      backend.conversations = [threadOf('t1', 'main', 'm1', 1), summary('main')];
+      final transcript = make();
+      await settle();
+      expect(transcript.activeConversationId, 'main');
+    });
+
+    test('the answer that just arrived gets its id from the history', () async {
+      backend.conversations = [summary('main')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      transcript.send('q');
+      backend.histories['main'] = [
+        const HistoryEntry(id: 'm1', fromUser: true, content: 'q'),
+        const HistoryEntry(id: 'm2', fromUser: false, content: 'a'),
+      ];
+      replies.add(ChatResponseMessage('a', const Usage(promptTokens: 1, completionTokens: 1, totalTokens: 2), conversationId: 'main'));
+      await settle();
+
+      expect(transcript.entries.map((e) => e.id), ['m1', 'm2']);
+    });
+
+    test('ids go to the entries that lack one, skipping errors, and wait when the counts differ', () {
+      const history = [HistoryEntry(id: 'a', fromUser: true, content: 'x'), HistoryEntry(id: 'b', fromUser: false, content: 'y')];
+      final shown = [
+        const ChatEntry(EntryRole.user, 'x', id: 'a'),
+        const ChatEntry(EntryRole.error, 'boom'),
+        const ChatEntry(EntryRole.assistant, 'y'),
+      ];
+      expect(withMessageIds(shown, history).map((e) => e.id), ['a', null, 'b']);
+      final longer = [...shown, const ChatEntry(EntryRole.user, 'z')];
+      expect(identical(withMessageIds(longer, history), longer), isTrue);
     });
   });
 

@@ -24,6 +24,7 @@ import {
   type OrgEdit,
   type ServerMessage,
   type SkillDto,
+  type ThreadParent,
   type ToolSpec,
 } from "../protocol/messages";
 
@@ -60,6 +61,8 @@ export class HubRequestError extends Error {
 export interface ChatEntry {
   role: "user" | "assistant" | "error";
   content: string;
+  /** P125 — the hub's id for the message, which a thread attaches to. Missing on what has just been sent or answered, until the history is read again. */
+  id?: string;
 }
 
 type StatusListener = (status: ConnectionStatus) => void;
@@ -337,8 +340,10 @@ export class ServerConnection {
 
   /** Sends one chat turn to `conversationId` (a new id starts a new conversation, P78). The reply
    * arrives asynchronously via `onChatMessage`, tagged with the same id. */
-  sendChat(message: string, conversationId: string, agentId?: string, workdir?: string): void {
-    this.socket.send(encode({ type: "chat", message, conversationId, ...(agentId !== undefined && { agentId }), ...(workdir !== undefined && { workdir }) }));
+  sendChat(message: string, conversationId: string, agentId?: string, workdir?: string, threadOf?: ThreadParent): void {
+    this.socket.send(
+      encode({ type: "chat", message, conversationId, ...(agentId !== undefined && { agentId }), ...(workdir !== undefined && { workdir }), ...(threadOf !== undefined && { threadOf }) }),
+    );
   }
 
   /** P102 — the folders inside `path` on the hub's machine (or a node's), to pick a conversation's working folder. */

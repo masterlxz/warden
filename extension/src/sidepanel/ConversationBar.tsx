@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { ConversationSummary } from "../protocol/messages";
+import type { ConversationSummary, ThreadParent } from "../protocol/messages";
+import { visibleConversations } from "../protocol/threads";
 import type { OkResponse } from "../background/popup_protocol";
 import FolderPicker from "./FolderPicker";
 import { folderLabel } from "./workdir";
@@ -12,6 +13,8 @@ interface Props {
   agentId: string | null;
   /** P102 — the open conversation's working folder, or the one a new conversation will start in. */
   workdir: string | null;
+  /** P125 — the app shows the thread bar instead of this one while a thread is open, so this is always null here. */
+  threadParent?: ThreadParent | null;
 }
 
 /** P78 — which of this device's conversations the chat shows, plus new/rename/delete. A `<select>`
@@ -85,7 +88,7 @@ export default function ConversationBar({ conversations, activeConversationId, p
     <div className="conversation-bar">
       <select aria-label="Conversa" value={active ? active.id : ""} onChange={(e) => select(e.target.value)}>
         {!active && <option value="">Nova conversa</option>}
-        {conversations.map((c) => (
+        {visibleConversations(conversations).map((c) => (
           <option key={c.id} value={c.id}>
             {pendingIds.includes(c.id) ? `${c.title} (respondendo…)` : c.title || "Sem título"}
           </option>

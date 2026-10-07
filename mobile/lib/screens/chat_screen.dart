@@ -337,6 +337,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       body: Column(
         children: [
           if (_status is! Connected) _DisconnectedBanner(status: _status),
+          // P125 — in a thread, the way back to the conversation it came from.
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) => widget.transcript.threadParent == null
+                ? const SizedBox.shrink()
+                : Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('thread-back'),
+                      onPressed: widget.transcript.closeThread,
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Back to the conversation'),
+                    ),
+                  ),
+          ),
           // P102 — the folder this conversation works in, picked before its first message.
           ListenableBuilder(
             listenable: widget.transcript,
@@ -348,6 +363,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               builder: (context, _) {
                 final entries = widget.transcript.entries;
                 final waiting = widget.transcript.waitingForReply;
+                // P125 — no thread inside a thread; a message gets the button once the hub has given it an id.
+                final inThread = widget.transcript.threadParent != null;
+                final threads = widget.transcript.threads;
                 return ListView.builder(
                   controller: _scrollController,
                   padding: const EdgeInsets.all(12),
@@ -356,7 +374,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     if (index == entries.length) {
                       return const _ThinkingIndicator();
                     }
-                    return _MessageBubble(entry: entries[index]);
+                    final entry = entries[index];
+                    final id = entry.id;
+                    return _MessageBubble(
+                      entry: entry,
+                      thread: inThread || id == null || entry.role == EntryRole.error
+                          ? null
+                          : _ThreadLink(replies: threads[id]?.replies ?? 0, onTap: () => widget.transcript.openThread(id)),
+                    );
                   },
                 );
               },
@@ -532,7 +557,7 @@ class _ConversationDrawer extends StatelessWidget {
         child: ListenableBuilder(
           listenable: transcript,
           builder: (context, _) {
-            final conversations = transcript.conversations;
+            final conversations = transcript.visibleConversations;
             final error = transcript.conversationsError;
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -635,10 +660,29 @@ class _ThinkingIndicator extends StatelessWidget {
   }
 }
 
+/// P125 — what a message offers under it: start a thread, or open the one it has (with its reply count).
+class _ThreadLink extends StatelessWidget {
+  const _ThreadLink({required this.replies, required this.onTap});
+
+  final int replies;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      key: const Key('thread-link'),
+      style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero, minimumSize: const Size(0, 28)),
+      onPressed: onTap,
+      child: Text(replies == 0 ? 'Reply in thread' : (replies == 1 ? '1 reply' : '$replies replies')),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.entry});
+  const _MessageBubble({required this.entry, this.thread});
 
   final ChatEntry entry;
+  final _ThreadLink? thread;
 
   @override
   Widget build(BuildContext context) {
@@ -662,6 +706,7 @@ class _MessageBubble extends StatelessWidget {
           children: [
             Text(entry.text, style: TextStyle(color: foreground)),
             for (final attachment in entry.attachments) _AttachmentPreview(attachment: attachment, foreground: foreground),
+            ?thread,
           ],
         ),
       ),

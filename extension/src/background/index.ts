@@ -17,7 +17,8 @@
 import { HubRequestError, ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
 import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, ConversationState, PopupRequest } from "./popup_protocol";
-import type { ApprovalPrompt, ConversationSummary } from "../protocol/messages";
+import type { ApprovalPrompt, ConversationSummary, ThreadParent } from "../protocol/messages";
+import { visibleConversations, withMessageIds } from "../protocol/threads";
 import { toolSpecs, toolHandlers } from "./tools";
 import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
 import { setUpPanelOpening, supportsHubDiscovery } from "./platform";
@@ -47,6 +48,8 @@ let agentId: string | null = null;
 /** P102 — the open conversation's working folder, or the one a new conversation will start in. Chosen before its first
  * message and fixed after (the hub keeps the one it was created with), so this only matters while it is unsent. */
 let workdir: string | null = null;
+/** P125 — a thread opened here whose first reply hasn't been sent: the hub only learns of it (and of what it hangs from) with that reply. */
+let threadDraft: { id: string; parent: ThreadParent } | null = null;
 /** P87 — approvals the hub is waiting on. The panel may be closed, so the icon shows a "!" too. */
 let approvals: ApprovalPrompt[] = [];
 
@@ -96,7 +99,14 @@ function addChatEntry(entry: ChatEntry): void {
 const HISTORY_LIMIT = 100;
 
 function conversationState(): ConversationState {
-  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir };
+  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir, threadParent: threadParentOfActive() };
+}
+
+/** P125 — what the open conversation hangs from, when it is a thread (already on the hub, or still a draft). */
+function threadParentOfActive(): ThreadParent | null {
+  if (activeConversationId === null) return null;
+  if (threadDraft?.id === activeConversationId) return threadDraft.parent;
+  return conversations.find((c) => c.id === activeConversationId)?.parent ?? null;
 }
 
 function setApprovals(next: ApprovalPrompt[]): void {
@@ -157,7 +167,7 @@ async function refreshConversations(from: ServerConnection): Promise<Conversatio
 async function loadHistory(from: ServerConnection, conversationId: string): Promise<void> {
   let loaded: ChatEntry[];
   try {
-    loaded = (await from.fetchHistory(conversationId, HISTORY_LIMIT)).map((m) => ({ role: m.role, content: m.content }));
+    loaded = (await from.fetchHistory(conversationId, HISTORY_LIMIT)).map((m) => ({ role: m.role, content: m.content, ...(m.id && { id: m.id }) }));
   } catch (err) {
     loaded = [{ role: "error", content: `Could not load earlier messages: ${err instanceof Error ? err.message : String(err)}` }];
   }
@@ -168,8 +178,24 @@ async function loadHistory(from: ServerConnection, conversationId: string): Prom
   broadcast({ type: "historyLoaded", history });
 }
 
+/** P125 — the message just answered has no id on screen yet; reads the history again to give it one, so a thread can hang from it. */
+async function attachMessageIds(from: ServerConnection, conversationId: string): Promise<void> {
+  let loaded;
+  try {
+    loaded = await from.fetchHistory(conversationId, HISTORY_LIMIT);
+  } catch {
+    return;
+  }
+  if (connection !== from || activeConversationId !== conversationId) return;
+  const next = withMessageIds(history, loaded);
+  if (next === history) return;
+  history = next;
+  broadcast({ type: "historyLoaded", history });
+}
+
 /** P78 — shows `id` in the chat: empty right away, then its transcript once the hub answers. */
 function openConversation(id: string): void {
+  if (threadDraft && threadDraft.id !== id) threadDraft = null;
   setActiveConversation(id);
   restoreAgent(id);
   history = [];
@@ -185,7 +211,7 @@ async function restoreConversations(from: ServerConnection): Promise<void> {
   if (connection !== from) return;
   const current = activeConversationId;
   if (list && (current === null || !list.some((c) => c.id === current))) {
-    setActiveConversation(list[0]?.id ?? crypto.randomUUID());
+    setActiveConversation(visibleConversations(list)[0]?.id ?? crypto.randomUUID());
   }
   if (activeConversationId !== null) restoreAgent(activeConversationId);
   broadcastConversations();
@@ -229,6 +255,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       history = [];
       conversations = [];
       pendingTurns = {};
+      threadDraft = null;
       agentIds = [];
       setApprovals([]);
       if (activeConversationId === null) {
@@ -255,7 +282,10 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       connection.onChatMessage((entry, conversationId) => {
         const id = conversationId ?? activeConversationId;
         if (id !== null) delete pendingTurns[id];
-        if (id === activeConversationId) addChatEntry(entry);
+        if (id === activeConversationId) {
+          addChatEntry(entry);
+          if (entry.role === "assistant" && id !== null) void attachMessageIds(next, id);
+        }
         broadcastConversations();
         // New title/order — and a conversation started here now exists on the hub.
         void refreshConversations(next);
@@ -292,15 +322,20 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       pendingTurns[id] = request.message;
       // The folder only counts on the turn that starts the conversation: the hub keeps the one it was made with.
       const startsHere = !conversations.some((c) => c.id === id);
+      // P125 — a thread's first reply carries the link; the hub gives it the parent's folder and project, so none is sent.
+      const threadOf = startsHere && threadDraft?.id === id ? threadDraft.parent : undefined;
       if (startsHere) {
         // Shown until the hub's list has it — same title the hub gives it (`title_from`).
         const now = Date.now();
         const collapsed = request.message.split(/\s+/).filter(Boolean).join(" ");
         const title = [...collapsed].length > 40 ? `${[...collapsed].slice(0, 40).join("")}…` : collapsed;
-        conversations = [{ id, title, createdAt: now, updatedAt: now, ...(agentId !== null && { agentId }), ...(workdir !== null && { workdir }) }, ...conversations];
+        conversations = [
+          { id, title, createdAt: now, updatedAt: now, ...(agentId !== null && { agentId }), ...(workdir !== null && { workdir }), ...(threadOf && { parent: threadOf }) },
+          ...conversations,
+        ];
       }
       broadcastConversations();
-      connection.sendChat(request.message, id, agentId ?? undefined, startsHere ? (workdir ?? undefined) : undefined);
+      connection.sendChat(request.message, id, agentId ?? undefined, startsHere && !threadOf ? (workdir ?? undefined) : undefined, threadOf);
       return { ok: true };
     }
 
@@ -348,6 +383,20 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       }
       return { ok: true };
 
+    case "openThread": {
+      const parent = { conversationId: request.conversationId, messageId: request.messageId };
+      const existing = conversations.find((c) => c.parent?.conversationId === parent.conversationId && c.parent.messageId === parent.messageId);
+      if (existing) {
+        openConversation(existing.id);
+      } else {
+        // Nothing on the hub until the first reply; the draft remembers what it hangs from.
+        const id = crypto.randomUUID();
+        threadDraft = { id, parent };
+        openConversation(id);
+      }
+      return { ok: true };
+    }
+
     case "renameConversation":
     case "deleteConversation": {
       const from = connection;
@@ -360,7 +409,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       }
       const list = await refreshConversations(from);
       if (request.type === "deleteConversation" && request.conversationId === activeConversationId) {
-        openConversation(list?.[0]?.id ?? crypto.randomUUID());
+        openConversation((list ? visibleConversations(list)[0]?.id : undefined) ?? crypto.randomUUID());
       }
       return { ok: true };
     }

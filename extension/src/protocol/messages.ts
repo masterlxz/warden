@@ -51,6 +51,16 @@ export interface ConversationSummary {
   agentId?: string;
   /** The folder the conversation works in (P102): a path of the hub's machine, or `node:<id>:<path>` on a node. */
   workdir?: string;
+  /** P125 — set on a thread: the conversation and the message it came from. */
+  parent?: ThreadParent;
+  /** P125 — for a thread, how many messages the person sent in it. */
+  replies?: number;
+}
+
+/** Mirrors `ThreadParentDto` (P125). */
+export interface ThreadParent {
+  conversationId: string;
+  messageId: string;
 }
 
 /** Mirrors `DirEntryDto` (P102): a folder in the folder browser. */
@@ -153,6 +163,8 @@ export interface HubAgents {
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
 export interface HistoryMessage {
+  /** P125 — what a thread is attached to; absent on a hub from before threads. */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   createdAt: number;
@@ -166,7 +178,7 @@ export type ClientMessage =
   | { type: "ping"; nonce: number }
   /** `conversationId` (P78) picks one of this device's conversations — a new id starts a new one;
    * omitted, the turn goes to the device's default conversation. */
-  | { type: "chat"; message: string; conversationId?: string; agentId?: string; workdir?: string }
+  | { type: "chat"; message: string; conversationId?: string; agentId?: string; workdir?: string; threadOf?: ThreadParent }
   /** P102 — the folders inside `path` on the hub's machine (or a node's, `node:<id>:<path>`); no `path`: where the person starts. Answered by `dirList`/`dirError`. */
   | { type: "listDirs"; requestId: number; path?: string }
   /** P87 — only for the configured agents' ids, as the web's selector does. */

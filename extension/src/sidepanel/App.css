@@ -147,6 +147,21 @@ button:hover:not(:disabled) {
   font-size: 0.9rem;
 }
 
+/* P125 — in a thread the conversation bar is replaced by a way back to where it came from. */
+.thread-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.chat-entry-thread {
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+}
+
 .conversation-bar-actions {
   display: flex;
   gap: 0.6rem;

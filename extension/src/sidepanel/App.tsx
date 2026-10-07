@@ -7,6 +7,7 @@ import AgentsView from "./AgentsView";
 import TabsView from "./TabsView";
 import ApprovalCard from "./ApprovalCard";
 import type { ApprovalPrompt } from "../protocol/messages";
+import { threadsOf } from "../protocol/threads";
 import type { ChatEntry, ConnectionStatus } from "../background/connection";
 import type { BackgroundEvent, ConnectionSettings, ConversationState, GetStatusResponse, OkResponse } from "../background/popup_protocol";
 
@@ -24,6 +25,7 @@ export default function App() {
     agentIds: [],
     agentId: null,
     workdir: null,
+    threadParent: null,
   });
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
@@ -34,8 +36,8 @@ export default function App() {
       setStatus(res.status);
       setHistory(res.history);
       setSavedSettings(res.savedSettings);
-      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir } = res;
-      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir });
+      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent } = res;
+      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent });
       setApprovals(res.approvals);
     });
 
@@ -47,8 +49,8 @@ export default function App() {
       } else if (event.type === "historyLoaded") {
         setHistory(event.history);
       } else if (event.type === "conversationsChanged") {
-        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir } = event;
-        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir });
+        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent } = event;
+        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent });
       } else if (event.type === "approvalsChanged") {
         setApprovals(event.approvals);
       }
@@ -108,8 +110,33 @@ export default function App() {
           {/* All three stay mounted (just hidden) so switching tabs never scrolls away or loses a half-typed message. */}
           <div className="tab-panel" hidden={tab !== "chat"}>
             {approvals[0] && <ApprovalCard prompt={approvals[0]} waiting={approvals.length - 1} />}
-            <ConversationBar {...conversationState} />
-            <ChatView serverName={status.serverName} history={history} pending={pendingChat} onSend={handleSend} onDisconnect={handleDisconnect} />
+            {conversationState.threadParent ? (
+              <header className="thread-bar">
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => void chrome.runtime.sendMessage({ type: "selectConversation", conversationId: conversationState.threadParent!.conversationId })}
+                >
+                  ← Voltar à conversa
+                </button>
+                <strong>Thread</strong>
+              </header>
+            ) : (
+              <ConversationBar {...conversationState} />
+            )}
+            <ChatView
+              serverName={status.serverName}
+              history={history}
+              pending={pendingChat}
+              threads={conversationState.activeConversationId ? threadsOf(conversationState.conversations, conversationState.activeConversationId) : {}}
+              inThread={conversationState.threadParent !== null}
+              onOpenThread={(messageId) =>
+                conversationState.activeConversationId &&
+                void chrome.runtime.sendMessage({ type: "openThread", conversationId: conversationState.activeConversationId, messageId })
+              }
+              onSend={handleSend}
+              onDisconnect={handleDisconnect}
+            />
           </div>
           {tab === "skills" && (
             <div className="tab-panel">

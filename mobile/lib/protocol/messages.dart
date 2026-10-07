@@ -161,12 +161,15 @@ final class GoodbyeMessage extends ClientMessage {
 /// the new conversation works in — only read when the conversation is created, so it travels with its
 /// first message.
 final class ChatMessage extends ClientMessage {
-  const ChatMessage(this.message, {this.conversationId, this.agentId, this.workdir});
+  const ChatMessage(this.message, {this.conversationId, this.agentId, this.workdir, this.threadOf});
 
   final String message;
   final String? conversationId;
   final String? agentId;
   final String? workdir;
+
+  /// P125 — makes the conversation a thread of this message, when the hub creates it.
+  final ThreadParent? threadOf;
 
   @override
   Map<String, dynamic> toJson() => {
@@ -175,6 +178,7 @@ final class ChatMessage extends ClientMessage {
         if (conversationId != null) 'conversationId': conversationId,
         if (agentId != null) 'agentId': agentId,
         if (workdir != null) 'workdir': workdir,
+        if (threadOf != null) 'threadOf': threadOf!.toJson(),
       };
 }
 
@@ -558,7 +562,16 @@ final class DeleteConversationMessage extends ClientMessage {
 /// One of this device's conversations in a [ConversationListMessage] (P78). Mirrors
 /// `warden_server_protocol::protocol::ConversationSummary`.
 class ConversationSummary {
-  const ConversationSummary({required this.id, required this.title, required this.createdAt, required this.updatedAt, this.agentId, this.workdir});
+  const ConversationSummary({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.updatedAt,
+    this.agentId,
+    this.workdir,
+    this.parent,
+    this.replies = 0,
+  });
 
   final String id;
   final String title;
@@ -571,6 +584,12 @@ class ConversationSummary {
   /// The folder of the hub's machine this conversation works in (P102), fixed when it began.
   final String? workdir;
 
+  /// P125 — set on a thread: the conversation and the message it came from.
+  final ThreadParent? parent;
+
+  /// P125 — for a thread, how many messages the person sent in it.
+  final int replies;
+
   static ConversationSummary fromJson(dynamic json) {
     final map = json as Map<String, dynamic>;
     return ConversationSummary(
@@ -580,8 +599,25 @@ class ConversationSummary {
       updatedAt: map['updatedAt'] as int,
       agentId: map['agentId'] as String?,
       workdir: map['workdir'] as String?,
+      parent: map['parent'] == null ? null : ThreadParent.fromJson(map['parent']),
+      replies: map['replies'] as int? ?? 0,
     );
   }
+}
+
+/// P125 — what a thread hangs from: a message of another conversation. Mirrors `ThreadParentDto`.
+class ThreadParent {
+  const ThreadParent({required this.conversationId, required this.messageId});
+
+  final String conversationId;
+  final String messageId;
+
+  static ThreadParent fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return ThreadParent(conversationId: map['conversationId'] as String, messageId: map['messageId'] as String);
+  }
+
+  Map<String, dynamic> toJson() => {'conversationId': conversationId, 'messageId': messageId};
 }
 
 /// One folder in a [DirListMessage] (P102): its name and the path to open or pick.
@@ -637,7 +673,10 @@ class Attachment {
 /// One persisted message in a [HistoryServerMessage] (P40). Mirrors
 /// `warden_server_protocol::protocol::HistoryMessage`.
 class HistoryEntry {
-  const HistoryEntry({required this.fromUser, required this.content, this.attachments = const []});
+  const HistoryEntry({required this.fromUser, required this.content, this.attachments = const [], this.id});
+
+  /// P125 — the hub's id for the message, which a thread hangs from; null from a hub that predates threads.
+  final String? id;
 
   /// `role` on the wire is only ever `user` or `assistant`.
   final bool fromUser;
@@ -647,6 +686,7 @@ class HistoryEntry {
   static HistoryEntry fromJson(dynamic json) {
     final map = json as Map<String, dynamic>;
     return HistoryEntry(
+      id: map['id'] as String?,
       fromUser: map['role'] == 'user',
       content: map['content'] as String,
       attachments: (map['attachments'] as List<dynamic>?)?.map(Attachment.fromJson).toList() ?? const [],
