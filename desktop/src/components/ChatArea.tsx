@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { nextCodeMode } from "../types";
 import type { AgentEntry, Attachment, CodeMode, Combo, Conversation, ProjectEntry, ProviderEntry } from "../types";
 import type { LiveTurn } from "../lib/liveTurn";
-import type { ThreadInfo } from "../lib/threads";
+import { threadAnchor, type ThreadInfo } from "../lib/threads";
 import { folderLabel, folderPlace, nodesWithFolders, type DirListing, type NodeInfo } from "../lib/workdir";
 import FolderPicker from "./FolderPicker";
 import { LogoMark } from "./Icons";
@@ -51,8 +51,8 @@ interface ChatAreaProps {
   /** What browsing a hub's folders needs (only with `remote`): the listing, the nodes known (to name them), and a call
    * made before the browser opens that reads the nodes (the owner's; a member has none to read). */
   hubFolders?: { listDirs: (path?: string) => Promise<DirListing>; nodes: NodeInfo[]; prepare: () => Promise<void> };
-  /** Opens the thread of a message of this conversation (P125, only on a hub): the id is the one the hub gave the message. Absent where
-   * there are no threads (this computer, a code project). */
+  /** Opens the thread of a message of this conversation (P125): on a hub the id is the one the hub gave the message, on this computer the
+   * message's own. Absent where there are no threads (a code project). */
   onOpenThread?: (messageId: string) => void;
   /** The threads of this conversation by the id of the message they came from: the chip with the replies in place of the button. */
   threads?: Record<string, ThreadInfo>;
@@ -353,13 +353,16 @@ function ChatArea({
           </div>
         ) : (
           <div className="chat-messages-column">
-            {activeConversation!.messages.map((message) => (
-              <MessageBubble
-                key={message.id}
-                message={message}
-                thread={onOpenThread && message.hubId ? { replies: threads?.[message.hubId]?.replies ?? null, onOpen: () => onOpenThread(message.hubId!) } : undefined}
-              />
-            ))}
+            {activeConversation!.messages.map((message) => {
+              const anchor = onOpenThread ? threadAnchor(message, !remote) : null;
+              return (
+                <MessageBubble
+                  key={message.id}
+                  message={message}
+                  thread={anchor ? { replies: threads?.[anchor]?.replies ?? null, onOpen: () => onOpenThread!(anchor) } : undefined}
+                />
+              );
+            })}
             {isSending && live && <LiveBubble live={live} onCancel={onCancel} />}
             {isSending && !live && <ThinkingIndicator />}
             <div ref={bottomRef} />

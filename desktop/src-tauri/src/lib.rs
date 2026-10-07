@@ -40,7 +40,7 @@ use warden_bootstrap::{
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
     append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig, ModelPolicyConfig,
     Overrides,
-    Provider, ProviderConfig, UsageSummary,
+    Provider, ProviderConfig, ThreadParent, UsageSummary,
 };
 use warden_core::model::{Attachment, Message};
 use warden_core::orchestrator::Orchestrator;
@@ -867,12 +867,13 @@ async fn append_conversation_messages(
     provider_id: Option<String>,
     project_id: Option<String>,
     workdir: Option<String>,
+    thread_of: Option<ThreadParent>,
 ) -> Result<Conversation, String> {
     let dir = default_conversations_dir().ok_or_else(|| "could not determine the OS config directory".to_string())?;
     let answered = ends_with_an_answer(&messages);
-    // `project_id` and `workdir` only count when this call creates the conversation (P103, P102): an existing one
-    // keeps its own, and a conversation in a project has no folder.
-    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), workdir: workdir.as_deref(), create: true, ..Default::default() };
+    // `project_id`, `workdir` and `thread_of` only count when this call creates the conversation (P103, P102, P125): an
+    // existing one keeps its own, and a conversation in a project has no folder.
+    let options = AppendOptions { title_seed: &title_seed, agent_id: agent_id.as_deref(), provider_id: Some(provider_id.as_deref()), project_id: project_id.as_deref(), workdir: workdir.as_deref(), thread_of: thread_of.as_ref(), create: true, ..Default::default() };
     let conversation = append_messages(&dir, &conversation_id, options, messages)
         .map_err(|e| format!("{e:#}"))?
         .ok_or_else(|| "the conversation could not be created".to_string())?;

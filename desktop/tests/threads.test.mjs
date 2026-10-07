@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { repliesLabel, threadAnchor, threadsOf, visibleConversations } from "../src/lib/threads.ts";
+import { repliesLabel, replyCount, THREAD_CONTEXT_MAX, threadAnchor, threadHistory, threadsOf, visibleConversations } from "../src/lib/threads.ts";
 
 const conversation = (id, extra = {}) => ({ id, title: id, messages: [], createdAt: 1, updatedAt: 1, ...extra });
 const thread = (id, parentConversation, messageId, replies) => conversation(id, { parent: { conversationId: parentConversation, messageId }, replies });
@@ -39,5 +39,39 @@ describe("the threads of a conversation", () => {
   test("only a message the hub gave an id can start one", () => {
     assert.equal(threadAnchor({ id: "c1:0", role: "user", content: "x", createdAt: 1 }), null);
     assert.equal(threadAnchor({ id: "170001", hubId: "170001", role: "user", content: "x", createdAt: 1 }), "170001");
+  });
+});
+
+describe("threads on this computer", () => {
+  const message = (id, role = "user") => ({ id, role, content: id, createdAt: 1 });
+
+  test("every saved message can start one, by its own id", () => {
+    assert.equal(threadAnchor(message("m1"), true), "m1");
+    assert.equal(threadAnchor(message("m1"), false), null);
+    assert.equal(threadAnchor({ ...message("m1"), hubId: "h1" }, true), "h1");
+  });
+
+  test("the replies are the messages the person sent, when the list has no count", () => {
+    const messages = [message("a"), message("b", "assistant"), message("c")];
+    assert.equal(replyCount(conversation("t", { messages })), 2);
+    assert.equal(replyCount(conversation("t", { messages, replies: 5 })), 5);
+    const list = [conversation("main"), conversation("t", { parent: { conversationId: "main", messageId: "m1" }, messages })];
+    assert.deepEqual(threadsOf(list, "main"), { m1: { conversationId: "t", replies: 2 } });
+  });
+
+  test("the model sees the conversation up to the message, then the thread", () => {
+    const main = conversation("main", { messages: ["a", "b", "c", "d"].map((id) => message(id)) });
+    const own = [message("t1"), message("t2", "assistant")];
+    assert.deepEqual(threadHistory(main, "b", own).map((m) => m.id), ["a", "b", "t1", "t2"]);
+    assert.deepEqual(threadHistory(main, "ghost", own).map((m) => m.id), ["t1", "t2"], "a message that isn't there gives no context");
+  });
+
+  test("keeps only the last messages that end at the one it came from", () => {
+    const many = Array.from({ length: THREAD_CONTEXT_MAX + 10 }, (_, i) => message(`m${i}`));
+    const main = conversation("main", { messages: many });
+    const seen = threadHistory(main, `m${many.length - 1}`, []);
+    assert.equal(seen.length, THREAD_CONTEXT_MAX);
+    assert.equal(seen[0].id, `m${many.length - THREAD_CONTEXT_MAX}`);
+    assert.equal(threadHistory(main, "m4", []).length, 5, "near the start it keeps all of them");
   });
 });

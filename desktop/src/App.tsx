@@ -38,8 +38,8 @@ import {
   type RemoteStatePayload,
 } from "./lib/hub";
 import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
-import { threadsOf, visibleConversations } from "./lib/threads";
-import ThreadPanel from "./components/ThreadPanel";
+import { threadHistory, threadsOf, visibleConversations } from "./lib/threads";
+import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
 
@@ -77,6 +77,15 @@ const SIDEBAR_COLLAPSED_KEY = "warden.sidebarCollapsed";
 function titleFromMessage(content: string): string {
   const collapsed = content.trim().replace(/\s+/g, " ");
   return collapsed.length > 40 ? `${collapsed.slice(0, 40)}…` : collapsed;
+}
+
+/** What a turn of a thread on this computer needs besides the message (P125): the agent picked in the thread, the message it comes from, and
+ * the project and folder of the conversation it came from (a thread works where that one does). */
+interface LocalThread {
+  agentId: string;
+  parent: { conversationId: string; messageId: string };
+  projectId: string;
+  workdir: string;
 }
 
 /** Puts the copy of a conversation just read from disk in the list (P87). It wins, since it has
@@ -147,10 +156,14 @@ function App() {
   const startedHere = useRef(new Set<string>());
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
-  // A thread open beside the chat (P125, only on a hub): the message it comes from and the conversation it lives in. It belongs to the
+  // A thread open beside the chat (P125, on a hub or on this computer): the message it comes from and the conversation it lives in. It belongs to the
   // conversation it was opened in, so moving to another conversation or machine closes it.
   const [thread, setThread] = useState<{ messageId: string; threadId: string } | null>(null);
   useEffect(() => setThread(null), [activeConversationId, activeHubId]);
+  // On this computer the turn of the thread is run by this screen (P125); on a hub the panel does it.
+  const [threadSending, setThreadSending] = useState(false);
+  const [threadError, setThreadError] = useState<string | null>(null);
+  useEffect(() => setThreadError(null), [thread]);
   function openThread(messageId: string) {
     if (activeConversationId === null) return;
     const known = threadsOf(conversations, activeConversationId)[messageId];
@@ -339,11 +352,12 @@ function App() {
   }
 
   /** `persist` false only shows the message: a code project's turn saves the whole exchange itself (P103 b). */
-  function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string, persist = true) {
-    const agentId = selectedAgentId || undefined;
+  function appendMessage(conversationId: string, message: ChatMessage, titleSeed?: string, persist = true, thread?: LocalThread) {
+    // A thread (P125) speaks as the agent picked in it, and works in the project and folder of the conversation it came from.
+    const agentId = (thread ? thread.agentId : selectedAgentId) || undefined;
     const providerId = selectedProviderId || undefined;
-    const projectId = currentProjectId || undefined;
-    const workdir = currentWorkdir || undefined;
+    const projectId = (thread ? thread.projectId : currentProjectId) || undefined;
+    const workdir = (thread ? thread.workdir : currentWorkdir) || undefined;
     // Shown at once; the saved copy then replaces it (P87).
     setConversations((prev) => {
       const existing = prev.find((c) => c.id === conversationId);
@@ -359,6 +373,7 @@ function App() {
             providerId,
             projectId,
             workdir,
+            ...(thread ? { parent: thread.parent } : {}),
           };
       return existing ? prev.map((c) => (c.id === conversationId ? conversation : c)) : [conversation, ...prev];
     });
@@ -378,6 +393,8 @@ function App() {
       projectId: projectId ?? null,
       // Same rule for the folder (P102); a conversation in a project has none.
       workdir: workdir ?? null,
+      // Same rule for the message a thread comes from (P125).
+      threadOf: thread?.parent ?? null,
     })
       .then((onDisk) => setConversations((prev) => replaceWithSaved(prev, onDisk)))
       .catch((err) => console.error("failed to persist conversation:", err));
@@ -587,6 +604,65 @@ function App() {
     }
   }
 
+  /** A turn in the thread open beside the conversation, on this computer (P125). The thread is a conversation of its own, saved with the link
+   * to the message it came from; the model sees the conversation up to that message and then the thread. It works in the project and folder
+   * of the conversation it came from and speaks as the agent picked in the thread. */
+  async function handleSendLocalThread(content: string, attachments: Attachment[], agentId: string) {
+    if (!thread || !activeConversation) return;
+    const threadId = thread.threadId;
+    const scope: LocalThread = {
+      agentId,
+      parent: { conversationId: activeConversation.id, messageId: thread.messageId },
+      projectId: activeConversation.projectId ?? "",
+      workdir: activeConversation.workdir ?? "",
+    };
+    const history = threadHistory(activeConversation, thread.messageId, conversations.find((c) => c.id === threadId)?.messages ?? []).map(
+      ({ role, content, attachments }) => ({ role, content, attachments: attachments ?? [] }),
+    );
+    appendMessage(
+      threadId,
+      { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now(), ...(attachments.length > 0 ? { attachments } : {}) },
+      content || "Image",
+      true,
+      scope,
+    );
+    setThreadError(null);
+    setThreadSending(true);
+    try {
+      const reply = await invoke<{ content: string; usage?: Usage; attachments?: Attachment[]; generatedFiles?: string[]; fallbacks?: ProviderFallback[] }>("send_message", {
+        history,
+        content,
+        attachments,
+        agentId: agentId || null,
+        providerId: selectedProviderId && selectedProviderId !== settings.activeProvider ? selectedProviderId : null,
+        projectId: scope.projectId || null,
+        workdir: scope.workdir || null,
+        conversationId: threadId,
+        codeMode: null,
+      });
+      appendMessage(
+        threadId,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: reply.content,
+          createdAt: Date.now(),
+          usage: reply.usage,
+          ...(reply.attachments && reply.attachments.length > 0 ? { attachments: reply.attachments } : {}),
+          ...(reply.generatedFiles && reply.generatedFiles.length > 0 ? { generatedFiles: reply.generatedFiles } : {}),
+          ...(reply.fallbacks && reply.fallbacks.length > 0 ? { fallbacks: reply.fallbacks } : {}),
+        },
+        undefined,
+        true,
+        scope,
+      );
+    } catch (err) {
+      setThreadError(String(err));
+    } finally {
+      setThreadSending(false);
+    }
+  }
+
   /** The Stop button: the turn ends on its own, with what the engine had by then or an error to show. */
   function handleCancel() {
     if (activeConversationId === null) return;
@@ -690,8 +766,8 @@ function App() {
           onOpenSettings={() => setView("settings")}
           remote={remote}
           hubFolders={remote ? { listDirs: hubListDirs, nodes: knownNodes, prepare: loadNodes } : undefined}
-          // A thread needs a conversation the hub has, and a code project's context is the engine's session, not its messages.
-          onOpenThread={remote && activeConversation && !projects.some((p) => p.id === currentProjectId && p.code) ? openThread : undefined}
+          // A thread needs a conversation that is saved, and a code project's context is the engine's session, not its messages.
+          onOpenThread={activeConversation && !projects.some((p) => p.id === currentProjectId && p.code) ? openThread : undefined}
           threads={activeConversationId === null ? undefined : threadsOf(conversations, activeConversationId)}
         />
         {remote && thread && activeConversation && activeConversation.messages.some((m) => m.hubId === thread.messageId) && (
@@ -707,9 +783,23 @@ function App() {
             onChanged={() => void loadConversations()}
           />
         )}
+        {!remote && thread && activeConversation && activeConversation.messages.some((m) => m.id === thread.messageId) && (
+          <LocalThreadPanel
+            key={thread.threadId}
+            threadId={thread.threadId}
+            anchor={activeConversation.messages.find((m) => m.id === thread.messageId)!}
+            messages={conversations.find((c) => c.id === thread.threadId)?.messages ?? []}
+            sending={threadSending}
+            error={threadError}
+            agentIds={settings.agents.map((a) => a.id)}
+            initialAgentId={conversations.find((c) => c.id === thread.threadId)?.agentId ?? selectedAgentId}
+            onSend={(content, attachments, agentId) => void handleSendLocalThread(content, attachments, agentId)}
+            onClose={() => setThread(null)}
+          />
+        )}
         </div>
       )}
-      {connectingTo && <HubConnectDialog hub={connectingTo} onSubmit={handleSignIn} onCancel={() => setConnectingTo(null)} />}
+      {connectingTo &&<HubConnectDialog hub={connectingTo} onSubmit={handleSignIn} onCancel={() => setConnectingTo(null)} />}
       <ApprovalModal />
     </div>
   );

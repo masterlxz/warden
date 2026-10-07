@@ -5,74 +5,41 @@ import { decorateLastAnswer, HubTurnError } from "../lib/hubMap";
 import MessageBubble from "./MessageBubble";
 import MessageInput from "./MessageInput";
 
-/** P125 — the thread of a message, on a hub: a chat of its own beside the conversation, tied to a child conversation of it. The model
- * sees the conversation up to the message the thread came from and then only what is said here; nothing goes back to the main
- * conversation but the counter of replies on the message. `threadId` is the thread's conversation (the one it already has, or a new id
- * the hub creates with the first reply) and `parent` is the message it comes from, said only with the first. */
-function ThreadPanel({
-  threadId,
-  parent,
-  anchor,
+/** The look of a thread beside the conversation (P125), the same on a hub and on this computer: the agent picker, the message it came from,
+ * the thread's messages and the box to write in. What differs is where the messages live and who answers, which the two panels below
+ * bring. */
+function ThreadShell({
   agentIds,
-  initialAgentId,
-  ready,
+  agentId,
+  onAgentChange,
+  anchor,
+  messages,
+  sending,
+  error,
+  disabled,
+  focusKey,
+  onSend,
   onClose,
-  onChanged,
 }: {
-  threadId: string;
-  parent: { conversationId: string; messageId: string };
+  /** The configured agents, to choose who the thread talks to. */
+  agentIds: string[];
+  agentId: string;
+  onAgentChange: (agentId: string) => void;
   /** The message the thread came from, shown at the top. */
   anchor: ChatMessage;
-  /** The hub's configured agents, to choose who the thread talks to. */
-  agentIds: string[];
-  /** Who the thread starts with: the agent it last spoke with, or the main conversation's if it is new. The person can change it here. */
-  initialAgentId: string;
-  /** The hub is connected. */
-  ready: boolean;
+  messages: ChatMessage[];
+  sending: boolean;
+  error: string | null;
+  disabled: boolean;
+  focusKey: string;
+  onSend: (content: string, attachments: Attachment[]) => void;
   onClose: () => void;
-  /** A reply was saved: the list of conversations has a new counter to read. */
-  onChanged: () => void;
 }) {
-  const [agentId, setAgentId] = useState(initialAgentId);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  // The thread's history, when it already exists (one that doesn't comes back empty).
-  useEffect(() => {
-    let alive = true;
-    setMessages([]);
-    setError(null);
-    hubHistory(threadId).then(
-      (saved) => alive && setMessages(saved),
-      (err) => alive && setError(`Could not load the thread: ${String(err)}`),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [threadId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages.length, sending]);
-
-  async function send(content: string, attachments: Attachment[]) {
-    // The hub has this thread once it saved a message in it; until then the turn is the one that creates it.
-    const creating = !messages.some((m) => m.hubId);
-    setError(null);
-    setSending(true);
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now(), ...(attachments.length > 0 ? { attachments } : {}) }]);
-    try {
-      const reply = await hubChat({ content, attachments, conversationId: threadId, agentId, projectId: "", workdir: "", creating, threadOf: parent });
-      setMessages(decorateLastAnswer(await hubHistory(threadId), reply));
-    } catch (err) {
-      setError(err instanceof HubTurnError ? err.message : String(err));
-    } finally {
-      setSending(false);
-      onChanged();
-    }
-  }
 
   return (
     <aside className="thread-panel" aria-label="Thread">
@@ -82,7 +49,7 @@ function ThreadPanel({
           // Each thread talks to the agent the person picks, the main conversation's or another; locked while an answer is on the way.
           <label className="thread-agent">
             Agent
-            <select value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={sending}>
+            <select value={agentId} onChange={(e) => onAgentChange(e.target.value)} disabled={sending}>
               <option value="">None</option>
               {agentIds.map((id) => (
                 <option key={id} value={id}>
@@ -113,8 +80,131 @@ function ThreadPanel({
         )}
         <div ref={bottomRef} />
       </div>
-      <MessageInput onSend={(content, attachments) => void send(content, attachments)} focusKey={threadId} disabled={sending || !ready} />
+      <MessageInput onSend={onSend} focusKey={focusKey} disabled={sending || disabled} />
     </aside>
+  );
+}
+
+/** P125 — the thread of a message, on a hub: a chat of its own beside the conversation, tied to a child conversation of it. The model
+ * sees the conversation up to the message the thread came from and then only what is said here; nothing goes back to the main
+ * conversation but the counter of replies on the message. `threadId` is the thread's conversation (the one it already has, or a new id
+ * the hub creates with the first reply) and `parent` is the message it comes from, said only with the first. */
+function ThreadPanel({
+  threadId,
+  parent,
+  anchor,
+  agentIds,
+  initialAgentId,
+  ready,
+  onClose,
+  onChanged,
+}: {
+  threadId: string;
+  parent: { conversationId: string; messageId: string };
+  anchor: ChatMessage;
+  agentIds: string[];
+  /** Who the thread starts with: the agent it last spoke with, or the main conversation's if it is new. The person can change it here. */
+  initialAgentId: string;
+  /** The hub is connected. */
+  ready: boolean;
+  onClose: () => void;
+  /** A reply was saved: the list of conversations has a new counter to read. */
+  onChanged: () => void;
+}) {
+  const [agentId, setAgentId] = useState(initialAgentId);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The thread's history, when it already exists (one that doesn't comes back empty).
+  useEffect(() => {
+    let alive = true;
+    setMessages([]);
+    setError(null);
+    hubHistory(threadId).then(
+      (saved) => alive && setMessages(saved),
+      (err) => alive && setError(`Could not load the thread: ${String(err)}`),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [threadId]);
+
+  async function send(content: string, attachments: Attachment[]) {
+    // The hub has this thread once it saved a message in it; until then the turn is the one that creates it.
+    const creating = !messages.some((m) => m.hubId);
+    setError(null);
+    setSending(true);
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now(), ...(attachments.length > 0 ? { attachments } : {}) }]);
+    try {
+      const reply = await hubChat({ content, attachments, conversationId: threadId, agentId, projectId: "", workdir: "", creating, threadOf: parent });
+      setMessages(decorateLastAnswer(await hubHistory(threadId), reply));
+    } catch (err) {
+      setError(err instanceof HubTurnError ? err.message : String(err));
+    } finally {
+      setSending(false);
+      onChanged();
+    }
+  }
+
+  return (
+    <ThreadShell
+      agentIds={agentIds}
+      agentId={agentId}
+      onAgentChange={setAgentId}
+      anchor={anchor}
+      messages={messages}
+      sending={sending}
+      error={error}
+      disabled={!ready}
+      focusKey={threadId}
+      onSend={(content, attachments) => void send(content, attachments)}
+      onClose={onClose}
+    />
+  );
+}
+
+/** P125 — the thread of a message on this computer. The messages are the thread conversation's, kept by the screen with the others (it
+ * saves them like any conversation, with the link to the message it came from); the turn is sent by the screen too, with the
+ * conversation up to that message ahead of what is said here. */
+export function LocalThreadPanel({
+  threadId,
+  anchor,
+  messages,
+  sending,
+  error,
+  agentIds,
+  initialAgentId,
+  onSend,
+  onClose,
+}: {
+  threadId: string;
+  anchor: ChatMessage;
+  /** The thread's messages so far: none for a thread that isn't saved yet. */
+  messages: ChatMessage[];
+  sending: boolean;
+  error: string | null;
+  agentIds: string[];
+  initialAgentId: string;
+  /** Sends the turn as `agentId`. */
+  onSend: (content: string, attachments: Attachment[], agentId: string) => void;
+  onClose: () => void;
+}) {
+  const [agentId, setAgentId] = useState(initialAgentId);
+  return (
+    <ThreadShell
+      agentIds={agentIds}
+      agentId={agentId}
+      onAgentChange={setAgentId}
+      anchor={anchor}
+      messages={messages}
+      sending={sending}
+      error={error}
+      disabled={false}
+      focusKey={threadId}
+      onSend={(content, attachments) => onSend(content, attachments, agentId)}
+      onClose={onClose}
+    />
   );
 }
 

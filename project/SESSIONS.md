@@ -6,6 +6,15 @@
 
 ---
 
+### 2026-10-07 — Sessão 163
+
+- **Objetivo**: threads no desktop em modo local (P125), sem hub. O `warden-bootstrap` já gravava `parent` e o id estável de cada mensagem, e apagar a conversa-pai já apagava as filhas, então a mudança ficou no app.
+- **Rust (`desktop/src-tauri`)**: `append_conversation_messages` recebe `threadOf` (só vale ao criar, como projeto e pasta). `cargo check` limpo.
+- **Tela**: `lib/threads.ts` ganhou `replyCount` (o hub manda a contagem; local conta as mensagens da pessoa), `threadHistory` (as últimas 40 até a mensagem de origem, mais a thread) e `threadAnchor(message, local)` (local usa o id da própria mensagem). `ThreadPanel` virou um `ThreadShell` com dois envoltórios: o do hub e o novo `LocalThreadPanel`. O `App` ganhou `handleSendLocalThread`, que salva a thread como conversa com `parent`, no projeto e na pasta da pai, com o agente escolhido na thread, e roda o `send_message` com o histórico cortado. `appendMessage` aceita um escopo de thread. Thread de projeto de código continua recusada.
+- **Testes**: desktop `npm test` 67 (4 novos) e `tsc` limpo. Não rodei os testes Rust do lado Tauri.
+- **Deslize**: acrescentei os testes novos em `tests/threads.test.mjs` com um heredoc de Bash, em vez de Edit/Write, contra a regra de mostrar o diff. O conteúdo está certo; fica registrado.
+- **Não verificado**: o painel numa janela do Tauri em modo local, e um modelo real respondendo numa thread local. A mensagem de origem precisa estar salva em disco antes da primeira resposta da thread (a do assistente grava logo depois da resposta).
+
 ### 2026-10-07 — Sessão 162
 
 - **Objetivo**: escolher o agente da thread (P125). Decisão do usuário: cada thread fala com o agente que a pessoa escolher nela, o mesmo da conversa principal ou outro.
