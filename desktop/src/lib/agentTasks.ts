@@ -54,7 +54,7 @@ export const STATE_MARK: Record<AgentTaskState, string> = {
 const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, paused: 0, done: 0, failed: 0, cancelled: 0 });
 
 /** What a person can do to this task right now: only a task running in the process that answered can be controlled. A task that
- * hasn't started can only be stopped; a paused one can be resumed. */
+ * hasn't started can only be stopped, and so can a delegation the agent is waiting on; a paused one can be resumed. */
 export function actionsFor(task: AgentTask): AgentTaskAction[] {
   if (!task.controllable) return [];
   switch (task.state) {
@@ -62,7 +62,7 @@ export function actionsFor(task: AgentTask): AgentTaskAction[] {
       return ["cancel"];
     case "running":
     case "waiting":
-      return ["pause", "cancel"];
+      return task.pausable ? ["pause", "cancel"] : ["cancel"];
     case "paused":
       return ["resume", "cancel"];
     default:

@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::model::Usage;
@@ -119,9 +119,46 @@ impl Default for PauseGate {
     }
 }
 
+/// How a task a person controls is run: on a task of its own, or inside the future of the caller that waits for it.
+enum Runner {
+    Spawned(AbortHandle),
+    /// A delegation the caller waits for (`run_recorded`): stopping it ends the wait with an error, and the caller goes on.
+    Inline { stop: Arc<Notify>, finished: Arc<AtomicBool> },
+}
+
+impl Runner {
+    fn is_finished(&self) -> bool {
+        match self {
+            Runner::Spawned(abort) => abort.is_finished(),
+            Runner::Inline { finished, .. } => finished.load(Ordering::SeqCst),
+        }
+    }
+
+    fn stop(&self) {
+        match self {
+            Runner::Spawned(abort) => abort.abort(),
+            Runner::Inline { stop, .. } => stop.notify_one(),
+        }
+    }
+
+    /// An inline task runs one turn the caller is waiting on, with no gate looked at before its model calls.
+    fn is_pausable(&self) -> bool {
+        matches!(self, Runner::Spawned(_))
+    }
+}
+
+/// Marks an inline task as finished however its future ends (done, stopped or dropped), after the outcome was written.
+struct FinishOnDrop(Arc<AtomicBool>);
+
+impl Drop for FinishOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 struct Control {
     parent: Option<String>,
-    abort: AbortHandle,
+    runner: Runner,
     gate: PauseGate,
     stopped: Arc<AtomicBool>,
     recorder: Arc<dyn TaskRecorder>,
@@ -143,13 +180,18 @@ pub fn task_controls() -> &'static TaskControls {
 impl TaskControls {
     fn register(&self, id: &str, control: Control) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        tasks.retain(|_, c| !c.abort.is_finished());
+        tasks.retain(|_, c| !c.runner.is_finished());
         tasks.insert(id.to_string(), control);
     }
 
     /// Whether `id` is a task of this process that is still going.
     pub fn is_controllable(&self, id: &str) -> bool {
-        self.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|c| !c.abort.is_finished())
+        self.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|c| !c.runner.is_finished())
+    }
+
+    /// Whether `id` is going here and can also be paused: a delegation the caller waits for can only be stopped.
+    pub fn is_pausable(&self, id: &str) -> bool {
+        self.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|c| !c.runner.is_finished() && c.runner.is_pausable())
     }
 
     /// `id` and every task below it, as far as this registry knows them.
@@ -168,14 +210,14 @@ impl TaskControls {
     /// Stops the task and the subtasks below it; each is recorded as stopped by a person. `false` when `id` isn't running here.
     pub fn cancel(&self, id: &str) -> bool {
         let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(root) = tasks.get(id).filter(|c| !c.abort.is_finished()) else { return false };
+        let Some(root) = tasks.get(id).filter(|c| !c.runner.is_finished()) else { return false };
         for own in Self::branch(&tasks, id) {
             if let Some(control) = tasks.get(&own) {
                 control.stopped.store(true, Ordering::SeqCst);
             }
         }
         // The subtasks go with it: dropping the turn of the task drops the jobs it started.
-        root.abort.abort();
+        root.runner.stop();
         true
     }
 
@@ -192,12 +234,12 @@ impl TaskControls {
     fn set_paused(&self, id: &str, paused: bool) -> bool {
         let affected: Vec<(String, Arc<dyn TaskRecorder>)> = {
             let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-            if !tasks.get(id).is_some_and(|c| !c.abort.is_finished()) {
+            if !tasks.get(id).is_some_and(|c| !c.runner.is_finished() && c.runner.is_pausable()) {
                 return false;
             }
             let ids = Self::branch(&tasks, id);
             ids.into_iter()
-                .filter_map(|own| tasks.get(&own).filter(|c| !c.abort.is_finished() && c.gate.is_paused() != paused).map(|c| {
+                .filter_map(|own| tasks.get(&own).filter(|c| !c.runner.is_finished() && c.runner.is_pausable() && c.gate.is_paused() != paused).map(|c| {
                     c.gate.set(paused);
                     (own, c.recorder.clone())
                 }))
@@ -401,7 +443,7 @@ impl JobBoard {
             }
         });
 
-        task_controls().register(&task_id, Control { parent: context.parent.clone(), abort: handle.abort_handle(), gate, stopped, recorder: recorder_for_controls });
+        task_controls().register(&task_id, Control { parent: context.parent.clone(), runner: Runner::Spawned(handle.abort_handle()), gate, stopped, recorder: recorder_for_controls });
 
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         let id = format!("job-{}", jobs.len() + 1);
@@ -428,18 +470,36 @@ impl JobBoard {
             channel: context.channel.clone(),
             parent: context.parent.clone(),
         });
-        let mut cancel = CancelOnDrop::new(recorder.clone(), id.clone(), Arc::new(AtomicBool::new(false)));
+        // A person can stop it from a screen (P123): the wait ends with an error the delegating agent reads, and it goes on.
+        let (stop, finished, stopped) = (Arc::new(Notify::new()), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        task_controls().register(&id, Control {
+            parent: context.parent.clone(),
+            runner: Runner::Inline { stop: stop.clone(), finished: finished.clone() },
+            gate: PauseGate::new(),
+            stopped: stopped.clone(),
+            recorder: recorder.clone(),
+        });
+        // Declared first, so it is let go last: the task stops being controllable only after its outcome is written.
+        let _finish = FinishOnDrop(finished);
+        let mut cancel = CancelOnDrop::new(recorder.clone(), id.clone(), stopped);
         recorder.running(&id);
-        let outcome = work.await;
+        let outcome = tokio::select! {
+            outcome = work => Some(outcome),
+            () = stop.notified() => None,
+        };
         cancel.armed = false;
         match outcome {
-            Ok((text, usage)) => {
+            Some(Ok((text, usage))) => {
                 recorder.finished(&id, TaskOutcome::Done { result: text.clone(), usage });
                 Ok(text)
             }
-            Err(err) => {
+            Some(Err(err)) => {
                 recorder.finished(&id, TaskOutcome::Failed { error: format!("{err:#}") });
                 Err(err)
+            }
+            None => {
+                recorder.finished(&id, TaskOutcome::Stopped);
+                Err(anyhow::anyhow!("the delegation was stopped by a person"))
             }
         }
     }
@@ -904,6 +964,50 @@ mod tests {
         assert_eq!(board.list().len(), 1, "only the background job is listed");
         assert_eq!(board.state(&held), Some(JobState::Running));
         board.abort_unfinished();
+    }
+
+    #[tokio::test]
+    async fn a_waited_for_delegation_can_be_stopped_by_a_person_but_not_paused() {
+        let recorder = Prefixed::new("sync");
+        let board = board_of(&recorder, None);
+        let waiting = tokio::spawn({
+            let board = board.clone();
+            async move { board.run_recorded(draft("writer"), std::future::pending()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(task_controls().is_controllable("sync-1"));
+        assert!(!task_controls().is_pausable("sync-1"));
+        assert!(!task_controls().pause("sync-1"), "nothing looks at a gate before its model calls");
+
+        assert!(task_controls().cancel("sync-1"));
+        let err = waiting.await.unwrap().unwrap_err();
+
+        assert!(err.to_string().contains("stopped by a person"), "{err}");
+        assert_eq!(recorder.lines(), ["running sync-1", "stopped sync-1"]);
+        assert!(!task_controls().is_controllable("sync-1"));
+        assert!(!task_controls().cancel("sync-1"), "nothing to stop any more");
+    }
+
+    #[tokio::test]
+    async fn stopping_the_task_above_a_waited_for_delegation_records_it_as_stopped() {
+        let recorder = Prefixed::new("above");
+        let board = board_of(&recorder, None);
+        let (inner_recorder, ready) = (recorder.clone(), Arc::new(tokio::sync::Notify::new()));
+        let signal = ready.clone();
+        let job = board.spawn_task("manager".into(), draft("manager"), async move {
+            // The turn of the manager waits for a delegation of its own.
+            let own = board_of(&inner_recorder, Some("above-1"));
+            signal.notify_one();
+            own.run_recorded(draft("worker"), std::future::pending()).await.map(|text| (text, None))
+        });
+        ready.notified().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(task_controls().cancel("above-1"));
+        board.wait(&job).await;
+
+        let lines = recorder.lines();
+        assert!(lines.contains(&"stopped above-1".to_string()) && lines.contains(&"stopped above-2".to_string()), "{lines:?}");
     }
 
     #[tokio::test]

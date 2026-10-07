@@ -11,7 +11,10 @@
 - **Objetivo**: seguir no P123, fechando o que sobrou do limite de modelos por agente no CLI.
 - **Feito**: o wizard de agentes do CLI (`/agents` criar e editar) pergunta agora "modelos que pode escolher ao delegar": ids de provedores, combos ou políticas separados por vírgula, o primeiro é o padrão, em branco = aberto. `parse_delegation_models` recusa id que não existe (com a lista) e tira repetidos; `delegation_model_ids` junta provedores, combos e políticas. Ao editar, o valor atual vem preenchido (antes era só preservado).
 - **Testes**: `warden-cli` 58 + 7 verdes, clippy sem aviso; novo `delegation_models_input_is_blank_for_open_or_a_checked_deduplicated_list`. Wizard não exercitado num terminal real.
-- **Fica no P123**: celular e extensão sem tela, a delegação síncrona sem botão de parar, um modelo real vendo só o limite e as telas não vistas.
+- **Parar a delegação síncrona**: `task_controls()` agora guarda um `Runner` (`Spawned` ou `Inline`); `run_recorded` se registra e espera por `select!` entre o trabalho e o sinal de parar. Parada, grava "stopped by a person" e devolve um erro ao agente que delegou, que segue o turno. Parar a tarefa de cima leva a síncrona junto. **Pausar não vale** nela (nenhum portão antes das chamadas ao modelo): `is_pausable`, recusa no `control_agent_task` e `AgentTaskDto.pausable`, e as telas do desktop e da web oferecem só "Stop". Detalhes em `ARCHITECTURE.md`.
+- **Testes**: 1405 Rust verdes (`--workspace --no-fail-fast`), `npm test` do desktop 46 de 46, `tsc` de desktop e web, clippy só com o aviso antigo. Novos: 3 em `jobs.rs` (parar a síncrona e recusar a pausa, parar a de cima leva a síncrona, a lista) e 1 de hub (`a_delegation_the_agent_waits_on_can_be_stopped_from_the_hub_but_not_paused`), protocolo (`pausable`) e 1 do desktop.
+- **Não verificado**: o botão numa janela; um modelo real recebendo o erro de parada e seguindo o turno.
+- **Fica no P123**: celular e extensão sem tela, pausar a delegação síncrona, um modelo real vendo só o limite e as telas não vistas.
 
 ### 2026-10-06 — Sessão 156
 

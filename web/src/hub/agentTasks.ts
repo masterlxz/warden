@@ -53,7 +53,7 @@ export const STATE_MARK: Record<AgentTaskState, string> = {
 const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, paused: 0, done: 0, failed: 0, cancelled: 0 });
 
 /** O que dá para fazer com esta tarefa agora: só a que roda no processo do hub que respondeu. A que ainda não começou só pode ser parada;
- * a pausada pode ser retomada. */
+ * a pausada pode ser retomada; uma delegação que o agente espera também só pode ser parada. */
 export function actionsFor(task: AgentTask): AgentTaskAction[] {
   if (!task.controllable) return [];
   switch (task.state) {
@@ -61,7 +61,7 @@ export function actionsFor(task: AgentTask): AgentTaskAction[] {
       return ["cancel"];
     case "running":
     case "waiting":
-      return ["pause", "cancel"];
+      return task.pausable ? ["pause", "cancel"] : ["cancel"];
     case "paused":
       return ["resume", "cancel"];
     default:

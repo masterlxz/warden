@@ -12,8 +12,10 @@ use crate::settings::{keys_match, WRONG_KEY_DELAY};
 
 fn to_dto(task: AgentTask) -> AgentTaskDto {
     let controllable = warden_core::jobs::task_controls().is_controllable(&task.id);
+    let pausable = warden_core::jobs::task_controls().is_pausable(&task.id);
     AgentTaskDto {
         controllable,
+        pausable,
         id: task.id,
         group: task.group,
         owner: task.owner,

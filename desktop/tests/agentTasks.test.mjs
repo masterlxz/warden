@@ -97,13 +97,19 @@ describe("the tasks of one agent", () => {
 
 describe("what a person can do to a task", () => {
   test("only a task running in the answering process can be controlled, and the actions follow its state", () => {
-    const mine = (state) => task("a", "g", state, { controllable: true });
+    const mine = (state) => task("a", "g", state, { controllable: true, pausable: true });
     assert.deepEqual(actionsFor(mine("pending")), ["cancel"]);
     assert.deepEqual(actionsFor(mine("running")), ["pause", "cancel"]);
     assert.deepEqual(actionsFor(mine("waiting")), ["pause", "cancel"]);
     assert.deepEqual(actionsFor(mine("paused")), ["resume", "cancel"]);
     for (const state of ["done", "failed", "cancelled"]) assert.deepEqual(actionsFor(mine(state)), []);
     assert.deepEqual(actionsFor(task("a", "g", "running")), [], "a task of another process has no controls");
+  });
+
+  test("a delegation the agent is waiting on can only be stopped", () => {
+    const waitedOn = (state) => task("a", "g", state, { controllable: true });
+    assert.deepEqual(actionsFor(waitedOn("running")), ["cancel"]);
+    assert.deepEqual(actionsFor(waitedOn("waiting")), ["cancel"]);
   });
 
   test("a paused task still counts as active work", () => {

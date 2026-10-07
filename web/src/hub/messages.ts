@@ -588,6 +588,8 @@ export interface AgentTask {
   finishedAtMs?: number | null;
   /** Roda no processo do hub que respondeu: dá para pausar, retomar ou parar por aqui. */
   controllable?: boolean;
+  /** Entre essas, as que também podem ser pausadas: uma delegação que o agente espera só pode ser parada. */
+  pausable?: boolean;
 }
 
 export interface Task {

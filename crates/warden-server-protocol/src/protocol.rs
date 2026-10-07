@@ -781,6 +781,9 @@ pub struct AgentTaskDto {
     /// (`ControlAgentTask`). A task of another process or one that has finished isn't.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub controllable: bool,
+    /// Among the controllable ones, those that can also be paused: a delegation the agent waits on can only be stopped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pausable: bool,
 }
 
 /// One `[[limits]]` entry (P4) as a settings form edits it. `scope` is `global`, `agent`, `channel`
@@ -2778,6 +2781,7 @@ mod tests {
             started_at_ms: Some(2),
             finished_at_ms: Some(3),
             controllable: false,
+            pausable: false,
         };
         let reply = ServerMessage::AgentTaskList { request_id: 4, tasks: vec![task.clone()] };
         let json = serde_json::to_string(&reply).unwrap();
@@ -2792,8 +2796,10 @@ mod tests {
         assert_eq!((pending.owner, pending.total_tokens, pending.started_at_ms), (None, None, None));
 
         // A running task of this process says it can be controlled, and the control message is asked with the pairing key.
-        let running = serde_json::to_string(&AgentTaskDto { state: "running".into(), controllable: true, ..task }).unwrap();
-        assert!(running.contains(r#""controllable":true"#), "{running}");
+        let running = serde_json::to_string(&AgentTaskDto { state: "running".into(), controllable: true, ..task.clone() }).unwrap();
+        assert!(running.contains(r#""controllable":true"#) && !running.contains("pausable"), "{running}");
+        let pausable = serde_json::to_string(&AgentTaskDto { state: "running".into(), controllable: true, pausable: true, ..task }).unwrap();
+        assert!(pausable.contains(r#""pausable":true"#), "{pausable}");
         let control = ClientMessage::ControlAgentTask { request_id: 5, pairing_key: "k".into(), task_id: "at-1".into(), action: "pause".into() };
         let json = serde_json::to_string(&control).unwrap();
         assert_eq!(json, r#"{"type":"controlAgentTask","requestId":5,"pairingKey":"k","taskId":"at-1","action":"pause"}"#);

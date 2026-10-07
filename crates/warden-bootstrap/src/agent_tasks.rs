@@ -124,6 +124,7 @@ pub fn control_agent_task(log: &Path, id: &str, action: TaskControl) -> Result<(
     match (action, task.state) {
         (TaskControl::Pause, TaskState::Paused) => return Err("the task is already paused".to_string()),
         (TaskControl::Pause, TaskState::Pending) => return Err("the task hasn't started: cancel it, or wait for it to start".to_string()),
+        (TaskControl::Pause, _) if !controls.is_pausable(id) => return Err("a delegation the agent is waiting on can only be stopped, not paused".to_string()),
         (TaskControl::Resume, state) if state != TaskState::Paused => return Err("the task isn't paused".to_string()),
         _ => {}
     }
