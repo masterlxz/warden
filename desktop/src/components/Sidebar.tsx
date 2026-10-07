@@ -21,6 +21,8 @@ interface SidebarProps {
   onOpenAgentWork: () => void;
   /** The screen of the agents' channels (P121), only on a hub: omitted on this computer, where there is none. */
   onOpenAgents?: () => void;
+  /** How many agent channels have something the person has not seen (P121): shown on the Agents button. */
+  agentsUnread?: number;
   view: "chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork";
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -46,6 +48,7 @@ function Sidebar({
   onOpenOrganization,
   onOpenAgentWork,
   onOpenAgents,
+  agentsUnread = 0,
   view,
   collapsed,
   onToggleCollapsed,
@@ -129,6 +132,11 @@ function Sidebar({
           >
             <AgentsIcon size={17} />
             {!collapsed && "Agents"}
+            {agentsUnread > 0 && (
+              <span className="sidebar-badge" aria-label={`${agentsUnread} with new messages`}>
+                {agentsUnread}
+              </span>
+            )}
           </button>
         )}
         <button

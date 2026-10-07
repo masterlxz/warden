@@ -133,6 +133,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(_autoPullOnResume());
     }
     _lifecycleState = state;
+    // P121 — an agent's channel is read only while the app is on screen; with it away, a message that comes is unread and gets a notification.
+    widget.transcript.setForeground(state == AppLifecycleState.resumed);
   }
 
   /// P71 fatia 2 — pulls sync changes silently when the app comes back to the foreground,
@@ -331,11 +333,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             builder: (context, _) => widget.transcript.channelAgent != null ? const SizedBox.shrink() : _AgentMenu(transcript: widget.transcript),
           ),
           // P121 — the agents as contacts: one conversation each.
-          IconButton(
-            key: const Key('channels-button'),
-            onPressed: _openChannels,
-            icon: const Icon(Icons.chat_outlined),
-            tooltip: 'Agent channels',
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) {
+              final unread = widget.transcript.unreadChannelIds.length;
+              return IconButton(
+                key: const Key('channels-button'),
+                onPressed: _openChannels,
+                icon: Badge(isLabelVisible: unread > 0, label: Text('$unread'), child: const Icon(Icons.chat_outlined)),
+                tooltip: unread > 0 ? 'Agent channels ($unread new)' : 'Agent channels',
+              );
+            },
           ),
           // P120, P123 — the organization of the agents and the work they hand each other.
           IconButton(
@@ -548,7 +556,12 @@ class _ChannelsSheet extends StatelessWidget {
                 ListTile(
                   key: Key('channel-${row.agent}'),
                   selected: transcript.channelAgent == row.agent,
-                  leading: const Icon(Icons.person_outline),
+                  leading: Badge(
+                    key: Key('channel-unread-${row.agent}'),
+                    isLabelVisible: transcript.unreadAgents.contains(row.agent),
+                    smallSize: 9,
+                    child: const Icon(Icons.person_outline),
+                  ),
                   title: Text(row.agent),
                   trailing: Text(row.answering ? 'answering…' : (row.channel == null ? 'new' : _when(row.channel!.updatedAt))),
                   onTap: () => onPick(row.agent),

@@ -7,6 +7,8 @@ interface AgentContactsProps {
   conversations: Conversation[];
   /** The agent whose channel is open. */
   activeAgent: string;
+  /** The agents with something the person has not seen in their channel. */
+  unreadAgents: string[];
   /** Conversations with a turn waiting for its answer. */
   answeringIds: string[];
   /** The hub is not reachable: reading is fine, opening a channel is not. */
@@ -24,7 +26,7 @@ function shortDate(millis: number): string {
 
 /** P121 — the agents as contacts: each has one conversation with the person, its channel, which stays where it was left. Newest first, the
  * ones never spoken to at the end. */
-function AgentContacts({ agents, channels, conversations, activeAgent, answeringIds, disabled, onOpen }: AgentContactsProps) {
+function AgentContacts({ agents, channels, conversations, activeAgent, unreadAgents, answeringIds, disabled, onOpen }: AgentContactsProps) {
   const rows = agents
     .map((agent) => {
       const channelId = channels[agent.id];
@@ -48,7 +50,10 @@ function AgentContacts({ agents, channels, conversations, activeAgent, answering
                 onClick={() => onOpen(id)}
                 aria-current={id === activeAgent ? "true" : undefined}
               >
-                <span className="agent-contact-name">{id}</span>
+                <span className="agent-contact-name">
+                  {unreadAgents.includes(id) && <span className="unread-dot" role="img" aria-label="new message" />}
+                  {id}
+                </span>
                 <span className="agent-contact-meta">{answering ? "answering…" : channel ? shortDate(channel.updatedAt) : "new"}</span>
               </button>
             </li>

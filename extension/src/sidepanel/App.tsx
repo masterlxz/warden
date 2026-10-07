@@ -28,6 +28,7 @@ export default function App() {
     workdir: null,
     threadParent: null,
     channels: {},
+    unreadChannels: [],
   });
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
@@ -38,8 +39,8 @@ export default function App() {
       setStatus(res.status);
       setHistory(res.history);
       setSavedSettings(res.savedSettings);
-      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels } = res;
-      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels });
+      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels, unreadChannels } = res;
+      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels, unreadChannels });
       setApprovals(res.approvals);
     });
 
@@ -51,8 +52,8 @@ export default function App() {
       } else if (event.type === "historyLoaded") {
         setHistory(event.history);
       } else if (event.type === "conversationsChanged") {
-        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels } = event;
-        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels });
+        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels, unreadChannels } = event;
+        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels, unreadChannels });
       } else if (event.type === "approvalsChanged") {
         setApprovals(event.approvals);
       }
@@ -91,6 +92,16 @@ export default function App() {
   /** P121 — the agent whose channel the open conversation is, if it is one. */
   const channelAgent = Object.keys(conversationState.channels).find((agent) => conversationState.channels[agent] === conversationState.activeConversationId);
 
+  // P121 — tells the background which channel is in front (the chat tab, showing that channel), so it is read as it changes and does not light
+  // the toolbar icon; none when another tab is up. Closing the panel puts it back, so a message that comes then is told.
+  const watched = tab === "chat" && channelAgent !== undefined ? conversationState.activeConversationId : null;
+  useEffect(() => {
+    void chrome.runtime.sendMessage({ type: "watchChannel", conversationId: watched }).catch(() => undefined);
+    const release = () => void chrome.runtime.sendMessage({ type: "watchChannel", conversationId: null }).catch(() => undefined);
+    window.addEventListener("pagehide", release);
+    return () => window.removeEventListener("pagehide", release);
+  }, [watched]);
+
   const pendingChat =conversationState.activeConversationId !== null && conversationState.pendingIds.includes(conversationState.activeConversationId);
 
   return (
@@ -104,6 +115,11 @@ export default function App() {
             </button>
             <button type="button" className={tab === "channels" ? "tab tab--active" : "tab"} onClick={() => setTab("channels")}>
               Canais
+              {conversationState.unreadChannels.length > 0 && (
+                <span className="tab-badge" aria-label={`${conversationState.unreadChannels.length} com mensagens novas`}>
+                  {conversationState.unreadChannels.length}
+                </span>
+              )}
             </button>
             <button type="button" className={tab === "skills" ? "tab tab--active" : "tab"} onClick={() => setTab("skills")}>
               Skills
@@ -185,6 +201,7 @@ export default function App() {
                 channels={conversationState.channels}
                 conversations={conversationState.conversations}
                 pendingIds={conversationState.pendingIds}
+                unreadChannels={conversationState.unreadChannels}
                 onOpened={() => setTab("chat")}
               />
             </div>

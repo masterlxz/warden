@@ -6,6 +6,19 @@
 
 ---
 
+### 2026-10-07 — Sessão 169
+
+- **Objetivo**: avisar a pessoa quando um agente escreve no canal dele (P121): não lido e notificação, nos quatro clientes.
+- **Hub**: `run_task_notifying` e `run_webhook_notifying` (as antigas viram invólucros) recebem um aviso e o passam ao `AgentExtras.on_conversation_changed`; o agendador e as rotas de webhook o ligam à difusão `changes` que o hub já tinha, então o canal que o `message_user` escreve numa tarefa chega a todos os aparelhos do dono como `ConversationsChanged`. Os runs que uma pessoa começou já avisavam o aparelho dela.
+- **Não lido** (em cada cliente, igual): o hub não guarda "lido"; cada aparelho guarda por canal o `updatedAt` da última mudança que mostrou. Não lido = mudou depois disso e não é o canal em frente. **Primeira vez** no aparelho: o que existe conta como visto (`baseline`); depois, canal sem marca é novo e fica não lido. O canal aberto e em frente é lido conforme chega; o que se guarda sobrevive a fechar o app. Puro e testado em cada cliente (`unread.ts`, `unread.dart`).
+- **Web**: selo com a contagem na aba "Agents", ponto no contato e **notificação do navegador** (`Notification`, título = o agente, texto = o começo da mensagem, clicar abre o canal); a permissão é pedida ao abrir a aba Agents (o clique que o navegador exige). Teste de navegador contra um hub real: canal semeado no disco, selo 1, ponto só no agente certo, some ao abrir, continua lido depois de recarregar.
+- **Desktop**: selo no botão "Agents" da barra lateral e ponto no contato. **Sem notificação do sistema**: o app não tem o plugin de notificação do Tauri; adicioná-lo é uma dependência nova (Cargo, npm e capability).
+- **Extensão**: selo no **ícone da barra** (some o "!" de aprovação só enquanto houver uma pendente), contagem na aba "Canais" e ponto no contato; o painel diz ao background qual canal está em frente (`watchChannel`), e fechar o painel solta. **Sem notificação do sistema**: pediria a permissão `notifications` (o navegador avisa na instalação) e um ícone, que a extensão não tem.
+- **Celular**: notificação local por agente (canal Android próprio "Agent messages", `showAgentMessageNotification`), selo no botão dos canais e na lista; o `ChatTranscript` sabe se o app está na frente (`setForeground`), guarda as marcas por hub (`PrefsChannelSeenStore`) e só avisa quando a última mensagem é do agente.
+- **Testes**: web `npm test` 14 e e2e 2 de 2; desktop `npm test` 72; extensão `npm test` 54; celular `flutter analyze` limpo e 199 testes (4 novos); `cargo check --workspace --all-targets` limpo. Rust sem teste novo nesta fatia além do que já existia.
+- **Não verificado**: a notificação do navegador (o teste confere o selo, não o pop-up), a do celular num aparelho, o selo do ícone da extensão num navegador.
+- **Fica**: notificação do sistema no desktop (plugin do Tauri) e na extensão (permissão `notifications` e ícone), uma tela para editar `[[outreach]]`.
+
 ### 2026-10-07 — Sessão 168
 
 - **Objetivo**: o envio externo da mensagem iniciada pelo agente (P121): o `forward` do `[[outreach]]` passa a valer para Telegram e WhatsApp.

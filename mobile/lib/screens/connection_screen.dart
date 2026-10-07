@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../services/channel_unread.dart';
+import '../services/chat_notifications.dart';
 import '../services/chat_transcript.dart';
 import '../services/connection_settings.dart';
 import '../services/hub_pairing_qr.dart';
@@ -165,6 +167,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           // P78 — reopens the conversation that was open on this hub last time.
           lastConversationId: lastConversation,
           onConversationOpened: (id) => unawaited(_settingsStore.saveLastConversation(host, port, id)),
+          // P121 — what was shown of each agent's channel is kept per hub, and an agent that writes there gets a notification.
+          seenStore: PrefsChannelSeenStore(host, port),
+          onAgentMessage: (agent, text) => unawaited(showAgentMessageNotification(agent, text)),
           // P40 — the last 100 messages are plenty to pick a phone conversation back up, and keep
           // the reply small even when older turns carry base64 image attachments.
           historyLimit: 100,

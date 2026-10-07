@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/protocol/messages.dart';
+import 'package:mobile/services/channel_unread.dart';
 import 'package:mobile/services/chat_transcript.dart';
 
 /// The hub, in memory: a list of conversations and each one's history.
@@ -81,6 +82,20 @@ class FakeBackend implements ConversationBackend {
     conversations = conversations.where((c) => c.id != conversationId).toList();
     histories.remove(conversationId);
   }
+}
+
+/// The marks of the agents' channels, in memory (P121).
+class FakeSeenStore implements ChannelSeenStore {
+  FakeSeenStore({Map<String, int>? initial}) : saved = {...?initial}, _first = initial;
+
+  Map<String, int> saved;
+  final Map<String, int>? _first;
+
+  @override
+  Future<Map<String, int>?> load() async => _first;
+
+  @override
+  Future<void> save(Map<String, int> seen) async => saved = {...seen};
 }
 
 ConversationSummary summary(String id, [String? title]) =>
@@ -449,6 +464,105 @@ void main() {
 
       expect(transcript.conversationsError, contains('hub is down'));
       expect(transcript.send('hello'), isTrue);
+    });
+  });
+
+  group('what an agent starts in its channel (P121)', () {
+    ConversationSummary channelAt(String agent, int updatedAt) =>
+        ConversationSummary(id: 'channel-$agent', title: agent, createdAt: 0, updatedAt: updatedAt, agentId: agent);
+
+    final told = <(String, String)>[];
+
+    ChatTranscript withMarks({String? last, FakeSeenStore? store}) {
+      final transcript = ChatTranscript(
+        chatStream: replies.stream,
+        backend: backend,
+        lastConversationId: last,
+        seenStore: store,
+        onAgentMessage: (agent, text) => told.add((agent, text)),
+        newConversationId: () => 'new-${newIds++}',
+      );
+      addTearDown(transcript.dispose);
+      return transcript;
+    }
+
+    setUp(told.clear);
+
+    test('what is there on the first run counts as seen, and a later message is unread and told once', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [summary('main'), channelAt('poet', 10)];
+      final store = FakeSeenStore();
+      final transcript = withMarks(last: 'main', store: store);
+      await settle();
+      expect(transcript.unreadChannelIds, isEmpty, reason: 'the baseline');
+      expect(store.saved, {'channel-poet': 10}, reason: 'kept for the next run');
+
+      backend.conversations = [summary('main'), channelAt('poet', 20)];
+      backend.histories['channel-poet'] = [const HistoryEntry(id: 'm1', fromUser: false, content: 'The disk is full')];
+      replies.add(const ConversationsChangedMessage('channel-poet'));
+      await settle();
+
+      expect(transcript.unreadChannelIds, ['channel-poet']);
+      expect(transcript.unreadAgents, {'poet'});
+      expect(told, [('poet', 'The disk is full')]);
+    });
+
+    test('opening the channel reads it, and what comes while it is in front is not told', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [summary('main'), channelAt('poet', 10)];
+      final store = FakeSeenStore(initial: {'channel-poet': 1});
+      final transcript = withMarks(last: 'main', store: store);
+      await settle();
+      expect(transcript.unreadChannelIds, ['channel-poet'], reason: 'it changed after the last time it was shown');
+
+      await transcript.openAgentChannel('poet');
+      await settle();
+      expect(transcript.unreadChannelIds, isEmpty);
+      expect(store.saved['channel-poet'], 10);
+
+      backend.conversations = [summary('main'), channelAt('poet', 30)];
+      backend.histories['channel-poet'] = [const HistoryEntry(id: 'm2', fromUser: false, content: 'more')];
+      replies.add(const ConversationsChangedMessage('channel-poet'));
+      await settle();
+      expect(transcript.unreadChannelIds, isEmpty, reason: 'it is being read as it arrives');
+      expect(told, isEmpty);
+    });
+
+    test('with the app in the background even the open channel is unread and told', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [channelAt('poet', 10)];
+      final transcript = withMarks(last: 'channel-poet', store: FakeSeenStore());
+      await settle();
+      await transcript.openAgentChannel('poet');
+      await settle();
+
+      transcript.setForeground(false);
+      backend.conversations = [channelAt('poet', 40)];
+      backend.histories['channel-poet'] = [const HistoryEntry(id: 'm3', fromUser: false, content: 'while you were away')];
+      replies.add(const ConversationsChangedMessage('channel-poet'));
+      await settle();
+
+      expect(transcript.unreadChannelIds, ['channel-poet']);
+      expect(told, [('poet', 'while you were away')]);
+
+      transcript.setForeground(true);
+      expect(transcript.unreadChannelIds, isEmpty, reason: 'back on screen, the open channel is read');
+    });
+
+    test('a change that is not an agent message, or a loose conversation, tells nobody', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [summary('main'), channelAt('poet', 10)];
+      final transcript = withMarks(last: 'main', store: FakeSeenStore());
+      await settle();
+
+      backend.conversations = [summary('main'), channelAt('poet', 20)];
+      backend.histories['channel-poet'] = [const HistoryEntry(id: 'm4', fromUser: true, content: 'my own words')];
+      replies.add(const ConversationsChangedMessage('channel-poet'));
+      replies.add(const ConversationsChangedMessage('main'));
+      await settle();
+
+      expect(told, isEmpty, reason: 'the last message is the person\'s own, and "main" is no channel');
+      expect(transcript.unreadChannelIds, ['channel-poet'], reason: 'still marked: the list changed');
     });
   });
 

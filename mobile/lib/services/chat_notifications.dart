@@ -19,6 +19,12 @@ const _channelId = 'chat_messages';
 const _channelName = 'Chat messages';
 const _channelDescription = "Notifies you when Warden replies while the app isn't in the foreground";
 
+/// P121 — what agents say on their own (`message_user`): a channel of its own, and ids from here up, one per agent.
+const _agentNotificationBase = 1000;
+const _agentChannelId = 'agent_messages';
+const _agentChannelName = 'Agent messages';
+const _agentChannelDescription = 'Notifies you when an agent writes to you in its channel';
+
 const _bodyMaxChars = 200;
 
 final _plugin = FlutterLocalNotificationsPlugin();
@@ -73,6 +79,30 @@ Future<void> requestNotificationPermission() async {
         ?.requestNotificationsPermission();
   } catch (e) {
     debugPrint('mobile: could not request notification permission: $e');
+  }
+}
+
+/// P121 — an agent started a message in its channel while the person wasn't looking at it. One notification per agent (a new message of
+/// the same agent replaces the last in the tray), titled with the agent's name, in a channel of its own so it can be turned off apart.
+Future<void> showAgentMessageNotification(String agent, String text) async {
+  try {
+    await _plugin.show(
+      id: _agentNotificationBase + (agent.hashCode & 0x3ff),
+      title: agent,
+      body: _truncate(text),
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _agentChannelId,
+          _agentChannelName,
+          channelDescription: _agentChannelDescription,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+      ),
+    );
+  } catch (e) {
+    // No notification is not an error the person can act on; the unread mark is on the screen anyway.
+    debugPrint('mobile: could not show an agent notification: $e');
   }
 }
 

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/messages.dart';
+import 'channel_unread.dart';
 import 'device_id.dart';
 
 enum EntryRole { user, assistant, error }
@@ -81,6 +82,8 @@ class ChatTranscript extends ChangeNotifier {
     required this.backend,
     String? lastConversationId,
     this.onConversationOpened,
+    this.seenStore,
+    this.onAgentMessage,
     this.historyLimit = 100,
     String Function()? newConversationId,
   }) : _newConversationId = newConversationId ?? generateDeviceId {
@@ -93,6 +96,13 @@ class ChatTranscript extends ChangeNotifier {
 
   /// Called with the id of every conversation opened, so the caller can reopen it next time.
   final void Function(String conversationId)? onConversationOpened;
+
+  /// P121 — where the marks of what was shown of each agent's channel are kept between runs. Without one they last until the app closes.
+  final ChannelSeenStore? seenStore;
+
+  /// P121 — called with the agent's name and the start of its message when an agent writes in its channel and the person is not looking at
+  /// it: the screen turns this into a notification.
+  final void Function(String agent, String text)? onAgentMessage;
   final int historyLimit;
   final String Function() _newConversationId;
   late final StreamSubscription<ServerMessage> _subscription;
@@ -229,6 +239,12 @@ class ChatTranscript extends ChangeNotifier {
   /// new one when there are none), then its transcript.
   Future<void> _start() async {
     unawaited(refreshAgents());
+    // The marks from earlier runs (none on the first: the first list becomes the baseline).
+    try {
+      _seen = await seenStore?.load();
+    } catch (_) {
+      _seen = null;
+    }
     final list = await refreshConversations();
     if (_disposed) return;
     if (list != null && !list.any((c) => c.id == _activeId) && !_pending.containsKey(_activeId)) {
@@ -313,8 +329,85 @@ class ChatTranscript extends ChangeNotifier {
       ...list,
     ];
     _conversationsError = null;
+    _listLoaded = true;
+    _syncSeen();
     notifyListeners();
     return list;
+  }
+
+  /// P121 — the time of the last change shown of each channel; null until the first list says what exists on a first run.
+  SeenMap? _seen;
+  bool _foreground = true;
+
+  /// Whether the hub's list of conversations has come at least once.
+  bool _listLoaded = false;
+
+  /// The channel in front: the open conversation when it is an agent's channel and the app is on screen.
+  String? get _watchedChannel => _foreground && channelAgent != null ? _activeId : null;
+
+  /// P121 — the app went to the background or came back: a channel is only read while it is in front on a screen that is on.
+  void setForeground(bool foreground) {
+    if (_foreground == foreground) return;
+    _foreground = foreground;
+    _syncSeen();
+    notifyListeners();
+  }
+
+  /// P121 — brings the marks up to date after the list or what is in front changed: the baseline on a first run, the channel in front
+  /// shown up to its latest change, saved when it moved.
+  void _syncSeen() {
+    var seen = _seen;
+    if (seen == null) {
+      // Only the hub's own list says what exists: until it came there is nothing to take as seen.
+      if (!_listLoaded) return;
+      seen = baseline(_conversations);
+      _persistSeen(seen);
+    }
+    final watched = _watchedChannel;
+    final front = watched == null ? null : _conversations.where((c) => c.id == watched).firstOrNull;
+    if (front != null) {
+      final next = markSeen(seen, front);
+      if (!identical(next, seen)) {
+        seen = next;
+        _persistSeen(seen);
+      }
+    }
+    _seen = seen;
+  }
+
+  void _persistSeen(SeenMap seen) {
+    final store = seenStore;
+    if (store != null) unawaited(store.save(seen).catchError((Object _) {}));
+  }
+
+  /// P121 — the ids of the agents' channels with something the person has not seen.
+  List<String> get unreadChannelIds {
+    final seen = _seen;
+    return seen == null ? const [] : unreadIds(_conversations, seen, _watchedChannel);
+  }
+
+  /// The agents whose channel has something the person has not seen.
+  Set<String> get unreadAgents => {
+        for (final e in _channels.entries)
+          if (unreadChannelIds.contains(e.value)) e.key,
+      };
+
+  /// P121 — an agent wrote in its channel: if the person is not looking at it, [onAgentMessage] gets the start of the message. [refreshed] is
+  /// the list being re-read, which says whether the channel really has something new.
+  Future<void> _announceChannel(String channelId, Future<List<ConversationSummary>?> refreshed) async {
+    final list = await refreshed;
+    final seen = _seen;
+    if (_disposed || list == null || seen == null || onAgentMessage == null) return;
+    final channel = list.where((c) => c.id == channelId).firstOrNull;
+    if (channel == null || !isUnread(channel, seen, _watchedChannel)) return;
+    final agent = _channels.entries.where((e) => e.value == channelId).map((e) => e.key).firstOrNull ?? channel.title;
+    try {
+      final last = (await backend.fetchHistory(limit: 1, conversationId: channelId)).lastOrNull;
+      if (_disposed || last == null || last.fromUser) return;
+      onAgentMessage!(agent, last.content);
+    } catch (_) {
+      // Without the text there is nothing to say; the unread mark is there all the same.
+    }
   }
 
   Future<void> _loadHistory(String conversationId) async {
@@ -392,6 +485,8 @@ class ChatTranscript extends ChangeNotifier {
     _entries.clear();
     _restoreAgent(conversationId);
     _restoreWorkdir(conversationId);
+    // A channel opened is read from now on (P121).
+    _syncSeen();
     notifyListeners();
     onConversationOpened?.call(conversationId);
     unawaited(_loadHistory(conversationId));
@@ -422,7 +517,9 @@ class ChatTranscript extends ChangeNotifier {
   void _onMessage(ServerMessage msg) {
     if (msg is ConversationsChangedMessage) {
       // An agent left a note in one of this device's conversations, or answered one (P87).
-      unawaited(refreshConversations());
+      final refreshed = refreshConversations();
+      unawaited(refreshed);
+      if (isAgentChannel(msg.conversationId)) unawaited(_announceChannel(msg.conversationId, refreshed));
       if (msg.conversationId == _activeId && !_pending.containsKey(_activeId)) unawaited(_loadHistory(_activeId));
       return;
     }

@@ -40,6 +40,7 @@ import {
 } from "./lib/hub";
 import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
 import { isAgentChannel, threadHistory, threadsOf, visibleConversations } from "./lib/threads";
+import { baseline, loadSeen, markSeen, saveSeen, unreadIds, type SeenMap } from "./lib/unread";
 import AgentContacts from "./components/AgentContacts";
 import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
@@ -124,8 +125,10 @@ function App() {
   const [view, setView] = useState<"chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
-  /** P121 — the id of each agent's channel on the hub in use (the hub makes it from the agent's name), asked for when the Agents screen opens. */
+  /** P121 — the id of each agent's channel on the hub in use (the hub makes it from the agent's name), asked for once the agents are known. */
   const [channels, setChannels] = useState<Record<string, string>>({});
+  /** P121 — the time of the last change this app showed of each channel; `null` before the first run has looked at what exists. */
+  const [seen, setSeen] = useState<SeenMap | null>(loadSeen);
   /** The agent a conversation that isn't started yet speaks with (set from the organization tree), so choosing it survives the
    * reload of the settings that opening the chat triggers. Empty once a conversation is open. */
   const [newChatAgent, setNewChatAgent] = useState("");
@@ -199,7 +202,11 @@ function App() {
         .catch((err) => console.error("failed to load conversation history:", err));
     }
     return hubListConversations()
-      .then((summaries) => setConversations((prev) => mergeConversations(prev, summaries, startedHere.current)))
+      .then((summaries) => {
+        setConversations((prev) => mergeConversations(prev, summaries, startedHere.current));
+        // The first run on this app: what is there already counts as seen, so the first list does not light up every channel (P121).
+        setSeen((current) => current ?? baseline(summaries));
+      })
       .catch((err) => console.error("failed to load the hub's conversations:", err));
   }
 
@@ -439,9 +446,10 @@ function App() {
     }
   }
 
-  // The Agents screen shows each agent's last activity, so it needs the id of every channel: asked once per agent.
+  // The Agents screen shows each agent's last activity, and the unread marks need to know whose channel is whose: so the id of every
+  // channel is asked once per agent as soon as the agents are known.
   useEffect(() => {
-    if (view !== "agents" || !remoteReady) return;
+    if (!remoteReady) return;
     for (const agent of settings.agents) {
       if (channels[agent.id]) continue;
       hubOpenAgentChannel(agent.id).then(
@@ -449,7 +457,21 @@ function App() {
         () => undefined,
       );
     }
-  }, [view, remoteReady, settings, channels]);
+  }, [remoteReady, settings, channels]);
+
+  // Remembered across runs, so a message that came while the app was closed is still unread when it opens.
+  useEffect(() => saveSeen(seen), [seen]);
+  // A channel that is open and in front shows its latest change, so it is read as it arrives.
+  useEffect(() => {
+    if (!seen || view !== "agents" || activeConversationId === null || !isAgentChannel(activeConversationId)) return;
+    const channel = conversations.find((c) => c.id === activeConversationId);
+    if (!channel) return;
+    const next = markSeen(seen, channel);
+    if (next !== seen) setSeen(next);
+  }, [conversations, activeConversationId, view, seen]);
+  // The channels with something the person has not seen, and the agents they belong to.
+  const unreadChannels = remote && seen ? unreadIds(conversations, seen, view === "agents" ? activeConversationId : null) : [];
+  const unreadAgents = Object.keys(channels).filter((agent) => unreadChannels.includes(channels[agent]));
 
   /** Leaves what the previous machine showed, so nothing of it lingers under the new one's name. */
   function resetForMachine() {
@@ -737,6 +759,7 @@ function App() {
         onOpenWorkspace={() => setView("workspace")}
         onOpenOrganization={() => setView("organization")}
         onOpenAgents={remote ? () => setView("agents") : undefined}
+        agentsUnread={unreadChannels.length}
         onOpenAgentWork={() => {
           setAgentWorkFilter(null);
           setView("agentWork");
@@ -785,6 +808,7 @@ function App() {
             channels={channels}
             conversations={conversations}
             activeAgent={Object.keys(channels).find((agent) => channels[agent] === activeConversationId) ?? ""}
+            unreadAgents={unreadAgents}
             answeringIds={Object.keys(liveTurns)}
             disabled={!remoteReady}
             onOpen={(agent) => void openAgentChannel(agent)}

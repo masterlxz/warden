@@ -8,6 +8,8 @@ interface Props {
   channels: Record<string, string>;
   conversations: ConversationSummary[];
   pendingIds: string[];
+  /** The ids of the channels with something the person has not seen. */
+  unreadChannels: string[];
   /** The channel is open in the chat: the panel goes to it. */
   onOpened: () => void;
 }
@@ -22,14 +24,14 @@ function shortDate(millis: number): string {
 
 /** P121 — the agents as contacts: each has one conversation with the person, its channel. Newest first, the ones never spoken to at the end.
  * Opening one shows it in the chat tab, with the agent fixed. */
-export default function ChannelsView({ agentIds, channels, conversations, pendingIds, onOpened }: Props) {
+export default function ChannelsView({ agentIds, channels, conversations, pendingIds, unreadChannels, onOpened }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const rows = agentIds
     .map((id) => {
       const channelId = channels[id];
       const channel = channelId ? conversations.find((c) => c.id === channelId) : undefined;
-      return { id, channel, answering: channelId !== undefined && pendingIds.includes(channelId) };
+      return { id, channel, answering: channelId !== undefined && pendingIds.includes(channelId), unread: channelId !== undefined && unreadChannels.includes(channelId) };
     })
     .sort((a, b) => (b.channel?.updatedAt ?? 0) - (a.channel?.updatedAt ?? 0));
 
@@ -47,10 +49,13 @@ export default function ChannelsView({ agentIds, channels, conversations, pendin
         <p className="hub-empty">Nenhum agente configurado ainda.</p>
       ) : (
         <ul className="channel-list">
-          {rows.map(({ id, channel, answering }) => (
+          {rows.map(({ id, channel, answering, unread }) => (
             <li key={id}>
               <button type="button" className="channel-row" onClick={() => void open(id)}>
-                <span className="channel-name">{id}</span>
+                <span className="channel-name">
+                  {unread && <span className="unread-dot" role="img" aria-label="mensagem nova" />}
+                  {id}
+                </span>
                 <span className="channel-meta">{answering ? "respondendo…" : channel ? shortDate(channel.updatedAt) : "nova"}</span>
               </button>
             </li>

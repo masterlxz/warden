@@ -19,6 +19,7 @@ import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, ConversationState, PopupRequest } from "./popup_protocol";
 import type { ApprovalPrompt, ConversationSummary, ThreadParent } from "../protocol/messages";
 import { visibleConversations, withMessageIds } from "../protocol/threads";
+import { badgeText, baseline, markSeen, unreadIds, type SeenMap } from "../protocol/unread";
 import { toolSpecs, toolHandlers } from "./tools";
 import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
 import { setUpPanelOpening, supportsHubDiscovery } from "./platform";
@@ -31,6 +32,7 @@ const STORAGE_KEY_DEVICE_ID = "deviceId";
 const STORAGE_KEY_SETTINGS = "connectionSettings";
 const STORAGE_KEY_DEVICE_TOKENS = "deviceTokens";
 const STORAGE_KEY_ACTIVE_CONVERSATION = "activeConversation";
+const STORAGE_KEY_SEEN = "channelSeen";
 
 let connection: ServerConnection | null = null;
 /** The open conversation's transcript. */
@@ -52,6 +54,11 @@ let workdir: string | null = null;
 let threadDraft: { id: string; parent: ThreadParent } | null = null;
 /** P121 — the id of each agent's channel, asked of the hub once per agent. */
 let channels: Record<string, string> = {};
+/** P121 — the time of the last change this browser showed of each channel; `null` until the stored marks are read (and, on a first run, until
+ * the first list says what exists). */
+let seen: SeenMap | null = null;
+/** P121 — the channel the panel has in front right now, if any: read as it changes. The panel reports it (`watchChannel`). */
+let watching: string | null = null;
 /** P87 — approvals the hub is waiting on. The panel may be closed, so the icon shows a "!" too. */
 let approvals: ApprovalPrompt[] = [];
 
@@ -101,7 +108,7 @@ function addChatEntry(entry: ChatEntry): void {
 const HISTORY_LIMIT = 100;
 
 function conversationState(): ConversationState {
-  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir, threadParent: threadParentOfActive(), channels };
+  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir, threadParent: threadParentOfActive(), channels, unreadChannels: unreadChannels() };
 }
 
 /** P125 — what the open conversation hangs from, when it is a thread (already on the hub, or still a draft). */
@@ -113,8 +120,39 @@ function threadParentOfActive(): ThreadParent | null {
 
 function setApprovals(next: ApprovalPrompt[]): void {
   approvals = next;
-  void chrome.action.setBadgeText({ text: approvals.length > 0 ? "!" : "" });
+  updateBadge();
   broadcast({ type: "approvalsChanged", approvals });
+}
+
+/** P121 — the channels with something the person has not seen. The one in front of the panel is read as it arrives. */
+function unreadChannels(): string[] {
+  return seen ? unreadIds(conversations, seen, watching) : [];
+}
+
+/** The toolbar icon: an approval waiting wins, else how many agent channels have something new. It shows with the panel closed, which is
+ * the point: an agent that started a message has to be noticed without the panel open. */
+function updateBadge(): void {
+  void chrome.action.setBadgeText({ text: badgeText(approvals.length, unreadChannels().length) });
+}
+
+/** P121 — brings the marks up to date after the conversations or what is in front changed: the baseline on a first run, the channel in front
+ * shown up to its latest change, saved when it moved; then the icon. */
+function syncSeen(listLoaded = false): void {
+  if (seen === null) {
+    // Only the hub's own list says what exists: until it came there is nothing to take as seen.
+    if (!listLoaded) return;
+    seen = baseline(conversations);
+    void chrome.storage.local.set({ [STORAGE_KEY_SEEN]: seen });
+  }
+  const front = watching === null ? undefined : conversations.find((c) => c.id === watching);
+  if (front) {
+    const next = markSeen(seen, front);
+    if (next !== seen) {
+      seen = next;
+      void chrome.storage.local.set({ [STORAGE_KEY_SEEN]: seen });
+    }
+  }
+  updateBadge();
 }
 
 /** P87 — re-reads the configured agents. A hub that can't answer leaves the selector empty. */
@@ -172,6 +210,7 @@ async function refreshConversations(from: ServerConnection): Promise<Conversatio
   }
   if (connection !== from) return undefined;
   conversations = [...conversations.filter((c) => c.id in pendingTurns && !list.some((l) => l.id === c.id)), ...list];
+  syncSeen(true);
   broadcastConversations();
   return list;
 }
@@ -271,6 +310,8 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       pendingTurns = {};
       threadDraft = null;
       channels = {};
+      // The marks kept from earlier visits (none on a first run: the first list becomes the baseline).
+      seen = ((await chrome.storage.local.get(STORAGE_KEY_SEEN))[STORAGE_KEY_SEEN] as SeenMap | undefined) ?? null;
       agentIds = [];
       setApprovals([]);
       if (activeConversationId === null) {
@@ -417,6 +458,13 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       broadcastConversations();
       return { ok: true };
     }
+
+    case "watchChannel":
+      // The panel says which channel is in front (or none): that one is read as it changes.
+      watching = request.conversationId;
+      syncSeen();
+      broadcastConversations();
+      return { ok: true };
 
     case "openThread": {
       const parent = { conversationId: request.conversationId, messageId: request.messageId };
