@@ -2204,6 +2204,42 @@ fn parse_agent_tools(input: &str, known: &[String]) -> Result<Option<Vec<String>
     Ok(Some(tools))
 }
 
+/// The models the agent may delegate with (P123): ids of providers, combos or policies separated by commas, the first one the default
+/// for a delegation that names none; blank = the choice is open.
+async fn prompt_agent_delegation_models(terminal: &mut CliTerminal, known: &[String], initial: &[String]) -> anyhow::Result<Option<Vec<String>>> {
+    let title = " modelos que pode escolher ao delegar (separados por vírgula, o primeiro é o padrão; em branco = qualquer) ";
+    let initial_text = initial.join(", ");
+    loop {
+        let Some(input) = prompt_field(terminal, title, &initial_text).await? else {
+            return Ok(None);
+        };
+        match parse_delegation_models(&input, known) {
+            Ok(models) => return Ok(Some(models)),
+            Err(message) => render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())])?,
+        }
+    }
+}
+
+/// Blank is an empty list (open); otherwise the trimmed, de-duplicated ids, all of which must be in `known`.
+fn parse_delegation_models(input: &str, known: &[String]) -> Result<Vec<String>, String> {
+    let mut models: Vec<String> = Vec::new();
+    for id in input.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        if !known.iter().any(|k| k == id) {
+            let available = if known.is_empty() { "nenhum cadastrado".to_string() } else { known.join(", ") };
+            return Err(format!("modelo '{id}' não existe — disponíveis: {available}"));
+        }
+        if !models.iter().any(|m| m == id) {
+            models.push(id.to_string());
+        }
+    }
+    Ok(models)
+}
+
+/// Every id an agent's delegation may be limited to: providers, combos and named policies.
+fn delegation_model_ids(config: &FileConfig) -> Vec<String> {
+    config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).chain(config.model_policies.iter().map(|p| p.id.clone())).collect()
+}
+
 async fn prompt_agent_flag(terminal: &mut CliTerminal, title: &str, initial: bool) -> anyhow::Result<Option<bool>> {
     loop {
         let Some(input) = prompt_field(terminal, title, if initial { "s" } else { "n" }).await? else {
@@ -2258,6 +2294,10 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
 
+    let Some(delegation_models) = prompt_agent_delegation_models(terminal, &delegation_model_ids(&config), &[]).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+
     config.agents.push(AgentConfig {
         id: id.clone(),
         persona,
@@ -2273,7 +2313,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         reports_to,
         owner: None,
         shared_with: Vec::new(),
-        delegation_models: Vec::new(),
+        delegation_models,
     });
     if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
         return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
@@ -2327,6 +2367,10 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
 
+    let Some(delegation_models) = prompt_agent_delegation_models(terminal, &delegation_model_ids(&config), &current.delegation_models).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+
     let old_id = current.id.clone();
     config.agents[index] = AgentConfig {
         id: new_id.clone(),
@@ -2343,8 +2387,7 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         reports_to,
         owner: None,
         shared_with: current.shared_with.clone(),
-        // Not asked by this wizard: a limit on the models it delegates with (P123) stays as it was.
-        delegation_models: current.delegation_models.clone(),
+        delegation_models,
     };
     // Whoever reported to it under the old name reports to it under the new one.
     warden_bootstrap::org::rename_in_reports(&mut config.agents, &old_id, &new_id);
@@ -3305,6 +3348,15 @@ mod tests {
         assert!(parse_agent_tools("read_file, teleport", &known).unwrap_err().contains("'teleport' não existe"));
         assert!(parse_agent_tools("manage_agents", &known).unwrap_err().contains("não entra na lista"));
         assert!(parse_agent_tools("delegate_to_agent", &known).is_err());
+    }
+
+    #[test]
+    fn delegation_models_input_is_blank_for_open_or_a_checked_deduplicated_list() {
+        let known: Vec<String> = ["fast", "smart", "cheap"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(parse_delegation_models("  ", &known), Ok(Vec::new()));
+        assert_eq!(parse_delegation_models(" smart , fast,smart,", &known), Ok(vec!["smart".to_string(), "fast".to_string()]));
+        assert!(parse_delegation_models("fast, nope", &known).unwrap_err().contains("'nope' não existe"));
+        assert!(parse_delegation_models("fast", &[]).unwrap_err().contains("nenhum cadastrado"));
     }
 
     #[test]

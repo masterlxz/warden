@@ -6,6 +6,13 @@
 
 ---
 
+### 2026-10-06 — Sessão 157
+
+- **Objetivo**: seguir no P123, fechando o que sobrou do limite de modelos por agente no CLI.
+- **Feito**: o wizard de agentes do CLI (`/agents` criar e editar) pergunta agora "modelos que pode escolher ao delegar": ids de provedores, combos ou políticas separados por vírgula, o primeiro é o padrão, em branco = aberto. `parse_delegation_models` recusa id que não existe (com a lista) e tira repetidos; `delegation_model_ids` junta provedores, combos e políticas. Ao editar, o valor atual vem preenchido (antes era só preservado).
+- **Testes**: `warden-cli` 58 + 7 verdes, clippy sem aviso; novo `delegation_models_input_is_blank_for_open_or_a_checked_deduplicated_list`. Wizard não exercitado num terminal real.
+- **Fica no P123**: celular e extensão sem tela, a delegação síncrona sem botão de parar, um modelo real vendo só o limite e as telas não vistas.
+
 ### 2026-10-06 — Sessão 156
 
 - **Objetivo**: o item 2 da lista, fechar P123 e P120 por dentro: limitar os modelos por agente, uma tela para as políticas, atalhos por nó da árvore e a pessoa ditar o modelo de uma subtarefa. O usuário escolheu as quatro partes; sem testes manuais nesta rodada.
