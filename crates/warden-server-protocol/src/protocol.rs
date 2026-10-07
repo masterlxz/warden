@@ -781,7 +781,7 @@ pub struct AgentTaskDto {
     /// (`ControlAgentTask`). A task of another process or one that has finished isn't.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub controllable: bool,
-    /// Among the controllable ones, those that can also be paused: a delegation the agent waits on can only be stopped.
+    /// Among the controllable ones, those that can also be paused. Every controllable task is since Session 158 (a delegation the agent waits on included); the field stays for clients that read it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pausable: bool,
 }
@@ -1285,6 +1285,18 @@ pub enum AgentOrgEdit {
     },
     /// Removes `id`; whoever reported to it reports to its superior.
     Remove { id: String },
+    /// The models `id` may pick when it delegates (P123), in order: the first is the default of a delegation that names none, so a list
+    /// of one dictates the model. Empty leaves the choice open. A name that isn't a provider, a combo or a policy is refused.
+    SetDelegationModels {
+        id: String,
+        #[serde(default)]
+        models: Vec<String>,
+    },
+    /// Replaces the named model policies (P123) with this list; an agent's limit forgets a policy that is gone.
+    SetModelPolicies {
+        #[serde(default)]
+        policies: Vec<ModelPolicyDto>,
+    },
 }
 
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.

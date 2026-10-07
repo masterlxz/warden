@@ -255,8 +255,9 @@ impl Tool for DelegateToAgentTool {
             let draft = TaskDraft { assignee: agent.id.clone(), objective: task.to_string(), model: model_id };
             let (persona, owned_task) = (agent.persona.clone(), task.to_string());
             let text = board
-                .run_recorded(draft, async move {
-                    let outcome = orchestrator.handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
+                .run_recorded(draft, move |gate| async move {
+                    // A person can pause it from a screen: the turn looks at the gate before each model call (P123).
+                    let outcome = orchestrator.with_pause_gate(gate).handle_turn(&[], &owned_task, Vec::new(), persona.as_deref()).await?;
                     Ok((outcome.content, outcome.usage))
                 })
                 .await?;

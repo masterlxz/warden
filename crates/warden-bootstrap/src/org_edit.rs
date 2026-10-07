@@ -1,12 +1,17 @@
 //! Editing the organization of the owner's agents from the tree (P120): a person moves an agent, gives it a role, adds a report or
 //! removes one, and nothing else of the settings is touched. The same hierarchy checks as a settings save (`check_hierarchy`: no
 //! circle, no missing superior), applied to a copy first, so a refused edit changes nothing.
+//!
+//! The same narrow door takes the two edits of P123 the light clients (phone, browser extension) make without the whole settings form:
+//! the models an agent may delegate with, and the named model policies. They reuse the checks of a save (`check_policies`,
+//! `check_delegation_models`).
 
 use warden_core::autonomy::Category;
 use warden_server_protocol::protocol::AgentOrgEdit;
 
 use crate::manage_agents::{check_id, check_persona, check_role, ASK_FIRST_LEVEL};
-use crate::{org, remove_agent_references, AgentConfig, FileConfig, SAFE_AGENT_TOOLS};
+use crate::settings::{check_delegation_models, check_policies};
+use crate::{org, prune_delegation_models, remove_agent_references, AgentConfig, FileConfig, ModelPolicyConfig, SAFE_AGENT_TOOLS};
 
 fn blank_is_none(value: &Option<String>) -> Option<String> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
@@ -56,6 +61,23 @@ pub fn apply_org_edit(config: &mut FileConfig, edit: &AgentOrgEdit) -> Result<()
                 delegation_models: Vec::new(),
             });
         }
+        AgentOrgEdit::SetDelegationModels { id, models } => {
+            let models = check_delegation_models(models);
+            let known: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).chain(config.combos.iter().map(|c| c.id.as_str())).chain(config.model_policies.iter().map(|p| p.id.as_str())).collect();
+            if let Some(unknown) = models.iter().find(|m| !known.contains(&m.as_str())) {
+                return Err(format!("'{unknown}' isn't a provider, a combo or a model policy"));
+            }
+            let agent = agents.iter_mut().find(|a| a.owner.is_none() && &a.id == id).ok_or_else(|| format!("no agent named '{id}'"))?;
+            agent.delegation_models = models;
+        }
+        AgentOrgEdit::SetModelPolicies { policies } => {
+            let wanted = policies.iter().map(|p| ModelPolicyConfig { id: p.id.clone(), model: p.model.clone(), description: p.description.clone() }).collect();
+            let checked = check_policies(wanted, &config.providers, &config.combos)?;
+            config.model_policies = checked;
+            // A policy that is gone leaves every agent's limit.
+            prune_delegation_models(config);
+            return Ok(());
+        }
         AgentOrgEdit::Remove { id } => {
             if !owners(&agents, id) {
                 return Err(format!("no agent named '{id}'"));
@@ -78,6 +100,7 @@ pub fn apply_org_edit(config: &mut FileConfig, edit: &AgentOrgEdit) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use warden_server_protocol::protocol::ModelPolicyDto;
 
     fn agent(id: &str, boss: Option<&str>) -> AgentConfig {
         AgentConfig {
@@ -195,6 +218,80 @@ mod tests {
         assert!(apply_org_edit(&mut config, &AgentOrgEdit::Remove { id: "ghost".into() }).is_err());
         assert!(apply_org_edit(&mut config, &AgentOrgEdit::Remove { id: "ana-bot".into() }).is_err(), "not from here");
         assert_eq!(config.agents, before);
+    }
+
+    fn with_models() -> FileConfig {
+        let provider = |id: &str| crate::ProviderConfig { id: id.into(), kind: crate::Provider::Gemini, api_key: None, base_url: None, model: None, node: None };
+        FileConfig {
+            providers: vec![provider("main"), provider("spare")],
+            model_policies: vec![ModelPolicyConfig { id: "fast".into(), model: "main".into(), description: "simple work".into() }],
+            ..config()
+        }
+    }
+
+    fn limit_of<'a>(config: &'a FileConfig, id: &str) -> &'a [String] {
+        &config.agents.iter().find(|a| a.id == id).unwrap().delegation_models
+    }
+
+    #[test]
+    fn an_agents_model_limit_is_trimmed_in_order_and_refuses_what_does_not_exist() {
+        let mut config = with_models();
+        let limit = |id: &str, models: &[&str]| AgentOrgEdit::SetDelegationModels { id: id.into(), models: models.iter().map(|m| m.to_string()).collect() };
+
+        apply_org_edit(&mut config, &limit("chief", &[" fast ", "spare", "fast", " "])).unwrap();
+        assert_eq!(limit_of(&config, "chief"), ["fast", "spare"], "trimmed, no repeats, the first is the default");
+        apply_org_edit(&mut config, &limit("chief", &[])).unwrap();
+        assert!(limit_of(&config, "chief").is_empty(), "empty opens the choice again");
+
+        let before = config.agents.clone();
+        assert!(apply_org_edit(&mut config, &limit("chief", &["ghost"])).unwrap_err().contains("isn't a provider"), "an unknown name is told, not dropped");
+        assert!(apply_org_edit(&mut config, &limit("ghost", &["fast"])).is_err(), "no such agent");
+        assert!(apply_org_edit(&mut config, &limit("ana-bot", &["fast"])).is_err(), "a member's agent is theirs alone");
+        assert_eq!(config.agents, before);
+    }
+
+    #[test]
+    fn the_model_policies_are_replaced_checked_and_a_gone_one_leaves_every_limit() {
+        let mut config = with_models();
+        config.agents.iter_mut().find(|a| a.id == "chief").unwrap().delegation_models = vec!["fast".into(), "spare".into()];
+        let policy = |id: &str, model: &str, description: &str| ModelPolicyDto { id: id.into(), model: model.into(), description: description.into() };
+
+        apply_org_edit(&mut config, &AgentOrgEdit::SetModelPolicies { policies: vec![policy(" deep ", " spare ", " thinks hard "), policy("fast", "main", "")] }).unwrap();
+        assert_eq!(config.model_policies, vec![
+            ModelPolicyConfig { id: "deep".into(), model: "spare".into(), description: "thinks hard".into() },
+            ModelPolicyConfig { id: "fast".into(), model: "main".into(), description: String::new() },
+        ]);
+        assert_eq!(limit_of(&config, "chief"), ["fast", "spare"]);
+
+        apply_org_edit(&mut config, &AgentOrgEdit::SetModelPolicies { policies: vec![policy("deep", "spare", "")] }).unwrap();
+        assert_eq!(limit_of(&config, "chief"), ["spare"], "the removed policy left the limit");
+
+        let before = (config.model_policies.clone(), config.agents.clone());
+        for bad in [
+            vec![policy("main", "spare", "")],
+            vec![policy("x", "ghost", "")],
+            vec![policy(" ", "main", "")],
+            vec![policy("x", "main", ""), policy("x", "spare", "")],
+            vec![policy("x", "main", "two\nlines")],
+        ] {
+            assert!(apply_org_edit(&mut config, &AgentOrgEdit::SetModelPolicies { policies: bad.clone() }).is_err(), "{bad:?}");
+            assert_eq!((config.model_policies.clone(), config.agents.clone()), before, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_model_edits_round_trip_over_the_wire() {
+        let limit = AgentOrgEdit::SetDelegationModels { id: "chief".into(), models: vec!["fast".into()] };
+        let json = serde_json::to_string(&limit).unwrap();
+        assert_eq!(json, r#"{"kind":"setDelegationModels","id":"chief","models":["fast"]}"#);
+        assert_eq!(serde_json::from_str::<AgentOrgEdit>(&json).unwrap(), limit);
+        assert_eq!(serde_json::from_str::<AgentOrgEdit>(r#"{"kind":"setDelegationModels","id":"chief"}"#).unwrap(), AgentOrgEdit::SetDelegationModels { id: "chief".into(), models: Vec::new() });
+
+        let policies = AgentOrgEdit::SetModelPolicies { policies: vec![ModelPolicyDto { id: "fast".into(), model: "main".into(), description: "quick".into() }] };
+        let json = serde_json::to_string(&policies).unwrap();
+        assert_eq!(json, r#"{"kind":"setModelPolicies","policies":[{"id":"fast","model":"main","description":"quick"}]}"#);
+        assert_eq!(serde_json::from_str::<AgentOrgEdit>(&json).unwrap(), policies);
+        assert_eq!(serde_json::from_str::<AgentOrgEdit>(r#"{"kind":"setModelPolicies"}"#).unwrap(), AgentOrgEdit::SetModelPolicies { policies: Vec::new() });
     }
 
     #[test]

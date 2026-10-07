@@ -203,8 +203,9 @@ impl Tool for DelegateTool {
             let draft = TaskDraft { assignee: helper_name(&args), objective: task.to_string(), model: model_id };
             let owned_task = task.to_string();
             let text = board
-                .run_recorded(draft, async move {
-                    let outcome = orchestrator.handle_message(&[], &owned_task).await?;
+                .run_recorded(draft, move |gate| async move {
+                    // A person can pause it from a screen: the turn looks at the gate before each model call (P123).
+                    let outcome = orchestrator.with_pause_gate(gate).handle_message(&[], &owned_task).await?;
                     Ok((outcome.content, outcome.usage))
                 })
                 .await?;

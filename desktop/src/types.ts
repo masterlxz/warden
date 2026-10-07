@@ -396,7 +396,7 @@ export interface AgentTask {
   finishedAtMs?: number | null;
   /** Running in the process that answered, so it can be paused, resumed or stopped from here. */
   controllable?: boolean;
-  /** Among those, the ones that can also be paused: a delegation the agent waits on can only be stopped. */
+  /** Among those, the ones that can also be paused (every controllable one, a delegation the agent waits on included). */
   pausable?: boolean;
 }
 

@@ -32,6 +32,21 @@ void main() {
       );
       expect(const RemoveAgentEdit('dev').toJson(), {'kind': 'remove', 'id': 'dev'});
     });
+
+    test('the model limit and the policies go as the hub reads them, with a description always present', () {
+      expect(const SetDelegationModelsEdit('chief', ['fast', 'main']).toJson(), {'kind': 'setDelegationModels', 'id': 'chief', 'models': ['fast', 'main']});
+      expect(const SetDelegationModelsEdit('chief', []).toJson(), {'kind': 'setDelegationModels', 'id': 'chief', 'models': []});
+      expect(
+        const SetModelPoliciesEdit([ModelPolicy(id: 'fast', model: 'main', description: 'quick'), ModelPolicy(id: 'deep', model: 'spare')]).toJson(),
+        {
+          'kind': 'setModelPolicies',
+          'policies': [
+            {'id': 'fast', 'model': 'main', 'description': 'quick'},
+            {'id': 'deep', 'model': 'spare', 'description': ''},
+          ],
+        },
+      );
+    });
   });
 
   group('server messages', () {
@@ -75,6 +90,30 @@ void main() {
       expect(msg.agents.single.autonomy, 4);
       expect(msg.agents.single.delegationModels, isEmpty);
       expect(msg.agents.single.reportsTo, isNull);
+    });
+
+    test('settings carry the ids of the providers and combos, apart from the policies', () {
+      final msg = ServerMessage.decode(jsonEncode({
+        'type': 'settings',
+        'requestId': 1,
+        'settings': {
+          'agents': <dynamic>[],
+          'providers': [
+            {'id': 'main'},
+            {'id': 'spare'},
+          ],
+          'combos': [
+            {'id': 'both'},
+          ],
+          'modelPolicies': [
+            {'id': 'fast', 'model': 'main', 'description': ''},
+          ],
+        },
+      })) as SettingsMessage;
+      expect(msg.modelIds, ['main', 'spare', 'both']);
+      expect(msg.modelPolicies.single.id, 'fast');
+      final saved = ServerMessage.decode('{"type":"settingsSaved","requestId":2,"settings":{"agents":[]}}') as SettingsSavedMessage;
+      expect(saved.modelIds, isEmpty);
     });
 
     test('an organization edit is answered with the agents as they are now', () {

@@ -2209,6 +2209,35 @@ body {
   background: var(--color-accent-soft);
 }
 
+/* Dragging a card onto another changes its superior (P120): the dragged card fades and the targets that accept it get an outline. */
+.org-card[draggable="true"] {
+  cursor: grab;
+}
+
+.org-card--dragging {
+  opacity: 0.5;
+}
+
+.org-card--target {
+  outline: 2px dashed currentColor;
+  outline-offset: 2px;
+}
+
+.org-activity {
+  flex-basis: 100%;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.org-top {
+  padding: 0.6em 0.8em;
+  border-radius: 8px;
+  border: 2px dashed rgba(127, 127, 127, 0.6);
+  text-align: center;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
 .org-name {
   font-weight: 600;
 }

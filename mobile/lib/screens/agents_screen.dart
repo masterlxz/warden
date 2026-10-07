@@ -11,7 +11,7 @@ const _autonomy = {1: 'only answers', 2: 'suggests', 3: 'asks first', 4: 'acts a
 /// P120, P123 — the organization of the agents and the work they hand each other, on the phone: the tree (a role and a
 /// superior for each agent, add or remove one, open a chat with it or its tasks) and the background tasks (state, progress,
 /// cost, pause, resume, stop). Every change asks for the hub's pairing key, which is never kept. The model policies and the
-/// models limit of each agent show here but are edited on the desktop or the web. Mirrors the web's two screens.
+/// models limit of each agent are edited here too, through the same narrow edit as the tree. Mirrors the web's two screens.
 class AgentsScreen extends StatefulWidget {
   const AgentsScreen({
     super.key,
@@ -240,6 +240,145 @@ class _PositionDialogState extends State<_PositionDialog> {
   }
 }
 
+/// The models an agent may pick when it delegates (P123): checked, with a default (the first). Nothing checked leaves the choice open.
+class _LimitDialog extends StatefulWidget {
+  const _LimitDialog({required this.agent, required this.candidates, required this.policyIds});
+
+  final AgentInfo agent;
+  final List<String> candidates;
+  final Set<String> policyIds;
+
+  @override
+  State<_LimitDialog> createState() => _LimitDialogState();
+}
+
+class _LimitDialogState extends State<_LimitDialog> {
+  late final Set<String> _checked = {...widget.agent.delegationModels};
+  late String _default = widget.agent.delegationModels.isEmpty ? '' : widget.agent.delegationModels.first;
+
+  List<String> get _chosen => [
+        for (final id in widget.candidates)
+          if (_checked.contains(id)) id,
+      ];
+
+  @override
+  Widget build(BuildContext context) {
+    final chosen = _chosen;
+    final shownDefault = chosen.contains(_default) ? _default : (chosen.isEmpty ? '' : chosen.first);
+    return AlertDialog(
+      title: Text('Models of ${widget.agent.id}'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'The models it can pick for the tasks it delegates. None checked leaves the choice open; with one, it dictates the model.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            if (widget.candidates.isEmpty) const Text('The hub has no providers or policies to pick from.'),
+            for (final id in widget.candidates)
+              CheckboxListTile(
+                key: Key('limit-$id'),
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: Text(widget.policyIds.contains(id) ? '$id (policy)' : id),
+                value: _checked.contains(id),
+                onChanged: (on) => setState(() => on == true ? _checked.add(id) : _checked.remove(id)),
+              ),
+            if (chosen.length > 1)
+              DropdownButtonFormField<String>(
+                key: const Key('limit-default'),
+                initialValue: shownDefault,
+                decoration: InputDecoration(labelText: 'Default', helperText: 'What a task gets when ${widget.agent.id} does not pick.'),
+                items: [for (final id in chosen) DropdownMenuItem(value: id, child: Text(id))],
+                onChanged: (value) => setState(() => _default = value ?? ''),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('limit-save'),
+          onPressed: () => Navigator.of(context).pop(limitModels(widget.candidates, _checked, shownDefault)),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+/// A model policy (P123): a name an agent that delegates can say, what answers it, and when to pick it. Owns its controllers, so they are
+/// disposed after the dialog's exit animation.
+class _PolicyDialog extends StatefulWidget {
+  const _PolicyDialog({required this.original, required this.modelIds, required this.initialId});
+
+  final ModelPolicy? original;
+  final List<String> modelIds;
+  final String initialId;
+
+  @override
+  State<_PolicyDialog> createState() => _PolicyDialogState();
+}
+
+class _PolicyDialogState extends State<_PolicyDialog> {
+  late final TextEditingController _id = TextEditingController(text: widget.initialId);
+  late final TextEditingController _description = TextEditingController(text: widget.original?.description ?? '');
+  late String _model = widget.modelIds.contains(widget.original?.model) ? widget.original!.model : (widget.modelIds.isEmpty ? '' : widget.modelIds.first);
+
+  @override
+  void dispose() {
+    _id.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = _id.text.trim().isNotEmpty && _model.isNotEmpty;
+    return AlertDialog(
+      title: Text(widget.original == null ? 'New policy' : 'Policy ${widget.original!.id}'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const Key('policy-name-field'),
+              controller: _id,
+              maxLength: 64,
+              decoration: const InputDecoration(labelText: 'Name'),
+              onChanged: (_) => setState(() {}),
+            ),
+            DropdownButtonFormField<String>(
+              key: const Key('policy-model-field'),
+              initialValue: _model.isEmpty ? null : _model,
+              decoration: const InputDecoration(labelText: 'Answered by'),
+              items: [for (final id in widget.modelIds) DropdownMenuItem(value: id, child: Text(id))],
+              onChanged: (value) => setState(() => _model = value ?? ''),
+            ),
+            TextField(
+              key: const Key('policy-description-field'),
+              controller: _description,
+              maxLength: 200,
+              decoration: const InputDecoration(labelText: 'When to pick it (one line)', hintText: 'e.g. simple, cheap work'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('policy-save'),
+          onPressed: ready ? () => Navigator.of(context).pop(ModelPolicy(id: _id.text, model: _model, description: _description.text)) : null,
+          child: const Text('Save policy'),
+        ),
+      ],
+    );
+  }
+}
+
 /// A new agent: name, role and what it does. Starts careful (the hub decides what that means).
 class _NewAgentDialog extends StatefulWidget {
   const _NewAgentDialog({required this.under});
@@ -327,6 +466,9 @@ class _OrganizationTabState extends State<OrganizationTab> {
   HubAgents? _hub;
   String? _error;
 
+  /// The hub's tasks, for the activity line of each node (an extra: without them the card just shows no line).
+  List<AgentTask> _tasks = const [];
+
   @override
   void initState() {
     super.initState();
@@ -345,6 +487,18 @@ class _OrganizationTabState extends State<OrganizationTab> {
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     }
+    try {
+      final tasks = await widget.backend.listAgentTasks();
+      if (mounted) setState(() => _tasks = tasks);
+    } catch (_) {
+      // The activity is an extra.
+    }
+  }
+
+  /// What [agent] has been up to, on one line; null with no task of its own.
+  String? _activity(String agent) {
+    final activity = activityOf(_tasks, agent);
+    return activity == null ? null : activityLine(activity, DateTime.now().millisecondsSinceEpoch);
   }
 
   /// Asks for the key and applies [edit]; the screen shows what the hub holds afterwards.
@@ -380,6 +534,40 @@ class _OrganizationTabState extends State<OrganizationTab> {
     );
     if (picked == null || !mounted) return;
     await _apply(AddReportEdit(picked.id, picked.persona, role: picked.role, reportsTo: under), 'Add ${picked.id}');
+  }
+
+  /// The models [agent] may pick when it delegates (P123).
+  Future<void> _limit(AgentInfo agent) async {
+    final hub = _hub;
+    if (hub == null) return;
+    final picked = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _LimitDialog(agent: agent, candidates: delegationCandidates(hub.modelIds, hub.modelPolicies), policyIds: {for (final p in hub.modelPolicies) p.id}),
+    );
+    if (picked == null || !mounted) return;
+    await _apply(SetDelegationModelsEdit(agent.id, picked), 'Models of ${agent.id}');
+  }
+
+  /// A model policy (P123): [original] is the one being edited, null for a new one.
+  Future<void> _policy(ModelPolicy? original) async {
+    final hub = _hub;
+    if (hub == null) return;
+    final picked = await showDialog<ModelPolicy>(
+      context: context,
+      builder: (_) => _PolicyDialog(
+        original: original,
+        modelIds: hub.modelIds,
+        initialId: original?.id ?? nextPolicyId(delegationCandidates(hub.modelIds, hub.modelPolicies)),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    await _apply(SetModelPoliciesEdit(policiesWith(hub.modelPolicies, picked, original?.id)), 'Save the policy ${picked.id.trim()}');
+  }
+
+  Future<void> _removePolicy(ModelPolicy policy) async {
+    final hub = _hub;
+    if (hub == null) return;
+    await _apply(SetModelPoliciesEdit(policiesWithout(hub.modelPolicies, policy.id)), 'Remove the policy ${policy.id}');
   }
 
   Future<void> _remove(OrgNode node) async {
@@ -431,6 +619,7 @@ class _OrganizationTabState extends State<OrganizationTab> {
                   if (_badges(agent).isNotEmpty) Wrap(spacing: 4, children: [for (final b in _badges(agent)) Chip(label: Text(b), visualDensity: VisualDensity.compact)]),
                   if (agent.canDelegateToAgents) Text(delegationSummary(agent.delegationModels), style: Theme.of(context).textTheme.bodySmall),
                   if (node.children.isNotEmpty) Text(node.children.length == 1 ? '1 report' : '${node.children.length} reports', style: Theme.of(context).textTheme.bodySmall),
+                  if (_activity(agent.id) != null) Text(_activity(agent.id)!, key: Key('activity-${agent.id}'), style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
               isThreeLine: true,
@@ -444,6 +633,8 @@ class _OrganizationTabState extends State<OrganizationTab> {
                       widget.onOpenTasks(agent.id);
                     case 'edit':
                       _edit(agent, all);
+                    case 'models':
+                      _limit(agent);
                     case 'add':
                       _add(agent.id);
                     case 'remove':
@@ -454,6 +645,7 @@ class _OrganizationTabState extends State<OrganizationTab> {
                   if (widget.onOpenChat != null) const PopupMenuItem(value: 'chat', child: Text('Chat')),
                   const PopupMenuItem(value: 'tasks', child: Text('Tasks')),
                   const PopupMenuItem(value: 'edit', child: Text('Edit position')),
+                  if (agent.canDelegateToAgents) const PopupMenuItem(value: 'models', child: Text('Models it can pick')),
                   const PopupMenuItem(value: 'add', child: Text('Add a report')),
                   const PopupMenuItem(value: 'remove', child: Text('Remove')),
                 ],
@@ -496,16 +688,29 @@ class _OrganizationTabState extends State<OrganizationTab> {
           TextButton.icon(key: const Key('add-top'), onPressed: () => _add(null), icon: const Icon(Icons.add), label: const Text('Add an agent at the top')),
           const Divider(),
           Text('Model policies', style: Theme.of(context).textTheme.titleSmall),
-          if (hub.modelPolicies.isEmpty)
-            const Text('None: an agent that delegates sees only the model ids. They are created on the desktop or the web.')
-          else
-            for (final p in hub.modelPolicies)
-              ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                title: Text('${p.id} → ${p.model}'),
-                subtitle: p.description == null || p.description!.isEmpty ? null : Text(p.description!),
+          if (hub.modelPolicies.isEmpty) const Text('None: an agent that delegates sees only the model ids.'),
+          for (final p in hub.modelPolicies)
+            ListTile(
+              key: Key('policy-${p.id}'),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text('${p.id} → ${p.model}'),
+              subtitle: p.description == null || p.description!.isEmpty ? null : Text(p.description!),
+              trailing: PopupMenuButton<String>(
+                key: Key('policy-menu-${p.id}'),
+                onSelected: (action) => action == 'edit' ? _policy(p) : _removePolicy(p),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  PopupMenuItem(value: 'remove', child: Text('Remove')),
+                ],
               ),
+            ),
+          TextButton.icon(
+            key: const Key('new-policy'),
+            onPressed: hub.modelIds.isEmpty ? null : () => _policy(null),
+            icon: const Icon(Icons.add),
+            label: const Text('New policy'),
+          ),
         ],
       ),
     );

@@ -8,20 +8,22 @@ import 'package:mobile/services/server_connection.dart' show HubRequestException
 /// A hub in memory: it holds the agents and the tasks, checks the pairing key like the real one, and records
 /// what the screen asked for.
 class _FakeBackend implements AgentsBackend {
-  _FakeBackend({List<AgentInfo> agents = const [], this.policies = const [], List<AgentTask> tasks = const []})
+  _FakeBackend({List<AgentInfo> agents = const [], List<ModelPolicy> policies = const [], this.modelIds = const [], List<AgentTask> tasks = const []})
       : agents = List.of(agents),
+        policies = List.of(policies),
         tasks = List.of(tasks);
 
   static const pairingKey = 'right-key';
 
   List<AgentInfo> agents;
-  final List<ModelPolicy> policies;
+  List<ModelPolicy> policies;
+  final List<String> modelIds;
   List<AgentTask> tasks;
   final edits = <OrgEdit>[];
   final controls = <String>[];
 
   @override
-  Future<HubAgents> listHubAgents() async => HubAgents(List.of(agents), policies);
+  Future<HubAgents> listHubAgents() async => HubAgents(List.of(agents), List.of(policies), modelIds);
 
   @override
   Future<HubAgents> editAgentOrg(String key, OrgEdit edit) async {
@@ -37,8 +39,15 @@ class _FakeBackend implements AgentsBackend {
         agents = [...agents, AgentInfo(id: id, reportsTo: reportsTo)];
       case RemoveAgentEdit(:final id):
         agents = [for (final a in agents) if (a.id != id) a];
+      case SetDelegationModelsEdit(:final id, :final models):
+        agents = [
+          for (final a in agents)
+            if (a.id == id) AgentInfo(id: a.id, role: a.role, reportsTo: a.reportsTo, canDelegateToAgents: a.canDelegateToAgents, delegationModels: models) else a,
+        ];
+      case SetModelPoliciesEdit(policies: final next):
+        policies = List.of(next);
     }
-    return HubAgents(List.of(agents), policies);
+    return HubAgents(List.of(agents), List.of(policies), modelIds);
   }
 
   @override
@@ -118,6 +127,7 @@ void main() {
       expect(find.text('1 report'), findsOneWidget);
       expect(find.text('autonomy 3: asks first'), findsOneWidget);
       expect(find.text('fast → gpt-mini'), findsOneWidget);
+      expect(find.byKey(const Key('new-policy')), findsOneWidget, reason: 'policies are edited here too, but a hub with no model offers none to answer one');
     });
 
     testWidgets('moving an agent asks for the pairing key, refuses a wrong one and then applies it', (tester) async {
@@ -189,6 +199,83 @@ void main() {
       await _openMenu(tester, 'dev', 'Chat');
       expect(opened, 'dev');
       expect(find.byKey(const Key('open-agents')), findsOneWidget, reason: 'back on the screen that opened it');
+    });
+  });
+
+  group('activity of each node', () {
+    testWidgets('shows what each agent has been up to, from the hub\'s tasks, and nothing for one with no task', (tester) async {
+      final backend = _FakeBackend(
+        agents: [const AgentInfo(id: 'chief'), const AgentInfo(id: 'dev', reportsTo: 'chief'), const AgentInfo(id: 'idle', reportsTo: 'chief')],
+        tasks: [_task('dev', 'done', owner: 'chief')],
+      );
+      await _pump(tester, backend);
+      expect(find.byKey(const Key('activity-dev')), findsOneWidget);
+      expect(find.textContaining('1 done'), findsOneWidget);
+      expect(find.byKey(const Key('activity-chief')), findsOneWidget);
+      expect(find.textContaining('delegated 1'), findsOneWidget);
+      expect(find.byKey(const Key('activity-idle')), findsNothing);
+    });
+  });
+
+  group('model limit and policies', () {
+    const delegating = AgentInfo(id: 'chief', canDelegateToAgents: true);
+    const fast = ModelPolicy(id: 'fast', model: 'main', description: 'simple work');
+
+    testWidgets('limiting an agent to some models sends them with the first checked as the default', (tester) async {
+      final backend = _FakeBackend(agents: [delegating, const AgentInfo(id: 'dev', reportsTo: 'chief')], policies: [fast], modelIds: ['main', 'spare']);
+      await _pump(tester, backend);
+      expect(find.text('Models it can pick'), findsNothing, reason: 'the menu is closed');
+      await _openMenu(tester, 'chief', 'Models it can pick');
+      await tester.tap(find.byKey(const Key('limit-spare')));
+      await tester.tap(find.byKey(const Key('limit-fast')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('limit-save')));
+      await tester.pumpAndSettle();
+      await _typeKey(tester, _FakeBackend.pairingKey);
+
+      final edit = backend.edits.single as SetDelegationModelsEdit;
+      expect(edit.id, 'chief');
+      expect(edit.models, ['spare', 'fast']);
+      expect(find.textContaining('Limited to 2 models; spare is what'), findsOneWidget);
+    });
+
+    testWidgets('only an agent that can delegate has the models entry', (tester) async {
+      await _pump(tester, _FakeBackend(agents: [const AgentInfo(id: 'dev')], modelIds: ['main']));
+      await tester.tap(find.byKey(const Key('menu-dev')));
+      await tester.pumpAndSettle();
+      expect(find.text('Models it can pick'), findsNothing);
+    });
+
+    testWidgets('a new policy is named, answered by a model and saved with the key', (tester) async {
+      final backend = _FakeBackend(agents: [delegating], modelIds: ['main', 'spare']);
+      await _pump(tester, backend);
+      await tester.ensureVisible(find.byKey(const Key('new-policy')));
+      await tester.tap(find.byKey(const Key('new-policy')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('policy-name-field')), ' cheap ');
+      await tester.enterText(find.byKey(const Key('policy-description-field')), 'quick and cheap');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('policy-save')));
+      await tester.pumpAndSettle();
+      await _typeKey(tester, _FakeBackend.pairingKey);
+
+      final edit = backend.edits.single as SetModelPoliciesEdit;
+      expect([for (final p in edit.policies) (p.id, p.model, p.description)], [('cheap', 'main', 'quick and cheap')]);
+      expect(find.text('cheap → main'), findsOneWidget);
+    });
+
+    testWidgets('a policy can be removed, and the list says so when none is left', (tester) async {
+      final backend = _FakeBackend(agents: [delegating], policies: [fast], modelIds: ['main']);
+      await _pump(tester, backend);
+      await tester.ensureVisible(find.byKey(const Key('policy-menu-fast')));
+      await tester.tap(find.byKey(const Key('policy-menu-fast')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove').last);
+      await tester.pumpAndSettle();
+      await _typeKey(tester, _FakeBackend.pairingKey);
+
+      expect((backend.edits.single as SetModelPoliciesEdit).policies, isEmpty);
+      expect(find.textContaining('None: an agent that delegates'), findsOneWidget);
     });
   });
 

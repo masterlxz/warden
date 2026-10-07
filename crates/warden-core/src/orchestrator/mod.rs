@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::autonomy::{Autonomy, Category, Classifier};
 use crate::budget::{SpendTurn, TurnBudget};
-use crate::jobs::{JobBoard, JobsGuard, TaskContext, TaskLink, TaskRecorder};
+use crate::jobs::{JobBoard, JobsGuard, PauseGate, TaskContext, TaskLink, TaskRecorder};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, Role, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
@@ -102,6 +102,9 @@ pub struct Orchestrator {
     task_recorder: Option<Arc<dyn TaskRecorder>>,
     /// Set on the turn of a background task (P123): where that task sits in the tree, so the subtasks it starts are recorded under it.
     task_link: Option<TaskLink>,
+    /// Looked at before each model call (P123), so a person can pause the turn of a task: set with `task_link` on the turn of a
+    /// background task, and alone (`with_pause_gate`) on a delegation the caller waits for.
+    pause_gate: Option<PauseGate>,
 }
 
 /// How many levels of background tasks a turn can start: the root's tasks, and the subtasks of those, and no further (P123).
@@ -130,13 +133,20 @@ impl Orchestrator {
             classifier: None,
             task_recorder: None,
             task_link: None,
+            pause_gate: None,
         }
     }
 
     /// Returns a copy that is the turn of a background task (P123): it may start subtasks of its own, recorded under `link`'s task, in its
     /// group, up to `MAX_TASK_DEPTH` levels down. It keeps the recorder and the parallel limit the task's board had.
     pub fn with_parent_task(&self, link: TaskLink) -> Self {
-        Self { task_recorder: Some(link.recorder.clone()), job_limit: Some(link.max_parallel), task_link: Some(link), ..self.clone() }
+        Self { task_recorder: Some(link.recorder.clone()), job_limit: Some(link.max_parallel), pause_gate: Some(link.gate.clone()), task_link: Some(link), ..self.clone() }
+    }
+
+    /// Returns a copy that waits at `gate` before each model call while it is paused (P123): the turn of a delegation the caller waits
+    /// for, which a person can pause from a screen but which starts no subtasks of its own.
+    pub fn with_pause_gate(&self, gate: PauseGate) -> Self {
+        Self { pause_gate: Some(gate), ..self.clone() }
     }
 
     /// Returns a copy whose turns record the background jobs they start (P123) with `recorder`: each delegated task
@@ -726,8 +736,8 @@ impl Orchestrator {
 
         for _ in 0..MAX_TOOL_ITERATIONS {
             // The turn of a task a person paused (P123) waits here, between two calls, until it is resumed.
-            if let Some(link) = &self.task_link {
-                link.gate.until_resumed().await;
+            if let Some(gate) = &self.pause_gate {
+                gate.until_resumed().await;
             }
             // Before anything is spent: may pause to ask for more room, or end the turn. Checked on
             // every call rather than once per turn, so a loop can't burn past a limit meanwhile.

@@ -137,12 +137,18 @@ export interface ModelPolicy {
 export type OrgEdit =
   | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
   | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
-  | { kind: "remove"; id: string };
+  | { kind: "remove"; id: string }
+  /** P123 — the models `id` may pick when it delegates, in order (the first is the default; empty leaves the choice open). */
+  | { kind: "setDelegationModels"; id: string; models: string[] }
+  /** P123 — replaces the named model policies with this list. */
+  | { kind: "setModelPolicies"; policies: Array<{ id: string; model: string; description: string }> };
 
 /** What the hub's settings say about the agents (P87, P120, P123), reduced to what this client shows. */
 export interface HubAgents {
   agents: AgentInfo[];
   modelPolicies: ModelPolicy[];
+  /** The ids of the providers and combos: what a policy can be answered by, and what an agent can be limited to besides the policies. */
+  modelIds: string[];
 }
 
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
@@ -237,6 +243,8 @@ type RawAgent = Partial<Omit<AgentInfo, "id">> & { id: string };
 interface RawSettings {
   agents?: RawAgent[];
   modelPolicies?: ModelPolicy[];
+  providers?: Array<{ id: string }>;
+  combos?: Array<{ id: string }>;
 }
 
 /** The agents and model policies out of a settings payload, with the optional fields this client reads filled in. */
@@ -255,6 +263,7 @@ function hubAgents(settings: RawSettings): HubAgents {
       delegationModels: a.delegationModels ?? [],
     })),
     modelPolicies: settings.modelPolicies ?? [],
+    modelIds: [...(settings.providers ?? []), ...(settings.combos ?? [])].map((m) => m.id),
   };
 }
 

@@ -68,6 +68,76 @@ void main() {
     });
   });
 
+  group('what an agent has been up to', () {
+    final tasks = [
+      _task('dev', 'g1', 'done', totalTokens: 100, createdAtMs: 1000, startedAtMs: 1100, finishedAtMs: 5000),
+      _task('dev', 'g1', 'failed', createdAtMs: 2000, startedAtMs: 2100),
+      _task('dev', 'g1', 'running', createdAtMs: 3000, startedAtMs: 3100),
+      _task('writer', 'g1', 'pending', owner: 'dev', createdAtMs: 4000),
+    ];
+    const now = 5000 + 4 * 60000;
+
+    test('counts what it was given by state, sums the tokens, counts what it delegated and finds the last move', () {
+      final a = activityOf(tasks, 'dev')!;
+      expect([a.done, a.failed, a.cancelled, a.active, a.tokens, a.delegated, a.lastActiveMs], [1, 1, 0, 1, 100, 1, 5000]);
+    });
+
+    test('an agent that only delegated has no work of its own, and one no task involves has no activity', () {
+      final a = activityOf(tasks, 'chief')!;
+      expect([a.done, a.failed, a.cancelled, a.active, a.tokens, a.delegated, a.lastActiveMs], [0, 0, 0, 0, 0, 3, 5000]);
+      expect(activityOf(tasks, 'ghost'), isNull);
+      expect(activityOf([], 'dev'), isNull);
+    });
+
+    test('a state this app does not know counts as active', () {
+      expect(activityOf([_task('dev', 'g', 'some-new-state')], 'dev')!.active, 1);
+    });
+
+    test('the card line says it in a few words, and leaves out what is zero', () {
+      expect(activityLine(activityOf(tasks, 'dev')!, now), '1 done, 1 failed, 1 running · 100 tokens · delegated 1 · active 4 min ago');
+      expect(activityLine(activityOf(tasks, 'chief')!, now), 'delegated 3 · active 4 min ago');
+    });
+
+    test('how long ago, in minutes, hours and days', () {
+      expect(agoLabel(1000, 1000), 'just now');
+      expect(agoLabel(0, 59 * 60000), '59 min ago');
+      expect(agoLabel(0, 2 * 3600000), '2 h ago');
+      expect(agoLabel(0, 3 * 86400000), '3 d ago');
+      expect(agoLabel(5000, 1000), 'just now', reason: 'a clock that is behind never shows a negative time');
+    });
+  });
+
+  group('editing a model limit and the policies', () {
+    const policies = [ModelPolicy(id: 'fast', model: 'main', description: 'quick'), ModelPolicy(id: 'deep', model: 'spare')];
+
+    test('the candidates are the providers and combos, then the policies', () {
+      expect(delegationCandidates(['main', 'spare', ' '], policies), ['main', 'spare', 'fast', 'deep']);
+    });
+
+    test('the limit puts the default first and keeps the candidates\' order for the rest, and nothing checked is open', () {
+      const candidates = ['main', 'spare', 'fast'];
+      expect(limitModels(candidates, {'main', 'fast'}, 'fast'), ['fast', 'main']);
+      expect(limitModels(candidates, {'spare', 'fast', 'main'}, 'main'), ['main', 'spare', 'fast']);
+      expect(limitModels(candidates, {'spare'}, 'main'), ['spare'], reason: 'a default that is not checked is ignored');
+      expect(limitModels(candidates, {}, ''), isEmpty);
+    });
+
+    test('a policy is replaced where it was, or added at the end, with the text trimmed', () {
+      final replaced = policiesWith(policies, const ModelPolicy(id: ' fast ', model: ' spare ', description: ' cheap '), 'fast');
+      expect([for (final p in replaced) '${p.id}>${p.model}>${p.description}'], ['fast>spare>cheap', 'deep>spare>null'], reason: 'the other policy is left as it was');
+      final added = policiesWith(policies, const ModelPolicy(id: 'code', model: 'main'), null);
+      expect(added.last.id, 'code');
+      expect(added.last.description, '');
+      expect([for (final p in policiesWith(policies, const ModelPolicy(id: 'renamed', model: 'main'), 'deep')) p.id], ['fast', 'renamed']);
+      expect([for (final p in policiesWithout(policies, 'fast')) p.id], ['deep']);
+    });
+
+    test('a new policy gets a free name', () {
+      expect(nextPolicyId(['main']), 'policy-1');
+      expect(nextPolicyId(['policy-1', 'policy-2']), 'policy-3');
+    });
+  });
+
   group('grouping the tasks of a turn', () {
     test('counts the finished ones as the progress and sums the tokens', () {
       final group = groupTasks([

@@ -479,7 +479,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
   Future<HubAgents> listHubAgents() async {
     final reply = await _conversationRequest(RequestSettingsMessage.new);
     return switch (reply) {
-      SettingsMessage(:final agents, :final modelPolicies) => HubAgents(agents, modelPolicies),
+      SettingsMessage(:final agents, :final modelPolicies, :final modelIds) => HubAgents(agents, modelPolicies, modelIds),
       SettingsErrorMessage(:final message) => throw ConversationException(message),
       _ => throw ConversationException('Unexpected reply to the settings request: $reply'),
     };
@@ -494,7 +494,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
       timeout: const Duration(seconds: 120),
     );
     return switch (reply) {
-      SettingsSavedMessage(:final agents, :final modelPolicies) => HubAgents(agents, modelPolicies),
+      SettingsSavedMessage(:final agents, :final modelPolicies, :final modelIds) => HubAgents(agents, modelPolicies, modelIds),
       SettingsErrorMessage(:final message, :final authRejected) => throw HubRequestException(message, authRejected: authRejected),
       _ => throw ConversationException('Unexpected reply to the organization change: $reply'),
     };

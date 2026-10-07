@@ -6,6 +6,20 @@
 
 ---
 
+### 2026-10-07 — Sessão 159
+
+- **Objetivo**: o item 4 da lista de depois da Sessão 158, planejado em Plan mode: pausar a delegação síncrona, editar políticas e limite de modelos pelo celular e pela extensão, arrastar nós da árvore e mostrar a atividade de cada nó. Quatro fatias.
+- **A — pausa síncrona**: o `run_recorded` agora recebe `FnOnce(PauseGate) -> Future` e guarda esse portão no registro; os dois delegadores passam o portão ao turno com `Orchestrator::with_pause_gate` (campo novo `pause_gate`, que o `with_parent_task` também preenche); `Runner::is_pausable` saiu e `control_agent_task` deixou de recusar. **Desvio do plano**: a síncrona ganha só o portão, **não** o vínculo de subtarefas (nada de aninhar sob ela), para não mudar o que ela pode fazer. Testes: o de `jobs.rs` virou "pode ser parada" e ganhou um de pausar e retomar; o de ponta a ponta do servidor agora pausa, retoma e para.
+- **B — políticas e limite**: duas variantes de `AgentOrgEdit` (`SetDelegationModels`, `SetModelPolicies`) tratadas em `apply_org_edit`, reaproveitando `check_policies` e o novo `check_delegation_models` (extraído do salvar) e `prune_delegation_models`; id desconhecido no limite vira erro. `settings` ganhou os ids de provedores e combos nos dois clientes. Extensão: formulário do limite (marcados e um padrão), seção de políticas editável, `lib/modelPolicies.ts`. Celular: diálogos `_LimitDialog` e `_PolicyDialog` (widgets com estado próprio), seção de políticas editável. Web e desktop só ganharam o tipo.
+- **C — arrastar**: `moveEdit` (puro) na web, no desktop e na extensão; `draggable` no `.org-card` (não no `<li>`), alvo só quando válido, zona "topo da árvore" durante o arraste. Teste de navegador novo: `web/e2e/org.test.mjs`.
+- **D — atividade**: `activityOf`, `agoLabel` e `activityLine` nos quatro clientes (inglês no desktop e no celular, português na web e na extensão), a partir de `ListAgentTasks`; cada árvore carrega as tarefas em silêncio.
+- **Testes**: Rust `warden-core` 412, `warden-server-protocol` 43, `warden-server` 148 mais os de integração, `warden-bootstrap` (8 novos em `org_edit`), clippy só com o aviso antigo de `learning_eval`; extensão `npm test` 41; desktop 54; `tsc` de web, desktop e extensão; celular pelo Docker: `flutter analyze` limpo e 184 testes; e2e do Brave: 2 de 2 (o arrastar de verdade, contra um hub real).
+- **Defeitos meus pegos pelos testes**: o servidor ainda chamava `run_recorded` com a assinatura antiga em um teste; um teste Dart comparava um record com lista; e uma string que usava `null` no lugar da descrição.
+- **Não verificado**: as telas numa janela (extensão e celular); um modelo real pausando uma delegação síncrona; o arrastar no webview do Tauri; a zona do topo da árvore num navegador.
+- **Disco**: o `/home` foi de 73% (depois do `cargo clean` da Sessão 158) a 87% com os testes e o clippy dos quatro crates; apaguei só o `target/debug/incremental` (6 GB, regenerável) e buildei o hub com `CARGO_INCREMENTAL=0`. Terminou em 84%.
+- **Deslize**: nenhum script por Bash para editar código nesta sessão (tudo por Edit/Write); um `python3` que rodei por engano só imprimiu "noop".
+- **Fica**: custo em dólar e hora da última conversa na atividade; a hierarquia por pessoa (P84).
+
 ### 2026-10-07 — Sessão 158
 
 - **Objetivo**: o item 4 da lista, levar para o celular e a extensão as telas de tarefas de agentes (P123) e da árvore de organização (P120) que o desktop e a web já têm. O usuário pediu cuidado com o espaço em disco.

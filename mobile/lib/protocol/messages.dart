@@ -300,6 +300,33 @@ final class RemoveAgentEdit extends OrgEdit {
   Map<String, dynamic> toJson() => {'kind': 'remove', 'id': id};
 }
 
+/// P123 — the models [id] may pick when it delegates, in order: the first is the default of a delegation that names none, so a
+/// list of one dictates the model. Empty leaves the choice open.
+final class SetDelegationModelsEdit extends OrgEdit {
+  const SetDelegationModelsEdit(this.id, this.models);
+
+  final String id;
+  final List<String> models;
+
+  @override
+  Map<String, dynamic> toJson() => {'kind': 'setDelegationModels', 'id': id, 'models': models};
+}
+
+/// P123 — replaces the named model policies with [policies].
+final class SetModelPoliciesEdit extends OrgEdit {
+  const SetModelPoliciesEdit(this.policies);
+
+  final List<ModelPolicy> policies;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'kind': 'setModelPolicies',
+        'policies': [
+          for (final p in policies) {'id': p.id, 'model': p.model, 'description': p.description ?? ''},
+        ],
+      };
+}
+
 /// What the organization screen reads of an agent in the hub's settings (P120, P123); the rest of `AgentSettings` stays
 /// out. A hub that doesn't send a field gets its default.
 class AgentInfo {
@@ -413,7 +440,7 @@ class AgentTask {
   /// Running in the hub process that answered, so it can be paused, resumed or stopped from here.
   final bool controllable;
 
-  /// Among the controllable ones, those that can also be paused: a delegation the agent waits on can only be stopped.
+  /// Among the controllable ones, those that can also be paused (every one, since a delegation the agent waits on can be paused too).
   final bool pausable;
 
   static AgentTask fromJson(dynamic json) {
@@ -685,11 +712,13 @@ sealed class ServerMessage {
           ],
           agents: _agentsOf(json['settings'] as Map<String, dynamic>),
           modelPolicies: _policiesOf(json['settings'] as Map<String, dynamic>),
+          modelIds: _modelIdsOf(json['settings'] as Map<String, dynamic>),
         ),
       'settingsSaved' => SettingsSavedMessage(
           json['requestId'] as int,
           agents: _agentsOf(json['settings'] as Map<String, dynamic>),
           modelPolicies: _policiesOf(json['settings'] as Map<String, dynamic>),
+          modelIds: _modelIdsOf(json['settings'] as Map<String, dynamic>),
         ),
       'settingsError' => SettingsErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'agentTaskList' => AgentTaskListMessage(
@@ -720,6 +749,12 @@ sealed class ServerMessage {
 
   static List<ModelPolicy> _policiesOf(Map<String, dynamic> settings) =>
       (settings['modelPolicies'] as List<dynamic>? ?? const []).map(ModelPolicy.fromJson).toList();
+
+  /// The ids of the providers and combos: what a policy can be answered by.
+  static List<String> _modelIdsOf(Map<String, dynamic> settings) => [
+        for (final key in const ['providers', 'combos'])
+          for (final entry in (settings[key] as List<dynamic>? ?? const [])) (entry as Map<String, dynamic>)['id'] as String,
+      ];
 }
 
 final class HelloAckMessage extends ServerMessage {
@@ -1012,21 +1047,25 @@ final class GoodbyeServerMessage extends ServerMessage {
 /// Reply to [RequestSettingsMessage], reduced to what this app uses: the agents' ids (P87), the agents with their
 /// organization and model limits (P120, P123) and the model policies (P123).
 final class SettingsMessage extends ServerMessage {
-  const SettingsMessage(this.requestId, this.agentIds, {this.agents = const [], this.modelPolicies = const []});
+  const SettingsMessage(this.requestId, this.agentIds, {this.agents = const [], this.modelPolicies = const [], this.modelIds = const []});
 
   final int requestId;
   final List<String> agentIds;
   final List<AgentInfo> agents;
   final List<ModelPolicy> modelPolicies;
+
+  /// The providers' and combos' ids.
+  final List<String> modelIds;
 }
 
 /// Reply to a successful [EditAgentOrgMessage], with the agents as the hub holds them now.
 final class SettingsSavedMessage extends ServerMessage {
-  const SettingsSavedMessage(this.requestId, {this.agents = const [], this.modelPolicies = const []});
+  const SettingsSavedMessage(this.requestId, {this.agents = const [], this.modelPolicies = const [], this.modelIds = const []});
 
   final int requestId;
   final List<AgentInfo> agents;
   final List<ModelPolicy> modelPolicies;
+  final List<String> modelIds;
 }
 
 /// [authRejected]: the pairing key was wrong; nothing was written.

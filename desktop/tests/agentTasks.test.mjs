@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { actionsFor, durationLabel, formatTokens, groupTasks, involvingAgent } from "../src/lib/agentTasks.ts";
+import { actionsFor, activityLine, activityOf, agoLabel, durationLabel, formatTokens, groupTasks, involvingAgent } from "../src/lib/agentTasks.ts";
 
 const task = (id, group, state, extra = {}) => ({ id, group, owner: "chief", assignee: id, objective: `do ${id}`, channel: "desktop", state, createdAtMs: 1000, ...extra });
 
@@ -117,5 +117,42 @@ describe("what a person can do to a task", () => {
     assert.equal(group.active, true);
     assert.equal(group.counts.paused, 1);
     assert.equal(group.finished, 1);
+  });
+});
+
+describe("what an agent has been up to", () => {
+  const tasks = [
+    task("a", "g1", "done", { assignee: "dev", totalTokens: 100, createdAtMs: 1000, startedAtMs: 1100, finishedAtMs: 5000 }),
+    task("b", "g1", "failed", { assignee: "dev", createdAtMs: 2000, startedAtMs: 2100 }),
+    task("c", "g1", "running", { assignee: "dev", createdAtMs: 3000, startedAtMs: 3100 }),
+    task("d", "g1", "pending", { assignee: "writer", owner: "dev", createdAtMs: 4000 }),
+  ];
+  const now = 5000 + 4 * 60000;
+
+  test("counts what it was given by state, sums the tokens, counts what it delegated and finds the last move", () => {
+    assert.deepEqual(activityOf(tasks, "dev"), { done: 1, failed: 1, cancelled: 0, active: 1, tokens: 100, delegated: 1, lastActiveMs: 5000 });
+  });
+
+  test("an agent that only delegated has no work of its own, and one no task involves has no activity", () => {
+    assert.deepEqual(activityOf(tasks, "chief"), { done: 0, failed: 0, cancelled: 0, active: 0, tokens: 0, delegated: 3, lastActiveMs: 5000 });
+    assert.equal(activityOf(tasks, "ghost"), null);
+    assert.equal(activityOf([], "dev"), null);
+  });
+
+  test("a state this app does not know counts as active", () => {
+    assert.equal(activityOf([task("x", "g", "some-new-state", { assignee: "dev" })], "dev").active, 1);
+  });
+
+  test("the card line says it in a few words, and leaves out what is zero", () => {
+    assert.equal(activityLine(activityOf(tasks, "dev"), now), "1 done, 1 failed, 1 running · 100 tokens · delegated 1 · active 4 min ago");
+    assert.equal(activityLine(activityOf(tasks, "chief"), now), "delegated 3 · active 4 min ago");
+  });
+
+  test("how long ago, in minutes, hours and days", () => {
+    assert.equal(agoLabel(1000, 1000), "just now");
+    assert.equal(agoLabel(0, 59 * 60000), "59 min ago");
+    assert.equal(agoLabel(0, 2 * 3600000), "2 h ago");
+    assert.equal(agoLabel(0, 3 * 86400000), "3 d ago");
+    assert.equal(agoLabel(5000, 1000), "just now", "a clock that is behind never shows a negative time");
   });
 });

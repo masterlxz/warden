@@ -54,7 +54,7 @@ export const STATE_MARK: Record<AgentTaskState, string> = {
 const emptyCounts = (): Record<AgentTaskState, number> => ({ pending: 0, running: 0, waiting: 0, paused: 0, done: 0, failed: 0, cancelled: 0 });
 
 /** What a person can do to this task right now: only a task running in the process that answered can be controlled. A task that
- * hasn't started can only be stopped, and so can a delegation the agent is waiting on; a paused one can be resumed. */
+ * hasn't started can only be stopped; a paused one can be resumed. */
 export function actionsFor(task: AgentTask): AgentTaskAction[] {
   if (!task.controllable) return [];
   switch (task.state) {
@@ -123,6 +123,67 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
  * the subtasks it started keep their place under it because they are the ones it delegated. */
 export function involvingAgent(tasks: AgentTask[], agent: string): AgentTask[] {
   return tasks.filter((t) => t.assignee === agent || t.owner === agent);
+}
+
+/** What an agent has been up to, taken only from the tasks the hub keeps (P120): what it was given (`assignee`), how many it delegated
+ * (`owner`) and when it last did anything. The log keeps only the most recent ones, and direct chats and notes are not in it. */
+export interface AgentActivity {
+  /** Tasks it was given, by where they are. */
+  done: number;
+  failed: number;
+  cancelled: number;
+  /** Pending, running, waiting for an agent or paused. */
+  active: number;
+  /** Tokens of the tasks it was given that reported any. */
+  tokens: number;
+  /** How many tasks it delegated to others. */
+  delegated: number;
+  /** The last thing that happened to a task of its own (created, started or finished). */
+  lastActiveMs: number;
+}
+
+/** The activity of `agent`, or `null` when no task involves it. */
+export function activityOf(tasks: AgentTask[], agent: string): AgentActivity | null {
+  const received = tasks.filter((t) => t.assignee === agent);
+  const delegated = tasks.filter((t) => t.owner === agent);
+  if (received.length === 0 && delegated.length === 0) return null;
+  const counts = emptyCounts();
+  for (const task of received) counts[task.state in counts ? task.state : "pending"] += 1;
+  const stamp = (t: AgentTask) => t.finishedAtMs ?? t.startedAtMs ?? t.createdAtMs;
+  return {
+    done: counts.done,
+    failed: counts.failed,
+    cancelled: counts.cancelled,
+    active: counts.pending + counts.running + counts.waiting + counts.paused,
+    tokens: received.reduce((sum, t) => sum + (t.totalTokens ?? 0), 0),
+    delegated: delegated.length,
+    lastActiveMs: Math.max(...[...received, ...delegated].map(stamp)),
+  };
+}
+
+/** How long ago, in a few words: `just now`, `4 min ago`, `2 h ago`, `3 d ago`. */
+export function agoLabel(thenMs: number, nowMs: number): string {
+  const minutes = Math.max(0, Math.round((nowMs - thenMs) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
+/** The activity on one line of the tree card: `3 done, 1 failed, 2 running · 12.9K tokens · delegated 5 · active 4 min ago`. */
+export function activityLine(a: AgentActivity, nowMs: number): string {
+  const parts = [
+    a.done > 0 && `${a.done} done`,
+    a.failed > 0 && `${a.failed} failed`,
+    a.cancelled > 0 && `${a.cancelled} stopped`,
+    a.active > 0 && `${a.active} running`,
+  ].filter(Boolean);
+  const line = [parts.join(", ")];
+  if (a.tokens > 0) line.push(`${formatTokens(a.tokens)} tokens`);
+  if (a.delegated > 0) line.push(`delegated ${a.delegated}`);
+  line.push(`active ${agoLabel(a.lastActiveMs, nowMs)}`);
+  return line.filter(Boolean).join(" · ");
 }
 
 /** `1,284` up to 999, `12.9K` beyond. */

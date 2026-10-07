@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type { AgentInfo, HubAgents, OrgEdit } from "../protocol/messages";
-import type { HubAgentsResponse } from "../background/popup_protocol";
-import { addReportEdit, buildOrg, positionEdit, superiorChoices, type OrgNode } from "./lib/org";
-import { delegationSummary } from "./lib/modelPolicies";
+import type { AgentInfo, AgentTask, HubAgents, ModelPolicy, OrgEdit } from "../protocol/messages";
+import type { AgentTasksResponse, HubAgentsResponse } from "../background/popup_protocol";
+import { activityLine, activityOf } from "./lib/agentTasks";
+import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgNode } from "./lib/org";
+import { delegationCandidates, delegationSummary, limitEdit, limitModels, nextPolicyId, policiesEdit, policiesWith, policiesWithout } from "./lib/modelPolicies";
 import PairingKeyForm from "./PairingKeyForm";
 
 const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho" };
@@ -20,17 +21,41 @@ function selos(agent: AgentInfo): string[] {
 }
 
 /** O que está aberto na árvore: o cargo de um agente, um subordinado novo sob um agente (`null`: no topo) ou a remoção de um. */
-type Painel = { kind: "edit"; id: string } | { kind: "add"; under: string | null } | { kind: "remove"; id: string };
+type Painel =
+  | { kind: "edit"; id: string }
+  | { kind: "add"; under: string | null }
+  | { kind: "remove"; id: string }
+  /** Os modelos que um agente pode escolher ao delegar. */
+  | { kind: "limit"; id: string }
+  /** Uma política de modelo: `id` é a que se edita, ou `null` para uma nova. */
+  | { kind: "policy"; id: string | null };
 
 interface Edicao {
   onOpenChat: (id: string) => void;
   onOpenTasks: (id: string) => void;
   agents: AgentInfo[];
+  /** Provedores, combos e políticas: do que um agente pode ser limitado. */
+  candidates: string[];
+  /** Provedores e combos: o que uma política pode responder. */
+  modelIds: string[];
+  policies: ModelPolicy[];
   painel: Painel | null;
   ocupado: boolean;
   abrir: (painel: Painel | null) => void;
   /** Pede a chave de pareamento para a mudança. */
   aplicar: (edit: OrgEdit) => void;
+  /** O agente cujo cartão está sendo arrastado (P120): outro cartão, ou o topo, aceita soltá-lo se a mudança é válida. */
+  arrastando: string | null;
+  arrastar: (id: string | null) => void;
+  /** O que o agente andou fazendo, numa linha, tirado das tarefas do hub; `null` sem nenhuma tarefa dele. */
+  atividade: (id: string) => string | null;
+}
+
+/** Soltar o cartão arrastado sobre `alvo` (`null`: o topo): a mudança, se houver. Um cartão que vira filho de um descendente fecharia um círculo. */
+function aoSoltar(edicao: Edicao, alvo: string | null): void {
+  const edit = edicao.arrastando === null ? null : moveEdit(edicao.agents, edicao.arrastando, alvo);
+  edicao.arrastar(null);
+  if (edit) edicao.aplicar(edit);
 }
 
 function FormularioCargo({ agent, edicao }: { agent: AgentInfo; edicao: Edicao }) {
@@ -58,6 +83,95 @@ function FormularioCargo({ agent, edicao }: { agent: AgentInfo; edicao: Edicao }
       <div className="skills-actions">
         <button type="button" disabled={edicao.ocupado} onClick={() => edicao.aplicar(positionEdit(agent.id, cargo, superior))}>
           Salvar
+        </button>
+        <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir(null)}>
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Os modelos que o agente pode escolher ao delegar (P123): marcados, com um padrão (o primeiro). Nenhum marcado deixa a escolha aberta. */
+function FormularioLimite({ agent, edicao }: { agent: AgentInfo; edicao: Edicao }) {
+  const [marcados, setMarcados] = useState(() => new Set(agent.delegationModels));
+  const [padrao, setPadrao] = useState(agent.delegationModels[0] ?? "");
+  const escolhidos = edicao.candidates.filter((id) => marcados.has(id));
+  const padraoValido = escolhidos.includes(padrao) ? padrao : (escolhidos[0] ?? "");
+  function alternar(id: string) {
+    const proximo = new Set(marcados);
+    if (proximo.has(id)) proximo.delete(id);
+    else proximo.add(id);
+    setMarcados(proximo);
+  }
+  return (
+    <div className="connection-form org-form">
+      <p className="skills-hint">Modelos que {agent.id} pode escolher para as tarefas que delega. Nenhum marcado deixa a escolha aberta; com um só, ele dita o modelo.</p>
+      {edicao.candidates.length === 0 && <p className="skills-hint">O hub não tem provedores nem políticas para escolher.</p>}
+      {edicao.candidates.map((id) => (
+        <label key={id} className="checkbox-label">
+          <input type="checkbox" checked={marcados.has(id)} onChange={() => alternar(id)} />
+          {id}
+          {edicao.policies.some((p) => p.id === id) && <span className="skills-hint"> (política)</span>}
+        </label>
+      ))}
+      {escolhidos.length > 1 && (
+        <label>
+          Padrão (o que uma tarefa recebe quando {agent.id} não escolhe)
+          <select value={padraoValido} onChange={(e) => setPadrao(e.target.value)}>
+            {escolhidos.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <div className="skills-actions">
+        <button type="button" disabled={edicao.ocupado} onClick={() => edicao.aplicar(limitEdit(agent.id, limitModels(edicao.candidates, marcados, padraoValido)))}>
+          Salvar
+        </button>
+        <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir(null)}>
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Uma política de modelo (P123): um nome que o agente que delega pode dizer, o provedor ou combo que responde por ele, e quando escolher. */
+function FormularioPolitica({ original, edicao }: { original: ModelPolicy | null; edicao: Edicao }) {
+  const [id, setId] = useState(original?.id ?? nextPolicyId(edicao.candidates));
+  const [modelo, setModelo] = useState(original?.model ?? edicao.modelIds[0] ?? "");
+  const [descricao, setDescricao] = useState(original?.description ?? "");
+  const pronto = id.trim() !== "" && modelo !== "";
+  return (
+    <div className="connection-form org-form">
+      <label>
+        Nome
+        <input type="text" value={id} maxLength={64} onChange={(e) => setId(e.target.value)} />
+      </label>
+      <label>
+        Quem responde
+        <select value={modelo} onChange={(e) => setModelo(e.target.value)}>
+          {edicao.modelIds.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Quando escolher (uma linha)
+        <input type="text" value={descricao} maxLength={200} placeholder="ex.: trabalho simples e barato" onChange={(e) => setDescricao(e.target.value)} />
+      </label>
+      <div className="skills-actions">
+        <button
+          type="button"
+          disabled={edicao.ocupado || !pronto}
+          onClick={() => edicao.aplicar(policiesEdit(policiesWith(edicao.policies, { id, model: modelo, description: descricao }, original?.id ?? null)))}
+        >
+          Salvar política
         </button>
         <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir(null)}>
           Cancelar
@@ -126,9 +240,27 @@ function ConfirmarRemocao({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: 
 function Node({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: Edicao }) {
   const { agent, children } = node;
   const { painel } = edicao;
+  const alvoValido = edicao.arrastando !== null && moveEdit(edicao.agents, edicao.arrastando, agent.id) !== null;
   return (
     <li className="org-node">
-      <div className="org-card">
+      {/* O arrastar fica no cartão, não no <li>: o `dragover` dos subordinados não deve subir para o cartão do pai. */}
+      <div
+        className={`org-card${edicao.arrastando === agent.id ? " org-card--arrastando" : ""}${alvoValido ? " org-card--alvo" : ""}`}
+        draggable={!edicao.ocupado}
+        onDragStart={(e) => {
+          e.dataTransfer.setData("text/plain", agent.id);
+          e.dataTransfer.effectAllowed = "move";
+          edicao.arrastar(agent.id);
+        }}
+        onDragEnd={() => edicao.arrastar(null)}
+        onDragOver={(e) => {
+          if (alvoValido) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          aoSoltar(edicao, agent.id);
+        }}
+      >
         <span className="org-name">{agent.id}</span>
         {agent.role && <span className="org-role">{agent.role}</span>}
         <span className="org-badges">
@@ -139,6 +271,7 @@ function Node({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: Edicao }) {
           ))}
         </span>
         {agent.canDelegateToAgents && <span className="skills-hint org-limit">{delegationSummary(agent.delegationModels)}</span>}
+        {edicao.atividade(agent.id) && <span className="skills-hint org-limit">{edicao.atividade(agent.id)}</span>}
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 subordinado" : `${children.length} subordinados`}</span>}
         <span className="org-actions">
           <button type="button" className="link-button" onClick={() => edicao.onOpenChat(agent.id)} title={`Começar uma conversa com ${agent.id}`}>
@@ -150,6 +283,11 @@ function Node({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: Edicao }) {
           <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "edit", id: agent.id })}>
             Editar
           </button>
+          {agent.canDelegateToAgents && (
+            <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "limit", id: agent.id })} title={`Os modelos que ${agent.id} pode escolher ao delegar`}>
+              Modelos
+            </button>
+          )}
           <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "add", under: agent.id })}>
             Adicionar subordinado
           </button>
@@ -160,6 +298,7 @@ function Node({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: Edicao }) {
       </div>
       {painel?.kind === "edit" && painel.id === agent.id && <FormularioCargo key={`edit-${agent.id}`} agent={agent} edicao={edicao} />}
       {painel?.kind === "remove" && painel.id === agent.id && <ConfirmarRemocao node={node} edicao={edicao} />}
+      {painel?.kind === "limit" && painel.id === agent.id && <FormularioLimite key={`limit-${agent.id}`} agent={agent} edicao={edicao} />}
       {painel?.kind === "add" && painel.under === agent.id && <FormularioNovo key={`add-${agent.id}`} under={agent.id} edicao={edicao} />}
       {children.length > 0 && (
         <ul className="org-children">
@@ -174,7 +313,7 @@ function Node({ node, edicao }: { node: OrgNode<AgentInfo>; edicao: Edicao }) {
 
 /** P120, P123 — quem reporta a quem entre os agentes, e onde isso se muda: dar um cargo a um agente, passá-lo para baixo de outro, adicionar um
  * subordinado, remover um. Cada mudança é escrita sozinha (nada mais das configurações é tocado) e pede a chave de pareamento do hub. As
- * políticas de modelo e o limite de modelos de cada agente só aparecem aqui: quem os edita é o desktop ou a web. */
+ * políticas de modelo e o limite de modelos de cada agente (P123) também se editam aqui, pela mesma operação estreita, sem o formulário inteiro. */
 export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: string) => void; onOpenTasks: (id: string) => void }) {
   const [hub, setHub] = useState<HubAgents | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +321,8 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
   const [asking, setAsking] = useState<OrgEdit | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [arrastando, setArrastando] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
 
   function load() {
     chrome.runtime.sendMessage({ type: "listHubAgents" }).then((res: HubAgentsResponse) => {
@@ -191,6 +332,10 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
       } else {
         setError(res.error ?? "falha ao ler os agentes");
       }
+    });
+    // A atividade de cada nó é um extra: sem as tarefas, o cartão só não mostra a linha.
+    chrome.runtime.sendMessage({ type: "listAgentTasks" }).then((res: AgentTasksResponse) => {
+      if (res.ok) setTasks(res.tasks);
     });
   }
 
@@ -225,11 +370,14 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
     return <div className="agents-pane">{error ? <p className="error-banner">{error}</p> : <p className="skills-hint">Carregando…</p>}</div>;
   }
 
-  const { agents, modelPolicies } = hub;
+  const { agents, modelPolicies, modelIds } = hub;
   const edicao: Edicao = {
     onOpenChat,
     onOpenTasks,
     agents,
+    candidates: delegationCandidates(modelIds, modelPolicies),
+    modelIds,
+    policies: modelPolicies,
     painel,
     ocupado: busy || asking !== null,
     abrir: (next) => {
@@ -241,7 +389,14 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
       setKeyError(null);
       setAsking(edit);
     },
+    arrastando,
+    arrastar: setArrastando,
+    atividade: (id) => {
+      const activity = activityOf(tasks, id);
+      return activity ? activityLine(activity, Date.now()) : null;
+    },
   };
+  const topoValido = arrastando !== null && moveEdit(agents, arrastando, null) !== null;
   const tree = buildOrg(agents);
   const ninguemReporta = tree.every((node) => node.children.length === 0);
 
@@ -270,7 +425,19 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
           ))}
         </ul>
       )}
-      {tree.length > 0 && ninguemReporta && <p className="skills-hint">Ninguém reporta a ninguém ainda: use "Editar" num agente para escolher o superior dele.</p>}
+      {topoValido && (
+        <div
+          className="org-topo"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            aoSoltar(edicao, null);
+          }}
+        >
+          Soltar aqui para tirar de baixo do superior (topo da árvore)
+        </div>
+      )}
+      {tree.length > 0 && ninguemReporta && <p className="skills-hint">Ninguém reporta a ninguém ainda: arraste um cartão para cima de outro, ou use "Editar" num agente para escolher o superior dele.</p>}
       {painel?.kind === "add" && painel.under === null && <FormularioNovo key="add-top" under={null} edicao={edicao} />}
       <div className="skills-actions">
         <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "add", under: null })}>
@@ -279,17 +446,32 @@ export default function OrgView({ onOpenChat, onOpenTasks }: { onOpenChat: (id: 
       </div>
       <h2 className="agents-subtitle">Políticas de modelo</h2>
       {modelPolicies.length === 0 ? (
-        <p className="skills-hint">Nenhuma política: um agente que delega vê só os ids dos modelos. Elas se criam no desktop ou na web.</p>
+        <p className="skills-hint">Nenhuma política: um agente que delega vê só os ids dos modelos.</p>
       ) : (
         <ul className="skills-list">
           {modelPolicies.map((policy) => (
             <li key={policy.id} className="skills-item">
               <span className="skills-item-name">{policy.id}</span> <span className="skills-hint">→ {policy.model}</span>
               {policy.description && <p className="skills-item-description">{policy.description}</p>}
+              <span className="org-actions">
+                <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "policy", id: policy.id })}>
+                  Editar
+                </button>
+                <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.aplicar(policiesEdit(policiesWithout(modelPolicies, policy.id)))}>
+                  Remover
+                </button>
+              </span>
+              {painel?.kind === "policy" && painel.id === policy.id && <FormularioPolitica key={`policy-${policy.id}`} original={policy} edicao={edicao} />}
             </li>
           ))}
         </ul>
       )}
+      {painel?.kind === "policy" && painel.id === null && <FormularioPolitica key="policy-new" original={null} edicao={edicao} />}
+      <div className="skills-actions">
+        <button type="button" className="link-button" disabled={edicao.ocupado || modelIds.length === 0} onClick={() => edicao.abrir({ kind: "policy", id: null })}>
+          Nova política
+        </button>
+      </div>
     </div>
   );
 }

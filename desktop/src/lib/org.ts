@@ -54,7 +54,10 @@ export function superiorChoices<T extends OrgAgent>(agents: T[], id: string): T[
 export type OrgEdit =
   | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
   | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
-  | { kind: "remove"; id: string };
+  | { kind: "remove"; id: string }
+  /** P123 — what the light clients (phone and extension) send; the desktop edits the limit and the policies in the Settings form. */
+  | { kind: "setDelegationModels"; id: string; models: string[] }
+  | { kind: "setModelPolicies"; policies: Array<{ id: string; model: string; description: string }> };
 
 /** A blank field is no value: the edit leaves it out instead of sending an empty string. */
 export function positionEdit(id: string, role: string, reportsTo: string): OrgEdit {
@@ -63,6 +66,17 @@ export function positionEdit(id: string, role: string, reportsTo: string): OrgEd
 
 export function addReportEdit(id: string, persona: string, role: string, reportsTo: string | null): OrgEdit {
   return { kind: "addReport", id: id.trim(), persona: persona.trim(), ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
+/** Dropping the card of `draggedId` on the one of `targetId` (or `null`: the top of the tree): the change of position the app and the hub
+ * take, with the role it already has. `null` when there is nothing to change: no such agent, the target is itself or somebody below it
+ * (that would close a circle, which the hub refuses too), or its superior already is the target. */
+export function moveEdit(agents: OrgAgent[], draggedId: string, targetId: string | null): OrgEdit | null {
+  const dragged = agents.find((a) => a.id === draggedId);
+  if (!dragged) return null;
+  if (targetId !== null && !superiorChoices(agents, draggedId).some((a) => a.id === targetId)) return null;
+  if ((dragged.reportsTo ?? null) === targetId) return null;
+  return positionEdit(draggedId, dragged.role ?? "", targetId ?? "");
 }
 
 /** An agent was renamed: whoever reported to it follows the new name. */

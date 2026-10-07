@@ -151,27 +151,29 @@ async fn the_owner_pauses_resumes_and_stops_a_task_running_on_the_hub_and_is_tol
 }
 
 #[tokio::test]
-async fn a_delegation_the_agent_waits_on_can_be_stopped_from_the_hub_but_not_paused() {
+async fn a_delegation_the_agent_waits_on_can_be_paused_resumed_and_stopped_from_the_hub() {
     use warden_core::jobs::{JobBoard, TaskContext, TaskDraft};
 
     let log = std::env::temp_dir().join(format!("warden-agent-task-sync-stop-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())).join("agent_tasks.jsonl");
     let recorder = Arc::new(FileTaskRecorder::new(&log));
     let board = JobBoard::recording(2, recorder, TaskContext { group: "turn-1".into(), owner: Some("chief".into()), channel: "desktop".into(), parent: None, depth: 0 });
-    let waiting = tokio::spawn(async move { board.run_recorded(TaskDraft { assignee: "writer".into(), objective: "draft".into(), model: None }, std::future::pending()).await });
+    let waiting = tokio::spawn(async move { board.run_recorded(TaskDraft { assignee: "writer".into(), objective: "draft".into(), model: None }, |_| std::future::pending()).await });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let url = spin_up(Some(log)).await;
     let mut conn = ServerConnection::connect(&url, "web-1", "Browser", "test-key").await.unwrap();
     let tasks = list(&url).await;
     let writer = tasks.iter().find(|t| t.assignee == "writer").unwrap();
-    assert!(writer.controllable && !writer.pausable);
+    assert!(writer.controllable && writer.pausable);
     let id = writer.id.clone();
 
-    match ask(&mut conn, control(1, "test-key", &id, "pause")).await {
-        ServerMessage::TaskError { message, .. } => assert!(message.contains("only be stopped"), "{message}"),
-        other => panic!("expected an error, got {other:?}"),
+    for (request, action, state) in [(1, "pause", "paused"), (2, "resume", "running")] {
+        match ask(&mut conn, control(request, "test-key", &id, action)).await {
+            ServerMessage::AgentTaskList { tasks, .. } => assert_eq!(tasks.iter().find(|t| t.assignee == "writer").unwrap().state, state),
+            other => panic!("expected the list after {action}, got {other:?}"),
+        }
     }
-    match ask(&mut conn, control(2, "test-key", &id, "cancel")).await {
+    match ask(&mut conn, control(3, "test-key", &id, "cancel")).await {
         ServerMessage::AgentTaskList { tasks, .. } => {
             let task = tasks.into_iter().find(|t| t.assignee == "writer").unwrap();
             assert_eq!((task.state.as_str(), task.error.as_deref(), task.controllable), ("cancelled", Some("stopped by a person"), false));

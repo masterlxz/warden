@@ -257,16 +257,23 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], comb
         let reports_to = a.reports_to.as_deref().and_then(non_empty);
         // P123: the models it may pick for its delegations, trimmed and without repeats, in the order given (the first is the default).
         // A member's agent has none: only the owner limits models. Whether each still exists is looked at when a task is delegated.
-        let mut delegation_models: Vec<String> = Vec::new();
-        for model in a.delegation_models.iter().filter_map(|m| non_empty(m)).filter(|_| a.owner.is_none()) {
-            if !delegation_models.contains(&model) {
-                delegation_models.push(model);
-            }
-        }
+        let delegation_models = if a.owner.is_none() { check_delegation_models(&a.delegation_models) } else { Vec::new() };
         checked.push(AgentConfig { id, provider_id, role, reports_to, delegation_models, ..a });
     }
     crate::org::check_hierarchy(&checked)?;
     Ok(checked)
+}
+
+/// The models an agent may pick for its delegations (P123), trimmed and without repeats, in the order given (the first is the default).
+/// Whether each still exists is looked at by the caller: a save prunes what is gone, the organization edit refuses it.
+pub fn check_delegation_models(models: &[String]) -> Vec<String> {
+    let mut checked: Vec<String> = Vec::new();
+    for model in models.iter().filter_map(|m| non_empty(m)) {
+        if !checked.contains(&model) {
+            checked.push(model);
+        }
+    }
+    checked
 }
 
 /// The model policies (P123), trimmed: a unique name that isn't also a provider's or a combo's, answered by one that is, and with a

@@ -53,7 +53,10 @@ export function superiorChoices<T extends OrgAgent>(agents: T[], id: string): T[
 export type OrgEdit =
   | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
   | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
-  | { kind: "remove"; id: string };
+  | { kind: "remove"; id: string }
+  /** P123 — o que os clientes leves (celular e extensão) mandam; a web edita o limite e as políticas pelo formulário de Configurações. */
+  | { kind: "setDelegationModels"; id: string; models: string[] }
+  | { kind: "setModelPolicies"; policies: Array<{ id: string; model: string; description: string }> };
 
 /** Um campo em branco é nenhum valor: a mudança o deixa de fora em vez de mandar uma string vazia. */
 export function positionEdit(id: string, role: string, reportsTo: string): OrgEdit {
@@ -62,6 +65,17 @@ export function positionEdit(id: string, role: string, reportsTo: string): OrgEd
 
 export function addReportEdit(id: string, persona: string, role: string, reportsTo: string | null): OrgEdit {
   return { kind: "addReport", id: id.trim(), persona: persona.trim(), ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
+/** Soltar o cartão de `draggedId` sobre o de `targetId` (ou `null`: o topo da árvore): a mudança de posição que o hub recebe, com o cargo que
+ * ele já tem. `null` quando não há o que mudar: o agente não existe, o alvo é ele mesmo ou alguém abaixo dele (fecharia um ciclo, o hub também
+ * recusa) ou o superior de hoje já é o alvo. */
+export function moveEdit(agents: OrgAgent[], draggedId: string, targetId: string | null): OrgEdit | null {
+  const dragged = agents.find((a) => a.id === draggedId);
+  if (!dragged) return null;
+  if (targetId !== null && !superiorChoices(agents, draggedId).some((a) => a.id === targetId)) return null;
+  if ((dragged.reportsTo ?? null) === targetId) return null;
+  return positionEdit(draggedId, dragged.role ?? "", targetId ?? "");
 }
 
 /** Um agente foi renomeado: quem reportava a ele acompanha o nome novo. */

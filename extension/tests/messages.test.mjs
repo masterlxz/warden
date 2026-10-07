@@ -4,7 +4,16 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { decode } from "../src/protocol/messages.ts";
-import { delegationSummary } from "../src/sidepanel/lib/modelPolicies.ts";
+import {
+  delegationCandidates,
+  delegationSummary,
+  limitEdit,
+  limitModels,
+  nextPolicyId,
+  policiesEdit,
+  policiesWith,
+  policiesWithout,
+} from "../src/sidepanel/lib/modelPolicies.ts";
 
 const settings = (agents, extra = {}) => ({ agents, ...extra });
 
@@ -75,6 +84,59 @@ describe("decoding the delegated tasks", () => {
     const reply = decode(JSON.stringify({ type: "taskError", requestId: 5, message: "not running here", authRejected: false }));
     assert.equal(reply.type, "taskError");
     assert.equal(reply.authRejected, false);
+  });
+});
+
+describe("the models a hub offers", () => {
+  test("settings carry the ids of the providers and combos, apart from the policies", () => {
+    const reply = decode(
+      JSON.stringify({
+        type: "settings",
+        requestId: 1,
+        settings: { agents: [], providers: [{ id: "main" }, { id: "spare" }], combos: [{ id: "both" }], modelPolicies: [{ id: "fast", model: "main", description: "" }] },
+      }),
+    );
+    assert.deepEqual(reply.modelIds, ["main", "spare", "both"]);
+    assert.deepEqual(delegationCandidates(reply.modelIds, reply.modelPolicies), ["main", "spare", "both", "fast"]);
+  });
+
+  test("a hub with no providers listed offers none", () => {
+    assert.deepEqual(decode(JSON.stringify({ type: "settingsSaved", requestId: 1, settings: { agents: [] } })).modelIds, []);
+  });
+});
+
+describe("editing a model limit and the policies", () => {
+  test("the limit puts the default first and keeps the candidates' order for the rest, and nothing checked is open", () => {
+    const candidates = ["main", "spare", "fast"];
+    assert.deepEqual(limitModels(candidates, new Set(["main", "fast"]), "fast"), ["fast", "main"]);
+    assert.deepEqual(limitModels(candidates, new Set(["spare", "fast", "main"]), "main"), ["main", "spare", "fast"]);
+    assert.deepEqual(limitModels(candidates, new Set(["spare"]), "main"), ["spare"], "a default that isn't checked is ignored");
+    assert.deepEqual(limitModels(candidates, new Set(), ""), []);
+    assert.deepEqual(limitEdit("chief", ["fast"]), { kind: "setDelegationModels", id: "chief", models: ["fast"] });
+  });
+
+  test("a policy is replaced where it was, or added at the end, with the text trimmed", () => {
+    const policies = [
+      { id: "fast", model: "main", description: "quick" },
+      { id: "deep", model: "spare" },
+    ];
+    assert.deepEqual(policiesWith(policies, { id: " fast ", model: " spare ", description: " cheap " }, "fast"), [
+      { id: "fast", model: "spare", description: "cheap" },
+      { id: "deep", model: "spare" },
+    ]);
+    assert.deepEqual(policiesWith(policies, { id: "code", model: "main" }, null).at(-1), { id: "code", model: "main", description: "" });
+    assert.deepEqual(policiesWith(policies, { id: "renamed", model: "main", description: "" }, "deep").map((p) => p.id), ["fast", "renamed"]);
+    assert.deepEqual(policiesWithout(policies, "fast").map((p) => p.id), ["deep"]);
+  });
+
+  test("the policies go to the hub with a description always present", () => {
+    assert.deepEqual(policiesEdit([{ id: "deep", model: "spare" }]), { kind: "setModelPolicies", policies: [{ id: "deep", model: "spare", description: "" }] });
+    assert.deepEqual(policiesEdit([]), { kind: "setModelPolicies", policies: [] });
+  });
+
+  test("a new policy gets a free name", () => {
+    assert.equal(nextPolicyId(["main"]), "policy-1");
+    assert.equal(nextPolicyId(["policy-1", "policy-2"]), "policy-3");
   });
 });
 

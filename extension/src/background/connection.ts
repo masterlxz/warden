@@ -358,14 +358,14 @@ export class ServerConnection {
   async listHubAgents(): Promise<HubAgents> {
     const reply = await this.request((requestId) => ({ type: "requestSettings", requestId }));
     if (reply.type !== "settings") throw new Error("unexpected reply from the hub");
-    return { agents: reply.agents, modelPolicies: reply.modelPolicies };
+    return { agents: reply.agents, modelPolicies: reply.modelPolicies, modelIds: reply.modelIds };
   }
 
   /** P120 — one change to the agents' organization, with the pairing key. Rejects with `HubRequestError` (`authRejected` on a wrong key). */
   async editAgentOrg(pairingKey: string, edit: OrgEdit): Promise<HubAgents> {
     const reply = await this.request((requestId) => ({ type: "editAgentOrg", requestId, pairingKey, edit }), SAVE_SETTINGS_TIMEOUT_MS);
     if (reply.type !== "settingsSaved") throw new Error("unexpected reply from the hub");
-    return { agents: reply.agents, modelPolicies: reply.modelPolicies };
+    return { agents: reply.agents, modelPolicies: reply.modelPolicies, modelIds: reply.modelIds };
   }
 
   /** P123 — the work agents delegated to each other, newest first. */

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { SettingsError, type ServerConnection } from "../hub/connection";
-import type { AgentSettings } from "../hub/messages";
+import type { AgentSettings, AgentTask } from "../hub/messages";
+import { activityLine, activityOf } from "../hub/agentTasks";
 import { approvalCategoryLabel } from "../hub/approvalCategories";
-import { addReportEdit, buildOrg, positionEdit, superiorChoices, type OrgEdit, type OrgNode } from "../hub/org";
+import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgEdit, type OrgNode } from "../hub/org";
 
 const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho" };
 
@@ -31,6 +32,18 @@ interface Edicao {
   abrir: (painel: Painel | null) => void;
   /** Pede a chave de pareamento para a mudança. */
   aplicar: (edit: OrgEdit) => void;
+  /** O agente cujo cartão está sendo arrastado (P120): outro cartão, ou o topo, aceita soltá-lo se a mudança é válida. */
+  arrastando: string | null;
+  arrastar: (id: string | null) => void;
+  /** O que o agente andou fazendo, numa linha, tirado das tarefas do hub; `null` sem nenhuma tarefa dele. */
+  atividade: (id: string) => string | null;
+}
+
+/** Soltar o cartão arrastado sobre `alvo` (`null`: o topo): a mudança, se houver. Um cartão que vira filho de um descendente fecharia um círculo. */
+function aoSoltar(edicao: Edicao, alvo: string | null): void {
+  const edit = edicao.arrastando === null ? null : moveEdit(edicao.agents, edicao.arrastando, alvo);
+  edicao.arrastar(null);
+  if (edit) edicao.aplicar(edit);
 }
 
 function FormularioCargo({ agent, edicao }: { agent: AgentSettings; edicao: Edicao }) {
@@ -126,9 +139,27 @@ function ConfirmarRemocao({ node, edicao }: { node: OrgNode<AgentSettings>; edic
 function Node({ node, edicao }: { node: OrgNode<AgentSettings>; edicao: Edicao }) {
   const { agent, children } = node;
   const { painel } = edicao;
+  const alvoValido = edicao.arrastando !== null && moveEdit(edicao.agents, edicao.arrastando, agent.id) !== null;
   return (
     <li className="org-node">
-      <div className="org-card">
+      {/* O arrastar fica no cartão, não no <li>: o `dragover` dos subordinados não deve subir para o cartão do pai. */}
+      <div
+        className={`org-card${edicao.arrastando === agent.id ? " org-card--arrastando" : ""}${alvoValido ? " org-card--alvo" : ""}`}
+        draggable={!edicao.ocupado}
+        onDragStart={(e) => {
+          e.dataTransfer.setData("text/plain", agent.id);
+          e.dataTransfer.effectAllowed = "move";
+          edicao.arrastar(agent.id);
+        }}
+        onDragEnd={() => edicao.arrastar(null)}
+        onDragOver={(e) => {
+          if (alvoValido) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          aoSoltar(edicao, agent.id);
+        }}
+      >
         <span className="org-name">{agent.id}</span>
         {agent.role && <span className="org-role">{agent.role}</span>}
         <span className="org-badges">
@@ -139,6 +170,7 @@ function Node({ node, edicao }: { node: OrgNode<AgentSettings>; edicao: Edicao }
           ))}
         </span>
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 subordinado" : `${children.length} subordinados`}</span>}
+        {edicao.atividade(agent.id) && <span className="org-activity">{edicao.atividade(agent.id)}</span>}
         <span className="org-actions">
           <button type="button" className="link-button" onClick={() => edicao.onOpenChat(agent.id)} title={`Começar uma conversa com ${agent.id}`}>
             Conversar
@@ -192,6 +224,8 @@ export default function OrganizationView({
   const [pairingKey, setPairingKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [arrastando, setArrastando] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
 
   const load = useCallback(async () => {
     if (!conn) return;
@@ -201,6 +235,12 @@ export default function OrganizationView({
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+    // A atividade de cada nó é um extra: sem as tarefas, o cartão só não mostra a linha.
+    try {
+      setTasks(await conn.listAgentTasks());
+    } catch {
+      /* ignorado */
     }
   }, [conn]);
 
@@ -254,7 +294,14 @@ export default function OrganizationView({
       setKeyError(null);
       setAsking(edit);
     },
+    arrastando,
+    arrastar: setArrastando,
+    atividade: (id) => {
+      const activity = activityOf(tasks, id);
+      return activity ? activityLine(activity, Date.now()) : null;
+    },
   };
+  const topoValido = arrastando !== null && moveEdit(agents, arrastando, null) !== null;
   const tree = buildOrg(agents);
   const ninguemReporta = tree.every((node) => node.children.length === 0);
 
@@ -302,7 +349,19 @@ export default function OrganizationView({
           ))}
         </ul>
       )}
-      {tree.length > 0 && ninguemReporta && <p className="skills-hint">Ninguém reporta a ninguém ainda: use "Editar" num agente para escolher o superior dele.</p>}
+      {topoValido && (
+        <div
+          className="org-topo"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            aoSoltar(edicao, null);
+          }}
+        >
+          Soltar aqui para tirar de baixo do superior (topo da árvore)
+        </div>
+      )}
+      {tree.length > 0 && ninguemReporta && <p className="skills-hint">Ninguém reporta a ninguém ainda: arraste um cartão para cima de outro, ou use "Editar" num agente para escolher o superior dele.</p>}
       {painel?.kind === "add" && painel.under === null && <FormularioNovo key="add-top" under={null} edicao={edicao} />}
       <div className="skills-actions">
         <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "add", under: null })}>

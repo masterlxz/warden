@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { addReportEdit, buildOrg, descendantsOf, positionEdit, removeFromOrg, renameInReports, superiorChoices } from "../src/sidepanel/lib/org.ts";
+import { addReportEdit, buildOrg, descendantsOf, moveEdit, positionEdit, removeFromOrg, renameInReports, superiorChoices } from "../src/sidepanel/lib/org.ts";
 
 const agent = (id, reportsTo = null, role = null) => ({ id, reportsTo, role });
 const ids = (nodes) => nodes.map((n) => n.agent.id);
@@ -61,5 +61,28 @@ describe("editing the tree", () => {
     assert.deepEqual(positionEdit("dev", " Backend ", "lead"), { kind: "setPosition", id: "dev", role: "Backend", reportsTo: "lead" });
     assert.deepEqual(addReportEdit(" reviewer ", " Reviews code. ", "", "lead"), { kind: "addReport", id: "reviewer", persona: "Reviews code.", reportsTo: "lead" });
     assert.deepEqual(addReportEdit("top", "Leads.", "Chief", null), { kind: "addReport", id: "top", persona: "Leads.", role: "Chief" });
+  });
+});
+
+describe("dragging a card onto another", () => {
+  const team = [agent("boss", null, "CTO"), agent("lead", "boss", "Lead"), agent("dev", "lead"), agent("solo")];
+
+  test("moves the agent under the target and keeps the role it already has", () => {
+    assert.deepEqual(moveEdit(team, "dev", "boss"), { kind: "setPosition", id: "dev", reportsTo: "boss" });
+    assert.deepEqual(moveEdit(team, "lead", "solo"), { kind: "setPosition", id: "lead", role: "Lead", reportsTo: "solo" });
+  });
+
+  test("dropping on the top takes the agent out from under its superior", () => {
+    assert.deepEqual(moveEdit(team, "lead", null), { kind: "setPosition", id: "lead", role: "Lead" });
+  });
+
+  test("there is nothing to change when the target is itself, a report of it, or already its superior", () => {
+    assert.equal(moveEdit(team, "lead", "lead"), null);
+    assert.equal(moveEdit(team, "boss", "dev"), null, "that would close a circle");
+    assert.equal(moveEdit(team, "boss", "lead"), null);
+    assert.equal(moveEdit(team, "dev", "lead"), null, "it already reports to the target");
+    assert.equal(moveEdit(team, "solo", null), null, "it is already at the top");
+    assert.equal(moveEdit(team, "ghost", "boss"), null);
+    assert.equal(moveEdit(team, "dev", "ghost"), null);
   });
 });

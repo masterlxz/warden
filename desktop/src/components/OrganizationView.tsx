@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEntry } from "../types";
+import type { AgentEntry, AgentTask } from "../types";
+import { activityLine, activityOf } from "../lib/agentTasks";
 import { approvalCategoryLabel } from "../lib/approvalCategories";
-import { hubEditAgentOrg } from "../lib/hub";
-import { addReportEdit, buildOrg, positionEdit, superiorChoices, type OrgEdit, type OrgNode } from "../lib/org";
+import { hubAgentTasks, hubEditAgentOrg } from "../lib/hub";
+import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgEdit, type OrgNode } from "../lib/org";
 import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
 const AUTONOMY: Record<number, string> = { 1: "answers only", 2: "suggests", 3: "asks first", 4: "acts alone" };
@@ -32,6 +33,18 @@ interface Editing {
   busy: boolean;
   open: (panel: Panel | null) => void;
   apply: (edit: OrgEdit) => Promise<void>;
+  /** The agent whose card is being dragged (P120): another card, or the top, takes the drop when the change is valid. */
+  dragging: string | null;
+  drag: (id: string | null) => void;
+  /** What the agent has been up to, on one line, taken from the hub's tasks; `null` with no task of its own. */
+  activity: (id: string) => string | null;
+}
+
+/** Dropping the dragged card on `target` (`null`: the top): the change, if there is one. A card dropped under one of its own reports would close a circle. */
+function onDropOn(editing: Editing, target: string | null): void {
+  const edit = editing.dragging === null ? null : moveEdit(editing.agents, editing.dragging, target);
+  editing.drag(null);
+  if (edit) void editing.apply(edit);
 }
 
 function PositionForm({ agent, editing }: { agent: AgentEntry; editing: Editing }) {
@@ -128,9 +141,27 @@ function RemoveConfirm({ node, editing }: { node: OrgNode<AgentEntry>; editing: 
 function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }) {
   const { agent, children } = node;
   const { panel } = editing;
+  const validTarget = editing.dragging !== null && moveEdit(editing.agents, editing.dragging, agent.id) !== null;
   return (
     <li className="org-node">
-      <div className="org-card">
+      {/* The drag sits on the card, not on the <li>: the `dragover` of the reports must not bubble up to their superior's card. */}
+      <div
+        className={`org-card${editing.dragging === agent.id ? " org-card--dragging" : ""}${validTarget ? " org-card--target" : ""}`}
+        draggable={!editing.busy}
+        onDragStart={(e) => {
+          e.dataTransfer.setData("text/plain", agent.id);
+          e.dataTransfer.effectAllowed = "move";
+          editing.drag(agent.id);
+        }}
+        onDragEnd={() => editing.drag(null)}
+        onDragOver={(e) => {
+          if (validTarget) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          onDropOn(editing, agent.id);
+        }}
+      >
         <span className="org-name">{agent.id}</span>
         {agent.role && <span className="org-role">{agent.role}</span>}
         <span className="org-badges">
@@ -141,6 +172,7 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
           ))}
         </span>
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 report" : `${children.length} reports`}</span>}
+        {editing.activity(agent.id) && <span className="org-activity">{editing.activity(agent.id)}</span>}
         <span className="org-actions">
           <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenChat(agent.id)} title={`Start a conversation with ${agent.id}`}>
             Chat
@@ -196,9 +228,29 @@ function OrganizationView({
   const [panel, setPanel] = useState<Panel | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
   const { askKey, dialog } = usePairingKey();
 
+  // The activity of each node is an extra: without the tasks, the card just shows no line.
+  useEffect(() => {
+    let alive = true;
+    (remote ? hubAgentTasks() : invoke<AgentTask[]>("list_agent_tasks")).then(
+      (loaded) => alive && setTasks(loaded),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [remote, agents]);
+
   const editing: Editing = {
+    dragging,
+    drag: setDragging,
+    activity: (id) => {
+      const activity = activityOf(tasks, id);
+      return activity ? activityLine(activity, Date.now()) : null;
+    },
     onOpenChat,
     onOpenTasks,
     agents,
@@ -242,7 +294,19 @@ function OrganizationView({
           ))}
         </ul>
       )}
-      {tree.length > 0 && nobodyReports && <p className="settings-hint">Nobody reports to anybody yet: use "Edit" on an agent to pick its superior.</p>}
+      {dragging !== null && moveEdit(agents, dragging, null) !== null && (
+        <div
+          className="org-top"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            onDropOn(editing, null);
+          }}
+        >
+          Drop here to take it out from under its superior (top of the tree)
+        </div>
+      )}
+      {tree.length > 0 && nobodyReports && <p className="settings-hint">Nobody reports to anybody yet: drag a card onto another, or use "Edit" on an agent to pick its superior.</p>}
       {panel?.kind === "add" && panel.under === null && <AddForm key="add-top" under={null} editing={editing} />}
       <div className="org-form-actions">
         <button type="button" className="settings-browse-btn" disabled={busy} onClick={() => editing.open({ kind: "add", under: null })}>
