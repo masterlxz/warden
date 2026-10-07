@@ -76,6 +76,75 @@ export interface ApprovalPrompt {
   category?: string;
 }
 
+/** Onde uma tarefa delegada está (P123). */
+export type AgentTaskState = "pending" | "running" | "waiting" | "paused" | "done" | "failed" | "cancelled";
+
+/** O que dá para fazer com uma tarefa em andamento, pela tela. */
+export type AgentTaskAction = "pause" | "resume" | "cancel";
+
+/** Mirrors `AgentTaskDto` (P123): uma tarefa que um agente delegou em segundo plano. `group` é comum às tarefas que um turno começou. */
+export interface AgentTask {
+  id: string;
+  group: string;
+  /** O agente que delegou. */
+  owner?: string | null;
+  /** Quem faz o trabalho, ou o nome dado a um ajudante temporário. */
+  assignee: string;
+  /** A tarefa de que esta é subtarefa, quando o agente dela a começou de dentro de outra tarefa. */
+  parentId?: string | null;
+  objective: string;
+  model?: string | null;
+  channel: string;
+  state: AgentTaskState;
+  result?: string | null;
+  error?: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  createdAtMs: number;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+  /** Roda no processo do hub que respondeu: dá para pausar, retomar ou parar por aqui. */
+  controllable?: boolean;
+  /** Entre essas, as que também podem ser pausadas: uma delegação que o agente espera só pode ser parada. */
+  pausable?: boolean;
+}
+
+/** O que a tela de Organização lê de um agente nas configurações do hub (P120, P123): o resto do `AgentSettings` fica de fora. */
+export interface AgentInfo {
+  id: string;
+  role?: string | null;
+  reportsTo?: string | null;
+  canDelegateToAgents: boolean;
+  canManageAgents: boolean;
+  canMessageAgents: boolean;
+  canManageTasks: boolean;
+  /** 1 só responde, 2 sugere, 3 pede antes, 4 age sozinho. */
+  autonomy: number;
+  approvalRequired: string[];
+  /** Os modelos que o agente pode escolher ao delegar; vazio = aberto. */
+  delegationModels: string[];
+}
+
+/** Mirrors `ModelPolicyDto` (P123): um nome ("fast", "reasoning"...) que um agente que delega usa para o modelo de uma tarefa. */
+export interface ModelPolicy {
+  id: string;
+  model: string;
+  description?: string;
+}
+
+/** Uma mudança feita pela árvore, como o hub a recebe (`AgentOrgEdit`). `role` e `reportsTo` ausentes querem dizer nenhum. */
+export type OrgEdit =
+  | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
+  | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
+  | { kind: "remove"; id: string };
+
+/** What the hub's settings say about the agents (P87, P120, P123), reduced to what this client shows. */
+export interface HubAgents {
+  agents: AgentInfo[];
+  modelPolicies: ModelPolicy[];
+}
+
 /** Mirrors `warden_server_protocol::protocol::HistoryMessage` (P40). */
 export interface HistoryMessage {
   role: "user" | "assistant";
@@ -97,6 +166,13 @@ export type ClientMessage =
   /** P87 — only for the configured agents' ids, as the web's selector does. */
   | { type: "requestSettings"; requestId: number }
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
+  /** P123 — the work agents delegated to each other, answered by `agentTaskList`. */
+  | { type: "listAgentTasks"; requestId: number }
+  /** P123 — pauses, resumes or stops a task running on the hub (and the subtasks below it). Asks for the pairing key; answered by
+   * `agentTaskList` or `taskError`. */
+  | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
+  /** P120 — one change to the agents' organization. Asks for the pairing key; answered by `settingsSaved` or `settingsError`. */
+  | { type: "editAgentOrg"; requestId: number; pairingKey: string; edit: OrgEdit }
   | { type: "toolCallResult"; callId: number; result: unknown }
   | { type: "toolCallError"; callId: number; message: string }
   /** Skills management (P72) — `requestId` is echoed on the matching reply. */
@@ -140,8 +216,13 @@ export type ServerMessage =
   | { type: "dirList"; requestId: number; path: string; parent?: string; dirs: DirEntry[] }
   | { type: "dirError"; requestId: number; message: string }
   /** Reply to `requestSettings`, reduced to what this client uses (P87). */
-  | { type: "settings"; requestId: number; agentIds: string[] }
-  | { type: "settingsError"; requestId: number; message: string }
+  | ({ type: "settings"; requestId: number; agentIds: string[] } & HubAgents)
+  /** Reply to a successful `editAgentOrg`, with the agents as the file holds them now. */
+  | ({ type: "settingsSaved"; requestId: number } & HubAgents)
+  /** `authRejected`: the pairing key was wrong; nothing was written. */
+  | { type: "settingsError"; requestId: number; message: string; authRejected?: boolean }
+  | { type: "agentTaskList"; requestId: number; tasks: AgentTask[] }
+  | { type: "taskError"; requestId: number; message: string; authRejected?: boolean }
   | ({ type: "approvalRequest" } & ApprovalPrompt)
   | { type: "approvalCancelled"; approvalId: number }
   /** An agent left a note in one of this device's conversations, or answered one (P46 `message_agent`). */
@@ -151,6 +232,31 @@ export type ServerMessage =
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
   | { type: "discoverAck"; serverName: string; secureUrl?: string }
   | { type: "goodbye"; reason: string | null };
+
+type RawAgent = Partial<Omit<AgentInfo, "id">> & { id: string };
+interface RawSettings {
+  agents?: RawAgent[];
+  modelPolicies?: ModelPolicy[];
+}
+
+/** The agents and model policies out of a settings payload, with the optional fields this client reads filled in. */
+function hubAgents(settings: RawSettings): HubAgents {
+  return {
+    agents: (settings.agents ?? []).map((a) => ({
+      id: a.id,
+      role: a.role ?? null,
+      reportsTo: a.reportsTo ?? null,
+      canDelegateToAgents: a.canDelegateToAgents ?? false,
+      canManageAgents: a.canManageAgents ?? false,
+      canMessageAgents: a.canMessageAgents ?? false,
+      canManageTasks: a.canManageTasks ?? false,
+      autonomy: a.autonomy ?? 4,
+      approvalRequired: a.approvalRequired ?? [],
+      delegationModels: a.delegationModels ?? [],
+    })),
+    modelPolicies: settings.modelPolicies ?? [],
+  };
+}
 
 /**
  * Decodes one `ServerMessage`. Throws on anything this client doesn't understand — explicit is
@@ -175,9 +281,15 @@ export function decode(text: string): ServerMessage {
       return { type: "skillList", requestId: raw.requestId, skills: raw.skills.map((skill) => ({ ...skill, agents: skill.agents ?? [] })) };
     }
     case "settings": {
-      const raw = json as { requestId: number; settings: { agents?: Array<{ id: string }> } };
-      return { type: "settings", requestId: raw.requestId, agentIds: (raw.settings.agents ?? []).map((a) => a.id) };
+      const raw = json as { requestId: number; settings: RawSettings };
+      return { type: "settings", requestId: raw.requestId, agentIds: (raw.settings.agents ?? []).map((a) => a.id), ...hubAgents(raw.settings) };
     }
+    case "settingsSaved": {
+      const raw = json as { requestId: number; settings: RawSettings };
+      return { type: "settingsSaved", requestId: raw.requestId, ...hubAgents(raw.settings) };
+    }
+    case "agentTaskList":
+    case "taskError":
     case "settingsError":
     case "approvalRequest":
     case "approvalCancelled":

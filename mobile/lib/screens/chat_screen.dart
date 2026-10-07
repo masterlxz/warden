@@ -15,6 +15,7 @@ import '../services/server_connection.dart';
 import '../services/sync_auto_pull.dart';
 import '../services/vault_paths.dart';
 import '../src/rust/api/sync.dart' as sync_bridge;
+import 'agents_screen.dart';
 import 'attachment_kind.dart';
 import 'folder_picker.dart';
 
@@ -202,6 +203,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
+  /// P120, P123 — the agents screen. "Chat" on a node leaves it and starts an empty conversation as that agent.
+  void _openAgents() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AgentsScreen(
+          backend: widget.connection,
+          onOpenChat: (agentId) {
+            widget.transcript.startNew();
+            widget.transcript.selectAgent(agentId);
+          },
+        ),
+      ),
+    );
+  }
+
   Future<void> _disconnect() async {
     await widget.connection.goodbye('user disconnected');
     if (mounted) Navigator.of(context).pop();
@@ -291,6 +307,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ListenableBuilder(
             listenable: widget.transcript,
             builder: (context, _) => _AgentMenu(transcript: widget.transcript),
+          ),
+          // P120, P123 — the organization of the agents and the work they hand each other.
+          IconButton(
+            key: const Key('agents-button'),
+            onPressed: _openAgents,
+            icon: const Icon(Icons.account_tree_outlined),
+            tooltip: 'Agents',
           ),
           Builder(
             builder: (context) => IconButton(

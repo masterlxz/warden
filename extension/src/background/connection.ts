@@ -13,11 +13,15 @@
 import {
   encode,
   decode,
+  type AgentTask,
+  type AgentTaskAction,
   type ApprovalPrompt,
   type ClientMessage,
   type ConversationSummary,
   type DirListing,
   type HistoryMessage,
+  type HubAgents,
+  type OrgEdit,
   type ServerMessage,
   type SkillDto,
   type ToolSpec,
@@ -35,6 +39,16 @@ export type ConnectionStatus =
   | { kind: "failure"; message: string };
 
 export class HandshakeError extends Error {}
+
+/** A request the hub refused. `authRejected`: the pairing key was wrong, nothing changed. */
+export class HubRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly authRejected: boolean,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * One line of the conversation transcript kept in `background/index.ts`. `ServerConnection`
@@ -72,6 +86,8 @@ export interface ConnectOptions {
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+/** A change to the settings starts the hub's orchestrator again, which can take a while (MCP servers). */
+const SAVE_SETTINGS_TIMEOUT_MS = 120_000;
 
 /** One in-flight request/reply pair (skills P72, history P40), keyed by `requestId`. `resolve`
  * gets the matching success reply; an `*Error` reply rejects instead. */
@@ -276,6 +292,8 @@ export class ServerConnection {
         for (const listener of this.changedListeners) listener(message.conversationId);
         break;
       case "settings":
+      case "settingsSaved":
+      case "agentTaskList":
       case "skillList":
       case "skillOk":
       case "history":
@@ -288,8 +306,11 @@ export class ServerConnection {
       case "skillError":
       case "historyError":
       case "conversationError":
-      case "settingsError":
         this.settleRequest(message.requestId, (pending) => pending.reject(new Error(message.message)));
+        break;
+      case "settingsError":
+      case "taskError":
+        this.settleRequest(message.requestId, (pending) => pending.reject(new HubRequestError(message.message, message.authRejected ?? false)));
         break;
       case "authError":
         this.rejectedReason = message.reason;
@@ -333,6 +354,35 @@ export class ServerConnection {
     return reply.type === "settings" ? reply.agentIds : [];
   }
 
+  /** P120, P123 — the agents as the hub's settings hold them (with their roles, superiors and model limits) and the model policies. */
+  async listHubAgents(): Promise<HubAgents> {
+    const reply = await this.request((requestId) => ({ type: "requestSettings", requestId }));
+    if (reply.type !== "settings") throw new Error("unexpected reply from the hub");
+    return { agents: reply.agents, modelPolicies: reply.modelPolicies };
+  }
+
+  /** P120 — one change to the agents' organization, with the pairing key. Rejects with `HubRequestError` (`authRejected` on a wrong key). */
+  async editAgentOrg(pairingKey: string, edit: OrgEdit): Promise<HubAgents> {
+    const reply = await this.request((requestId) => ({ type: "editAgentOrg", requestId, pairingKey, edit }), SAVE_SETTINGS_TIMEOUT_MS);
+    if (reply.type !== "settingsSaved") throw new Error("unexpected reply from the hub");
+    return { agents: reply.agents, modelPolicies: reply.modelPolicies };
+  }
+
+  /** P123 — the work agents delegated to each other, newest first. */
+  async listAgentTasks(): Promise<AgentTask[]> {
+    const reply = await this.request((requestId) => ({ type: "listAgentTasks", requestId }));
+    if (reply.type !== "agentTaskList") throw new Error("unexpected reply from the hub");
+    return reply.tasks;
+  }
+
+  /** P123 — pauses, resumes or stops a task running on the hub, with the pairing key. Returns the updated list. Rejects with
+   * `HubRequestError` (`authRejected` on a wrong key, or the task doesn't run there). */
+  async controlAgentTask(pairingKey: string, taskId: string, action: AgentTaskAction): Promise<AgentTask[]> {
+    const reply = await this.request((requestId) => ({ type: "controlAgentTask", requestId, pairingKey, taskId, action }));
+    if (reply.type !== "agentTaskList") throw new Error("unexpected reply from the hub");
+    return reply.tasks;
+  }
+
   /** P87 — the person's answer to an `approvalRequest`. */
   resolveApproval(approvalId: number, approved: boolean): void {
     this.socket.send(encode({ type: "resolveApproval", approvalId, approved }));
@@ -374,13 +424,13 @@ export class ServerConnection {
     return reply.type === "history" ? reply.messages : [];
   }
 
-  private request(build: (requestId: number) => ClientMessage): Promise<ServerMessage> {
+  private request(build: (requestId: number) => ClientMessage, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<ServerMessage> {
     return new Promise((resolve, reject) => {
       const requestId = this.nextRequestId++;
       const timeoutId = setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error("no response from the server"));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
       try {
         this.socket.send(encode(build(requestId)));

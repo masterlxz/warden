@@ -202,6 +202,244 @@ final class RequestSettingsMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'requestSettings', 'requestId': requestId};
 }
 
+/// P123 — the work agents delegated to each other in the background, newest first. Answered by
+/// [AgentTaskListMessage].
+final class ListAgentTasksMessage extends ClientMessage {
+  const ListAgentTasksMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'listAgentTasks', 'requestId': requestId};
+}
+
+/// P123 — pauses, resumes or stops ([action]: `pause`, `resume` or `cancel`) a task running on the hub, with the
+/// subtasks below it. Asks for the pairing key every time. Answered by [AgentTaskListMessage] or [TaskErrorMessage].
+final class ControlAgentTaskMessage extends ClientMessage {
+  const ControlAgentTaskMessage(this.requestId, this.pairingKey, this.taskId, this.action);
+
+  final int requestId;
+  final String pairingKey;
+  final String taskId;
+  final String action;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'controlAgentTask',
+        'requestId': requestId,
+        'pairingKey': pairingKey,
+        'taskId': taskId,
+        'action': action,
+      };
+}
+
+/// P120 — one change to the organization of the agents, with the pairing key. Answered by [SettingsSavedMessage] or
+/// [SettingsErrorMessage].
+final class EditAgentOrgMessage extends ClientMessage {
+  const EditAgentOrgMessage(this.requestId, this.pairingKey, this.edit);
+
+  final int requestId;
+  final String pairingKey;
+  final OrgEdit edit;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'editAgentOrg', 'requestId': requestId, 'pairingKey': pairingKey, 'edit': edit.toJson()};
+}
+
+/// One change made from the organization tree (P120), as the hub receives it (`AgentOrgEdit`). A blank [role] or
+/// [reportsTo] means none and is left out.
+sealed class OrgEdit {
+  const OrgEdit();
+
+  Map<String, dynamic> toJson();
+}
+
+/// Gives [id] this role and this superior (moving it, with everyone below it, when the superior changes).
+final class SetPositionEdit extends OrgEdit {
+  const SetPositionEdit(this.id, {this.role, this.reportsTo});
+
+  final String id;
+  final String? role;
+  final String? reportsTo;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'kind': 'setPosition',
+        'id': id,
+        if (role != null && role!.trim().isNotEmpty) 'role': role!.trim(),
+        if (reportsTo != null && reportsTo!.isNotEmpty) 'reportsTo': reportsTo,
+      };
+}
+
+/// A new agent under [reportsTo] (or at the top), careful by default (the hub decides what that means).
+final class AddReportEdit extends OrgEdit {
+  const AddReportEdit(this.id, this.persona, {this.role, this.reportsTo});
+
+  final String id;
+  final String persona;
+  final String? role;
+  final String? reportsTo;
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'kind': 'addReport',
+        'id': id.trim(),
+        'persona': persona.trim(),
+        if (role != null && role!.trim().isNotEmpty) 'role': role!.trim(),
+        if (reportsTo != null && reportsTo!.isNotEmpty) 'reportsTo': reportsTo,
+      };
+}
+
+/// Removes [id]; whoever reported to it reports to its superior.
+final class RemoveAgentEdit extends OrgEdit {
+  const RemoveAgentEdit(this.id);
+
+  final String id;
+
+  @override
+  Map<String, dynamic> toJson() => {'kind': 'remove', 'id': id};
+}
+
+/// What the organization screen reads of an agent in the hub's settings (P120, P123); the rest of `AgentSettings` stays
+/// out. A hub that doesn't send a field gets its default.
+class AgentInfo {
+  const AgentInfo({
+    required this.id,
+    this.role,
+    this.reportsTo,
+    this.canDelegateToAgents = false,
+    this.canManageAgents = false,
+    this.canMessageAgents = false,
+    this.canManageTasks = false,
+    this.autonomy = 4,
+    this.approvalRequired = const [],
+    this.delegationModels = const [],
+  });
+
+  final String id;
+  final String? role;
+  final String? reportsTo;
+  final bool canDelegateToAgents;
+  final bool canManageAgents;
+  final bool canMessageAgents;
+  final bool canManageTasks;
+
+  /// 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone.
+  final int autonomy;
+  final List<String> approvalRequired;
+
+  /// The models the agent may pick when it delegates; empty is open.
+  final List<String> delegationModels;
+
+  static AgentInfo fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return AgentInfo(
+      id: map['id'] as String,
+      role: map['role'] as String?,
+      reportsTo: map['reportsTo'] as String?,
+      canDelegateToAgents: map['canDelegateToAgents'] as bool? ?? false,
+      canManageAgents: map['canManageAgents'] as bool? ?? false,
+      canMessageAgents: map['canMessageAgents'] as bool? ?? false,
+      canManageTasks: map['canManageTasks'] as bool? ?? false,
+      autonomy: map['autonomy'] as int? ?? 4,
+      approvalRequired: [for (final c in (map['approvalRequired'] as List<dynamic>? ?? const [])) c as String],
+      delegationModels: [for (final m in (map['delegationModels'] as List<dynamic>? ?? const [])) m as String],
+    );
+  }
+}
+
+/// A named model policy (P123): [id] ("fast", "reasoning"...) is answered by [model]; [description] tells an agent that
+/// delegates when to pick it.
+class ModelPolicy {
+  const ModelPolicy({required this.id, required this.model, this.description});
+
+  final String id;
+  final String model;
+  final String? description;
+
+  static ModelPolicy fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return ModelPolicy(id: map['id'] as String, model: map['model'] as String, description: map['description'] as String?);
+  }
+}
+
+/// One task an agent delegated in the background (P123), as the hub's log has it. [group] is shared by the tasks one turn
+/// started. Mirrors `AgentTaskDto`.
+class AgentTask {
+  const AgentTask({
+    required this.id,
+    required this.group,
+    required this.assignee,
+    required this.objective,
+    required this.channel,
+    required this.state,
+    required this.createdAtMs,
+    this.owner,
+    this.parentId,
+    this.model,
+    this.result,
+    this.error,
+    this.totalTokens,
+    this.startedAtMs,
+    this.finishedAtMs,
+    this.controllable = false,
+    this.pausable = false,
+  });
+
+  final String id;
+  final String group;
+
+  /// The agent that delegated.
+  final String? owner;
+
+  /// Who does the work, or the name given to a temporary helper.
+  final String assignee;
+
+  /// The task this one is a subtask of.
+  final String? parentId;
+  final String objective;
+  final String? model;
+  final String channel;
+
+  /// `pending`, `running`, `waiting`, `paused`, `done`, `failed` or `cancelled`; an unknown one counts as pending.
+  final String state;
+  final String? result;
+  final String? error;
+  final int? totalTokens;
+  final int createdAtMs;
+  final int? startedAtMs;
+  final int? finishedAtMs;
+
+  /// Running in the hub process that answered, so it can be paused, resumed or stopped from here.
+  final bool controllable;
+
+  /// Among the controllable ones, those that can also be paused: a delegation the agent waits on can only be stopped.
+  final bool pausable;
+
+  static AgentTask fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return AgentTask(
+      id: map['id'] as String,
+      group: map['group'] as String,
+      owner: map['owner'] as String?,
+      assignee: map['assignee'] as String,
+      parentId: map['parentId'] as String?,
+      objective: map['objective'] as String,
+      model: map['model'] as String?,
+      channel: map['channel'] as String,
+      state: map['state'] as String,
+      result: map['result'] as String?,
+      error: map['error'] as String?,
+      totalTokens: map['totalTokens'] as int?,
+      createdAtMs: map['createdAtMs'] as int,
+      startedAtMs: map['startedAtMs'] as int?,
+      finishedAtMs: map['finishedAtMs'] as int?,
+      controllable: map['controllable'] as bool? ?? false,
+      pausable: map['pausable'] as bool? ?? false,
+    );
+  }
+}
+
 /// The person's answer to an [ApprovalRequestMessage] (P87).
 final class ResolveApprovalMessage extends ClientMessage {
   const ResolveApprovalMessage(this.approvalId, this.approved);
@@ -445,8 +683,20 @@ sealed class ServerMessage {
             for (final agent in ((json['settings'] as Map<String, dynamic>)['agents'] as List<dynamic>? ?? const []))
               (agent as Map<String, dynamic>)['id'] as String,
           ],
+          agents: _agentsOf(json['settings'] as Map<String, dynamic>),
+          modelPolicies: _policiesOf(json['settings'] as Map<String, dynamic>),
         ),
-      'settingsError' => SettingsErrorMessage(json['requestId'] as int, json['message'] as String),
+      'settingsSaved' => SettingsSavedMessage(
+          json['requestId'] as int,
+          agents: _agentsOf(json['settings'] as Map<String, dynamic>),
+          modelPolicies: _policiesOf(json['settings'] as Map<String, dynamic>),
+        ),
+      'settingsError' => SettingsErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
+      'agentTaskList' => AgentTaskListMessage(
+          json['requestId'] as int,
+          (json['tasks'] as List<dynamic>).map(AgentTask.fromJson).toList(),
+        ),
+      'taskError' => TaskErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'approvalRequest' => ApprovalRequestMessage(
           json['approvalId'] as int,
           target: json['target'] as String,
@@ -464,6 +714,12 @@ sealed class ServerMessage {
 
   static ServerMessage decode(String text) =>
       fromJson(jsonDecode(text) as Map<String, dynamic>);
+
+  static List<AgentInfo> _agentsOf(Map<String, dynamic> settings) =>
+      (settings['agents'] as List<dynamic>? ?? const []).map(AgentInfo.fromJson).toList();
+
+  static List<ModelPolicy> _policiesOf(Map<String, dynamic> settings) =>
+      (settings['modelPolicies'] as List<dynamic>? ?? const []).map(ModelPolicy.fromJson).toList();
 }
 
 final class HelloAckMessage extends ServerMessage {
@@ -753,19 +1009,50 @@ final class GoodbyeServerMessage extends ServerMessage {
   final String? reason;
 }
 
-/// Reply to [RequestSettingsMessage], reduced to what this app uses: the agents' ids (P87).
+/// Reply to [RequestSettingsMessage], reduced to what this app uses: the agents' ids (P87), the agents with their
+/// organization and model limits (P120, P123) and the model policies (P123).
 final class SettingsMessage extends ServerMessage {
-  const SettingsMessage(this.requestId, this.agentIds);
+  const SettingsMessage(this.requestId, this.agentIds, {this.agents = const [], this.modelPolicies = const []});
 
   final int requestId;
   final List<String> agentIds;
+  final List<AgentInfo> agents;
+  final List<ModelPolicy> modelPolicies;
 }
 
+/// Reply to a successful [EditAgentOrgMessage], with the agents as the hub holds them now.
+final class SettingsSavedMessage extends ServerMessage {
+  const SettingsSavedMessage(this.requestId, {this.agents = const [], this.modelPolicies = const []});
+
+  final int requestId;
+  final List<AgentInfo> agents;
+  final List<ModelPolicy> modelPolicies;
+}
+
+/// [authRejected]: the pairing key was wrong; nothing was written.
 final class SettingsErrorMessage extends ServerMessage {
-  const SettingsErrorMessage(this.requestId, this.message);
+  const SettingsErrorMessage(this.requestId, this.message, {this.authRejected = false});
 
   final int requestId;
   final String message;
+  final bool authRejected;
+}
+
+/// Reply to [ListAgentTasksMessage] and to a successful [ControlAgentTaskMessage] (P123): the delegated tasks, newest first.
+final class AgentTaskListMessage extends ServerMessage {
+  const AgentTaskListMessage(this.requestId, this.tasks);
+
+  final int requestId;
+  final List<AgentTask> tasks;
+}
+
+/// A task request failed (P123). [authRejected]: the pairing key was wrong; nothing changed.
+final class TaskErrorMessage extends ServerMessage {
+  const TaskErrorMessage(this.requestId, this.message, {this.authRejected = false});
+
+  final int requestId;
+  final String message;
+  final bool authRejected;
 }
 
 /// A tool in this device's turn needs the person's yes (P46/P87: an agent creating or editing

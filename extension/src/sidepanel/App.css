@@ -573,3 +573,210 @@ button:hover:not(:disabled) {
 .skills-diff-line--gap {
   color: var(--color-text-muted);
 }
+
+/* Agentes (P120, P123): a árvore da organização e o trabalho que os agentes delegam. */
+.agents-view,
+.agents-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tab-bar--sub {
+  margin-bottom: 0.25rem;
+}
+
+.agents-subtitle {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: var(--color-accent-dark);
+}
+
+.org-form select,
+.org-form textarea,
+.pairing-key-form input {
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.org-tree,
+.org-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.org-children {
+  margin-left: 0.6rem;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--color-border);
+}
+
+.org-node {
+  margin: 0.4rem 0;
+}
+
+.org-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.org-name {
+  font-weight: 600;
+}
+
+.org-role,
+.org-limit {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.org-limit {
+  flex-basis: 100%;
+}
+
+.org-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.org-badge {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+}
+
+.org-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.org-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.7rem;
+  flex-basis: 100%;
+}
+
+.org-form,
+.pairing-key-form {
+  margin: 0.3rem 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.agent-work-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.agent-work-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.agent-work-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.5rem;
+}
+
+.agent-work-live {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+}
+
+.agent-work-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.agent-work-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transition: width 0.3s ease;
+}
+
+.agent-work-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* A side panel is narrow: the objective goes on its own line under who and what model. */
+.agent-work-task-line {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.5rem;
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.85rem;
+}
+
+.agent-work-task-line:hover:not(:disabled) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.agent-work-assignee {
+  font-weight: 600;
+}
+
+.agent-work-objective {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.agent-work-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.agent-work-actions {
+  display: inline-flex;
+  gap: 0.6rem;
+  margin: 0.2rem 0 0 1.4rem;
+}
+
+.agent-work-detail {
+  padding: 0.3rem 0.5rem 0.4rem 1.4rem;
+}

@@ -7,7 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
-import type { ApprovalPrompt, ConversationSummary, DirListing, SkillDto } from "../protocol/messages";
+import type { AgentTask, AgentTaskAction, ApprovalPrompt, ConversationSummary, DirListing, HubAgents, OrgEdit, SkillDto } from "../protocol/messages";
 import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
@@ -39,6 +39,14 @@ export type PopupRequest =
   | { type: "listDirs"; path?: string }
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
   | { type: "discoverHubs"; port: number }
+  /** P123 — the work agents delegated to each other. */
+  | { type: "listAgentTasks" }
+  /** P123 — pauses, resumes or stops a task, with the hub's pairing key (asked every time, never kept). */
+  | { type: "controlAgentTask"; pairingKey: string; taskId: string; action: AgentTaskAction }
+  /** P120 — the agents with their roles, superiors and model limits, and the model policies. */
+  | { type: "listHubAgents" }
+  /** P120 — one change to the organization, with the pairing key. */
+  | { type: "editAgentOrg"; pairingKey: string; edit: OrgEdit }
   | { type: "listSkills" }
   | { type: "saveSkill"; skill: SkillDto; overwrite: boolean }
   | { type: "deleteSkill"; name: string }
@@ -80,6 +88,22 @@ export interface DiscoverHubsResponse {
   ok: boolean;
   hubs: DiscoveredHub[];
   error?: string;
+}
+
+/** Reply to `listAgentTasks` and `controlAgentTask`. `authRejected`: the pairing key was wrong. */
+export interface AgentTasksResponse {
+  ok: boolean;
+  tasks: AgentTask[];
+  error?: string;
+  authRejected?: boolean;
+}
+
+/** Reply to `listHubAgents` and `editAgentOrg`. `authRejected`: the pairing key was wrong. */
+export interface HubAgentsResponse {
+  ok: boolean;
+  hub?: HubAgents;
+  error?: string;
+  authRejected?: boolean;
 }
 
 /** Reply to `{ type: "listSkills" }` — always `skills` (empty on failure too), same posture as

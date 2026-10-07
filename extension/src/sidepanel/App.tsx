@@ -3,6 +3,7 @@ import ConnectionForm from "./ConnectionForm";
 import ChatView from "./ChatView";
 import ConversationBar from "./ConversationBar";
 import SkillsView from "./SkillsView";
+import AgentsView from "./AgentsView";
 import TabsView from "./TabsView";
 import ApprovalCard from "./ApprovalCard";
 import type { ApprovalPrompt } from "../protocol/messages";
@@ -26,7 +27,7 @@ export default function App() {
   });
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
-  const [tab, setTab] = useState<"chat" | "skills" | "tabs">("chat");
+  const [tab, setTab] = useState<"chat" | "skills" | "tabs" | "agents">("chat");
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "getStatus" }).then((res: GetStatusResponse) => {
@@ -76,7 +77,14 @@ export default function App() {
     });
   }
 
-  const pendingChat = conversationState.activeConversationId !== null && conversationState.pendingIds.includes(conversationState.activeConversationId);
+  /** P120 — a node of the organization tree: an empty conversation with that agent, shown in the chat. */
+  async function handleOpenChat(id: string) {
+    await chrome.runtime.sendMessage({ type: "newConversation" });
+    await chrome.runtime.sendMessage({ type: "selectAgent", agentId: id });
+    setTab("chat");
+  }
+
+  const pendingChat =conversationState.activeConversationId !== null && conversationState.pendingIds.includes(conversationState.activeConversationId);
 
   return (
     <div className="sidepanel-app">
@@ -89,6 +97,9 @@ export default function App() {
             </button>
             <button type="button" className={tab === "skills" ? "tab tab--active" : "tab"} onClick={() => setTab("skills")}>
               Skills
+            </button>
+            <button type="button" className={tab === "agents" ? "tab tab--active" : "tab"} onClick={() => setTab("agents")}>
+              Agentes
             </button>
             <button type="button" className={tab === "tabs" ? "tab tab--active" : "tab"} onClick={() => setTab("tabs")}>
               Abas
@@ -103,6 +114,11 @@ export default function App() {
           {tab === "skills" && (
             <div className="tab-panel">
               <SkillsView />
+            </div>
+          )}
+          {tab === "agents" && (
+            <div className="tab-panel">
+              <AgentsView onOpenChat={(id) => void handleOpenChat(id)} />
             </div>
           )}
           {tab === "tabs" && (

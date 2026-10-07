@@ -5,6 +5,7 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
+import 'agent_work.dart';
 import 'chat_transcript.dart';
 
 /// Connection state exposed to the UI. Mirrors the lifecycle a Fase 7.2
@@ -66,6 +67,18 @@ class ConversationException implements Exception {
   String toString() => message;
 }
 
+/// The hub refused a change to the organization or to a task (P120, P123). [authRejected]: the pairing key was wrong and
+/// nothing changed.
+class HubRequestException implements Exception {
+  const HubRequestException(this.message, {this.authRejected = false});
+
+  final String message;
+  final bool authRejected;
+
+  @override
+  String toString() => message;
+}
+
 /// Dart mirror of `crates/warden-server/src/client.rs`'s `ServerConnection`.
 ///
 /// Written against `StreamChannel<dynamic>` rather than `WebSocketChannel`
@@ -115,7 +128,7 @@ typedef ServerConnector = Future<ServerConnection> Function({
   Map<String, ToolHandler> toolHandlers,
 });
 
-class ServerConnection implements ConversationBackend {
+class ServerConnection implements ConversationBackend, AgentsBackend {
   ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this.user, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
@@ -324,7 +337,10 @@ class ServerConnection implements ConversationBackend {
               DirListMessage() ||
               DirErrorMessage() ||
               SettingsMessage() ||
+              SettingsSavedMessage() ||
               SettingsErrorMessage() ||
+              AgentTaskListMessage() ||
+              TaskErrorMessage() ||
               ApprovalRequestMessage() ||
               ApprovalCancelledMessage() ||
               ConversationsChangedMessage() ||
@@ -371,7 +387,11 @@ class ServerConnection implements ConversationBackend {
       case ApprovalRequestMessage():
       case ApprovalCancelledMessage():
         _approvalController.add(msg);
-      case SettingsMessage(:final requestId) || SettingsErrorMessage(:final requestId):
+      case SettingsMessage(:final requestId) ||
+            SettingsSavedMessage(:final requestId) ||
+            SettingsErrorMessage(:final requestId) ||
+            AgentTaskListMessage(:final requestId) ||
+            TaskErrorMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
       case PasswordChangedMessage(:final requestId) ||
             RecoveryPolicyAcceptedMessage(:final requestId) ||
@@ -450,6 +470,56 @@ class ServerConnection implements ConversationBackend {
       SettingsMessage(:final agentIds) => agentIds,
       SettingsErrorMessage(:final message) => throw ConversationException(message),
       _ => const [],
+    };
+  }
+
+  /// P120, P123 — the agents as the hub's settings hold them (roles, superiors, model limits) and the model policies.
+  /// Throws a [ConversationException] when the hub can't answer.
+  @override
+  Future<HubAgents> listHubAgents() async {
+    final reply = await _conversationRequest(RequestSettingsMessage.new);
+    return switch (reply) {
+      SettingsMessage(:final agents, :final modelPolicies) => HubAgents(agents, modelPolicies),
+      SettingsErrorMessage(:final message) => throw ConversationException(message),
+      _ => throw ConversationException('Unexpected reply to the settings request: $reply'),
+    };
+  }
+
+  /// P120 — one change to the organization, with the pairing key. A change starts the hub's orchestrator again, so it
+  /// waits longer than the other requests. Throws a [HubRequestException] (`authRejected` on a wrong key).
+  @override
+  Future<HubAgents> editAgentOrg(String pairingKey, OrgEdit edit) async {
+    final reply = await _conversationRequest(
+      (requestId) => EditAgentOrgMessage(requestId, pairingKey, edit),
+      timeout: const Duration(seconds: 120),
+    );
+    return switch (reply) {
+      SettingsSavedMessage(:final agents, :final modelPolicies) => HubAgents(agents, modelPolicies),
+      SettingsErrorMessage(:final message, :final authRejected) => throw HubRequestException(message, authRejected: authRejected),
+      _ => throw ConversationException('Unexpected reply to the organization change: $reply'),
+    };
+  }
+
+  /// P123 — the work agents delegated to each other, newest first.
+  @override
+  Future<List<AgentTask>> listAgentTasks() async {
+    final reply = await _conversationRequest(ListAgentTasksMessage.new);
+    return switch (reply) {
+      AgentTaskListMessage(:final tasks) => tasks,
+      TaskErrorMessage(:final message) => throw ConversationException(message),
+      _ => throw ConversationException('Unexpected reply to the task list: $reply'),
+    };
+  }
+
+  /// P123 — pauses, resumes or stops ([action]: `pause`, `resume` or `cancel`) a task running on the hub, with the pairing
+  /// key. Returns the updated list. Throws a [HubRequestException] (`authRejected` on a wrong key, or the task doesn't run there).
+  @override
+  Future<List<AgentTask>> controlAgentTask(String pairingKey, String taskId, String action) async {
+    final reply = await _conversationRequest((requestId) => ControlAgentTaskMessage(requestId, pairingKey, taskId, action));
+    return switch (reply) {
+      AgentTaskListMessage(:final tasks) => tasks,
+      TaskErrorMessage(:final message, :final authRejected) => throw HubRequestException(message, authRejected: authRejected),
+      _ => throw ConversationException('Unexpected reply to the task control: $reply'),
     };
   }
 

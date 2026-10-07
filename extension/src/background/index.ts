@@ -14,7 +14,7 @@
  * comment.
  */
 
-import { ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
+import { HubRequestError, ServerConnection, type ChatEntry, type ConnectionStatus } from "./connection";
 import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, ConversationState, PopupRequest } from "./popup_protocol";
 import type { ApprovalPrompt, ConversationSummary } from "../protocol/messages";
@@ -364,6 +364,28 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       }
       return { ok: true };
     }
+
+    case "listAgentTasks":
+    case "controlAgentTask":
+      if (!connection || connection.status.kind !== "connected") return { ok: false, tasks: [], error: "not connected" };
+      try {
+        const tasks = request.type === "listAgentTasks" ? await connection.listAgentTasks() : await connection.controlAgentTask(request.pairingKey, request.taskId, request.action);
+        return { ok: true, tasks };
+      } catch (err) {
+        return { ok: false, tasks: [], error: err instanceof Error ? err.message : String(err), authRejected: err instanceof HubRequestError && err.authRejected };
+      }
+
+    case "listHubAgents":
+    case "editAgentOrg":
+      if (!connection || connection.status.kind !== "connected") return { ok: false, error: "not connected" };
+      try {
+        const hub = request.type === "listHubAgents" ? await connection.listHubAgents() : await connection.editAgentOrg(request.pairingKey, request.edit);
+        // An edit can rename nobody, but it can add or remove agents: the chat's agent selector follows.
+        if (request.type === "editAgentOrg") void refreshAgents(connection);
+        return { ok: true, hub };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err), authRejected: err instanceof HubRequestError && err.authRejected };
+      }
 
     case "listSkills":
       if (!connection || connection.status.kind !== "connected") return { ok: false, skills: [], error: "not connected" };
