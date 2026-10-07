@@ -171,3 +171,36 @@ describe("a vault reply", () => {
     assert.throws(() => expectVaultReply({ type: "settingsError", message: "no" }, "vaultSaved"), /no/);
   });
 });
+
+describe("threads (P125)", () => {
+  test("a message the hub gave an id is known by it, and keeps the position id as a fallback for a hub that gives none", () => {
+    const [saved, old] = messagesFromHistory("c1", [
+      { id: "170001", role: "user", content: "hi", createdAt: 1 },
+      { role: "assistant", content: "hello", createdAt: 2 },
+    ]);
+    assert.equal(saved.id, "170001");
+    assert.equal(saved.hubId, "170001", "what a thread starts from");
+    assert.equal(old.id, "c1:1");
+    assert.equal("hubId" in old, false, "no thread can start from a message the hub has no id for");
+  });
+
+  test("a thread's summary carries the message it came from and its replies, and an ordinary one carries none", () => {
+    const link = { conversationId: "main", messageId: "170002" };
+    const side = conversationFromSummary(summary("side", 5, { parent: link, replies: 3 }));
+    assert.deepEqual(side.parent, link);
+    assert.equal(side.replies, 3);
+    assert.equal(conversationFromSummary(summary("t", 5, { parent: link })).replies, 0, "a hub that sends no count counts none");
+    assert.equal("parent" in conversationFromSummary(summary("plain", 5)), false);
+    assert.equal("replies" in conversationFromSummary(summary("plain", 5)), false);
+  });
+
+  test("the turn that creates a thread says what it is a thread of, and not its project or folder (the hub uses the conversation's)", () => {
+    const base = { content: "hi", attachments: [], conversationId: "t1", agentId: "poet", projectId: "tax", workdir: "/srv", creating: true, threadOf: { conversationId: "main", messageId: "170002" } };
+    const first = chatMessage(base);
+    assert.deepEqual(first.threadOf, { conversationId: "main", messageId: "170002" });
+    assert.equal("projectId" in first || "workdir" in first, false);
+    assert.equal(first.agentId, "poet", "it talks to the same agent");
+    assert.equal("threadOf" in chatMessage({ ...base, creating: false }), false, "a thread that exists keeps its message");
+    assert.equal("threadOf" in chatMessage({ ...base, threadOf: undefined }), false, "an ordinary turn has none");
+  });
+});

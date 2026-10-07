@@ -3,6 +3,7 @@ import "./App.css";
 import ApprovalModal from "./components/ApprovalModal";
 import ChangePasswordView from "./components/ChangePasswordView";
 import ChatView from "./components/ChatView";
+import ThreadPanel from "./components/ThreadPanel";
 import ConversationList from "./components/ConversationList";
 import DevicesView from "./components/DevicesView";
 import FolderPicker from "./components/FolderPicker";
@@ -27,6 +28,7 @@ import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, sa
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
 import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
+import { threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
 import { folderLabel, folderPlace, nodesWithFolders, parseNodeFolder } from "./hub/workdir";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
@@ -99,6 +101,8 @@ export default function App() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   /** The agent the open conversation speaks with — "" for none. */
   const [agentId, setAgentId] = useState("");
+  /** A thread open beside the chat (P125): the message it comes from and the conversation it lives in. Closed when the chat moves to another conversation. */
+  const [thread, setThread] = useState<{ messageId: string; threadId: string } | null>(null);
   /** O agente cujas tarefas a aba "Trabalho dos agentes" mostra (definido a partir da árvore da organização). */
   const [agentWorkFilter, setAgentWorkFilter] = useState<string | null>(null);
   /** The person's projects (P103), for the chat's picker and the list's groups. */
@@ -127,6 +131,8 @@ export default function App() {
   /** Mirrors `conversations` for the connection's callbacks. */
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
+  // A thread belongs to the conversation it was opened in: moving to another one closes it.
+  useEffect(() => setThread(null), [activeId]);
 
   const forgetToken = useCallback(() => {
     const { deviceToken: _dropped, ...rest } = identityRef.current;
@@ -251,6 +257,15 @@ export default function App() {
         setPendingTurns(({ [id]: _answered, ...rest }) => rest);
         setLiveTurns(({ [id]: _done, ...rest }) => rest);
         if (id === activeIdRef.current) setEntries((current) => [...current, entry]);
+        // The messages that just came have no id yet, and a thread (P125) starts from one: ask the hub for the saved ones.
+        if (entry.role === "assistant" && id === activeIdRef.current) {
+          void connection.fetchHistory(id, HISTORY_LIMIT).then(
+            (history) => {
+              if (connRef.current === connection && activeIdRef.current === id) setEntries((current) => withMessageIds(current, history));
+            },
+            () => {},
+          );
+        }
         // New title/order — and a conversation started here now exists on the hub.
         void refreshConversations(connection);
       });
@@ -302,7 +317,8 @@ export default function App() {
       // elsewhere gives way to the most recent; with none at all, a fresh one waits for its first message.
       const current = activeIdRef.current;
       if (list && !list.some((c) => c.id === current) && !(current in pendingTurnsRef.current)) {
-        setActiveId(list[0]?.id ?? newConversationId());
+        // A thread (P125) is never what opens: it only shows from the message it came from.
+        setActiveId(visibleConversations(list)[0]?.id ?? newConversationId());
       }
       const open = list?.find((c) => c.id === activeIdRef.current);
       if (open) {
@@ -471,6 +487,12 @@ export default function App() {
     const connection = connRef.current;
     if (!connection) throw new Error("sem conexão com o hub");
     await connection.extendLimit(limitId);
+  }
+
+  /** Opens the thread of a message of the open conversation (P125): the one it already has, or a new one that the hub creates with the first reply. */
+  function openThread(messageId: string) {
+    const known = threadsOf(conversations, activeId)[messageId];
+    setThread({ messageId, threadId: known?.conversationId ?? newConversationId() });
   }
 
   function openConversation(id: string) {
@@ -736,7 +758,7 @@ export default function App() {
         {view === "chat" ? (
           <div className={sidebarOpen ? "chat-layout chat-layout--drawer-open" : "chat-layout"}>
             <ConversationList
-              conversations={conversations}
+              conversations={visibleConversations(conversations)}
               projects={projects}
               activeId={activeId}
               pendingIds={Object.keys(pendingTurns)}
@@ -852,8 +874,23 @@ export default function App() {
                     ? () => handleCodeMode(nextCodeMode(codeModes[activeId] ?? "manual"))
                     : undefined
                 }
+                // A thread needs a conversation the hub already has, and a code project's context is the engine's session, not its messages.
+                onOpenThread={conversations.some((c) => c.id === activeId) && !projects.some((p) => p.id === projectId && p.code) ? openThread : undefined}
+                threads={threadsOf(conversations, activeId)}
               />
             </div>
+            {thread && conn && entries.some((e) => e.id === thread.messageId) && (
+              <ThreadPanel
+                key={thread.threadId}
+                conn={conn}
+                threadId={thread.threadId}
+                parent={{ conversationId: activeId, messageId: thread.messageId }}
+                anchor={entries.find((e) => e.id === thread.messageId)!}
+                agentId={agentId}
+                disabled={!phase.connected}
+                onClose={() => setThread(null)}
+              />
+            )}
           </div>
         ) : view === "vault" ? (
           <VaultView conn={conn} />

@@ -122,11 +122,27 @@ pub enum HistoryRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
+    /// The message's stable id (P125), what a thread is started from. Absent from a hub from before threads: a client then
+    /// has none to offer a thread on.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub role: HistoryRole,
     pub content: String,
     pub created_at: i64,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+}
+
+/// The message of a conversation a thread was started from (P125).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadParentDto {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One of a device's conversations in a `ConversationList` (P78) — enough for a sidebar; the
@@ -149,6 +165,13 @@ pub struct ConversationSummary {
     /// (it has the project's), for one with no folder, and for a hub from before folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// Set when this conversation is a thread (P125): the message it was started from. A client keeps it out of the list of
+    /// conversations and shows it from that message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ThreadParentDto>,
+    /// For a thread, how many messages the person sent in it: the counter shown on the message it came from.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub replies: u32,
 }
 
 /// A folder in a `DirList` (P102): its name for the list and its whole path to choose or open.
@@ -1372,6 +1395,12 @@ pub enum ClientMessage {
         /// them) and answers a `ChatError` otherwise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workdir: Option<String>,
+        /// The message of another conversation this one is a **thread** of (P125), with the same rule as `project_id`: read when
+        /// this turn creates the conversation, ignored for one that exists (a thread keeps its message). The thread works in
+        /// the folder and project of that conversation and its model sees that conversation up to the message. A message that
+        /// isn't there, or one that is itself in a thread, is a `ChatError`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_of: Option<ThreadParentDto>,
     },
     /// The person's answer to a `ServerMessage::ApprovalRequest` (P46 `manage_agents`, SSH hosts
     /// that need approval). An id with no pending request is ignored.
@@ -1952,7 +1981,7 @@ pub enum ClientMessage {
 impl ClientMessage {
     /// A plain text `Chat` turn to the default conversation, with no attachments.
     pub fn chat(message: impl Into<String>) -> Self {
-        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None, project_id: None, workdir: None }
+        ClientMessage::Chat { message: message.into(), conversation_id: None, attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: None }
     }
 }
 
@@ -2671,7 +2700,7 @@ mod tests {
 
         let reply = ServerMessage::History {
             request_id: 1,
-            messages: vec![HistoryMessage { role: HistoryRole::User, content: "hi".into(), created_at: 7, attachments: Vec::new() }],
+            messages: vec![HistoryMessage { id: String::new(), role: HistoryRole::User, content: "hi".into(), created_at: 7, attachments: Vec::new() }],
         };
         let json = serde_json::to_string(&reply).unwrap();
         assert_eq!(
@@ -2698,17 +2727,45 @@ mod tests {
         assert_eq!(msg, ClientMessage::chat("hi"));
         assert_eq!(serde_json::to_string(&msg).unwrap(), r#"{"type":"chat","message":"hi"}"#);
 
-        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None };
+        let with = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: None };
         let json = serde_json::to_string(&with).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), with);
+    }
+
+    /// P125: a chat names the message it is a thread of; the history carries each message's id and the summary of a thread its link and
+    /// reply count. Everything from before threads (no field) still reads, and nothing is written when there is none.
+    #[test]
+    fn threads_ride_on_the_chat_the_history_and_the_summary() {
+        let link = ThreadParentDto { conversation_id: "c1".into(), message_id: "170000".into() };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("t1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: Some(link.clone()) };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"t1","threadOf":{"conversationId":"c1","messageId":"170000"}}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
+
+        let message = HistoryMessage { id: "170000".into(), role: HistoryRole::User, content: "hi".into(), created_at: 7, attachments: Vec::new() };
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(json, r#"{"id":"170000","role":"user","content":"hi","createdAt":7,"attachments":[]}"#);
+        let old: HistoryMessage = serde_json::from_str(r#"{"role":"user","content":"hi","createdAt":7}"#).unwrap();
+        assert_eq!(old.id, "", "a hub from before threads sends no id");
+        assert!(!serde_json::to_string(&old).unwrap().contains("\"id\""));
+
+        let thread = ConversationSummary { id: "t1".into(), title: "x".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None, workdir: None, parent: Some(link), replies: 3 };
+        let json = serde_json::to_string(&thread).unwrap();
+        assert!(json.contains(r#""parent":{"conversationId":"c1","messageId":"170000"}"#) && json.contains(r#""replies":3"#), "{json}");
+        assert_eq!(serde_json::from_str::<ConversationSummary>(&json).unwrap(), thread);
+        let plain = ConversationSummary { parent: None, replies: 0, ..thread };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("parent") && !json.contains("replies"), "{json}");
+        let old: ConversationSummary = serde_json::from_str(r#"{"id":"c","title":"t","createdAt":1,"updatedAt":2}"#).unwrap();
+        assert_eq!((old.parent, old.replies), (None, 0));
     }
 
     /// P103: a chat names the project it starts in; the project messages and the summary's `projectId` use the names
     /// the web and the desktop expect, and everything from before projects (no field) still reads.
     #[test]
     fn projects_travel_with_the_names_the_clients_expect_and_old_peers_still_read() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: Some("tax".into()), workdir: None };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: Some("tax".into()), workdir: None, thread_of: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","projectId":"tax"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2740,7 +2797,7 @@ mod tests {
     /// folders (no field) still reads.
     #[test]
     fn working_folders_travel_with_the_names_the_clients_expect_and_old_peers_still_read() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()) };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()), thread_of: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","conversationId":"c1","workdir":"/srv/work"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2834,7 +2891,7 @@ mod tests {
 
     #[test]
     fn a_chat_can_name_an_agent_and_approvals_round_trip() {
-        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None, workdir: None };
+        let chat = ClientMessage::Chat { message: "hi".into(), conversation_id: None, attachments: Vec::new(), agent_id: Some("chief".into()), project_id: None, workdir: None, thread_of: None };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"hi","agentId":"chief"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), chat);
@@ -2889,6 +2946,7 @@ mod tests {
             agent_id: None,
             project_id: None,
             workdir: None,
+            thread_of: None,
         };
         let json = serde_json::to_string(&chat).unwrap();
         assert_eq!(json, r#"{"type":"chat","message":"","attachments":[{"mimeType":"application/pdf","data":"JVBE"}]}"#);
@@ -2937,7 +2995,7 @@ mod tests {
             (
                 ServerMessage::ConversationList {
                     request_id: 1,
-                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None, workdir: None }],
+                    conversations: vec![ConversationSummary { id: "c1".into(), title: "Trip".into(), created_at: 1, updated_at: 2, agent_id: None, project_id: None, workdir: None, parent: None, replies: 0 }],
                 },
                 r#"{"type":"conversationList","requestId":1,"conversations":[{"id":"c1","title":"Trip","createdAt":1,"updatedAt":2}]}"#,
             ),

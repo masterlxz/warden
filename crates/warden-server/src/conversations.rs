@@ -20,7 +20,7 @@ use warden_bootstrap::{
     delete_conversation, list_conversations, load_conversation, rename_conversation, set_conversation_project, ChatRole, Conversation,
     ConversationMessage,
 };
-use warden_server_protocol::protocol::{ConversationSummary, HistoryMessage, HistoryRole};
+use warden_server_protocol::protocol::{ConversationSummary, HistoryMessage, HistoryRole, ThreadParentDto};
 use warden_server_protocol::{ClientMessage, ServerMessage};
 
 /// The conversation a `Chat`/`RequestHistory` without a `conversation_id` goes to.
@@ -152,6 +152,8 @@ fn found(result: anyhow::Result<bool>, id: &str) -> Result<(), String> {
 }
 
 fn to_summary(conversation: Conversation) -> ConversationSummary {
+    // P125: for a thread, what the message it came from shows as its reply counter.
+    let replies = if conversation.parent.is_some() { conversation.messages.iter().filter(|m| m.role == ChatRole::User).count() as u32 } else { 0 };
     ConversationSummary {
         id: conversation.id,
         title: conversation.title,
@@ -160,11 +162,14 @@ fn to_summary(conversation: Conversation) -> ConversationSummary {
         agent_id: conversation.agent_id,
         project_id: conversation.project_id,
         workdir: conversation.workdir,
+        parent: conversation.parent.map(|p| ThreadParentDto { conversation_id: p.conversation_id, message_id: p.message_id }),
+        replies,
     }
 }
 
 fn to_history_message(message: ConversationMessage) -> HistoryMessage {
     HistoryMessage {
+        id: message.id,
         role: match message.role {
             ChatRole::User => HistoryRole::User,
             ChatRole::Assistant => HistoryRole::Assistant,
@@ -211,6 +216,7 @@ mod tests {
             project_id: None,
             engine_session_id: None,
             workdir: None,
+            parent: None,
         };
         save_conversation(dir, &conversation).unwrap();
     }

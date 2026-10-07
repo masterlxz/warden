@@ -754,6 +754,52 @@ button:focus-visible {
   flex-direction: column;
 }
 
+/* A thread (P125): a chat of its own beside the conversation, from one message of it. On a narrow screen it covers the chat. */
+.thread-panel {
+  width: 380px;
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+}
+
+.thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.thread-anchor {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(127, 127, 127, 0.08);
+  max-height: 9rem;
+  overflow-y: auto;
+}
+
+.thread-anchor p {
+  margin: 0.2rem 0 0;
+  white-space: pre-wrap;
+}
+
+.thread-button {
+  font-size: 0.85em;
+}
+
+@media (max-width: 800px) {
+  .thread-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: auto;
+    background: var(--color-bg, Canvas);
+  }
+}
+
 .chat-header {
   display: flex;
   align-items: center;

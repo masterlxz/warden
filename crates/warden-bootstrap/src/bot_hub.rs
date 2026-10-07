@@ -220,7 +220,7 @@ fn classify(message: ServerMessage, conversation_id: &str) -> Option<MemberReply
 }
 
 async fn turn(conn: &mut ServerConnection, conversation_id: &str, text: &str) -> Result<MemberReply, Lost> {
-    let chat = ClientMessage::Chat { message: text.to_string(), conversation_id: Some(conversation_id.to_string()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None };
+    let chat = ClientMessage::Chat { message: text.to_string(), conversation_id: Some(conversation_id.to_string()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: None };
     conn.send(&chat).await.map_err(|_| Lost::Dropped)?;
     let answer = async {
         loop {

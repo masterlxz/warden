@@ -357,6 +357,73 @@ body {
   background: var(--color-bg);
 }
 
+/* A thread (P125) opens beside the conversation: the chat takes what is left of the second column. */
+.chat-with-thread {
+  display: flex;
+  min-width: 0;
+  height: 100vh;
+}
+
+.chat-with-thread > .chat-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.thread-panel {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.thread-anchor {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(127, 127, 127, 0.08);
+  max-height: 9rem;
+  overflow-y: auto;
+}
+
+.thread-anchor p {
+  margin: 0.2rem 0 0;
+  white-space: pre-wrap;
+}
+
+.thread-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+}
+
+.message-thread-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.82em;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.message-thread-btn:hover {
+  opacity: 1;
+}
+
 .chat-header {
   flex-shrink: 0;
   display: flex;

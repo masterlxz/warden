@@ -184,7 +184,7 @@ async fn dirs(conn: &mut ServerConnection, path: Option<&str>) -> Result<(String
 /// Sends a turn in `conversation` and answers what the turn asks: `approve` is the answer to a shell command's yes.
 /// Returns the reply (`error: …` for a `ChatError`) and how many times the person was asked.
 async fn say(conn: &mut ServerConnection, conversation: &str, text: &str, workdir: Option<&str>, approve: bool) -> (String, usize) {
-    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: workdir.map(str::to_string) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: workdir.map(str::to_string), thread_of: None }).await.unwrap();
     let mut asked = 0;
     loop {
         match next(conn).await {

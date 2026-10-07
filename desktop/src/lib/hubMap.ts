@@ -48,9 +48,14 @@ export interface HubConversationSummary {
   agentId?: string;
   projectId?: string;
   workdir?: string;
+  /** Set on a thread (P125). */
+  parent?: { conversationId: string; messageId: string };
+  replies?: number;
 }
 
 export interface HubHistoryMessage {
+  /** The hub's id for the message (P125); a hub from before threads sends none. */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   createdAt: number;
@@ -106,6 +111,7 @@ export function conversationFromSummary(summary: HubConversationSummary, loaded?
     ...(summary.agentId ? { agentId: summary.agentId } : {}),
     ...(summary.projectId ? { projectId: summary.projectId } : {}),
     ...(summary.workdir ? { workdir: summary.workdir } : {}),
+    ...(summary.parent ? { parent: summary.parent, replies: summary.replies ?? 0 } : {}),
   };
 }
 
@@ -119,11 +125,13 @@ export function mergeConversations(previous: Conversation[], summaries: HubConve
   return [...notListedYet, ...fromHub].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** A conversation's messages from the hub's history. The history has no ids, so one is made from the conversation and
- * the position: it is the same on every load, which is what `replaceWithSaved`-style merging needs. */
+/** A conversation's messages from the hub's history. The id of a message is the one the hub gave it (P125, kept also as `hubId`,
+ * what a thread is started from); a hub from before threads gives none, and then one is made from the conversation and the
+ * position: it is the same on every load, which is what `replaceWithSaved`-style merging needs. */
 export function messagesFromHistory(conversationId: string, history: HubHistoryMessage[]): ChatMessage[] {
   return history.map((m, index) => ({
-    id: `${conversationId}:${index}`,
+    id: m.id ? m.id : `${conversationId}:${index}`,
+    ...(m.id ? { hubId: m.id } : {}),
     role: m.role,
     content: m.content,
     createdAt: m.createdAt,
@@ -211,15 +219,20 @@ export function chatMessage(args: {
   projectId: string;
   workdir: string;
   creating: boolean;
+  /** The message this conversation is a thread of (P125): carried only by the turn that creates it, and then the thread works in
+   * the project and the folder of that conversation, so none is sent here. */
+  threadOf?: { conversationId: string; messageId: string };
 }): Record<string, unknown> {
+  const thread = args.creating ? args.threadOf : undefined;
   return {
     type: "chat",
     message: args.content,
     conversationId: args.conversationId,
     attachments: args.attachments,
     ...(args.agentId ? { agentId: args.agentId } : {}),
-    ...(args.creating && args.projectId ? { projectId: args.projectId } : {}),
-    ...(args.creating && !args.projectId && args.workdir ? { workdir: args.workdir } : {}),
+    ...(!thread && args.creating && args.projectId ? { projectId: args.projectId } : {}),
+    ...(!thread && args.creating && !args.projectId && args.workdir ? { workdir: args.workdir } : {}),
+    ...(thread ? { threadOf: thread } : {}),
   };
 }
 

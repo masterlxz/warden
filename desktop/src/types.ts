@@ -29,6 +29,8 @@ export interface ChatMessage {
   /** The turn's provider was down and a reserve answered (P79). Shown above the answer, not
    * saved with the conversation. */
   fallbacks?: ProviderFallback[];
+  /** The id the hub gave this message (P125), what a thread is started from. Only a message read from a hub has one. */
+  hubId?: string;
 }
 
 /** Mirrors `warden_bootstrap::ComboConfig` (P90): provider ids, in order. Its id shares one
@@ -72,6 +74,11 @@ export interface Conversation {
   /** The folder of this computer (P102) the conversation works in — picked before its first message and fixed for
    * its life. Absent: none, or the conversation is in a project (which has its own). */
   workdir?: string;
+  /** Set when this conversation is a thread (P125), only on a hub: the message it was started from. It is not listed with the
+   * conversations; it shows from that message. */
+  parent?: { conversationId: string; messageId: string };
+  /** For a thread, how many messages the person sent in it: the counter on the message it came from. */
+  replies?: number;
 }
 
 /** One project (P103) — mirrors `ProjectPayload` in `src-tauri/src/projects_cmds.rs`. Its files are notes of the

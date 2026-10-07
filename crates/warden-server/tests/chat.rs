@@ -79,7 +79,7 @@ async fn a_device_keeps_several_conversations_apart() {
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
 
     for (id, text) in [("trip", "plan a trip"), ("work", "draft an email")] {
-        conn.send(&ClientMessage::Chat { message: text.to_string(), conversation_id: Some(id.to_string()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None })
+        conn.send(&ClientMessage::Chat { message: text.to_string(), conversation_id: Some(id.to_string()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: None })
             .await
             .unwrap();
         match conn.recv().await.unwrap() {
@@ -115,7 +115,7 @@ async fn a_device_keeps_several_conversations_apart() {
         other => panic!("expected ChatResponse, got {other:?}"),
     }
 
-    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: Some("../escape".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None })
+    conn.send(&ClientMessage::Chat { message: "hello".to_string(), conversation_id: Some("../escape".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: None, thread_of: None })
         .await
         .unwrap();
     match conn.recv().await.unwrap() {
@@ -136,7 +136,7 @@ async fn attachments_ride_along_with_a_turn_and_other_types_are_refused() {
     let mut conn = ServerConnection::connect(&format!("ws://{addr}"), "dev-1", "Test Device", "test-key").await.unwrap();
     let pdf = warden_core::model::Attachment { mime_type: "application/pdf".into(), data: "JVBERi0=".into() };
 
-    conn.send(&ClientMessage::Chat { message: String::new(), conversation_id: None, attachments: vec![pdf.clone()], agent_id: None, project_id: None, workdir: None }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: String::new(), conversation_id: None, attachments: vec![pdf.clone()], agent_id: None, project_id: None, workdir: None, thread_of: None }).await.unwrap();
     assert!(matches!(conn.recv().await.unwrap(), Some(ServerMessage::ChatResponse { .. })));
 
     conn.send(&ClientMessage::RequestHistory { request_id: 1, limit: None, conversation_id: None }).await.unwrap();
@@ -154,7 +154,7 @@ async fn attachments_ride_along_with_a_turn_and_other_types_are_refused() {
     }
 
     let html = warden_core::model::Attachment { mime_type: "text/html".into(), data: "PGgxPg==".into() };
-    conn.send(&ClientMessage::Chat { message: "look".into(), conversation_id: None, attachments: vec![html], agent_id: None, project_id: None, workdir: None }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: "look".into(), conversation_id: None, attachments: vec![html], agent_id: None, project_id: None, workdir: None, thread_of: None }).await.unwrap();
     match conn.recv().await.unwrap() {
         Some(ServerMessage::ChatError { message, .. }) => assert!(message.contains("text/html"), "message was: {message}"),
         other => panic!("expected ChatError, got {other:?}"),

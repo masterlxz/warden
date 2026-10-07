@@ -274,14 +274,32 @@ mod tests {
 
         let list = value(ServerMessage::ConversationList {
             request_id: 1,
-            conversations: vec![ConversationSummary { id: "c1".into(), title: "T".into(), created_at: 1, updated_at: 2, agent_id: Some("poet".into()), project_id: None, workdir: None }],
+            conversations: vec![ConversationSummary { id: "c1".into(), title: "T".into(), created_at: 1, updated_at: 2, agent_id: Some("poet".into()), project_id: None, workdir: None, parent: None, replies: 0 }],
         });
         assert_eq!(list["type"], "conversationList");
         assert_eq!(keys(&list["conversations"][0]), ["agentId", "createdAt", "id", "title", "updatedAt"], "empty optionals are left out: the mapper copes with their absence");
 
-        let history = value(ServerMessage::History { request_id: 1, messages: vec![HistoryMessage { role: HistoryRole::Assistant, content: "hi".into(), created_at: 3, attachments: Vec::new() }] });
+        let history = value(ServerMessage::History { request_id: 1, messages: vec![HistoryMessage { id: "170001".into(), role: HistoryRole::Assistant, content: "hi".into(), created_at: 3, attachments: Vec::new() }] });
         assert_eq!(history["type"], "history");
         assert_eq!((history["messages"][0]["role"].as_str(), history["messages"][0]["content"].as_str(), history["messages"][0]["createdAt"].as_i64()), (Some("assistant"), Some("hi"), Some(3)));
+        assert_eq!(history["messages"][0]["id"], "170001", "the id a thread (P125) starts from");
+
+        let thread_list = value(ServerMessage::ConversationList {
+            request_id: 1,
+            conversations: vec![ConversationSummary {
+                id: "t1".into(),
+                title: "T".into(),
+                created_at: 1,
+                updated_at: 2,
+                agent_id: None,
+                project_id: None,
+                workdir: None,
+                parent: Some(warden_server_protocol::protocol::ThreadParentDto { conversation_id: "c1".into(), message_id: "170001".into() }),
+                replies: 2,
+            }],
+        });
+        assert_eq!(keys(&thread_list["conversations"][0]), ["createdAt", "id", "parent", "replies", "title", "updatedAt"], "a thread carries its message and its replies");
+        assert_eq!(thread_list["conversations"][0]["parent"], json!({ "conversationId": "c1", "messageId": "170001" }));
 
         let projects = value(ServerMessage::ProjectList { request_id: 1, projects: vec![ProjectDto { id: "tax".into(), name: "Tax".into(), description: String::new(), instructions: String::new(), workdir: None, code: false }] });
         assert_eq!(projects["type"], "projectList");
@@ -340,11 +358,24 @@ mod tests {
             (json!({ "type": "cancelTurn", "conversationId": "c1" }), ClientMessage::CancelTurn { conversation_id: "c1".into() }),
             (
                 json!({ "type": "chat", "message": "hello", "conversationId": "c1", "attachments": [], "agentId": "poet", "projectId": "tax" }),
-                ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: Some("tax".into()), workdir: None },
+                ClientMessage::Chat { message: "hello".into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: Some("poet".into()), project_id: Some("tax".into()), workdir: None, thread_of: None },
             ),
             (
                 json!({ "type": "chat", "message": "hi", "conversationId": "c2", "attachments": [], "workdir": "/srv/work" }),
-                ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()) },
+                ClientMessage::Chat { message: "hi".into(), conversation_id: Some("c2".into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: Some("/srv/work".into()), thread_of: None },
+            ),
+            // P125: the first turn of a thread says which message of which conversation it comes from.
+            (
+                json!({ "type": "chat", "message": "why?", "conversationId": "t1", "attachments": [], "agentId": "poet", "threadOf": { "conversationId": "c1", "messageId": "170002" } }),
+                ClientMessage::Chat {
+                    message: "why?".into(),
+                    conversation_id: Some("t1".into()),
+                    attachments: Vec::new(),
+                    agent_id: Some("poet".into()),
+                    project_id: None,
+                    workdir: None,
+                    thread_of: Some(warden_server_protocol::protocol::ThreadParentDto { conversation_id: "c1".into(), message_id: "170002".into() }),
+                },
             ),
         ];
         for (sent, wanted) in no_reply {

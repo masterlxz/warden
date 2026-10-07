@@ -38,6 +38,8 @@ import {
   type RemoteStatePayload,
 } from "./lib/hub";
 import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
+import { threadsOf, visibleConversations } from "./lib/threads";
+import ThreadPanel from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
 
@@ -145,6 +147,15 @@ function App() {
   const startedHere = useRef(new Set<string>());
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  // A thread open beside the chat (P125, only on a hub): the message it comes from and the conversation it lives in. It belongs to the
+  // conversation it was opened in, so moving to another conversation or machine closes it.
+  const [thread, setThread] = useState<{ messageId: string; threadId: string } | null>(null);
+  useEffect(() => setThread(null), [activeConversationId, activeHubId]);
+  function openThread(messageId: string) {
+    if (activeConversationId === null) return;
+    const known = threadsOf(conversations, activeConversationId)[messageId];
+    setThread({ messageId, threadId: known?.conversationId ?? crypto.randomUUID() });
+  }
   const currentProjectId = activeConversation ? (activeConversation.projectId ?? "") : selectedProjectId;
   const currentWorkdir = currentProjectId ? "" : activeConversation ? (activeConversation.workdir ?? "") : selectedWorkdir;
 
@@ -587,7 +598,7 @@ function App() {
   return (
     <div className={`app-shell${sidebarCollapsed ? " app-shell--sidebar-collapsed" : ""}`}>
       <Sidebar
-        conversations={conversations}
+        conversations={visibleConversations(conversations)}
         projects={projects}
         activeConversationId={activeConversationId}
         onSelectConversation={selectConversation}
@@ -649,6 +660,7 @@ function App() {
       ) : view === "organization" ? (
         <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
       ) : (
+        <div className="chat-with-thread">
         <ChatArea
           activeConversation={activeConversation}
           onSendMessage={handleSendMessage}
@@ -678,7 +690,23 @@ function App() {
           onOpenSettings={() => setView("settings")}
           remote={remote}
           hubFolders={remote ? { listDirs: hubListDirs, nodes: knownNodes, prepare: loadNodes } : undefined}
+          // A thread needs a conversation the hub has, and a code project's context is the engine's session, not its messages.
+          onOpenThread={remote && activeConversation && !projects.some((p) => p.id === currentProjectId && p.code) ? openThread : undefined}
+          threads={activeConversationId === null ? undefined : threadsOf(conversations, activeConversationId)}
         />
+        {remote && thread && activeConversation && activeConversation.messages.some((m) => m.hubId === thread.messageId) && (
+          <ThreadPanel
+            key={thread.threadId}
+            threadId={thread.threadId}
+            parent={{ conversationId: activeConversation.id, messageId: thread.messageId }}
+            anchor={activeConversation.messages.find((m) => m.hubId === thread.messageId)!}
+            agentId={selectedAgentId}
+            ready={remoteReady}
+            onClose={() => setThread(null)}
+            onChanged={() => void loadConversations()}
+          />
+        )}
+        </div>
       )}
       {connectingTo && <HubConnectDialog hub={connectingTo} onSubmit={handleSignIn} onCancel={() => setConnectingTo(null)} />}
       <ApprovalModal />

@@ -487,6 +487,7 @@ mod tests {
                 project_id: None,
                 engine_session_id: None,
                 workdir: None,
+                parent: None,
             },
         )
         .unwrap();

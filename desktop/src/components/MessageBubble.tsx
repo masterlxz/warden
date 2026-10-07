@@ -7,9 +7,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Attachment, ChatMessage } from "../types";
 import { LogoMark, SpeakerIcon, StopIcon } from "./Icons";
 import { stripMarkdown } from "../lib/stripMarkdown";
+import { repliesLabel } from "../lib/threads";
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  /** The thread of this message on a hub (P125): `replies` is how many messages the person sent in it, or null when there is none yet. */
+  thread?: { replies: number | null; onOpen: () => void };
+}
+
+/** "Reply in thread", or the chip with the replies a thread already has. */
+function ThreadButton({ thread }: { thread: { replies: number | null; onOpen: () => void } }) {
+  return (
+    <button type="button" className="message-thread-btn" onClick={thread.onOpen}>
+      {thread.replies === null ? "Reply in thread" : repliesLabel(thread.replies)}
+    </button>
+  );
 }
 
 type SpeechState = "idle" | "loading" | "playing";
@@ -121,7 +133,7 @@ export function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
   );
 }
 
-function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubble({ message, thread }: MessageBubbleProps) {
   if (message.role === "assistant") {
     return (
       <div className="message-row message-row--assistant">
@@ -156,6 +168,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
           <div className="message-bubble-footer">
             <SpeakButton text={message.content} />
             {message.usage && <span className="message-bubble-usage">{message.usage.totalTokens} tokens</span>}
+            {thread && <ThreadButton thread={thread} />}
           </div>
         </div>
       </div>
@@ -177,6 +190,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
               {message.content}
             </ReactMarkdown>
+          </div>
+        )}
+        {thread && (
+          <div className="message-bubble-footer">
+            <ThreadButton thread={thread} />
           </div>
         )}
       </div>

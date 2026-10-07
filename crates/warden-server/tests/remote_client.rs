@@ -201,7 +201,7 @@ async fn connected(handle: &RemoteHandle) {
 }
 
 fn chat(message: &str, conversation: &str, agent: Option<&str>) -> ClientMessage {
-    ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: agent.map(str::to_string), project_id: None, workdir: None }
+    ClientMessage::Chat { message: message.into(), conversation_id: Some(conversation.into()), attachments: Vec::new(), agent_id: agent.map(str::to_string), project_id: None, workdir: None, thread_of: None }
 }
 
 async fn list(handle: &RemoteHandle) -> Vec<String> {

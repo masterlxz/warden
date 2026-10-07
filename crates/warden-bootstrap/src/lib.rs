@@ -909,6 +909,20 @@ pub struct ConversationMessage {
     pub tools_used: Vec<String>,
 }
 
+/// The message a thread started from (P125): the conversation it is in and the id of the message. A thread is a conversation of its own
+/// with this link; it works in the folder and project of the conversation it came from, and its turns see that conversation up to
+/// this message.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadParent {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
+/// How many messages of the conversation a thread's model sees before the thread itself (P125): the last ones that end at the message
+/// the thread started from. A conversation has no limit of its own, but a thread is a side question and shouldn't resend a long one.
+pub const THREAD_CONTEXT_MAX: usize = 40;
+
 /// A whole conversation as persisted to disk — mirrors the frontend's `Conversation`
 /// (`desktop/src/types.ts`) field for field, so a loaded value can be handed straight back to
 /// the UI with no reshaping at the IPC boundary.
@@ -942,6 +956,10 @@ pub struct Conversation {
     /// changed after: `read_file`, `write_file` and the shell act there. Only a conversation in no project has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// Set when this conversation is a thread (P125): the message it was started from, fixed when it is created. A conversation
+    /// that isn't one has none, and a thread can't be the parent of another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ThreadParent>,
 }
 
 /// Conversations are opaque app data (unlike the human-browsable markdown vault), so — like
@@ -1216,9 +1234,71 @@ pub async fn handle_agent_turn(
     project: Option<&str>,
     workdir: Option<&str>,
 ) -> anyhow::Result<MessageOutcome> {
+    handle_agent_turn_in(orchestrator, conversations_dir, conversation_id, title_seed, user_input, attachments, agent, project, workdir, None).await
+}
+
+/// An ordinary conversation id: 1 to 64 letters, digits, `_` or `-` (what the hub accepts), never a path.
+fn is_conversation_id(id: &str) -> bool {
+    (1..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The last messages of `anchor` that end at message `message_id` (P125): what a thread's model sees of the conversation it came from.
+/// Empty when that message isn't there.
+fn thread_context<'a>(anchor: &'a Conversation, message_id: &str) -> &'a [ConversationMessage] {
+    let Some(at) = anchor.messages.iter().position(|m| m.id == message_id) else { return &[] };
+    let end = at + 1;
+    &anchor.messages[end.saturating_sub(THREAD_CONTEXT_MAX)..end]
+}
+
+/// `handle_agent_turn` with the thread a conversation *starts* as (P125): `thread_of` is the message of another conversation this one is a
+/// thread of. Like `project`, it is only read when this call creates the conversation (an unknown message, or a thread as the parent, is an
+/// error and nothing is run); one that already exists keeps its own. A thread works in the folder and the project of the conversation it
+/// came from, whatever is sent, and its model sees that conversation up to the message (`THREAD_CONTEXT_MAX` at most) and then the thread.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_agent_turn_in(
+    orchestrator: &Orchestrator,
+    conversations_dir: &Path,
+    conversation_id: &str,
+    title_seed: &str,
+    user_input: &str,
+    attachments: Vec<Attachment>,
+    agent: Option<TurnAgent<'_>>,
+    project: Option<&str>,
+    workdir: Option<&str>,
+    thread_of: Option<&ThreadParent>,
+) -> anyhow::Result<MessageOutcome> {
     let existing = load_conversation(conversations_dir, conversation_id)?;
     let existed = existing.is_some();
-    let history: Vec<Message> = existing.iter().flat_map(|c| &c.messages).map(to_message).collect();
+    // P125: the message this is a thread of, from the file when it exists and from the request when it is being created.
+    let parent: Option<ThreadParent> = match &existing {
+        Some(conversation) => conversation.parent.clone(),
+        None => thread_of.cloned(),
+    };
+    if let (false, Some(link)) = (existed, &parent) {
+        // The id of the conversation it came from is a file name: only an ordinary id is looked up, so a client that skipped the hub's check
+        // can't make this read another folder. Checked before anything is read.
+        anyhow::ensure!(is_conversation_id(&link.conversation_id), "'{}' isn't a conversation id", link.conversation_id);
+    }
+    let anchor = match &parent {
+        Some(link) => load_conversation(conversations_dir, &link.conversation_id)?,
+        None => None,
+    };
+    if let (false, Some(link)) = (existed, &parent) {
+        let anchor = anchor.as_ref().ok_or_else(|| anyhow::anyhow!("there is no conversation '{}' to start a thread in", link.conversation_id))?;
+        anyhow::ensure!(link.conversation_id != conversation_id, "a conversation can't be a thread of itself");
+        anyhow::ensure!(anchor.parent.is_none(), "a thread can't have a thread of its own");
+        anyhow::ensure!(anchor.messages.iter().any(|m| m.id == link.message_id), "there is no message '{}' in that conversation", link.message_id);
+    }
+    // A thread starts in the folder and the project of the conversation it came from.
+    let (project, workdir) = match (&anchor, existed) {
+        (Some(from), false) => (from.project_id.as_deref(), from.workdir.as_deref()),
+        _ => (project, workdir),
+    };
+    let mut history: Vec<Message> = Vec::new();
+    if let (Some(link), Some(from)) = (&parent, &anchor) {
+        history.extend(thread_context(from, &link.message_id).iter().map(to_message));
+    }
+    history.extend(existing.iter().flat_map(|c| &c.messages).map(to_message));
     // P103: a conversation's project is the one it was created in; what a client sends later doesn't move it.
     let project_id = match &existing {
         Some(conversation) => conversation.project_id.clone(),
@@ -1262,6 +1342,7 @@ pub async fn handle_agent_turn(
         agent_id: agent.map(|a| a.id),
         project_id: project_id.as_deref().filter(|_| !existed),
         workdir: workdir.as_deref().filter(|_| !existed),
+        thread_of: parent.as_ref().filter(|_| !existed),
         create: !existed,
         ..Default::default()
     };
@@ -1300,6 +1381,8 @@ pub struct AppendOptions<'a> {
     /// The working folder of a conversation this call creates (P102): like `project_id`, an existing conversation
     /// keeps the one it has, and a conversation in a project has none.
     pub workdir: Option<&'a str>,
+    /// The message a conversation this call creates is a thread of (P125): like `project_id`, only read on creation.
+    pub thread_of: Option<&'a ThreadParent>,
     /// Create the file when it's missing. Otherwise a missing file was deleted meanwhile and stays
     /// deleted.
     pub create: bool,
@@ -1329,6 +1412,7 @@ pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, message
                 project_id: options.project_id.map(str::to_string),
                 engine_session_id: None,
                 workdir: options.workdir.filter(|_| options.project_id.is_none()).map(str::to_string),
+                parent: options.thread_of.cloned(),
             }
         }
     };
@@ -1423,15 +1507,28 @@ pub fn set_conversation_project(dir: &Path, id: &str, project: Option<&str>) -> 
     Ok(true)
 }
 
-/// Deletes a saved conversation's file (P78). `false` when there was none.
+/// Deletes a saved conversation's file (P78), and the threads started from it (P125): a thread without its conversation would have no
+/// message to hang from. `false` when there was none. Deleting a thread removes only its own file.
 pub fn delete_conversation(dir: &Path, id: &str) -> anyhow::Result<bool> {
     let _guard = ConversationWriteGuard::acquire(dir)?;
     let path = dir.join(format!("{id}.json"));
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err).with_context(|| format!("failed to delete conversation file at {}", path.display())),
+    let deleted = match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err).with_context(|| format!("failed to delete conversation file at {}", path.display())),
+    };
+    if deleted {
+        // A folder that can't be read (locked, say) leaves the threads: the conversation is gone either way.
+        for thread in list_conversations(dir).unwrap_or_default().into_iter().filter(|c| c.parent.as_ref().is_some_and(|p| p.conversation_id == id)) {
+            let thread_path = dir.join(format!("{}.json", thread.id));
+            if let Err(err) = std::fs::remove_file(&thread_path) {
+                if err.kind() != io::ErrorKind::NotFound {
+                    return Err(err).with_context(|| format!("failed to delete thread file at {}", thread_path.display()));
+                }
+            }
+        }
     }
+    Ok(deleted)
 }
 
 /// Loads the config file. An explicit path that doesn't exist is an error (the caller asked
@@ -2569,6 +2666,7 @@ oauth = true
             project_id: None,
             engine_session_id: None,
             workdir: None,
+            parent: None,
         }
     }
 
@@ -2894,6 +2992,137 @@ oauth = true
         assert!(plain.content.contains("the diary") && !plain.content.starts_with(PROJECT_BRIEFING), "{}", plain.content);
         assert_eq!(load_conversation(&dir, "c2").unwrap().unwrap().project_id, None);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A conversation `id` in `dir` with three turns ("alpha", "beta", "gamma question"), and the id of the message of the second one.
+    async fn three_turns(orchestrator: &Orchestrator, dir: &Path, id: &str, project: Option<&str>) -> String {
+        for (n, text) in ["alpha question", "beta question", "gamma question"].into_iter().enumerate() {
+            handle_agent_turn(orchestrator, dir, id, "hi", text, Vec::new(), None, project.filter(|_| n == 0), None).await.unwrap();
+        }
+        load_conversation(dir, id).unwrap().unwrap().messages[2].id.clone()
+    }
+
+    /// P125: a thread's model sees the conversation up to the message it came from and then the thread, and never what came after.
+    #[tokio::test]
+    async fn a_threads_model_sees_the_conversation_up_to_its_message_and_then_the_thread() {
+        let (root, orchestrator) = project_setup("thread-context");
+        let dir = root.join("conversations");
+        let anchor = three_turns(&orchestrator, &dir, "c1", None).await;
+        let link = ThreadParent { conversation_id: "c1".into(), message_id: anchor };
+
+        let first = handle_agent_turn_in(&orchestrator, &dir, "t1", "", "inside the thread", Vec::new(), None, None, None, Some(&link)).await.unwrap();
+        assert!(first.content.contains("alpha question") && first.content.contains("beta question"), "what came before the message: {}", first.content);
+        assert!(first.content.contains("inside the thread"), "{}", first.content);
+        assert!(!first.content.contains("gamma question"), "nothing after the message it came from: {}", first.content);
+        let saved = load_conversation(&dir, "t1").unwrap().unwrap();
+        assert_eq!((saved.parent.as_ref(), saved.messages.len()), (Some(&link), 2), "the thread holds only its own messages");
+
+        // The link is the file's, so a later turn needs none, and what it sends then is ignored.
+        let second = handle_agent_turn_in(&orchestrator, &dir, "t1", "", "once more", Vec::new(), None, None, None, None).await.unwrap();
+        assert!(second.content.contains("beta question") && second.content.contains("inside the thread") && !second.content.contains("gamma question"), "{}", second.content);
+        let other = ThreadParent { conversation_id: "c1".into(), message_id: load_conversation(&dir, "c1").unwrap().unwrap().messages[0].id.clone() };
+        handle_agent_turn_in(&orchestrator, &dir, "t1", "", "and again", Vec::new(), None, None, None, Some(&other)).await.unwrap();
+        assert_eq!(load_conversation(&dir, "t1").unwrap().unwrap().parent, Some(link), "a thread keeps the message it came from");
+
+        // The conversation it came from was not touched.
+        assert_eq!(load_conversation(&dir, "c1").unwrap().unwrap().messages.len(), 6);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_thread_starts_in_the_project_of_the_conversation_it_came_from() {
+        let (root, orchestrator) = project_setup("thread-project");
+        let dir = root.join("conversations");
+        let anchor = three_turns(&orchestrator, &dir, "c1", Some("tax")).await;
+        let link = ThreadParent { conversation_id: "c1".into(), message_id: anchor };
+
+        // Whatever the thread is told to start in, it starts where its conversation is.
+        let reply = handle_agent_turn_in(&orchestrator, &dir, "t1", "", "in the thread", Vec::new(), None, Some("other"), None, Some(&link)).await.unwrap();
+        assert!(reply.content.contains(PROJECT_BRIEFING), "{}", reply.content);
+        assert_eq!(load_conversation(&dir, "t1").unwrap().unwrap().project_id.as_deref(), Some("tax"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_thread_needs_a_message_of_a_conversation_that_is_not_itself_a_thread() {
+        let (root, orchestrator) = project_setup("thread-refusals");
+        let dir = root.join("conversations");
+        let anchor = three_turns(&orchestrator, &dir, "c1", None).await;
+        let link = |conversation: &str, message: &str| ThreadParent { conversation_id: conversation.into(), message_id: message.into() };
+        handle_agent_turn_in(&orchestrator, &dir, "t1", "", "first", Vec::new(), None, None, None, Some(&link("c1", &anchor))).await.unwrap();
+        let in_thread = load_conversation(&dir, "t1").unwrap().unwrap().messages[0].id.clone();
+
+        for (id, from, why) in [
+            ("t2", link("ghost", &anchor), "no such conversation"),
+            ("t3", link("c1", "no-such-message"), "no such message"),
+            ("t4", link("t1", &in_thread), "a thread of a thread"),
+            ("c1b", link("c1b", &anchor), "a thread of itself"),
+            ("t5", link("../escape", &anchor), "a path instead of a conversation id"),
+            ("t6", link("c1/../c1", &anchor), "a path that ends at a real conversation"),
+        ] {
+            assert!(handle_agent_turn_in(&orchestrator, &dir, id, "", "x", Vec::new(), None, None, None, Some(&from)).await.is_err(), "{why}");
+            assert!(load_conversation(&dir, id).unwrap().is_none(), "nothing was saved: {why}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A conversation has no limit of its own, but a thread resends at most `THREAD_CONTEXT_MAX` messages of it.
+    #[tokio::test]
+    async fn a_thread_resends_at_most_the_last_messages_that_end_at_its_message() {
+        let (root, orchestrator) = project_setup("thread-cap");
+        let dir = root.join("conversations");
+        let message = |i: usize| ConversationMessage {
+            id: format!("m{i}"),
+            role: if i.is_multiple_of(2) { ChatRole::User } else { ChatRole::Assistant },
+            content: format!("line-{i:03}-end"),
+            created_at: i as i64,
+            usage: None,
+            attachments: Vec::new(),
+            generated_files: Vec::new(),
+            tools_used: Vec::new(),
+        };
+        let long = Conversation { id: "long".into(), title: "long".into(), messages: (0..100).map(message).collect(), created_at: 0, updated_at: 0, agent_id: None, provider_id: None, project_id: None, engine_session_id: None, workdir: None, parent: None };
+        save_conversation(&dir, &long).unwrap();
+        let link = ThreadParent { conversation_id: "long".into(), message_id: "m89".into() };
+
+        let reply = handle_agent_turn_in(&orchestrator, &dir, "t1", "", "in the thread", Vec::new(), None, None, None, Some(&link)).await.unwrap();
+        let first_kept = 90 - THREAD_CONTEXT_MAX;
+        assert!(reply.content.contains(&format!("line-{first_kept:03}-end")) && reply.content.contains("line-089-end"), "{}", reply.content);
+        assert!(!reply.content.contains(&format!("line-{:03}-end", first_kept - 1)) && !reply.content.contains("line-090-end"), "{}", reply.content);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn deleting_a_conversation_deletes_its_threads_and_deleting_a_thread_leaves_it() {
+        let (root, orchestrator) = project_setup("thread-delete");
+        let dir = root.join("conversations");
+        let anchor = three_turns(&orchestrator, &dir, "c1", None).await;
+        three_turns(&orchestrator, &dir, "c2", None).await;
+        let link = ThreadParent { conversation_id: "c1".into(), message_id: anchor };
+        handle_agent_turn_in(&orchestrator, &dir, "t1", "", "in c1", Vec::new(), None, None, None, Some(&link)).await.unwrap();
+        let other = ThreadParent { conversation_id: "c2".into(), message_id: load_conversation(&dir, "c2").unwrap().unwrap().messages[2].id.clone() };
+        handle_agent_turn_in(&orchestrator, &dir, "t2", "", "in c2", Vec::new(), None, None, None, Some(&other)).await.unwrap();
+
+        assert!(delete_conversation(&dir, "t2").unwrap());
+        assert!(load_conversation(&dir, "c2").unwrap().is_some(), "the conversation stays when its thread goes");
+
+        assert!(delete_conversation(&dir, "c1").unwrap());
+        assert!(load_conversation(&dir, "t1").unwrap().is_none(), "its thread went with it");
+        assert!(load_conversation(&dir, "c2").unwrap().is_some(), "another conversation is untouched");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_conversation_saved_before_threads_loads_and_a_thread_keeps_its_link_on_disk() {
+        let old = r#"{"id":"c","title":"t","messages":[],"createdAt":1,"updatedAt":1}"#;
+        assert_eq!(serde_json::from_str::<Conversation>(old).unwrap().parent, None);
+        let dir = temp_dir("thread-disk");
+        let link = ThreadParent { conversation_id: "c".into(), message_id: "m".into() };
+        append_messages(&dir, "t", AppendOptions { title_seed: "x", thread_of: Some(&link), create: true, ..Default::default() }, Vec::new()).unwrap();
+        assert!(std::fs::read_to_string(dir.join("t.json")).unwrap().contains(r#""parent""#));
+        assert_eq!(load_conversation(&dir, "t").unwrap().unwrap().parent, Some(link));
+        assert!(!std::fs::read_to_string({ append_messages(&dir, "plain", AppendOptions { title_seed: "x", create: true, ..Default::default() }, Vec::new()).unwrap(); dir.join("plain.json") }).unwrap().contains("parent"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

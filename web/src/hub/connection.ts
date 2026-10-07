@@ -39,6 +39,7 @@ import {
   type SpaceInfo,
   type Task,
   type TaskInfo,
+  type ThreadParent,
   type Webhook,
   type WebhookAuth,
   type WebhookInfo,
@@ -203,6 +204,8 @@ export interface VaultNote {
 
 /** One line of the transcript. `error` entries come from `chatError` or a failed request. */
 export interface ChatEntry {
+  /** The message's id on the hub (P125), what a thread starts from. Absent on a message not saved yet and on a hub from before threads. */
+  id?: string;
   role: "user" | "assistant" | "error";
   content: string;
   attachments: Attachment[];
@@ -213,7 +216,7 @@ export interface ChatEntry {
 }
 
 export function historyToEntries(messages: HistoryMessage[]): ChatEntry[] {
-  return messages.map((m) => ({ role: m.role, content: m.content, attachments: m.attachments }));
+  return messages.map((m) => ({ ...(m.id && { id: m.id }), role: m.role, content: m.content, attachments: m.attachments }));
 }
 
 type StatusListener = (status: ConnectionStatus) => void;
@@ -639,7 +642,7 @@ export class ServerConnection {
     this.socket.send(encode({ type: "setCodeMode", conversationId, mode }));
   }
 
-  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string, workdir?: string): void {
+  sendChat(message: string, conversationId: string, attachments: Attachment[] = [], agentId?: string, projectId?: string, workdir?: string, threadOf?: ThreadParent): void {
     this.socket.send(
       encode({
         type: "chat",
@@ -649,6 +652,8 @@ export class ServerConnection {
         ...(agentId && { agentId }),
         ...(projectId && { projectId }),
         ...(workdir && { workdir }),
+        // P125: only the turn that starts a thread says what it is a thread of; the hub keeps that for the life of the conversation.
+        ...(threadOf && { threadOf }),
       }),
     );
   }

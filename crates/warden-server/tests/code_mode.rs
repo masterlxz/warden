@@ -110,7 +110,7 @@ async fn save_project(conn: &mut ServerConnection, id: &str, workdir: Option<&st
 }
 
 async fn say(conn: &mut ServerConnection, text: &str, project: Option<&str>) {
-    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: project.map(str::to_string), workdir: None }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some("c1".into()), attachments: Vec::new(), agent_id: None, project_id: project.map(str::to_string), workdir: None, thread_of: None }).await.unwrap();
 }
 
 #[tokio::test]

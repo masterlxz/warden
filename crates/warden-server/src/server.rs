@@ -1266,10 +1266,29 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::Ping { nonce }) => {
                     let _ = tx.send(ServerMessage::Pong { nonce });
                 }
-                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id, workdir }) => {
+                Ok(ClientMessage::Chat { message, conversation_id, attachments, agent_id, project_id, workdir, thread_of }) => {
+                    // P125: the message this is a thread of. Its conversation id becomes a file name, so it follows the same rules as
+                    // any other id before anything reads it.
+                    let thread_check = thread_of.as_ref().map_or(Ok(()), |link| {
+                        resolve_conversation_id(Some(link.conversation_id.clone())).and_then(|_| if link.message_id.trim().is_empty() { Err("a thread needs the id of a message".to_string()) } else { Ok(()) })
+                    });
+                    // A new thread works in the project and the folder of the conversation it came from, so what the checks below look at is
+                    // that conversation's, whatever the request says. A thread that already exists keeps its own.
+                    let (project_id, workdir) = match (&thread_of, &thread_check) {
+                        (Some(link), Ok(())) => {
+                            let own_exists = resolve_conversation_id(conversation_id.clone()).ok().is_some_and(|id| warden_bootstrap::load_conversation(conversation_dirs.dir_for(&id), &id).ok().flatten().is_some());
+                            let parent = (!own_exists).then(|| warden_bootstrap::load_conversation(conversation_dirs.dir_for(&link.conversation_id), &link.conversation_id).ok().flatten()).flatten();
+                            match parent {
+                                Some(parent) => (parent.project_id, parent.workdir),
+                                None => (project_id, workdir),
+                            }
+                        }
+                        _ => (project_id, workdir),
+                    };
                     // The folder this turn runs in, when there is one: set while it is checked just below.
                     let mut effective_workdir: Option<String> = None;
-                    let checked = resolve_conversation_id(conversation_id.clone())
+                    let checked = thread_check
+                        .and_then(|()| resolve_conversation_id(conversation_id.clone()))
                         .and_then(|id| validate_attachments(&attachments).map(|()| id))
                         .and_then(|id| project_id.as_deref().map_or(Ok(()), |p| warden_core::project::validate_id(p).map_err(|e| format!("{e:#}"))).map(|()| id))
                         .and_then(|id| {
@@ -1350,6 +1369,12 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         (None, Ok(Some(project))) => Some(project),
                         _ => None,
                     };
+                    if code.is_some() && thread_of.is_some() {
+                        // The context of a code project's conversation is the engine's session, not its messages: a thread has nothing to take it from.
+                        let message = "threads aren't available in a code project's conversations".to_string();
+                        let _ = tx.send(ServerMessage::ChatError { message, conversation_id: Some(conversation_id), spend_limit_id: None });
+                        continue;
+                    }
                     if let Some(project) = code {
                         let Some(engine) = code_engine.clone() else {
                             let message = "this hub has no code engine, so this project's conversations can't run here".to_string();
@@ -1385,10 +1410,11 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let is_member = member.is_some();
                     let learning_settings = settings.clone();
                     let learn_member = member.as_ref().map(|m| m.id.clone());
+                    let thread = thread_of.map(|link| warden_bootstrap::ThreadParent { conversation_id: link.conversation_id, message_id: link.message_id });
                     tokio::spawn(async move {
                         let learn_id = conversation_id.clone();
                         let agent = agent_id.as_deref().zip(persona.as_deref()).map(|(id, persona)| TurnAgent { id, persona });
-                        let reply = match warden_bootstrap::handle_agent_turn(
+                        let reply = match warden_bootstrap::handle_agent_turn_in(
                             &orchestrator,
                             &conversations_dir,
                             &conversation_id,
@@ -1398,6 +1424,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                             agent,
                             project_id.as_deref(),
                             workdir.as_deref(),
+                            thread.as_ref(),
                         )
                         .await
                         {

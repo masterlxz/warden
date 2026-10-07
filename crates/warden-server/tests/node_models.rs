@@ -130,7 +130,7 @@ fn start_node(url: &str) -> tokio::task::JoinHandle<()> {
 
 /// Sends a chat turn as `agent` and returns the reply (or `error: …`) and how many fallbacks it reports.
 async fn chat(conn: &mut ServerConnection, message: &str, agent: &str) -> (String, usize) {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(format!("c-{agent}")), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None, workdir: None })
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(format!("c-{agent}")), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None, workdir: None, thread_of: None })
         .await
         .unwrap();
     loop {

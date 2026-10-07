@@ -6,6 +6,7 @@ import type { ChatEntry } from "../hub/connection";
 import type { LiveTurn } from "../hub/liveTurn";
 import type { Attachment } from "../hub/messages";
 import { canRecord, VoiceRecorder } from "../hub/recorder";
+import { repliesLabel, type ThreadInfo } from "../hub/threads";
 
 interface Props {
   entries: ChatEntry[];
@@ -23,6 +24,10 @@ interface Props {
   onExtendLimit: (limitId: string) => Promise<void>;
   /** Shift+Tab in the box, as in Claude Code: the next mode of a code conversation. Absent when there is no mode to change. */
   onCycleMode?: () => void;
+  /** P125 — abre a thread de uma mensagem (pelo id dela). Ausente onde não há threads (a própria thread, um hub antigo, uma conversa de código). */
+  onOpenThread?: (messageId: string) => void;
+  /** As threads desta conversa, pelo id da mensagem de onde saíram: o chip "N respostas" no lugar do botão. */
+  threads?: Record<string, ThreadInfo>;
 }
 
 /** Under an error from a spending limit: allow more, then say to send again — never resends by itself. */
@@ -123,7 +128,7 @@ function LiveBubble({ live, onCancel }: { live: LiveTurn; onCancel: () => void }
   );
 }
 
-export default function ChatView({ entries, pending, live, onCancel, disabled, onSend, onTranscribe, onExtendLimit, onCycleMode }: Props) {
+export default function ChatView({ entries, pending, live, onCancel, disabled, onSend, onTranscribe, onExtendLimit, onCycleMode, onOpenThread, threads }: Props) {
   const [draft, setDraft] = useState("");
   const [attached, setAttached] = useState<PendingAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -248,6 +253,13 @@ export default function ChatView({ entries, pending, live, onCancel, disabled, o
                   <AttachmentView key={j} attachment={attachment} />
                 ))}
                 {entry.spendLimitId && <ExtendLimitAction limitId={entry.spendLimitId} onExtend={onExtendLimit} />}
+                {entry.id && onOpenThread && (
+                  <div className="bubble-actions">
+                    <button type="button" className="link-button thread-button" onClick={() => onOpenThread(entry.id!)}>
+                      {threads?.[entry.id] ? repliesLabel(threads[entry.id].replies) : "Responder em thread"}
+                    </button>
+                  </div>
+                )}
               </li>
             ))}
             {pending && live && <LiveBubble live={live} onCancel={onCancel} />}

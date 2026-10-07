@@ -6,6 +6,19 @@
 
 ---
 
+### 2026-10-07 — Sessão 160
+
+- **Objetivo**: o P125, threads (responder a uma mensagem e abrir uma conversa à parte), planejado em Plan mode. O usuário escolheu: contexto = a conversa até a mensagem-pai mais a thread; primeira fatia = web e desktop em modo hub; o mesmo agente responde e nada volta para a principal.
+- **Hub**: `Conversation.parent` (`ThreadParent`) e `handle_agent_turn_in` (a `handle_agent_turn` delega a ela com `None`), que valida o vínculo ao criar (conversa e mensagem existem, pai não é thread, não é a si mesma), herda projeto e pasta da pai e monta o histórico com `thread_context` (as últimas `THREAD_CONTEXT_MAX` = 40 mensagens que terminam na âncora) antes das da própria thread. `delete_conversation` apaga as filhas. Protocolo: `HistoryMessage.id`, `ConversationSummary.parent`/`replies`, `ThreadParentDto`, `Chat.threadOf`. No servidor: validação do id do vínculo, herança de projeto e pasta antes das checagens de pasta, recusa em projeto de código, `to_summary` com a contagem de respostas e `to_history_message` com o id.
+- **Segurança**: o `conversationId` do vínculo vem do cliente e vira nome de arquivo. Validado no hub e de novo no bootstrap **antes** de carregar a conversa-pai (a primeira versão carregava antes de validar; corrigi na mesma sessão). Tem teste com `../escape` e `c1/../c1`.
+- **Web**: `threads.ts` (puro: `visibleConversations`, `threadsOf`, `withMessageIds`, `repliesLabel`), `ThreadPanel`, botão e chip no `ChatView`, `ChatEntry.id`, `sendChat(..., threadOf)`; a lista esconde as threads e a conversa que abre ao entrar nunca é uma thread; os ids chegam às mensagens recém-respondidas relendo o histórico. `npm test` novo na web (8).
+- **Desktop**: `lib/threads.ts`, `ChatMessage.hubId`, `Conversation.parent`/`replies`, `chatMessage` com `threadOf` (e sem projeto nem pasta nessa volta), `ThreadPanel`, botão no `MessageBubble`, painel ao lado do chat (`.chat-with-thread`); escondido no modo local.
+- **Testes**: Rust `warden-core` 412, `warden-server-protocol` 44, `warden-bootstrap` (7 novos), `warden-server` 148 mais os de integração (3 novos em `tests/threads.rs`), `desktop` lado Tauri `remote_cmds` 6; clippy só com o aviso antigo do `learning_eval`; web `npm test` 8 e e2e de navegador 2 de 2 (`threads.test.mjs`, contra um hub real); desktop `npm test` 63; `tsc` de web e desktop.
+- **Achados**: a suíte do servidor teve 3 falhas em `node_folder` na primeira rodada (cada teste levou ~60 s, com o disco em 94%) e passou sozinha em 0,93 s: carga, não regressão. O clippy acusou o `i % 2 == 0` de um teste meu (`is_multiple_of`), corrigido.
+- **Não verificado**: um modelo real respondendo numa thread (o histórico pode terminar numa mensagem de pessoa e seguir com outra: alguns provedores não gostam de duas seguidas), o painel numa janela do Tauri, a tela estreita da web.
+- **Disco**: o `/home` foi a 94% durante os testes; `cargo clean` no fim liberou 22,4 GB (67%, 59 GB livres) e o `web/dist` foi apagado, a pedido do usuário.
+- **Fica**: o que está em `PENDING.md` (P125): desktop local, extensão, celular, CLI, bots, Code, agente da thread, resumo de volta.
+
 ### 2026-10-07 — Sessão 159
 
 - **Objetivo**: o item 4 da lista de depois da Sessão 158, planejado em Plan mode: pausar a delegação síncrona, editar políticas e limite de modelos pelo celular e pela extensão, arrastar nós da árvore e mostrar a atividade de cada nó. Quatro fatias.

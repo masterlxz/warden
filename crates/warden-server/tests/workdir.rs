@@ -102,7 +102,7 @@ async fn next(conn: &mut ServerConnection) -> ServerMessage {
 }
 
 async fn chat(conn: &mut ServerConnection, id: &str, text: &str, workdir: Option<&Path>) -> ServerMessage {
-    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some(id.into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: workdir.map(|p| p.to_string_lossy().into_owned()) }).await.unwrap();
+    conn.send(&ClientMessage::Chat { message: text.into(), conversation_id: Some(id.into()), attachments: Vec::new(), agent_id: None, project_id: None, workdir: workdir.map(|p| p.to_string_lossy().into_owned()), thread_of: None }).await.unwrap();
     next(conn).await
 }
 

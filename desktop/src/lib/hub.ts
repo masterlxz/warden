@@ -123,6 +123,8 @@ export async function hubChat(args: {
   projectId: string;
   workdir: string;
   creating: boolean;
+  /** The message this conversation is a thread of (P125), said only by the turn that creates it. */
+  threadOf?: { conversationId: string; messageId: string };
 }): Promise<{ content: string } & TurnExtras> {
   return turnFromReply(await invoke<unknown>("remote_chat", { message: chatMessage(args) }));
 }

@@ -205,7 +205,7 @@ async fn node_reply(conn: &mut ServerConnection) -> ServerMessage {
 
 /// Sends a chat turn as `agent` and returns the reply text, answering approvals with `approve`.
 async fn chat(conn: &mut ServerConnection, message: &str, agent: &str, approve: bool) -> (String, usize) {
-    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(format!("c-{agent}")), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None, workdir: None })
+    conn.send(&ClientMessage::Chat { message: message.into(), conversation_id: Some(format!("c-{agent}")), attachments: Vec::new(), agent_id: Some(agent.into()), project_id: None, workdir: None, thread_of: None })
         .await
         .unwrap();
     let mut asked = 0;
