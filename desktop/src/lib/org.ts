@@ -44,6 +44,27 @@ export function descendantsOf(agents: OrgAgent[], id: string): Set<string> {
   return below;
 }
 
+/** Who `id` can be made to report to: everyone but itself and the agents below it (that would close a circle). */
+export function superiorChoices<T extends OrgAgent>(agents: T[], id: string): T[] {
+  const below = descendantsOf(agents, id);
+  return agents.filter((a) => a.id !== id && !below.has(a.id));
+}
+
+/** One change made from the tree, as the app and the hub take it (`AgentOrgEdit`). `role` and `reportsTo` left out mean none. */
+export type OrgEdit =
+  | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
+  | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
+  | { kind: "remove"; id: string };
+
+/** A blank field is no value: the edit leaves it out instead of sending an empty string. */
+export function positionEdit(id: string, role: string, reportsTo: string): OrgEdit {
+  return { kind: "setPosition", id, ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
+export function addReportEdit(id: string, persona: string, role: string, reportsTo: string | null): OrgEdit {
+  return { kind: "addReport", id: id.trim(), persona: persona.trim(), ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
 /** An agent was renamed: whoever reported to it follows the new name. */
 export function renameInReports<T extends OrgAgent>(agents: T[], from: string, to: string): T[] {
   if (from === to) return agents;

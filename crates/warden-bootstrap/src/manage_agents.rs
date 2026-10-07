@@ -100,7 +100,7 @@ struct ToolRules {
 }
 
 /// The `autonomy` an agent made by another agent starts at (P122): it asks before every change.
-const ASK_FIRST_LEVEL: u8 = 3;
+pub(crate) const ASK_FIRST_LEVEL: u8 = 3;
 
 #[derive(Clone)]
 pub struct ManageAgentsTool {
@@ -455,7 +455,7 @@ fn check_superior_in_scope(config: &FileConfig, caller: &str, wanted: &str) -> a
 }
 
 /// A role as the model wrote it: trimmed, blank is none, short and on one line.
-fn check_role(role: Option<&str>) -> anyhow::Result<Option<String>> {
+pub(crate) fn check_role(role: Option<&str>) -> anyhow::Result<Option<String>> {
     let Some(role) = role.map(str::trim).filter(|r| !r.is_empty()) else { return Ok(None) };
     if role.chars().count() > MAX_ROLE_CHARS || role.chars().any(char::is_control) {
         anyhow::bail!("role must be at most {MAX_ROLE_CHARS} characters, on one line");
@@ -480,7 +480,7 @@ fn tools_label(tools: Option<&[String]>) -> String {
     }
 }
 
-fn check_id(id: &str) -> anyhow::Result<()> {
+pub(crate) fn check_id(id: &str) -> anyhow::Result<()> {
     if id.trim().is_empty() || id != id.trim() {
         anyhow::bail!("agent id must not be empty or start/end with spaces");
     }
@@ -490,7 +490,7 @@ fn check_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn check_persona(persona: &str) -> anyhow::Result<()> {
+pub(crate) fn check_persona(persona: &str) -> anyhow::Result<()> {
     if persona.trim().is_empty() {
         anyhow::bail!("persona must not be empty");
     }

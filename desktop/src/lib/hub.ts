@@ -42,6 +42,7 @@ import {
 } from "./hubMap";
 
 import type { DirListing, NodeInfo } from "./workdir";
+import type { OrgEdit } from "./org";
 
 export { HubTurnError } from "./hubMap";
 export type { RemoteState, RemoteStatePayload, HubUser } from "./hubMap";
@@ -211,6 +212,13 @@ export async function hubControlAgentTask(askKey: KeyAsker, taskId: string, acti
   const reason = `${action === "cancel" ? "Stopping" : action === "pause" ? "Pausing" : "Resuming"} a task changes what the hub is doing.`;
   const message = { type: "controlAgentTask", taskId, action, pairingKey: await askKey(reason) };
   return (await ask<{ type: string; tasks: AgentTask[] }>(message, "agentTaskList")).tasks;
+}
+
+/** One change to the organization of the hub's agents, from the tree (P120). It changes the hub, so it asks for the pairing key. Resolves
+ * when the hub has started again with the change; rejects with the hub's reason when it refuses (a circle, a name already taken, a wrong key). */
+export async function hubEditAgentOrg(askKey: KeyAsker, edit: OrgEdit): Promise<void> {
+  const message = { type: "editAgentOrg", edit, pairingKey: await askKey("Changing the organization changes what the agents of the hub may reach.") };
+  await ask(message, "settingsSaved");
 }
 
 interface HubWebhookReply {

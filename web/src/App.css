@@ -1074,6 +1074,23 @@ button:focus-visible {
   opacity: 0.7;
 }
 
+.org-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3em 0.8em;
+  flex-basis: 100%;
+}
+
+.org-form {
+  margin: 0.4em 0 0.4em 0.4em;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.35));
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
 /* Trabalho dos agentes (P123) */
 
 .agent-work-group {

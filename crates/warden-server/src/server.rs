@@ -49,7 +49,7 @@ use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, Hub
 use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
-use crate::settings::{handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
+use crate::settings::{handle_edit_agent_org, handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
 use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyChange};
 use crate::api_keys::ApiKeyStore;
@@ -1575,6 +1575,14 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     tokio::spawn(async move {
                         let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
                         let _ = reply_tx.send(handle_save_settings(&access, request_id, &pairing_key, &base_version, update).await);
+                    });
+                }
+                Ok(ClientMessage::EditAgentOrg { request_id, pairing_key, edit }) => {
+                    // Starts the orchestrator again, like a save: off the reader loop.
+                    let (settings, shared, lock, auth_key, reply_tx) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
+                        let _ = reply_tx.send(handle_edit_agent_org(&access, request_id, &pairing_key, &edit).await);
                     });
                 }
                 Ok(ClientMessage::ListDevices { request_id }) => {

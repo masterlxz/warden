@@ -2236,6 +2236,28 @@ body {
   opacity: 0.7;
 }
 
+.org-actions {
+  display: inline-flex;
+  gap: 0.3em;
+  flex-basis: 100%;
+}
+
+.org-form {
+  margin: 0.4em 0 0.4em 0.4em;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--color-border, rgba(127, 127, 127, 0.35));
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.org-form-actions {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.4em;
+}
+
 /* P123: the work agents delegated to each other. */
 .agent-work-group {
   margin: 1rem 0;

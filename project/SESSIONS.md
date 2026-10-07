@@ -6,6 +6,15 @@
 
 ---
 
+### 2026-10-06 — Sessão 155
+
+- **Objetivo**: o item 3 da lista, editar a hierarquia pela árvore (P120, fatia 3), a pedido do usuário; sem testes manuais nesta rodada.
+- **Decisão**: em vez de reaproveitar o salvar de configurações inteiro (providers com chaves, combos, bots...), uma **operação estreita** `AgentOrgEdit` (`setPosition`, `addReport`, `remove`), que só escreve os agentes e reinicia o orquestrador. O agente novo nasce cuidadoso (igual ao que um gerente cria).
+- **Feito**: `warden_bootstrap::org_edit::apply_org_edit` (cópia dos agentes, `check_hierarchy`, só os do dono; o remover também tira o agente dos hosts SSH e dos nós); `AgentOrgEdit` e `ClientMessage::EditAgentOrg` no protocolo (membro recusado em `member_refusal`); `handle_edit_agent_org` no hub (chave de pareamento e o lock dos salvamentos, volta o arquivo se o hub não sobe, responde `SettingsSaved`); comando `edit_agent_org` no desktop; telas do desktop (inglês) e da web (português) com Editar, Adicionar subordinado e Remover, cada um com formulário inline e a confirmação do remover; a web pede a chave.
+- **Testes**: 1396 Rust verdes, `npm test` do desktop 38 de 38, `tsc` e builds de desktop e web, clippy sem aviso novo. Novos: 5 em `org_edit` (posição, recusas que não mudam nada, o agente novo cuidadoso, remover com hosts e nós, ida e volta no fio), 2 de hub de ponta a ponta (`tests/org_edit.rs`: as três mudanças com o orquestrador reconstruído, e chave errada ou círculo sem tocar o arquivo), 1 de protocolo, 2 do desktop (`org.test.mjs`).
+- **Não verificado**: as telas numa janela (formulários, a confirmação, o pedido da chave na web); o desktop local reiniciando o motor depois de uma edição; um modelo real usando o alcance novo.
+- **Fica no P120**: arrastar os nós, abrir a conversa, as tarefas e a atividade de cada nó, a hierarquia por pessoa (P84), mobile e extensão.
+
 ### 2026-10-06 — Sessão 154
 
 - **Objetivo**: o item 2 da lista, pausar e cancelar uma tarefa de agente pela tela (P123), a pedido do usuário, que pediu para **não fazer testes manuais** (ver telas) nesta rodada.

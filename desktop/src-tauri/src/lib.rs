@@ -764,6 +764,19 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
     Ok(())
 }
 
+/// One change to the organization of the agents from the tree (P120): a position, a new report, a removal. Only the agents (and what lists
+/// them) are written, so a screen open on the settings form isn't overwritten; the orchestrator starts again so a manager's reach follows
+/// the tree at once. A change the hierarchy refuses comes back as the error, and nothing is written.
+#[tauri::command]
+async fn edit_agent_org(state: State<'_, AppState>, edit: warden_server_protocol::protocol::AgentOrgEdit) -> Result<(), String> {
+    let path = default_config_path().ok_or_else(|| "could not determine the OS config directory".to_string())?;
+    let mut config = load_config_from_path(&path, false).map_err(|e| format!("{e:#}"))?;
+    warden_bootstrap::org_edit::apply_org_edit(&mut config, &edit)?;
+    save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
+    reload_orchestrator(&state).await;
+    Ok(())
+}
+
 /// Rebuilds the orchestrator from the config file for the desktop's chat and, when the embedded
 /// hub is running, for the hub too (P78) — before this, the hub kept the orchestrator it started
 /// with until it was restarted. A config the orchestrator can't start with leaves the hub on its
@@ -1076,6 +1089,7 @@ pub fn run() {
             lend_cmds::stop_lending,
             agent_task_cmds::list_agent_tasks,
             agent_task_cmds::control_agent_task,
+            edit_agent_org,
             task_cmds::list_tasks,
             task_cmds::save_task,
             task_cmds::set_task_enabled_cmd,

@@ -7,6 +7,8 @@
  * "camelCase")]` on the Rust side) — locked by `protocol.rs`'s own round-trip tests, not guessed.
  */
 
+import type { OrgEdit } from "./org";
+
 export interface Usage {
   promptTokens: number;
   completionTokens: number;
@@ -757,6 +759,8 @@ export type ClientMessage =
   | { type: "listAgentTasks"; requestId: number }
   /** Pausa, retoma ou para (`pause`, `resume`, `cancel`) uma tarefa que roda no hub, com as subtarefas. Dono; pede a chave de pareamento. */
   | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
+  /** P120 — uma mudança na organização dos agentes, pela árvore. Dono; pede a chave de pareamento; respondida como um salvar (`settingsSaved`). */
+  | { type: "editAgentOrg"; requestId: number; pairingKey: string; edit: OrgEdit }
   | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
   | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
   | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }

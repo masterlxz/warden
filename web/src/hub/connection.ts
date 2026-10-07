@@ -46,6 +46,7 @@ import {
   type UserInfo,
   type VaultSearchHit,
 } from "./messages";
+import type { OrgEdit } from "./org";
 
 /** The workspace's members (P84) — with the provisional password of the one just created or reset. */
 export interface UserList {
@@ -785,6 +786,15 @@ export class ServerConnection {
     );
     if (reply.type !== "settingsSaved") throw new Error("resposta inesperada do hub");
     return { settings: reply.settings, version: reply.version };
+  }
+
+  /** Uma mudança na organização dos agentes, pela árvore (P120): um cargo e superior, um subordinado novo, uma remoção. Pede a chave de
+   * pareamento e reinicia o orquestrador do hub com a mudança; devolve os agentes de agora. Rejeita com `SettingsError` (chave errada, um
+   * ciclo, um nome já usado...). */
+  async editAgentOrg(pairingKey: string, edit: OrgEdit): Promise<AgentSettings[]> {
+    const reply = await this.request((requestId) => ({ type: "editAgentOrg", requestId, pairingKey, edit }), SAVE_SETTINGS_TIMEOUT_MS);
+    if (reply.type !== "settingsSaved") throw new Error("resposta inesperada do hub");
+    return reply.settings.agents;
   }
 
   /** Every device that has ever connected to the hub (Sessão 103). */

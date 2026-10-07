@@ -47,6 +47,7 @@ pub mod manage_agents;
 pub mod manage_tasks;
 pub mod member_crypto;
 pub mod org;
+pub mod org_edit;
 pub mod recovery;
 pub mod risk;
 pub mod node_model;

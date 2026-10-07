@@ -1236,6 +1236,33 @@ impl HubSettingsUpdate {
     }
 }
 
+/// One change a person makes to the organization of the owner's agents from the tree (P120), without touching anything else of the
+/// settings. `role` and `reports_to` left out (or blank) mean none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum AgentOrgEdit {
+    /// Gives `id` this role and this superior (moving it, with everyone below it, when the superior changes).
+    SetPosition {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reports_to: Option<String>,
+    },
+    /// A new agent under `reports_to` (or at the top), careful by default: read-only tools, asks before every change, can't delegate
+    /// or manage agents until a person turns that on.
+    AddReport {
+        id: String,
+        persona: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reports_to: Option<String>,
+    },
+    /// Removes `id`; whoever reported to it reports to its superior.
+    Remove { id: String },
+}
+
 /// Messages sent from a client (mobile, desktop-as-client, browser extension) to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -1593,6 +1620,13 @@ pub enum ClientMessage {
         pairing_key: String,
         task_id: String,
         action: String,
+    },
+    /// Changes the organization of the agents from the tree (P120): a position, a new report, a removal. Owner only, asks for the
+    /// pairing key like a settings save, and is answered like one (`SettingsSaved` with the new settings, or `SettingsError`).
+    EditAgentOrg {
+        request_id: u64,
+        pairing_key: String,
+        edit: AgentOrgEdit,
     },
     /// Creates a task, or replaces `original_id` with it (a rename when the ids differ).
     SaveTask {
@@ -2743,6 +2777,20 @@ mod tests {
         let json = serde_json::to_string(&control).unwrap();
         assert_eq!(json, r#"{"type":"controlAgentTask","requestId":5,"pairingKey":"k","taskId":"at-1","action":"pause"}"#);
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), control);
+    }
+
+    #[test]
+    fn a_change_to_the_organization_is_asked_with_the_pairing_key() {
+        let ask = ClientMessage::EditAgentOrg {
+            request_id: 6,
+            pairing_key: "k".into(),
+            edit: AgentOrgEdit::SetPosition { id: "dev".into(), role: Some("Backend".into()), reports_to: Some("lead".into()) },
+        };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(json, r#"{"type":"editAgentOrg","requestId":6,"pairingKey":"k","edit":{"kind":"setPosition","id":"dev","role":"Backend","reportsTo":"lead"}}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), ask);
+        let top = r#"{"type":"editAgentOrg","requestId":7,"pairingKey":"k","edit":{"kind":"remove","id":"dev"}}"#;
+        assert!(matches!(serde_json::from_str::<ClientMessage>(top).unwrap(), ClientMessage::EditAgentOrg { edit: AgentOrgEdit::Remove { .. }, .. }));
     }
 
     #[test]

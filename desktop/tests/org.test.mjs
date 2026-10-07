@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { buildOrg, descendantsOf, removeFromOrg, renameInReports } from "../src/lib/org.ts";
+import { addReportEdit, buildOrg, descendantsOf, positionEdit, removeFromOrg, renameInReports, superiorChoices } from "../src/lib/org.ts";
 
 const agent = (id, reportsTo = null, role = null) => ({ id, reportsTo, role });
 const ids = (nodes) => nodes.map((n) => n.agent.id);
@@ -45,5 +45,21 @@ describe("editing the reporting lines", () => {
     assert.deepEqual(next.map((a) => [a.id, a.reportsTo]), [["boss", null], ["dev", "boss"]]);
     const top = removeFromOrg([agent("boss"), agent("dev", "boss")], "boss");
     assert.deepEqual(top.map((a) => [a.id, a.reportsTo]), [["dev", null]]);
+  });
+});
+
+describe("editing the tree", () => {
+  test("an agent can be moved under anyone but itself and the agents below it", () => {
+    const team = [agent("boss"), agent("lead", "boss"), agent("dev", "lead"), agent("solo")];
+    assert.deepEqual(superiorChoices(team, "lead").map((a) => a.id), ["boss", "solo"]);
+    assert.deepEqual(superiorChoices(team, "solo").map((a) => a.id), ["boss", "lead", "dev"]);
+    assert.deepEqual(superiorChoices(team, "boss").map((a) => a.id), ["solo"]);
+  });
+
+  test("a blank role or superior is left out of the edit and the rest is trimmed", () => {
+    assert.deepEqual(positionEdit("dev", "  ", ""), { kind: "setPosition", id: "dev" });
+    assert.deepEqual(positionEdit("dev", " Backend ", "lead"), { kind: "setPosition", id: "dev", role: "Backend", reportsTo: "lead" });
+    assert.deepEqual(addReportEdit(" reviewer ", " Reviews code. ", "", "lead"), { kind: "addReport", id: "reviewer", persona: "Reviews code.", reportsTo: "lead" });
+    assert.deepEqual(addReportEdit("top", "Leads.", "Chief", null), { kind: "addReport", id: "top", persona: "Leads.", role: "Chief" });
   });
 });

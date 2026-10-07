@@ -43,6 +43,27 @@ export function descendantsOf(agents: OrgAgent[], id: string): Set<string> {
   return below;
 }
 
+/** A quem `id` pode passar a reportar: todos menos ele mesmo e quem está abaixo dele (fecharia um ciclo). */
+export function superiorChoices<T extends OrgAgent>(agents: T[], id: string): T[] {
+  const below = descendantsOf(agents, id);
+  return agents.filter((a) => a.id !== id && !below.has(a.id));
+}
+
+/** Uma mudança feita pela árvore, como o hub a recebe (`AgentOrgEdit`). `role` e `reportsTo` ausentes querem dizer nenhum. */
+export type OrgEdit =
+  | { kind: "setPosition"; id: string; role?: string; reportsTo?: string }
+  | { kind: "addReport"; id: string; persona: string; role?: string; reportsTo?: string }
+  | { kind: "remove"; id: string };
+
+/** Um campo em branco é nenhum valor: a mudança o deixa de fora em vez de mandar uma string vazia. */
+export function positionEdit(id: string, role: string, reportsTo: string): OrgEdit {
+  return { kind: "setPosition", id, ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
+export function addReportEdit(id: string, persona: string, role: string, reportsTo: string | null): OrgEdit {
+  return { kind: "addReport", id: id.trim(), persona: persona.trim(), ...(role.trim() ? { role: role.trim() } : {}), ...(reportsTo ? { reportsTo } : {}) };
+}
+
 /** Um agente foi renomeado: quem reportava a ele acompanha o nome novo. */
 export function renameInReports<T extends OrgAgent>(agents: T[], from: string, to: string): T[] {
   if (from === to) return agents;

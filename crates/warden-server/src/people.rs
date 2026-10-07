@@ -149,7 +149,7 @@ const ROOT_ONLY: &str = "only the workspace's owner can do this";
 pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
     let message_text = ROOT_ONLY.to_string();
     Some(match message {
-        ClientMessage::SaveSettings { request_id, .. } => {
+        ClientMessage::SaveSettings { request_id, .. } | ClientMessage::EditAgentOrg { request_id, .. } => {
             ServerMessage::SettingsError { request_id: *request_id, message: message_text, conflict: false, auth_rejected: true }
         }
         ClientMessage::ListDevices { request_id } | ClientMessage::SetDeviceStatus { request_id, .. } => {

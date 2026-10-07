@@ -627,7 +627,7 @@ function App() {
       ) : view === "agentWork" ? (
         <AgentTasksView key={activeHubId ?? "local"} remote={remote} />
       ) : view === "organization" ? (
-        <OrganizationView agents={settings.agents} onEdit={() => setView("settings")} />
+        <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} />
       ) : (
         <ChatArea
           activeConversation={activeConversation}

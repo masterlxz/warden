@@ -20,7 +20,7 @@ use warden_bootstrap::settings::{apply_hub_settings, config_version, hub_setting
 use warden_bootstrap::{load_config_from_path, render_config, FileConfig};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::Tool;
-use warden_server_protocol::protocol::{HubSettingsDto, HubSettingsUpdate};
+use warden_server_protocol::protocol::{AgentOrgEdit, HubSettingsDto, HubSettingsUpdate};
 use warden_server_protocol::ServerMessage;
 
 /// How long a wrong pairing key waits before its answer, so guessing one over the socket is slow.
@@ -268,6 +268,56 @@ pub async fn handle_save_settings(access: &SettingsAccess<'_>, request_id: u64, 
     let settings = view(host, &config, &orchestrator, access);
     host.installed(&orchestrator);
     shared.replace(orchestrator);
+    match config_version(&path) {
+        Ok(version) => ServerMessage::SettingsSaved { request_id, settings, version },
+        Err(err) => settings_error(request_id, format!("saved, but reading it back failed: {err:#}")),
+    }
+}
+
+/// Answers `EditAgentOrg` (P120): one change to the organization of the agents from the tree, with the pairing key. It writes only the
+/// agents (and what lists them) and starts the hub's orchestrator again, so a manager's reach follows the tree at once. Answered like a
+/// save: the new settings, or an error that says why nothing changed.
+pub async fn handle_edit_agent_org(access: &SettingsAccess<'_>, request_id: u64, pairing_key: &str, edit: &AgentOrgEdit) -> ServerMessage {
+    let Some(host) = access.host else {
+        return settings_error(request_id, NO_SETTINGS);
+    };
+    let _saving = access.lock.lock().await;
+    if !keys_match(pairing_key, access.auth_key) {
+        tokio::time::sleep(WRONG_KEY_DELAY).await;
+        return ServerMessage::SettingsError { request_id, message: "wrong pairing key".to_string(), conflict: false, auth_rejected: true };
+    }
+    let path = host.config_path();
+    let previous = match read_optional(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => return settings_error(request_id, format!("{err:#}")),
+    };
+    let mut config = match load_config_from_path(&path, false) {
+        Ok(config) => config,
+        Err(err) => return settings_error(request_id, format!("{err:#}")),
+    };
+    if let Err(message) = warden_bootstrap::org_edit::apply_org_edit(&mut config, edit) {
+        return settings_error(request_id, message);
+    }
+    if let Err(err) = write_config(&path, previous.as_deref(), &config) {
+        return settings_error(request_id, format!("{err:#}"));
+    }
+    let orchestrator = match host.build().await {
+        Ok(orchestrator) => orchestrator,
+        Err(err) => {
+            let restored = match &previous {
+                Some(bytes) => write_atomic(&path, bytes),
+                None => std::fs::remove_file(&path).context("failed to remove the new config file"),
+            };
+            let mut message = format!("not changed — the hub couldn't start with it: {err:#}");
+            if let Err(restore_err) = restored {
+                message.push_str(&format!(" (and putting the previous file back failed: {restore_err:#})"));
+            }
+            return settings_error(request_id, message);
+        }
+    };
+    let settings = view(host, &config, &orchestrator, access);
+    host.installed(&orchestrator);
+    access.shared.replace(orchestrator);
     match config_version(&path) {
         Ok(version) => ServerMessage::SettingsSaved { request_id, settings, version },
         Err(err) => settings_error(request_id, format!("saved, but reading it back failed: {err:#}")),
