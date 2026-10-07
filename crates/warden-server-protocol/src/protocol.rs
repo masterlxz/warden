@@ -1527,6 +1527,13 @@ pub enum ClientMessage {
     ListConversations {
         request_id: u64,
     },
+    /// The id of an agent's channel (P121): the one conversation the agent keeps with the person, like a contact. The same id every time for
+    /// the same agent, so a client asks once and uses it as the `conversation_id` of a `Chat` with that `agent_id`; the conversation
+    /// exists on the hub from the first message. Answered by `AgentChannel`/`ConversationError` with the same `request_id`.
+    OpenAgentChannel {
+        request_id: u64,
+        agent_id: String,
+    },
     /// Renames one of this device's conversations. Answered by `ConversationOk`/`ConversationError`.
     RenameConversation {
         request_id: u64,
@@ -2140,6 +2147,11 @@ pub enum ServerMessage {
     ConversationList {
         request_id: u64,
         conversations: Vec<ConversationSummary>,
+    },
+    /// Reply to `ClientMessage::OpenAgentChannel` (P121): the conversation id of that agent's channel.
+    AgentChannel {
+        request_id: u64,
+        conversation_id: String,
     },
     /// Reply to a successful `RenameConversation`/`DeleteConversation`/`MoveConversation`.
     ConversationOk {
@@ -2759,6 +2771,20 @@ mod tests {
         assert!(!json.contains("parent") && !json.contains("replies"), "{json}");
         let old: ConversationSummary = serde_json::from_str(r#"{"id":"c","title":"t","createdAt":1,"updatedAt":2}"#).unwrap();
         assert_eq!((old.parent, old.replies), (None, 0));
+    }
+
+    /// P121: the id of an agent's channel is asked for with the agent's name and comes back as a conversation id.
+    #[test]
+    fn an_agents_channel_is_asked_for_and_answered_by_name() {
+        let ask = ClientMessage::OpenAgentChannel { request_id: 4, agent_id: "chief".into() };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(json, r#"{"type":"openAgentChannel","requestId":4,"agentId":"chief"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), ask);
+
+        let reply = ServerMessage::AgentChannel { request_id: 4, conversation_id: "channel-00ff".into() };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(json, r#"{"type":"agentChannel","requestId":4,"conversationId":"channel-00ff"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
     }
 
     /// P103: a chat names the project it starts in; the project messages and the summary's `projectId` use the names

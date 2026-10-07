@@ -28,7 +28,8 @@ import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, sa
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
 import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
-import { threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
+import { isAgentChannel, threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
+import AgentContacts from "./components/AgentContacts";
 import { folderLabel, folderPlace, nodesWithFolders, parseNodeFolder } from "./hub/workdir";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
@@ -44,7 +45,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization" | "agentWork";
+type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization" | "agentWork" | "agents";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -101,6 +102,8 @@ export default function App() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   /** The agent the open conversation speaks with — "" for none. */
   const [agentId, setAgentId] = useState("");
+  /** P121 — the id of each agent's channel (the hub makes it from the agent's name), read when the Agents screen opens. */
+  const [channels, setChannels] = useState<Record<string, string>>({});
   /** A thread open beside the chat (P125): the message it comes from and the conversation it lives in. Closed when the chat moves to another conversation. */
   const [thread, setThread] = useState<{ messageId: string; threadId: string } | null>(null);
   /** O agente cujas tarefas a aba "Trabalho dos agentes" mostra (definido a partir da árvore da organização). */
@@ -133,6 +136,17 @@ export default function App() {
   conversationsRef.current = conversations;
   // A thread belongs to the conversation it was opened in: moving to another one closes it.
   useEffect(() => setThread(null), [activeId]);
+  // The Agents screen shows each agent's last activity, so it needs the id of every channel: asked once per agent.
+  useEffect(() => {
+    if (view !== "agents" || !conn) return;
+    for (const agent of agentIds) {
+      if (channels[agent]) continue;
+      conn.openAgentChannel(agent).then(
+        (id) => setChannels((prev) => (prev[agent] ? prev : { ...prev, [agent]: id })),
+        () => undefined,
+      );
+    }
+  }, [view, conn, agentIds, channels]);
 
   const forgetToken = useCallback(() => {
     const { deviceToken: _dropped, ...rest } = identityRef.current;
@@ -535,10 +549,48 @@ export default function App() {
   function showView(next: View) {
     setView(next);
     // Agents may have been added or renamed in Settings meanwhile.
-    if (next === "chat" && connRef.current) {
+    if ((next === "chat" || next === "agents") && connRef.current) {
       void refreshAgents(connRef.current);
+    }
+    if (next === "chat" && connRef.current) {
       void refreshProjects(connRef.current);
     }
+    // An agent's channel belongs to the Agents screen: coming back to the chat leaves it for the first loose conversation (or a new one).
+    if (next === "chat" && isAgentChannel(activeIdRef.current)) {
+      const first = visibleConversations(conversationsRef.current)[0];
+      if (first) {
+        openConversation(first.id);
+      } else {
+        handleNewConversation();
+      }
+    }
+  }
+
+  /** P121 — opens the channel of `agent`: the one conversation it keeps with the person, with the agent fixed. The hub says its id; it
+   * exists on disk from the first message. */
+  async function openAgentChannel(agent: string) {
+    const connection = connRef.current;
+    if (!connection) return;
+    let id = channels[agent];
+    if (!id) {
+      try {
+        id = await connection.openAgentChannel(agent);
+      } catch (err) {
+        setConversationsError(`Não foi possível abrir o canal: ${errorText(err)}`);
+        return;
+      }
+      const known = id;
+      setChannels((prev) => ({ ...prev, [agent]: known }));
+    }
+    setSidebarOpen(false);
+    if (id !== activeIdRef.current) {
+      setActiveId(id);
+      setEntries([]);
+      void loadConversation(connection, id);
+    }
+    setAgentId(agent);
+    setProjectId("");
+    setWorkdir("");
   }
 
   /** The chat's project picker (P103). Before the conversation exists it only chooses where the first message goes;
@@ -589,7 +641,7 @@ export default function App() {
     }
     const list = await refreshConversations(connection);
     if (id !== activeIdRef.current) return;
-    const next = list?.[0]?.id;
+    const next = list ? visibleConversations(list)[0]?.id : undefined;
     if (next) {
       openConversation(next);
     } else {
@@ -673,6 +725,9 @@ export default function App() {
           <button type="button" className={view === "chat" ? "tab tab--active" : "tab"} onClick={() => showView("chat")}>
             Chat
           </button>
+          <button type="button" className={view === "agents" ? "tab tab--active" : "tab"} onClick={() => showView("agents")}>
+            Agents
+          </button>
           <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
             Vault
           </button>
@@ -755,27 +810,41 @@ export default function App() {
       )}
 
       <main className="app-main">
-        {view === "chat" ? (
+        {view === "chat" || view === "agents" ? (
           <div className={sidebarOpen ? "chat-layout chat-layout--drawer-open" : "chat-layout"}>
-            <ConversationList
-              conversations={visibleConversations(conversations)}
-              projects={projects}
-              activeId={activeId}
-              pendingIds={Object.keys(pendingTurns)}
-              error={conversationsError}
-              disabled={!phase.connected}
-              onOpen={openConversation}
-              onNew={handleNewConversation}
-              onRename={handleRename}
-              onDelete={handleDelete}
-            />
+            {view === "agents" ? (
+              <AgentContacts
+                agentIds={agentIds}
+                channels={channels}
+                conversations={conversations}
+                activeAgent={agentId}
+                pendingIds={Object.keys(pendingTurns)}
+                disabled={!phase.connected}
+                onOpen={(id) => void openAgentChannel(id)}
+              />
+            ) : (
+              <ConversationList
+                conversations={visibleConversations(conversations)}
+                projects={projects}
+                activeId={activeId}
+                pendingIds={Object.keys(pendingTurns)}
+                error={conversationsError}
+                disabled={!phase.connected}
+                onOpen={openConversation}
+                onNew={handleNewConversation}
+                onRename={handleRename}
+                onDelete={handleDelete}
+              />
+            )}
             <button type="button" className="drawer-scrim" aria-label="Fechar conversas" onClick={() => setSidebarOpen(false)} />
             <div className="chat-pane">
               <div className="chat-header">
                 <button type="button" className="link-button drawer-toggle" onClick={() => setSidebarOpen(true)}>
-                  ☰ Conversas
+                  {view === "agents" ? "☰ Agentes" : "☰ Conversas"}
                 </button>
-                <span className="chat-title">{activeTitle}</span>
+                <span className="chat-title">{view === "agents" ? agentId || "Agentes" : activeTitle}</span>
+                {/* P121 — in an agent's channel the agent is the channel's and there is no project or folder: only the chat. */}
+                {view === "chat" && (<>
                 {(agentIds.length > 0 || agentId !== "") && (
                   <label className="agent-picker">
                     <span className="agent-picker-label">Agente</span>
@@ -847,6 +916,7 @@ export default function App() {
                     </select>
                   </label>
                 )}
+                </>)}
               </div>
               {pickingFolder && connRef.current && (
                 <FolderPicker
@@ -860,6 +930,9 @@ export default function App() {
                   onCancel={() => setPickingFolder(false)}
                 />
               )}
+              {view === "agents" && !isAgentChannel(activeId) ? (
+                <p className="skills-hint agents-empty">Escolha um agente para conversar com ele. Cada agente tem uma conversa só, que fica aqui.</p>
+              ) : (
               <ChatView
                 entries={entries}
                 pending={activeId in pendingTurns}
@@ -878,6 +951,7 @@ export default function App() {
                 onOpenThread={conversations.some((c) => c.id === activeId) && !projects.some((p) => p.id === projectId && p.code) ? openThread : undefined}
                 threads={threadsOf(conversations, activeId)}
               />
+              )}
             </div>
             {thread && conn && entries.some((e) => e.id === thread.messageId) && (
               <ThreadPanel

@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-07 — Sessão 165
+
+- **Objetivo**: começar o P121 (modo Agents). Decisões do usuário nesta sessão: (1) as conversas soltas continuam na tela do Chat; na tela de Agents há **uma conversa só por agente**, como um contato do WhatsApp (convive com o resto, não substitui); (2) quando o agente inicia uma mensagem, ela vai **no canal dele**, e dá para **configurar o envio também para canais externos** (Telegram, WhatsApp), gerando **notificação**.
+- **Primeira fatia (o canal fixo, web)**: pedido novo `OpenAgentChannel { agentId }` → `AgentChannel { conversationId }`. O id é `channel-<hash FNV de 64 bits do nome do agente>` (`channel_id` em `message_agent.rs`, ao lado do `thread_id`), calculado só no hub, porque o id do agente é texto livre e um id de conversa é nome de arquivo; assim Rust, TypeScript e Dart não repetem um hash. A conversa em si é uma conversa comum, criada com a primeira mensagem (`Chat` com esse id e o `agentId`), sem campo novo no arquivo. A web ganhou a aba "Agents" (`AgentContacts`: os agentes como contatos, ordenados pela última atividade) que reaproveita o `ChatView`, sem os seletores de agente, projeto e pasta; a lista do Chat esconde os ids `channel-` (`visibleConversations`), e voltar ao Chat sai do canal. Corrigi de passagem: apagar a conversa aberta no Chat abria a primeira da lista inteira, que podia ser uma thread.
+- **Testes**: `protocol` (o par de mensagens), `bootstrap` (`an_agents_channel_has_one_stable_safe_id`), web `npm test` 9 e `tsc`, e o e2e de navegador novo `web/e2e/agents.test.mjs` contra um hub real (lista, id `channel-…` com o agente, mesmo canal ao voltar, fora da lista do Chat) mais `threads.test.mjs`: 3 de 3.
+- **Não feito (próximas fatias)**: desktop, extensão e celular; a mensagem iniciada pelo agente (uma tool para o agente escrever no canal dele, com a autorização no P122), o envio configurável para Telegram e WhatsApp, a notificação e o contador de não lidas; o feed de atividade.
+- **Disco**: `web/dist` apagado; o `target/` voltou a existir (compilação do hub para o e2e).
+
 ### 2026-10-07 — Sessão 164
 
 - **Objetivo**: fechar o P125 (o que sobrava não se aplica ou depende do P121, registrado em `PENDING.md`) e a parte pequena do P124: o desktop obrigava escolher um agente antes da primeira mensagem e o fixava.

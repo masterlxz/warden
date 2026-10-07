@@ -85,6 +85,22 @@ pub fn thread_id(from: &str, to: &str) -> String {
     format!("agents-{hash:016x}")
 }
 
+/// Prefix of the id of an agent's channel (P121): the one conversation an agent keeps with the person, like a contact. A client leaves these
+/// out of the list of loose conversations and shows them on the screen of agents.
+pub const CHANNEL_PREFIX: &str = "channel-";
+
+/// The id of the channel of `agent` (P121): a stable hash of its name, for the same reason as `thread_id` (agent ids are free text, a
+/// conversation id is a file name). The same id for the same agent every time, so there is only ever one channel per agent and person.
+pub fn channel_id(agent: &str) -> String {
+    // FNV-1a, 64 bits: stable across builds, unlike `std`'s hasher.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in agent.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{CHANNEL_PREFIX}{hash:016x}")
+}
+
 pub fn thread_title(from: &str, to: &str) -> String {
     format!("{from} → {to}")
 }
@@ -534,6 +550,19 @@ mod tests {
         assert_ne!(id, thread_id("bia", "ana"));
         assert_ne!(thread_id("a", "b c"), thread_id("a b", "c"));
         let weird = thread_id("../x", "y/z");
+        assert!(weird.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+    }
+
+    /// P121: an agent's channel has one id, always the same, safe as a file name whatever the agent is called, and the prefix a client uses
+    /// to keep channels out of the list of loose conversations.
+    #[test]
+    fn an_agents_channel_has_one_stable_safe_id() {
+        let id = channel_id("ana");
+        assert_eq!(id, channel_id("ana"));
+        assert_ne!(id, channel_id("bia"));
+        assert_ne!(id, thread_id("ana", "ana"), "never the id of an agent-to-agent conversation");
+        assert!(id.starts_with(CHANNEL_PREFIX) && id.len() <= 64);
+        let weird = channel_id("../x é 日本");
         assert!(weird.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
     }
 

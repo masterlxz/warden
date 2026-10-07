@@ -65,7 +65,7 @@ pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use manage_tasks::ManageTasksTool;
-pub use message_agent::{ConversationsChanged, MessageAgentTool};
+pub use message_agent::{channel_id, ConversationsChanged, MessageAgentTool, CHANNEL_PREFIX};
 pub use project_scope::{check_node_path, node_folder, node_folder_ref, scope_to_project, scope_to_workdir, WITHHELD_IN_A_PROJECT};
 pub use tasks::TaskConfig;
 pub use spend::{default_limit_configs, default_spend_ledger_path, env_switches_limits_off, LimitConfig, LimitScope};

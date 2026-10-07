@@ -1733,7 +1733,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     let store = ProjectStore::new(person_vault(member.as_ref(), settings.as_deref(), &orchestrator.current(), &space_vaults));
                     let _ = tx.send(crate::conversations::handle_move_conversation(&conversation_dirs, request_id, conversation_id, project_id, |id| store.exists(id)));
                 }
-                Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
+                Ok(message @ (ClientMessage::ListConversations { .. } | ClientMessage::OpenAgentChannel { .. } | ClientMessage::RenameConversation { .. } | ClientMessage::DeleteConversation { .. })) => {
                     // P78 — small file I/O, answered inline like `RequestHistory`.
                     if let Some(reply) = handle_conversation_request(&conversation_dirs, message) {
                         let _ = tx.send(reply);

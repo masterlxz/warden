@@ -3,9 +3,18 @@
 import type { ChatEntry } from "./connection";
 import type { ConversationSummary } from "./messages";
 
-/** As conversas que a lista mostra: as threads ficam de fora, só aparecem a partir da mensagem de onde saíram. */
-export function visibleConversations<T extends Pick<ConversationSummary, "parent">>(conversations: T[]): T[] {
-  return conversations.filter((c) => !c.parent);
+/** O começo do id do canal de um agente (P121): a conversa fixa que ele mantém com a pessoa. Igual ao `CHANNEL_PREFIX` do hub. */
+export const CHANNEL_PREFIX = "channel-";
+
+/** Se `id` é o canal de um agente. */
+export function isAgentChannel(id: string): boolean {
+  return id.startsWith(CHANNEL_PREFIX);
+}
+
+/** As conversas que a lista mostra: as threads ficam de fora, só aparecem a partir da mensagem de onde saíram, e os canais dos agentes
+ * também, que têm a tela deles. */
+export function visibleConversations<T extends Pick<ConversationSummary, "parent" | "id">>(conversations: T[]): T[] {
+  return conversations.filter((c) => !c.parent && !isAgentChannel(c.id));
 }
 
 /** Uma thread de uma mensagem: a conversa dela e quantas mensagens a pessoa mandou nela. */

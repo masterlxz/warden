@@ -755,6 +755,8 @@ export type ClientMessage =
   | { type: "requestHistory"; requestId: number; limit?: number; conversationId?: string }
   /** P78 — this device's conversations, answered by `conversationList`/`conversationOk`/`conversationError`. */
   | { type: "listConversations"; requestId: number }
+  /** P121 — the id of an agent's channel, the one conversation it keeps with the person; answered by `agentChannel`/`conversationError`. */
+  | { type: "openAgentChannel"; requestId: number; agentId: string }
   | { type: "renameConversation"; requestId: number; conversationId: string; title: string }
   | { type: "deleteConversation"; requestId: number; conversationId: string }
   /** P78 — voice input: the hub transcribes the recording (Whisper) and answers with
@@ -881,6 +883,7 @@ export type ServerMessage =
   | { type: "historyError"; requestId: number; message: string }
   | { type: "conversationList"; requestId: number; conversations: ConversationSummary[] }
   | { type: "conversationOk"; requestId: number }
+  | { type: "agentChannel"; requestId: number; conversationId: string }
   | { type: "conversationError"; requestId: number; message: string }
   | { type: "transcription"; requestId: number; text: string }
   | { type: "transcriptionError"; requestId: number; message: string }
@@ -992,6 +995,7 @@ export function decode(text: string): ServerMessage {
     case "historyError":
     case "conversationList":
     case "conversationOk":
+    case "agentChannel":
     case "conversationError":
     case "transcription":
     case "transcriptionError":

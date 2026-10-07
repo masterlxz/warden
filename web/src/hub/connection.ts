@@ -536,6 +536,7 @@ export class ServerConnection {
       case "history":
       case "conversationList":
       case "conversationOk":
+      case "agentChannel":
       case "transcription":
       case "vaultFileList":
       case "vaultNote":
@@ -681,6 +682,14 @@ export class ServerConnection {
   async listConversations(): Promise<ConversationSummary[]> {
     const reply = await this.request((requestId) => ({ type: "listConversations", requestId }));
     return reply.type === "conversationList" ? reply.conversations : [];
+  }
+
+  /** P121 — the id of the conversation that is `agentId`'s channel with this person: always the same, so there is one per agent. It exists
+   * on the hub from the first message sent to it. */
+  async openAgentChannel(agentId: string): Promise<string> {
+    const reply = await this.request((requestId) => ({ type: "openAgentChannel", requestId, agentId }));
+    if (reply.type !== "agentChannel") throw new Error("unexpected reply to the agent channel");
+    return reply.conversationId;
   }
 
   async renameConversation(conversationId: string, title: string): Promise<void> {

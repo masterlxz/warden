@@ -102,6 +102,14 @@ pub fn handle_conversation_request(dirs: &ConversationDirs, message: ClientMessa
                 Err(err) => ServerMessage::ConversationError { request_id, message: format!("{err:#}") },
             });
         }
+        ClientMessage::OpenAgentChannel { request_id, agent_id } => {
+            // The id is a hash computed here, so it is always a safe file name; only an agent id that cannot be one is refused.
+            return Some(if agent_id.trim().is_empty() || agent_id.chars().count() > 120 {
+                ServerMessage::ConversationError { request_id, message: "an agent id is 1 to 120 characters".to_string() }
+            } else {
+                ServerMessage::AgentChannel { request_id, conversation_id: warden_bootstrap::channel_id(&agent_id) }
+            });
+        }
         ClientMessage::RenameConversation { request_id, conversation_id, title } => {
             (request_id, existing(conversation_id).and_then(|id| found(rename_conversation(dirs.dir_for(&id), &id, &title), &id)))
         }
