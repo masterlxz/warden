@@ -58,6 +58,7 @@ fn agent(id: &str, boss: Option<&str>) -> AgentConfig {
         reports_to: boss.map(str::to_string),
         owner: None,
         shared_with: Vec::new(),
+        delegation_models: Vec::new(),
     }
 }
 

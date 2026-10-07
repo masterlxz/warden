@@ -2,17 +2,19 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, Combo, GitSyncConfig, McpServer, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
+import type { AgentEntry, Combo, GitSyncConfig, McpServer, ModelPolicy, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
 import ApiKeysSection from "./ApiKeysSection";
 import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 import { APPROVAL_CATEGORIES } from "../lib/approvalCategories";
 import { descendantsOf, removeFromOrg, renameInReports } from "../lib/org";
+import { delegationCandidates, delegationSummary, dropModel, dropPolicy, nextPolicyId, renameModel, renamePolicy, type PolicyForm } from "../lib/modelPolicies";
 
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
   combos: [],
+  modelPolicies: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -31,17 +33,25 @@ const emptySettings: Settings = {
 };
 
 /** A combo's providers (P90), in the order they're tried when one is down (429, 5xx, no
- * connection). Each entry is a provider id; the picker only offers ones not already listed. */
+ * connection). Each entry is a provider id; the picker only offers ones not already listed.
+ * Also the ordered list of the models an agent may delegate with (P123): `candidates` then
+ * names what can be picked, and `emptyHint` and `addLabel` say what the list is. */
 function ProviderOrderEditor({
   value,
-  providers,
+  providers = [],
+  candidates,
+  emptyHint = "No providers yet — a combo needs at least one.",
+  addLabel = "+ Add a provider…",
   onChange,
 }: {
   value: string[];
-  providers: ProviderEntry[];
+  providers?: ProviderEntry[];
+  candidates?: string[];
+  emptyHint?: string;
+  addLabel?: string;
   onChange: (next: string[]) => void;
 }) {
-  const available = providers.map((p) => p.id).filter((id) => id !== "" && !value.includes(id));
+  const available = (candidates ?? providers.map((p) => p.id)).filter((id) => id !== "" && !value.includes(id));
 
   function move(index: number, delta: number) {
     const next = [...value];
@@ -52,7 +62,7 @@ function ProviderOrderEditor({
 
   return (
     <div className="fallback-list">
-      {value.length === 0 && <p className="settings-hint">No providers yet — a combo needs at least one.</p>}
+      {value.length === 0 && <p className="settings-hint">{emptyHint}</p>}
       {value.map((id, index) => (
         <div key={id} className="fallback-row">
           <span className="fallback-order">{index + 1}.</span>
@@ -83,7 +93,7 @@ function ProviderOrderEditor({
             if (e.currentTarget.value) onChange([...value, e.currentTarget.value]);
           }}
         >
-          <option value="">+ Add a provider…</option>
+          <option value="">{addLabel}</option>
           {available.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -563,10 +573,62 @@ function ComboCard({
   );
 }
 
+/** One model policy (P123): its name (also its id), the provider or combo that answers it, and what an agent reads to know when to pick it. */
+function PolicyCard({
+  policy,
+  modelChoices,
+  onChange,
+  onDelete,
+}: {
+  policy: ModelPolicy;
+  /** The providers and combos that can answer it. */
+  modelChoices: string[];
+  onChange: (next: ModelPolicy) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="provider-card">
+      <div className="provider-card-header">
+        <input
+          className="settings-input provider-name-input"
+          type="text"
+          value={policy.id}
+          placeholder="policy name, e.g. fast"
+          aria-label="Policy name"
+          onChange={(e) => onChange({ ...policy, id: e.currentTarget.value })}
+        />
+        <select className="settings-select" value={policy.model} aria-label={`Model that answers ${policy.id || "this policy"}`} onChange={(e) => onChange({ ...policy, model: e.currentTarget.value })}>
+          {!modelChoices.includes(policy.model) && <option value={policy.model}>{policy.model || "(pick a model)"}</option>}
+          {modelChoices.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="provider-delete-btn" onClick={onDelete} aria-label={`Delete ${policy.id || "this policy"}`} title="Delete this policy">
+          ✕
+        </button>
+      </div>
+      <label className="settings-field">
+        <span className="settings-label">When to pick it</span>
+        <input
+          className="settings-input"
+          type="text"
+          maxLength={200}
+          placeholder="e.g. simple, quick work where cost matters more than depth"
+          value={policy.description ?? ""}
+          onChange={(e) => onChange({ ...policy, description: e.currentTarget.value })}
+        />
+      </label>
+    </div>
+  );
+}
+
 function AgentCard({
   agent,
   providers,
   combos,
+  modelChoices,
   toolNames,
   people,
   allAgents,
@@ -578,6 +640,8 @@ function AgentCard({
   allAgents: AgentEntry[];
   providers: ProviderEntry[];
   combos: Combo[];
+  /** The providers, combos and policies (P123) an agent may be limited to when it delegates. */
+  modelChoices: string[];
   /** Every tool the running app has, for the "Restrict tools" list. */
   toolNames: string[];
   /** P84 — the workspace's members, to share this agent with. */
@@ -818,6 +882,22 @@ function AgentCard({
           {agent.allowedTools.length === 0 && (
             <span className="settings-hint">No tool ticked — this agent can only chat.</span>
           )}
+        </div>
+      )}
+      {(agent.canDelegateToAgents || agent.canManageAgents || modelChoices.length > 0) && (
+        <div className="settings-field" role="group" aria-label={`Models ${agent.id || "this agent"} may delegate with`}>
+          <span className="settings-label">Models for the tasks it delegates</span>
+          <span className="settings-hint">
+            Which models this agent may pick when it hands a task to another agent. The first one is what a task gets when the agent names
+            none, so a list of one dictates the model. Empty leaves it open. {delegationSummary(agent.delegationModels)}
+          </span>
+          <ProviderOrderEditor
+            value={agent.delegationModels ?? []}
+            candidates={modelChoices}
+            emptyHint="Open — any model."
+            addLabel="+ Limit to a model…"
+            onChange={(next) => onChange({ ...agent, delegationModels: next })}
+          />
         </div>
       )}
       {people.length > 0 && (
@@ -1180,7 +1260,7 @@ function SettingsView() {
       const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
       const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
       const combos = f.combos.map((c) => ({ ...c, providers: c.providers.map((id) => (id === prevId ? next.id : id)) }));
-      return { ...f, providers, activeProvider, agents, combos };
+      return renameModel({ ...f, providers, activeProvider, agents, combos }, prevId, next.id);
     });
   }
 
@@ -1196,11 +1276,14 @@ function SettingsView() {
       // A combo loses it too; one left with nothing to try goes, with whatever pointed at it.
       const kept = f.combos.map((c) => ({ ...c, providers: c.providers.filter((id) => id !== removed.id) }));
       const emptied = kept.filter((c) => c.providers.length === 0).map((c) => c.id);
+      // The policies it answered go with it, and no agent may delegate with it or them any more (P123).
+      const cleaned = [removed.id, ...emptied].reduce<PolicyForm>((acc, id) => dropModel(acc, id), { agents, modelPolicies: f.modelPolicies });
       return {
         ...f,
         providers,
         activeProvider: emptied.includes(activeProvider) ? (providers[0]?.id ?? "") : activeProvider,
-        agents: agents.map((a) => (emptied.includes(a.providerId) ? { ...a, providerId: "" } : a)),
+        agents: cleaned.agents.map((a) => (emptied.includes(a.providerId) ? { ...a, providerId: "" } : a)),
+        modelPolicies: cleaned.modelPolicies,
         combos: kept.filter((c) => c.providers.length > 0),
       };
     });
@@ -1224,20 +1307,42 @@ function SettingsView() {
       // Same rename cascade as a provider's: the active model and every agent that named it.
       const activeProvider = f.activeProvider === prevId ? next.id : f.activeProvider;
       const agents = f.agents.map((a) => (a.providerId === prevId ? { ...a, providerId: next.id } : a));
-      return { ...f, combos, activeProvider, agents };
+      return renameModel({ ...f, combos, activeProvider, agents }, prevId, next.id);
     });
   }
 
   function deleteCombo(index: number) {
     setForm((f) => {
       const removed = f.combos[index];
-      return {
-        ...f,
-        combos: f.combos.filter((_, i) => i !== index),
-        activeProvider: f.activeProvider === removed.id ? (f.providers[0]?.id ?? "") : f.activeProvider,
-        agents: f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a)),
-      };
+      return dropModel(
+        {
+          ...f,
+          combos: f.combos.filter((_, i) => i !== index),
+          activeProvider: f.activeProvider === removed.id ? (f.providers[0]?.id ?? "") : f.activeProvider,
+          agents: f.agents.map((a) => (a.providerId === removed.id ? { ...a, providerId: "" } : a)),
+        },
+        removed.id,
+      );
     });
+  }
+
+  function addPolicy() {
+    setForm((f) => {
+      const taken = delegationCandidates(f.providers, f.combos, f.modelPolicies);
+      return { ...f, modelPolicies: [...f.modelPolicies, { id: nextPolicyId(taken), model: f.providers[0]?.id ?? "", description: "" }] };
+    });
+  }
+
+  function updatePolicy(index: number, next: ModelPolicy) {
+    setForm((f) => {
+      const prevId = f.modelPolicies[index]?.id;
+      const updated = { ...f, modelPolicies: f.modelPolicies.map((p, i) => (i === index ? next : p)) };
+      return prevId === undefined ? updated : renamePolicy(updated, prevId, next.id);
+    });
+  }
+
+  function deletePolicy(index: number) {
+    setForm((f) => dropPolicy(f, f.modelPolicies[index].id));
   }
 
   function addAgent() {
@@ -1390,6 +1495,7 @@ function SettingsView() {
           providers: form.providers,
           active_provider: form.activeProvider,
           combos: form.combos,
+          model_policies: form.modelPolicies,
           vault_path: form.vaultPath,
           generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
@@ -1481,6 +1587,32 @@ function SettingsView() {
 
         <section className="settings-section">
           <div className="settings-section-header">
+            <h3 className="settings-section-title">Model policies</h3>
+            <button type="button" className="settings-browse-btn" onClick={addPolicy} disabled={form.providers.length === 0 && form.combos.length === 0}>
+              + Add policy
+            </button>
+          </div>
+          <p className="settings-hint">
+            A policy is a word — "fast", "cheap", "reasoning", "code" — that an agent which delegates can use to pick the model of a task,
+            instead of a provider's name. Each one is answered by a provider or a combo, and its description is what the agent reads to know
+            when to pick it. Limit which models an agent may use on its own card, under Agents.
+          </p>
+          {form.modelPolicies.length === 0 && <p className="settings-hint">No policies yet — the agents see the providers and combos by name.</p>}
+          <div className="provider-list">
+            {form.modelPolicies.map((p, i) => (
+              <PolicyCard
+                key={i}
+                policy={p}
+                modelChoices={delegationCandidates(form.providers, form.combos, [])}
+                onChange={(next) => updatePolicy(i, next)}
+                onDelete={() => deletePolicy(i)}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
             <h3 className="settings-section-title">Agents</h3>
             <button type="button" className="settings-browse-btn" onClick={addAgent}>
               + Add agent
@@ -1495,7 +1627,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} allAgents={form.agents} providers={form.providers} combos={form.combos} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} allAgents={form.agents} providers={form.providers} combos={form.combos} modelChoices={delegationCandidates(form.providers, form.combos, form.modelPolicies)} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

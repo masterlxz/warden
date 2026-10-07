@@ -38,7 +38,7 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_model_for, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
-    append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig,
+    append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig, ModelPolicyConfig,
     Overrides,
     Provider, ProviderConfig, UsageSummary,
 };
@@ -430,6 +430,9 @@ struct AgentPayload {
     /// P84 — the people this agent is shared with (`"*"` = everyone) — see `AgentConfig::shared_with`.
     #[serde(default)]
     shared_with: Vec<String>,
+    /// P123 — the models this agent may pick for its delegations, the first being the default — see `AgentConfig::delegation_models`.
+    #[serde(default)]
+    delegation_models: Vec<String>,
 }
 
 /// IPC shape for `GitSyncConfig` (P63/P71 Settings UI) — same "dedicated payload struct for
@@ -484,6 +487,8 @@ struct SettingsSnapshot {
     git_sync: Option<GitSyncConfigPayload>,
     /// Named routing combos (P90) — `ComboConfig` as is: its fields are already single words.
     combos: Vec<ComboConfig>,
+    /// Named model policies (P123): "fast", "reasoning"..., each answered by a provider or combo, offered to an agent that delegates.
+    model_policies: Vec<ModelPolicyConfig>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
@@ -516,6 +521,9 @@ struct SettingsFormPayload {
     agents: Vec<AgentPayload>,
     git_sync: Option<GitSyncConfigPayload>,
     combos: Vec<ComboConfig>,
+    /// Named model policies (P123). Left out (`null`) keeps the ones on disk, dropping any whose model this save removed.
+    #[serde(default)]
+    model_policies: Option<Vec<ModelPolicyConfig>>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
@@ -569,10 +577,12 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 role: a.role,
                 reports_to: a.reports_to,
                 shared_with: a.shared_with,
+                delegation_models: a.delegation_models,
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
         combos: config.combos,
+        model_policies: config.model_policies,
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
         limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
@@ -656,6 +666,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 reports_to: a.reports_to,
                 owner: None,
                 shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
+                delegation_models: a.delegation_models,
             })
         })
         .collect::<Result<Vec<AgentConfig>, String>>()?;
@@ -687,8 +698,11 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         None => None,
     };
 
-    // Named model policies (P123) have no Settings screen yet (config.toml only): carry forward the ones whose model this save kept.
-    let model_policies = existing.model_policies.iter().filter(|p| providers.iter().any(|x| x.id == p.model) || combos.iter().any(|c| c.id == p.model)).cloned().collect();
+    // Named model policies (P123): what the form sent, checked; with none sent, the ones on disk whose model this save kept.
+    let model_policies = match payload.model_policies {
+        Some(policies) => warden_bootstrap::settings::check_policies(policies, &providers, &combos)?,
+        None => existing.model_policies.iter().filter(|p| providers.iter().any(|x| x.id == p.model) || combos.iter().any(|c| c.id == p.model)).cloned().collect(),
+    };
 
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`
@@ -757,6 +771,9 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // The hub the bots ask for a member's chats, and who speaks as whom, are set with `warden bots` (P117).
         bot_hub: existing.bot_hub,
     };
+    // A model a person took out of the lists above no longer lingers in an agent's limit on what it delegates with (P123).
+    let mut config = config;
+    warden_bootstrap::prune_delegation_models(&mut config);
 
     save_config(&path, &config).map_err(|e| format!("{e:#}"))?;
 

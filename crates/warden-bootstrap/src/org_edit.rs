@@ -53,6 +53,7 @@ pub fn apply_org_edit(config: &mut FileConfig, edit: &AgentOrgEdit) -> Result<()
                 reports_to: superior,
                 owner: None,
                 shared_with: Vec::new(),
+                delegation_models: Vec::new(),
             });
         }
         AgentOrgEdit::Remove { id } => {
@@ -94,6 +95,7 @@ mod tests {
             reports_to: boss.map(str::to_string),
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }
     }
 

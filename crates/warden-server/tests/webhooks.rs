@@ -78,6 +78,7 @@ fn agent(id: &str, persona: &str) -> AgentConfig {
         reports_to: None,
         owner: None,
         shared_with: Vec::new(),
+        delegation_models: Vec::new(),
     }
 }
 

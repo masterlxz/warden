@@ -593,6 +593,7 @@ async fn handle_own_agent(
                     reports_to: None,
                     owner: None,
                     shared_with: Vec::new(),
+                    delegation_models: Vec::new(),
                 };
                 warden_bootstrap::users::save_member_agent(&mut config, &member.id, original_id.as_deref(), agent, &available)?;
             }

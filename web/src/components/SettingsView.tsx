@@ -20,11 +20,13 @@ import type {
   LimitScope,
   LimitSettings,
   MachineEdit,
+  ModelPolicy,
   PriceSettings,
   ProviderEdit,
   ProviderKind,
   UserInfo,
 } from "../hub/messages";
+import { delegationCandidates, delegationSummary, dropModel, dropPolicy, nextPolicyId, renameModel, renamePolicy } from "../hub/modelPolicies";
 
 // The hub's settings (P78): providers, agents, the Tavily/Whisper keys, spending limits, prices and
 // the git remote the vault syncs to (P61; the Sync tab runs it).
@@ -57,6 +59,8 @@ interface Draft {
   providers: ProviderDraft[];
   activeProvider: string;
   combos: Keyed<Combo>[];
+  /** P123 — named model policies. */
+  modelPolicies: Keyed<ModelPolicy>[];
   agents: Keyed<AgentSettings>[];
   tavilyKey: SecretDraft;
   whisperKey: SecretDraft;
@@ -93,6 +97,7 @@ function toDraft(s: HubSettings): Draft {
     providers: s.providers.map((p) => keyed({ originalId: p.id, id: p.id, kind: p.kind, baseUrl: p.baseUrl, model: p.model, apiKey: { saved: p.apiKey, edit: KEEP }, node: p.node ?? "" })),
     activeProvider: s.activeProvider,
     combos: (s.combos ?? []).map((c) => keyed({ ...c })),
+    modelPolicies: (s.modelPolicies ?? []).map((p) => keyed({ ...p })),
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
     tavilyKey: { saved: s.tavilyKey, edit: KEEP },
     whisperKey: { saved: s.whisperKey, edit: KEEP },
@@ -162,6 +167,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
     providers: d.providers.map(providerEdit),
     activeProvider: d.activeProvider,
     combos: d.combos.map(strip),
+    modelPolicies: d.modelPolicies.map(strip),
     agents: d.agents.map(strip),
     tavilyKey: d.tavilyKey.edit,
     whisperKey: d.whisperKey.edit,
@@ -381,13 +387,17 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       const providers = d.providers.map((p) => (p.key === key ? { ...p, ...patch } : p));
       // A renamed provider stays the active one and every agent's default (same cascade as the desktop).
       if (before && patch.id !== undefined && patch.id !== before.id) {
-        return {
-          ...d,
-          providers,
-          activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
-          agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
-          combos: d.combos.map((c) => ({ ...c, providers: c.providers.map((id) => (id === before.id ? patch.id! : id)) })),
-        };
+        return renameModel(
+          {
+            ...d,
+            providers,
+            activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
+            agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
+            combos: d.combos.map((c) => ({ ...c, providers: c.providers.map((id) => (id === before.id ? patch.id! : id)) })),
+          },
+          before.id,
+          patch.id,
+        );
       }
       return { ...d, providers };
     });
@@ -396,7 +406,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   function removeProvider(key: number) {
     update((d) => {
       const removed = d.providers.find((p) => p.key === key);
-      return {
+      const next = {
         ...d,
         providers: d.providers.filter((p) => p.key !== key),
         activeProvider: d.activeProvider === removed?.id ? "" : d.activeProvider,
@@ -404,6 +414,8 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
         // A combo loses it too (the hub refuses an empty combo, so the screen says so before saving).
         combos: d.combos.map((c) => ({ ...c, providers: c.providers.filter((id) => id !== removed?.id) })),
       };
+      // P123: the policies it answered go with it, and no agent may delegate with it or them any more.
+      return removed ? dropModel(next, removed.id) : next;
     });
   }
 
@@ -413,12 +425,16 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       const combos = d.combos.map((c) => (c.key === key ? { ...c, ...patch } : c));
       // A renamed combo stays the active model and every agent's default, like a provider.
       if (before && patch.id !== undefined && patch.id !== before.id) {
-        return {
-          ...d,
-          combos,
-          activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
-          agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
-        };
+        return renameModel(
+          {
+            ...d,
+            combos,
+            activeProvider: d.activeProvider === before.id ? patch.id : d.activeProvider,
+            agents: d.agents.map((a) => (a.providerId === before.id ? { ...a, providerId: patch.id! } : a)),
+          },
+          before.id,
+          patch.id,
+        );
       }
       return { ...d, combos };
     });
@@ -427,12 +443,28 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
   function removeCombo(key: number) {
     update((d) => {
       const removed = d.combos.find((c) => c.key === key);
-      return {
+      const next = {
         ...d,
         combos: d.combos.filter((c) => c.key !== key),
         activeProvider: d.activeProvider === removed?.id ? "" : d.activeProvider,
         agents: d.agents.map((a) => (a.providerId === removed?.id ? { ...a, providerId: "" } : a)),
       };
+      return removed ? dropModel(next, removed.id) : next;
+    });
+  }
+
+  function patchPolicy(key: number, patch: Partial<ModelPolicy>) {
+    update((d) => {
+      const before = d.modelPolicies.find((p) => p.key === key);
+      const next = { ...d, modelPolicies: d.modelPolicies.map((p) => (p.key === key ? { ...p, ...patch } : p)) };
+      return before && patch.id !== undefined ? renamePolicy(next, before.id, patch.id) : next;
+    });
+  }
+
+  function removePolicy(key: number) {
+    update((d) => {
+      const removed = d.modelPolicies.find((p) => p.key === key);
+      return removed ? dropPolicy(d, removed.id) : d;
     });
   }
 
@@ -679,6 +711,51 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       </Section>
 
       <Section
+        title="Políticas de modelo"
+        hint='Uma política é uma palavra — "fast", "cheap", "reasoning", "code" — que um agente que delega pode usar para escolher o modelo de uma tarefa, no lugar do nome de um provedor. Cada uma é respondida por um provedor ou combo, e a descrição é o que o agente lê para saber quando escolher. Para limitar os modelos de um agente, use o cartão dele, em Agentes.'
+        action={
+          <button
+            type="button"
+            className="link-button"
+            disabled={modelIds.length === 0}
+            onClick={() => update((d) => ({ ...d, modelPolicies: [...d.modelPolicies, keyed({ id: nextPolicyId(delegationCandidates(d.providers, d.combos, d.modelPolicies)), model: modelIds[0] ?? "", description: "" })] }))}
+          >
+            + Política
+          </button>
+        }
+      >
+        {draft.modelPolicies.length === 0 && <p className="skills-hint">Nenhuma política: os agentes veem os provedores e combos pelo nome.</p>}
+        <ul className="skills-list">
+          {draft.modelPolicies.map((p) => (
+            <li key={p.key} className="skills-item settings-card">
+              <div className="skills-item-header">
+                <span className="skills-hint">Política</span>
+                <button type="button" className="link-button skills-danger" onClick={() => removePolicy(p.key)}>
+                  Remover
+                </button>
+              </div>
+              <Field label="Nome">
+                <input value={p.id} placeholder="ex.: fast" onChange={(e) => patchPolicy(p.key, { id: e.target.value })} />
+              </Field>
+              <Field label="Modelo que responde">
+                <select value={p.model} onChange={(e) => patchPolicy(p.key, { model: e.target.value })}>
+                  {!modelIds.includes(p.model) && <option value={p.model}>{p.model || "(escolha um modelo)"}</option>}
+                  {modelIds.map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Quando escolher">
+                <input value={p.description ?? ""} maxLength={200} placeholder="ex.: trabalho simples e rápido, em que o custo pesa mais que a profundidade" onChange={(e) => patchPolicy(p.key, { description: e.target.value })} />
+              </Field>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <Section
         title="Agentes"
         hint="Personas que uma conversa pode escolher (aqui no chat, no desktop e nas delegações entre agentes)."
         action={
@@ -795,6 +872,49 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                   </label>
                 ))}
               </fieldset>
+              {(a.canDelegateToAgents || a.canManageAgents || delegationCandidates(draft.providers, draft.combos, draft.modelPolicies).length > 0) && (
+                <fieldset className="settings-tools">
+                  <legend className="skills-hint">Modelos das tarefas que ele delega (o primeiro é o que uma tarefa recebe quando o agente não escolhe; uma lista de um dita o modelo; vazia deixa aberto):</legend>
+                  <p className="skills-hint">{delegationSummary(a.delegationModels)}</p>
+                  {(a.delegationModels ?? []).length > 0 && (
+                    <ol className="fallback-list">
+                      {(a.delegationModels ?? []).map((id, index, list) => (
+                        <li key={id} className="fallback-row">
+                          <span className="fallback-name">{id}</span>
+                          <button type="button" className="link-button" disabled={index === 0} onClick={() => patchAgent(a.key, { delegationModels: moved(list, index, -1) })}>
+                            Subir
+                          </button>
+                          <button type="button" className="link-button" disabled={index === list.length - 1} onClick={() => patchAgent(a.key, { delegationModels: moved(list, index, 1) })}>
+                            Descer
+                          </button>
+                          <button type="button" className="link-button skills-danger" onClick={() => patchAgent(a.key, { delegationModels: list.filter((m) => m !== id) })}>
+                            Remover
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {delegationCandidates(draft.providers, draft.combos, draft.modelPolicies).some((id) => !(a.delegationModels ?? []).includes(id)) && (
+                    <select
+                      value=""
+                      aria-label="Limitar a um modelo"
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        if (id) patchAgent(a.key, { delegationModels: [...(a.delegationModels ?? []), id] });
+                      }}
+                    >
+                      <option value="">+ Limitar a um modelo…</option>
+                      {delegationCandidates(draft.providers, draft.combos, draft.modelPolicies)
+                        .filter((id) => !(a.delegationModels ?? []).includes(id))
+                        .map((id) => (
+                          <option key={id} value={id}>
+                            {id}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                </fieldset>
+              )}
               {people.length > 0 && (
                 <fieldset className="settings-tools">
                   <legend className="skills-hint">Compartilhar com (a pessoa usa o agente com a memória e as ferramentas dela):</legend>

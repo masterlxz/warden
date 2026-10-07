@@ -189,6 +189,18 @@ impl Tool for DelegateToAgentTool {
         }))
     }
 
+    fn with_model_choices(&self, choices: Option<&ModelChoices>) -> Option<Arc<dyn Tool>> {
+        let agents = self.current();
+        let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;
+        Some(Arc::new(Self {
+            targets: Mutex::new(Targets { seen, agents }),
+            live: self.live.clone(),
+            budget: self.budget.clone(),
+            jobs: self.jobs.clone(),
+            models: choices.cloned(),
+        }))
+    }
+
     fn with_jobs(&self, board: &Arc<JobBoard>) -> Option<Arc<dyn Tool>> {
         let agents = self.current();
         let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;

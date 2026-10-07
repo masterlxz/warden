@@ -118,6 +118,11 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
   return groups.sort((a, b) => b.createdAtMs - a.createdAtMs);
 }
 
+/** As tarefas que envolvem um agente: as que ele recebeu e as que ele delegou (P120, a partir de um nó da árvore). */
+export function involvingAgent(tasks: AgentTask[], agent: string): AgentTask[] {
+  return tasks.filter((t) => t.assignee === agent || t.owner === agent);
+}
+
 export function formatTokens(n: number): string {
   return new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 }

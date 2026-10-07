@@ -159,6 +159,7 @@ mod tests {
             reports_to: reports_to.map(str::to_string),
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }
     }
 

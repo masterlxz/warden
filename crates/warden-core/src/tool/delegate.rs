@@ -37,6 +37,9 @@ pub struct ModelChoices {
     pub ids: Vec<String>,
     /// What a choice is for, by id (the named policies, "fast", "reasoning"...): shown to the agent next to the ids.
     pub hints: Vec<(String, String)>,
+    /// The model a delegation gets when the caller leaves `model` out, instead of the sub-agent's own: set when a person limited the
+    /// models this agent may use (its first one), so a list of one dictates the model of every task.
+    pub default: Option<String>,
     pub resolve: ModelResolver,
 }
 
@@ -45,9 +48,14 @@ pub type ModelResolver = Arc<dyn Fn(&str) -> anyhow::Result<Arc<dyn ModelProvide
 
 /// The `model` argument of a delegation: which provider or combo does this task.
 pub fn model_property(choices: &ModelChoices) -> Value {
-    let mut description = "Which model does this task. Leave it out to use the default one. Pick a faster or cheaper model for \
-        simple work and a stronger one for hard reasoning or code: you decide task by task."
-        .to_string();
+    let default = match &choices.default {
+        Some(id) => format!("Leave it out to use '{id}'."),
+        None => "Leave it out to use the default one.".to_string(),
+    };
+    let mut description = format!(
+        "Which model does this task. {default} Pick a faster or cheaper model for simple work and a stronger one for hard reasoning or \
+         code: you decide task by task."
+    );
     for (id, hint) in &choices.hints {
         description.push_str(&format!("\n- {id}: {hint}"));
     }
@@ -56,7 +64,9 @@ pub fn model_property(choices: &ModelChoices) -> Value {
 
 /// The model a call asked for, or `None` for the default. An id that isn't one of the choices is refused, naming the ones that are.
 pub fn pick_model(choices: &Option<ModelChoices>, args: &Value) -> anyhow::Result<Option<(String, Arc<dyn ModelProvider>)>> {
-    let Some(wanted) = args.get("model").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()) else {
+    let asked = args.get("model").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty());
+    // Left out: the one a person set as this agent's default for delegations, if any (else the sub-agent's own).
+    let Some(wanted) = asked.or_else(|| choices.as_ref().and_then(|c| c.default.as_deref())) else {
         return Ok(None);
     };
     let Some(choices) = choices else {
@@ -139,6 +149,11 @@ impl Tool for DelegateTool {
 
     fn with_autonomy(&self, level: crate::autonomy::Autonomy, read_only: &[String]) -> Option<Arc<dyn Tool>> {
         self.rebuilt(self.orchestrator.with_autonomy(level, read_only), self.jobs.clone())
+    }
+
+    fn with_model_choices(&self, choices: Option<&ModelChoices>) -> Option<Arc<dyn Tool>> {
+        // The nested orchestrator's own `delegate_task` follows, so a sub-agent can't pick what its caller may not.
+        Some(Arc::new(Self { orchestrator: self.orchestrator.with_model_choices(choices.cloned()), jobs: self.jobs.clone(), models: choices.cloned() }))
     }
 
     fn with_approval_rules(&self, required: &[crate::autonomy::Category], classifier: Option<&crate::autonomy::Classifier>) -> Option<Arc<dyn Tool>> {
@@ -252,6 +267,7 @@ mod tests {
         ModelChoices {
             ids: vec!["fast".to_string(), "strong".to_string()],
             hints: vec![("strong".to_string(), "hard reasoning and code".to_string())],
+            default: None,
             resolve: Arc::new(|id| match id {
                 "fast" | "strong" => Ok(Arc::new(FixedAnswerModel { answer: format!("answered by {id}") }) as Arc<dyn ModelProvider>),
                 other => anyhow::bail!("no model {other}"),
@@ -280,6 +296,30 @@ mod tests {
         assert!(plain.spec().parameters["properties"].get("model").is_none(), "no choices, no argument");
         assert!(plain.call(json!({ "task": "x", "model": "fast" })).await.unwrap_err().to_string().contains("can't choose a model"));
         assert_eq!(tool.spec().parameters["properties"]["model"]["enum"], json!(["fast", "strong"]));
+    }
+
+    #[tokio::test]
+    async fn a_limit_on_the_models_replaces_the_choices_and_its_default_answers_a_call_that_names_none() {
+        let default = Arc::new(FixedAnswerModel { answer: "answered by default".to_string() });
+        let open = DelegateTool::new(Orchestrator::new(default, temp_vault())).with_models(two_models());
+        let only_strong = ModelChoices { ids: vec!["strong".to_string()], hints: Vec::new(), default: Some("strong".to_string()), ..two_models() };
+
+        let limited = open.with_model_choices(Some(&only_strong)).unwrap();
+
+        // Left out: the person's default, not the sub-agent's own. Named: only what the limit allows, and the refusal says which.
+        assert_eq!(limited.call(json!({ "task": "x" })).await.unwrap()["result"], "answered by strong");
+        assert_eq!(limited.call(json!({ "task": "x", "model": "strong" })).await.unwrap()["result"], "answered by strong");
+        let err = limited.call(json!({ "task": "x", "model": "fast" })).await.unwrap_err().to_string();
+        assert!(err.contains("unknown model 'fast'") && err.contains("choose one of: strong"), "{err}");
+        let spec = limited.spec().parameters["properties"]["model"].clone();
+        assert_eq!(spec["enum"], json!(["strong"]));
+        assert!(spec["description"].as_str().unwrap().contains("Leave it out to use 'strong'"), "{spec}");
+
+        // No usable choice at all: no argument is offered and every task runs on the sub-agent's own model.
+        let none = open.with_model_choices(None).unwrap();
+        assert!(none.spec().parameters["properties"].get("model").is_none());
+        assert_eq!(none.call(json!({ "task": "x" })).await.unwrap()["result"], "answered by default");
+        assert!(none.call(json!({ "task": "x", "model": "fast" })).await.unwrap_err().to_string().contains("can't choose a model"));
     }
 
     #[tokio::test]

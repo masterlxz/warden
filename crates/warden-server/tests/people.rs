@@ -125,6 +125,7 @@ async fn spin_up() -> Hub {
             reports_to: None,
             owner: None,
             shared_with: vec!["ana".into()],
+            delegation_models: Vec::new(),
         }],
         ..FileConfig::default()
     };
@@ -402,6 +403,7 @@ async fn what_a_member_may_use_is_what_the_owner_shares_and_allows() {
         reports_to: None,
         shared_with: vec!["*".into()],
         owner: None,
+        delegation_models: Vec::new(),
     };
     ana.send(&ClientMessage::SaveOwnAgent { request_id: 5, original_id: None, agent: own }).await.unwrap();
     assert!(agent_ids(&reply(&mut ana).await).contains(&("cook".to_string(), Some("ana".to_string()))));

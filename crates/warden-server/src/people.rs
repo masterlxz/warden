@@ -298,6 +298,7 @@ pub fn member_agents_view(config: &FileConfig, member: &str) -> Vec<AgentSetting
                 reports_to: None,
                 shared_with: Vec::new(),
                 owner: mine.then(|| member.to_string()),
+                delegation_models: Vec::new(),
             }
         })
         .collect()

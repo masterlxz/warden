@@ -92,6 +92,7 @@ async fn an_agent_on_a_combo_gets_the_next_provider_when_the_first_is_down() {
             reports_to: None,
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }],
         ..FileConfig::default()
     };

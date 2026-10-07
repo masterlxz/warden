@@ -181,6 +181,11 @@ pub struct AgentConfig {
     /// meaningful on the owner's agents; empty keeps it the owner's alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared_with: Vec<String>,
+    /// P123: the models this agent may pick for the tasks it delegates, by provider, combo or policy id. Empty (the default) leaves
+    /// the choice open, as before. Otherwise only these are offered, and the **first** one is what a delegation that names no `model`
+    /// gets — so a list of one is the person dictating the model of every task this agent hands out. Set by a person only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegation_models: Vec<String>,
 }
 
 /// `AgentConfig.autonomy` of an agent that doesn't say (P122): 4, no change from before the field existed.
@@ -688,12 +693,35 @@ pub fn rename_provider_cascade(config: &mut FileConfig, old_id: &str, new_id: &s
     repoint_policies(config, old_id, new_id);
 }
 
-/// A model policy (P123) that answered with `old_id` answers with `new_id` now.
+/// A model policy (P123) that answered with `old_id` answers with `new_id` now, and so does an agent's list of the models it may
+/// delegate with.
 fn repoint_policies(config: &mut FileConfig, old_id: &str, new_id: &str) {
     for policy in &mut config.model_policies {
         if policy.model == old_id {
             policy.model = new_id.to_string();
         }
+    }
+    for agent in &mut config.agents {
+        for model in agent.delegation_models.iter_mut().filter(|m| m.as_str() == old_id) {
+            *model = new_id.to_string();
+        }
+    }
+}
+
+/// Takes out of every agent's list of the models it may delegate with (P123) what is no longer a provider, a combo or a policy — after a
+/// save that edited those lists, so a name a person removed there doesn't linger in an agent. A list left empty means the choice is open.
+pub fn prune_delegation_models(config: &mut FileConfig) {
+    let known: Vec<String> = config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).chain(config.model_policies.iter().map(|p| p.id.clone())).collect();
+    for agent in &mut config.agents {
+        agent.delegation_models.retain(|m| known.contains(m));
+    }
+}
+
+/// `id` (a provider, combo or policy) is gone: no agent may delegate with it any more. A list left empty means the choice is open
+/// again, which is what the person gets when the one model they had limited it to is removed.
+fn forget_delegation_model(config: &mut FileConfig, id: &str) {
+    for agent in &mut config.agents {
+        agent.delegation_models.retain(|m| m != id);
     }
 }
 
@@ -716,7 +744,13 @@ pub fn remove_provider_references(config: &mut FileConfig, removed_id: &str) {
     for id in emptied {
         remove_combo(config, &id);
     }
+    // A policy that answered with it goes too, and with the policy, whatever listed it.
+    let gone: Vec<String> = config.model_policies.iter().filter(|p| p.model == removed_id).map(|p| p.id.clone()).collect();
     config.model_policies.retain(|p| p.model != removed_id);
+    forget_delegation_model(config, removed_id);
+    for id in gone {
+        forget_delegation_model(config, &id);
+    }
 }
 
 /// `rename_provider_cascade` for a combo (P90): the active model and every agent that named it.
@@ -740,7 +774,12 @@ pub fn rename_combo(config: &mut FileConfig, old_id: &str, new_id: &str) {
 /// Removes a combo and every reference to it (P90).
 pub fn remove_combo(config: &mut FileConfig, id: &str) {
     config.combos.retain(|c| c.id != id);
+    let gone: Vec<String> = config.model_policies.iter().filter(|p| p.model == id).map(|p| p.id.clone()).collect();
     config.model_policies.retain(|p| p.model != id);
+    forget_delegation_model(config, id);
+    for policy in gone {
+        forget_delegation_model(config, &policy);
+    }
     if config.active_provider.as_deref() == Some(id) {
         config.active_provider = None;
     }
@@ -1765,7 +1804,8 @@ pub fn build_delegate_to_agent_tool(config: &FileConfig, orchestrator: &Orchestr
     let targets = delegate_targets(config, orchestrator, caller);
     (!targets.is_empty()).then(|| {
         let tool = DelegateToAgentTool::new(targets);
-        Arc::new(match model_choices(config) {
+        // The caller's own limit on the models it may pick (P123), or everyone's choices.
+        Arc::new(match model_choices_of(config, caller) {
             Some(models) => tool.with_models(models),
             None => tool,
         }) as Arc<dyn Tool>
@@ -1793,13 +1833,14 @@ pub fn build_live_delegate_to_agent_tool(
     }
     let path = config_path.to_path_buf();
     let base = orchestrator.clone();
+    let models = model_choices_of(config, caller);
     let caller = caller.map(str::to_string);
     let resolver: AgentResolver = Arc::new(move || {
         let config = load_config_from_path(&path, false).ok()?;
         Some(delegate_targets(&config, &base, caller.as_deref()))
     });
     let tool = DelegateToAgentTool::live(targets, revision, resolver);
-    Some(Arc::new(match model_choices(config) {
+    Some(Arc::new(match models {
         Some(models) => tool.with_models(models),
         None => tool,
     }))
@@ -2015,6 +2056,34 @@ fn build_delegating_orchestrator(
 /// The models an agent may choose between for each task it delegates (P123): every configured provider and combo, by id.
 /// `None` when there is nothing to choose between (fewer than two), so no `model` argument is offered.
 pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
+    all_model_choices(config).filter(|choices| choices.ids.len() >= 2)
+}
+
+/// `model_choices` for one agent (P123): when a person limited the models it may pick (`AgentConfig::delegation_models`), only those
+/// that still exist are offered, in the order given, and the first is what a delegation naming none gets — even a list of one, which is the
+/// person dictating the model. A limit with nothing left in it offers no choice at all (the sub-agent's own model runs), never everything.
+pub fn model_choices_for(config: &FileConfig, agent: Option<&AgentConfig>) -> Option<ModelChoices> {
+    let Some(agent) = agent.filter(|a| !a.delegation_models.is_empty()) else {
+        return model_choices(config);
+    };
+    let mut choices = all_model_choices(config)?;
+    let allowed: Vec<String> = agent.delegation_models.iter().filter(|id| choices.ids.contains(id)).cloned().collect();
+    if allowed.is_empty() {
+        eprintln!("note: agent '{}' may only delegate with {}, which no longer exist — it gets no choice of model\n", agent.id, agent.delegation_models.join(", "));
+        return None;
+    }
+    choices.hints.retain(|(id, _)| allowed.contains(id));
+    choices.default = allowed.first().cloned();
+    choices.ids = allowed;
+    Some(choices)
+}
+
+/// The models of `caller` (an agent id) for its delegations: its own limit, or everyone's choices.
+fn model_choices_of(config: &FileConfig, caller: Option<&str>) -> Option<ModelChoices> {
+    model_choices_for(config, caller.and_then(|id| config.agents.iter().find(|a| a.id == id)))
+}
+
+fn all_model_choices(config: &FileConfig) -> Option<ModelChoices> {
     let mut ids: Vec<String> = config.providers.iter().map(|p| p.id.clone()).chain(config.combos.iter().map(|c| c.id.clone())).collect();
     // The named policies (P123) come after the plain ids; one that clashes with an id or points at nothing is left out.
     let mut policies: Vec<&ModelPolicyConfig> = Vec::new();
@@ -2027,7 +2096,7 @@ pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
         policies.push(policy);
     }
     ids.extend(policies.iter().map(|p| p.id.clone()));
-    if ids.len() < 2 {
+    if ids.is_empty() {
         return None;
     }
     let hints = policies.iter().map(|p| (p.id.clone(), if p.description.is_empty() { format!("the same as '{}'", p.model) } else { p.description.clone() })).collect();
@@ -2036,6 +2105,7 @@ pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
     Some(ModelChoices {
         ids,
         hints,
+        default: None,
         resolve: Arc::new(move |id| {
             let target = routes.iter().find(|(policy, _)| policy == id).map_or(id, |(_, model)| model.as_str());
             build_model_for(&snapshot, target, None)
@@ -2363,6 +2433,7 @@ oauth = true
                 reports_to: None,
                 owner: None,
                 shared_with: Vec::new(),
+                delegation_models: Vec::new(),
             }],
             tool_categories: vec![risk::ToolCategoryConfig { tool: "pay".to_string(), category: warden_core::autonomy::Category::SpendMoney }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
@@ -3265,6 +3336,7 @@ oauth = true
                 reports_to: None,
                 owner: None,
                 shared_with: Vec::new(),
+                delegation_models: Vec::new(),
             }],
             ..Default::default()
         };
@@ -3396,6 +3468,7 @@ oauth = true
             reports_to: None,
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }
     }
 
@@ -3606,6 +3679,79 @@ oauth = true
         assert_eq!(model_choices(&config).unwrap().ids, ["small", "fast"]);
         config.model_policies.clear();
         assert!(model_choices(&config).is_none(), "one model and no policy is no choice");
+    }
+
+    fn limited_to(models: &[&str]) -> AgentConfig {
+        AgentConfig { delegation_models: models.iter().map(|m| m.to_string()).collect(), can_delegate_to_agents: true, ..agent_config("manager", None) }
+    }
+
+    #[test]
+    fn a_limit_on_the_models_of_an_agent_offers_only_those_that_exist_and_the_first_is_the_default() {
+        let config = models_with_policy();
+
+        // No limit: everyone's choices, and nothing is the default.
+        let open = model_choices_for(&config, Some(&limited_to(&[]))).unwrap();
+        assert_eq!((open.ids.clone(), open.default.clone()), (vec!["small".to_string(), "big".into(), "reasoning".into()], None));
+        assert_eq!(model_choices_for(&config, None).unwrap().ids.len(), 3);
+
+        // A limit keeps the order given, drops what doesn't exist, and its first is the default.
+        let limited = model_choices_for(&config, Some(&limited_to(&["reasoning", "ghost", "small"]))).unwrap();
+        assert_eq!((limited.ids.clone(), limited.default.as_deref()), (vec!["reasoning".to_string(), "small".into()], Some("reasoning")));
+        assert_eq!(limited.hints, [("reasoning".to_string(), "hard problems".to_string())], "only the hints of what is still offered");
+        assert_eq!((limited.resolve)("reasoning").unwrap().model_id(), "m");
+
+        // A list of one is the person dictating the model; one with nothing left offers no choice at all, never everything.
+        let dictated = model_choices_for(&config, Some(&limited_to(&["small"]))).unwrap();
+        assert_eq!((dictated.ids, dictated.default.as_deref()), (vec!["small".to_string()], Some("small")));
+        assert!(model_choices_for(&config, Some(&limited_to(&["ghost"]))).is_none());
+
+        // Even a hub with one provider can dictate its model.
+        let mut one = models_with_policy();
+        one.providers.truncate(1);
+        one.model_policies.clear();
+        assert!(model_choices(&one).is_none() && model_choices_for(&one, Some(&limited_to(&["small"]))).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_agent_limited_to_some_models_delegates_with_only_those_in_every_tool_it_has() {
+        let mut config = models_with_policy();
+        config.agents = vec![limited_to(&["reasoning", "small"]), agent_config("worker", None)];
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-limit-models-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default(), worker_model: None }), vault);
+        base.register_tool(Arc::new(DelegateTool::new(base.clone()).with_models(model_choices(&config).unwrap())));
+
+        let scoped = scope_to_agent(&base, &config, None, "manager", AgentExtras::default()).unwrap();
+
+        for name in ["delegate_task", "delegate_to_agent"] {
+            let spec = scoped.orchestrator.tools().iter().map(|t| t.spec()).find(|s| s.name == name).unwrap_or_else(|| panic!("no {name}"));
+            let model = &spec.parameters["properties"]["model"];
+            assert_eq!(model["enum"], serde_json::json!(["reasoning", "small"]), "{name}");
+            assert!(model["description"].as_str().unwrap().contains("Leave it out to use 'reasoning'"), "{name}: {model}");
+        }
+        // An agent with no limit keeps seeing all of them.
+        let mut open = config;
+        open.agents[0].delegation_models.clear();
+        let scoped = scope_to_agent(&base, &open, None, "manager", AgentExtras::default()).unwrap();
+        let spec = scoped.orchestrator.tools().iter().map(|t| t.spec()).find(|s| s.name == "delegate_to_agent").unwrap();
+        assert_eq!(spec.parameters["properties"]["model"]["enum"], serde_json::json!(["small", "big", "reasoning"]));
+    }
+
+    #[test]
+    fn what_an_agent_may_delegate_with_follows_a_renamed_model_and_forgets_a_removed_one() {
+        let mut config = models_with_policy();
+        config.agents = vec![limited_to(&["reasoning", "small", "big"])];
+
+        rename_provider_cascade(&mut config, "small", "tiny");
+        assert_eq!(config.agents[0].delegation_models, ["reasoning", "tiny", "big"]);
+
+        // `big` goes, and so does `reasoning`, the policy that answered with it.
+        remove_provider_references(&mut config, "big");
+        assert_eq!(config.agents[0].delegation_models, ["tiny"]);
+        assert!(config.model_policies.is_empty());
+
+        // Everything it listed gone: the list is empty, which means open again.
+        remove_provider_references(&mut config, "tiny");
+        assert!(config.agents[0].delegation_models.is_empty());
     }
 
     #[test]

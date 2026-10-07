@@ -15,8 +15,8 @@ use anyhow::Context;
 use warden_core::memory::content_version;
 use warden_core::spend::Price;
 use warden_server_protocol::protocol::{
-    AgentSettingsDto, BotsSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, PriceSettingsDto, ProviderSettingsDto,
-    SecretEdit, SecretStatusDto,
+    AgentSettingsDto, BotsSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, ModelPolicyDto, PriceSettingsDto,
+    ProviderSettingsDto, SecretEdit, SecretStatusDto,
 };
 
 use crate::bot_access::{TelegramSettings, WhatsAppSettings};
@@ -24,7 +24,7 @@ use crate::learning::LearningSettings;
 use crate::machine_settings::{advanced_settings, apply_advanced, apply_machine, machine_settings};
 use crate::{
     default_limit_configs, default_model_for, env_switches_limits_off, forget_agent_in_nodes, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
-    Provider, ProviderConfig,
+    ModelPolicyConfig, Provider, ProviderConfig,
 };
 
 /// Shortest secret whose last four characters are shown as a hint. Below this, four characters
@@ -255,11 +255,49 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], comb
         // P120: a blank role or superior is none, and a stray space doesn't make a different id.
         let role = a.role.as_deref().and_then(non_empty);
         let reports_to = a.reports_to.as_deref().and_then(non_empty);
-        checked.push(AgentConfig { id, provider_id, role, reports_to, ..a });
+        // P123: the models it may pick for its delegations, trimmed and without repeats, in the order given (the first is the default).
+        // A member's agent has none: only the owner limits models. Whether each still exists is looked at when a task is delegated.
+        let mut delegation_models: Vec<String> = Vec::new();
+        for model in a.delegation_models.iter().filter_map(|m| non_empty(m)).filter(|_| a.owner.is_none()) {
+            if !delegation_models.contains(&model) {
+                delegation_models.push(model);
+            }
+        }
+        checked.push(AgentConfig { id, provider_id, role, reports_to, delegation_models, ..a });
     }
     crate::org::check_hierarchy(&checked)?;
     Ok(checked)
 }
+
+/// The model policies (P123), trimmed: a unique name that isn't also a provider's or a combo's, answered by one that is, and with a
+/// description of at most `MAX_POLICY_DESCRIPTION` characters (what an agent reads to know when to pick it).
+pub fn check_policies(policies: Vec<ModelPolicyConfig>, providers: &[ProviderConfig], combos: &[ComboConfig]) -> Result<Vec<ModelPolicyConfig>, String> {
+    let mut checked: Vec<ModelPolicyConfig> = Vec::with_capacity(policies.len());
+    for policy in policies {
+        let id = policy.id.trim().to_string();
+        if id.is_empty() {
+            return Err("every model policy needs a name".to_string());
+        }
+        if is_model(&id, providers, combos) {
+            return Err(format!("model policy '{id}' has the same name as a provider or a combo"));
+        }
+        if checked.iter().any(|p| p.id == id) {
+            return Err(format!("duplicate model policy name: {id}"));
+        }
+        let model = policy.model.trim().to_string();
+        if !is_model(&model, providers, combos) {
+            return Err(format!("model policy '{id}' names '{model}', which is not a configured provider or combo"));
+        }
+        let description = policy.description.trim().to_string();
+        if description.chars().count() > MAX_POLICY_DESCRIPTION || description.contains('\n') {
+            return Err(format!("the description of model policy '{id}' must be one line of at most {MAX_POLICY_DESCRIPTION} characters"));
+        }
+        checked.push(ModelPolicyConfig { id, model, description });
+    }
+    Ok(checked)
+}
+
+const MAX_POLICY_DESCRIPTION: usize = 200;
 
 /// The combos (P90), trimmed: a unique name that isn't also a provider's, and at least one
 /// provider, each one configured and none twice.
@@ -350,6 +388,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
             .collect(),
         active_provider: config.active_provider.clone().unwrap_or_default(),
         combos: config.combos.iter().map(|c| ComboDto { id: c.id.clone(), providers: c.providers.clone() }).collect(),
+        model_policies: config.model_policies.iter().map(|p| ModelPolicyDto { id: p.id.clone(), model: p.model.clone(), description: p.description.clone() }).collect(),
         // P84: members' own agents are theirs — the owner's screen neither shows nor saves them.
         agents: config
             .agents
@@ -371,6 +410,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 reports_to: a.reports_to.clone(),
                 shared_with: a.shared_with.clone(),
                 owner: None,
+                delegation_models: a.delegation_models.clone(),
             })
             .collect(),
         tavily_key: secret_status(config.api_keys.tavily.as_deref()),
@@ -504,6 +544,11 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             .collect(),
     };
     let active_provider = check_active_provider(&update.active_provider, &providers, &combos)?;
+    let model_policies = match update.model_policies {
+        Some(dtos) => check_policies(dtos.into_iter().map(|p| ModelPolicyConfig { id: p.id, model: p.model, description: p.description }).collect(), &providers, &combos)?,
+        // Untouched by this screen: the ones whose model this save removed go with it.
+        None => config.model_policies.drain(..).filter(|p| is_model(&p.model, &providers, &combos)).collect(),
+    };
 
     let mut renames = Vec::new();
     let mut agents = Vec::with_capacity(update.agents.len());
@@ -528,6 +573,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             reports_to: dto.reports_to,
             owner: None,
             shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
+            delegation_models: dto.delegation_models,
         });
     }
     let kept: HashSet<String> = renames.iter().map(|(original, _)| original.clone()).chain(agents.iter().map(|a| a.id.trim().to_string())).collect();
@@ -588,7 +634,9 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     config.providers = providers;
     config.active_provider = active_provider;
     config.combos = combos;
+    config.model_policies = model_policies;
     config.agents = agents;
+    crate::prune_delegation_models(&mut config);
     Ok(config)
 }
 
@@ -644,6 +692,7 @@ mod tests {
             reports_to: None,
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }
     }
 
@@ -694,6 +743,7 @@ mod tests {
             prices: view.prices,
             git_sync: None,
             combos: None,
+            model_policies: None,
             bots: None,
             telegram_token: SecretEdit::Keep,
             advanced: None,
@@ -1315,5 +1365,53 @@ mod tests {
         update.providers.retain(|p| p.id != "spare");
         assert_eq!(apply_hub_settings(with(vec!["main".into(), "spare".into()]), update.clone()).unwrap().combos[0].providers, vec!["main".to_string()]);
         assert!(apply_hub_settings(with(vec!["spare".into()]), update).unwrap().combos.is_empty());
+    }
+
+    #[test]
+    fn model_policies_are_shown_checked_and_kept_when_not_sent_and_an_agents_limit_follows_them() {
+        let policy = |id: &str, model: &str, description: &str| ModelPolicyDto { id: id.into(), model: model.into(), description: description.into() };
+        let mut config = sample();
+        config.model_policies = vec![ModelPolicyConfig { id: "fast".into(), model: "main".into(), description: "simple work".into() }];
+        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).model_policies, vec![policy("fast", "main", "simple work")]);
+
+        // Sent: trimmed and saved; an agent can be limited to one, and the first of its list is kept as it is.
+        let mut update = untouched(&config);
+        update.model_policies = Some(vec![policy(" fast ", " spare ", " cheap and quick "), policy("deep", "main", "")]);
+        update.agents[0].delegation_models = vec![" deep ".into(), "fast".into(), "deep".into(), "ghost-model".into(), "  ".into()];
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.model_policies, vec![
+            ModelPolicyConfig { id: "fast".into(), model: "spare".into(), description: "cheap and quick".into() },
+            ModelPolicyConfig { id: "deep".into(), model: "main".into(), description: String::new() },
+        ]);
+        assert_eq!(saved.agents[0].delegation_models, ["deep", "fast"], "trimmed, no repeats, and what doesn't exist is dropped");
+
+        for bad in [
+            vec![policy("main", "spare", "")],
+            vec![policy("x", "ghost", "")],
+            vec![policy(" ", "main", "")],
+            vec![policy("x", "main", ""), policy("x", "spare", "")],
+            vec![policy("x", "main", "two\nlines")],
+            vec![policy("x", "main", &"d".repeat(201))],
+        ] {
+            let mut update = untouched(&config);
+            update.model_policies = Some(bad.clone());
+            assert!(apply_hub_settings(sample(), update).is_err(), "{bad:?}");
+        }
+
+        // Not sent: kept, minus a policy whose model this save removed (and the agent's limit on it).
+        let base = || {
+            let mut base = sample();
+            base.model_policies = vec![ModelPolicyConfig { id: "fast".into(), model: "spare".into(), description: String::new() }];
+            base.agents[0].delegation_models = vec!["fast".into(), "main".into()];
+            base
+        };
+        let kept = apply_hub_settings(base(), untouched(&base())).unwrap();
+        assert_eq!(kept.model_policies.len(), 1);
+        assert_eq!(kept.agents[0].delegation_models, ["fast", "main"]);
+        let mut update = untouched(&base());
+        update.providers.retain(|p| p.id != "spare");
+        let after = apply_hub_settings(base(), update).unwrap();
+        assert!(after.model_policies.is_empty());
+        assert_eq!(after.agents[0].delegation_models, ["main"]);
     }
 }

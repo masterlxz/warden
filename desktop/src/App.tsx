@@ -45,6 +45,7 @@ const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
   combos: [],
+  modelPolicies: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -110,6 +111,11 @@ function App() {
   const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
+  /** The agent a conversation that isn't started yet speaks with (set from the organization tree), so choosing it survives the
+   * reload of the settings that opening the chat triggers. Empty once a conversation is open. */
+  const [newChatAgent, setNewChatAgent] = useState("");
+  /** The agent whose tasks the "Agent work" screen is narrowed to (set from the organization tree). */
+  const [agentWorkFilter, setAgentWorkFilter] = useState<string | null>(null);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   // The project a *new* conversation will start in (P103); an existing one has its own, fixed at creation.
@@ -265,12 +271,12 @@ function App() {
   // Restores the agent/model this conversation was last using (P3) whenever it's switched, or
   // falls back to defaults if that id no longer matches anything configured (deleted since).
   useEffect(() => {
-    const storedAgentId = activeConversation?.agentId ?? "";
+    const storedAgentId = activeConversation?.agentId ?? (activeConversationId === null ? newChatAgent : "");
     setSelectedAgentId(settings.agents.some((a) => a.id === storedAgentId) ? storedAgentId : "");
 
     const storedProviderId = activeConversation?.providerId ?? "";
     setSelectedProviderId(isModel(settings, storedProviderId) ? storedProviderId : settings.activeProvider);
-  }, [activeConversationId, settings]);
+  }, [activeConversationId, settings, newChatAgent]);
 
   /** Moves the open conversation into a project, or out of any with "" (P103); the saved copy replaces the one shown. */
   async function handleMoveProject(projectId: string) {
@@ -301,7 +307,17 @@ function App() {
     });
   }
 
+  /** A new conversation with `agentId`, from the organization tree. */
+  function openChatWith(agentId: string) {
+    setNewChatAgent(agentId);
+    setActiveConversationId(null);
+    setSelectedProjectId("");
+    setSelectedWorkdir("");
+    setView("chat");
+  }
+
   function handleSelectAgent(agentId: string) {
+    if (activeConversationId === null) setNewChatAgent(agentId);
     setSelectedAgentId(agentId);
     // Pre-fills the model selector with the agent's default, if it has one — the user can still
     // change it afterward, this is just a convenience.
@@ -576,6 +592,7 @@ function App() {
         activeConversationId={activeConversationId}
         onSelectConversation={selectConversation}
         onNewConversation={() => {
+          setNewChatAgent("");
           setActiveConversationId(null);
           setSelectedProjectId("");
           setSelectedWorkdir("");
@@ -591,7 +608,10 @@ function App() {
         onOpenWebhooks={() => setView("webhooks")}
         onOpenWorkspace={() => setView("workspace")}
         onOpenOrganization={() => setView("organization")}
-        onOpenAgentWork={() => setView("agentWork")}
+        onOpenAgentWork={() => {
+          setAgentWorkFilter(null);
+          setView("agentWork");
+        }}
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
@@ -625,9 +645,9 @@ function App() {
       ) : view === "workspace" ? (
         <WorkspaceView />
       ) : view === "agentWork" ? (
-        <AgentTasksView key={activeHubId ?? "local"} remote={remote} />
+        <AgentTasksView key={activeHubId ?? "local"} remote={remote} agent={agentWorkFilter} onClearAgent={() => setAgentWorkFilter(null)} />
       ) : view === "organization" ? (
-        <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} />
+        <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
       ) : (
         <ChatArea
           activeConversation={activeConversation}

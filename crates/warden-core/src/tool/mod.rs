@@ -60,6 +60,12 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A copy of this tool offering `choices` as the models its caller may pick for a delegation (`None`: none, the sub-agent's own), or
+    /// `None` when it delegates nothing. Called by `Orchestrator::with_model_choices` (P123): a person limited the models of this agent.
+    fn with_model_choices(&self, _choices: Option<&crate::tool::delegate::ModelChoices>) -> Option<Arc<dyn Tool>> {
+        None
+    }
+
     /// A copy of this tool whose nested orchestrator asks for the risk categories in `required`, classified by
     /// `classifier` (P122), or `None` when it runs no nested agent. Called by `Orchestrator::with_approval_rules`.
     fn with_approval_rules(&self, _required: &[crate::autonomy::Category], _classifier: Option<&crate::autonomy::Classifier>) -> Option<Arc<dyn Tool>> {

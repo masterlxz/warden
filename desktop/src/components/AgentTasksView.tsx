@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentTask, AgentTaskAction } from "../types";
 import { hubAgentTasks, hubControlAgentTask } from "../lib/hub";
-import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../lib/agentTasks";
+import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, involvingAgent, STATE_LABEL, STATE_MARK, type TaskGroup } from "../lib/agentTasks";
 import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
 const REFRESH_MS = 3000;
@@ -112,7 +112,7 @@ function TaskItem({ task, depth, now, busy, onAction }: { task: AgentTask; depth
  * and what it cost. It refreshes while it is open. For this computer it reads the log the engine writes, and for a hub in use it
  * asks the hub. A task still running there can be paused, resumed or stopped (with its subtasks); on a hub that asks for the
  * pairing key, like any change to it. */
-function AgentTasksView({ remote = false }: { remote?: boolean }) {
+function AgentTasksView({ remote = false, agent = null, onClearAgent }: { remote?: boolean; agent?: string | null; onClearAgent?: () => void }) {
   const [tasks, setTasks] = useState<AgentTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -155,7 +155,7 @@ function AgentTasksView({ remote = false }: { remote?: boolean }) {
     [remote, askKey, load],
   );
 
-  const groups = useMemo(() => groupTasks(tasks ?? []), [tasks]);
+  const groups = useMemo(() => groupTasks(agent ? involvingAgent(tasks ?? [], agent) : (tasks ?? [])), [tasks, agent]);
 
   return (
     <div className="settings-view">
@@ -164,10 +164,20 @@ function AgentTasksView({ remote = false }: { remote?: boolean }) {
         Tasks that agents handed to each other in the background, {remote ? "on the hub" : "on this computer"}, with where each one is and what
         it cost. A manager picks the agent, and the model, of each task.
       </p>
+      {agent && (
+        <p className="settings-hint">
+          Only the tasks of <strong>{agent}</strong>: the ones it was given and the ones it delegated.{" "}
+          {onClearAgent && (
+            <button type="button" className="settings-browse-btn" onClick={onClearAgent}>
+              Show everyone
+            </button>
+          )}
+        </p>
+      )}
       {error && <p className="usage-error">{error}</p>}
       {tasks === null && !error && <p className="settings-hint">Loading…</p>}
       {tasks !== null && groups.length === 0 && (
-        <p className="settings-hint">Nothing yet. When an agent delegates a task with "background", it shows up here.</p>
+        <p className="settings-hint">{agent ? `No task involves ${agent} yet.` : 'Nothing yet. When an agent delegates a task with "background", it shows up here.'}</p>
       )}
       {groups.map((group) => (
         <section key={group.group} className="agent-work-group">

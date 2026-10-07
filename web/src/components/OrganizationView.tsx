@@ -22,6 +22,9 @@ function selos(agent: AgentSettings): string[] {
 type Painel = { kind: "edit"; id: string } | { kind: "add"; under: string | null } | { kind: "remove"; id: string };
 
 interface Edicao {
+  /** Abre uma conversa nova com este agente, ou as tarefas que ele recebeu e delegou. */
+  onOpenChat: (id: string) => void;
+  onOpenTasks: (id: string) => void;
   agents: AgentSettings[];
   painel: Painel | null;
   ocupado: boolean;
@@ -137,6 +140,12 @@ function Node({ node, edicao }: { node: OrgNode<AgentSettings>; edicao: Edicao }
         </span>
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 subordinado" : `${children.length} subordinados`}</span>}
         <span className="org-actions">
+          <button type="button" className="link-button" onClick={() => edicao.onOpenChat(agent.id)} title={`Começar uma conversa com ${agent.id}`}>
+            Conversar
+          </button>
+          <button type="button" className="link-button" onClick={() => edicao.onOpenTasks(agent.id)} title={`As tarefas que ${agent.id} recebeu e as que delegou`}>
+            Tarefas
+          </button>
           <button type="button" className="link-button" disabled={edicao.ocupado} onClick={() => edicao.abrir({ kind: "edit", id: agent.id })}>
             Editar
           </button>
@@ -165,7 +174,17 @@ function Node({ node, edicao }: { node: OrgNode<AgentSettings>; edicao: Edicao }
 /** P120 — quem reporta a quem entre os agentes, e onde isso se muda: dar um cargo a um agente, passá-lo para baixo de outro, adicionar um
  * subordinado, remover um. Cada mudança é escrita sozinha (nada mais das configurações é tocado) e pede a chave de pareamento do hub; quem
  * gerencia (`manage_agents`) ou delega (`delegate_to_agent`) alcança só os que estão abaixo dele, então a árvore define o alcance. */
-export default function OrganizationView({ conn, onEdit }: { conn: ServerConnection | null; onEdit: () => void }) {
+export default function OrganizationView({
+  conn,
+  onEdit,
+  onOpenChat,
+  onOpenTasks,
+}: {
+  conn: ServerConnection | null;
+  onEdit: () => void;
+  onOpenChat: (id: string) => void;
+  onOpenTasks: (id: string) => void;
+}) {
   const [agents, setAgents] = useState<AgentSettings[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [painel, setPainel] = useState<Painel | null>(null);
@@ -221,6 +240,8 @@ export default function OrganizationView({ conn, onEdit }: { conn: ServerConnect
   }
 
   const edicao: Edicao = {
+    onOpenChat,
+    onOpenTasks,
     agents,
     painel,
     ocupado: busy || asking !== null,

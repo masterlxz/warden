@@ -24,6 +24,9 @@ function badges(agent: AgentEntry): string[] {
 type Panel = { kind: "edit"; id: string } | { kind: "add"; under: string | null } | { kind: "remove"; id: string };
 
 interface Editing {
+  /** Opens a new conversation with this agent, or the tasks it was given and delegated. */
+  onOpenChat: (id: string) => void;
+  onOpenTasks: (id: string) => void;
   agents: AgentEntry[];
   panel: Panel | null;
   busy: boolean;
@@ -139,6 +142,12 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
         </span>
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 report" : `${children.length} reports`}</span>}
         <span className="org-actions">
+          <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenChat(agent.id)} title={`Start a conversation with ${agent.id}`}>
+            Chat
+          </button>
+          <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenTasks(agent.id)} title={`The tasks ${agent.id} was given and the ones it delegated`}>
+            Tasks
+          </button>
           <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "edit", id: agent.id })}>
             Edit
           </button>
@@ -167,7 +176,21 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
 /** P120 — who reports to whom, and the place to change it: give an agent a role, move it under another, add a report, remove one.
  * Each change is written on its own (nothing else of the settings is touched) and an agent that manages or delegates reaches only the
  * ones below it, so the tree is what sets its reach. On a hub it asks for the pairing key, like any change to it. */
-function OrganizationView({ agents, remote = false, onChanged, onEdit }: { agents: AgentEntry[]; remote?: boolean; onChanged: () => void; onEdit: () => void }) {
+function OrganizationView({
+  agents,
+  remote = false,
+  onChanged,
+  onEdit,
+  onOpenChat,
+  onOpenTasks,
+}: {
+  agents: AgentEntry[];
+  remote?: boolean;
+  onChanged: () => void;
+  onEdit: () => void;
+  onOpenChat: (id: string) => void;
+  onOpenTasks: (id: string) => void;
+}) {
   const tree = buildOrg(agents);
   const nobodyReports = tree.every((node) => node.children.length === 0);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -176,6 +199,8 @@ function OrganizationView({ agents, remote = false, onChanged, onEdit }: { agent
   const { askKey, dialog } = usePairingKey();
 
   const editing: Editing = {
+    onOpenChat,
+    onOpenTasks,
     agents,
     panel,
     busy,

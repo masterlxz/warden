@@ -731,6 +731,10 @@ pub struct AgentSettingsDto {
     /// them (and on every agent in the owner's view).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// P123: the models this agent may pick for the tasks it delegates (provider, combo or policy ids); the first is the default of a
+    /// delegation that names none. Empty leaves the choice open. A member's agent has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delegation_models: Vec<String>,
 }
 
 fn default_autonomy() -> u8 {
@@ -816,6 +820,17 @@ impl From<Price> for PriceSettingsDto {
 pub struct ComboDto {
     pub id: String,
     pub providers: Vec<String>,
+}
+
+/// One named model policy (P123): `id` ("fast", "reasoning"...) is answered by `model`, a provider or combo; `description` tells an agent
+/// that delegates when to pick it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPolicyDto {
+    pub id: String,
+    pub model: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One provider switch in a turn (P79): `from` failed with `reason`, `to` answered with `model`.
@@ -961,6 +976,9 @@ pub struct HubSettingsDto {
     /// A combo id can be the active model or an agent's default, like a provider id.
     #[serde(default)]
     pub combos: Vec<ComboDto>,
+    /// Named model policies (P123): names an agent that delegates may use for a task's model, each answered by a provider or combo.
+    #[serde(default)]
+    pub model_policies: Vec<ModelPolicyDto>,
     pub agents: Vec<AgentSettingsDto>,
     pub tavily_key: SecretStatusDto,
     pub whisper_key: SecretStatusDto,
@@ -1208,6 +1226,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) keeps the combos, dropping any provider this save removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub combos: Option<Vec<ComboDto>>,
+    /// `None` (or absent) keeps the model policies (P123), dropping any whose model this save removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_policies: Option<Vec<ModelPolicyDto>>,
     /// `None` (or absent) leaves `[learning]` and the bots' lists as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<BotsSettingsDto>,
@@ -3127,6 +3148,7 @@ mod tests {
             prices: Vec::new(),
             git_sync: None,
             combos: None,
+            model_policies: None,
             bots: Some(BotsSettingsDto { telegram_allowed_users: vec![42], ..BotsSettingsDto::default() }),
             telegram_token: SecretEdit::Keep,
             advanced: None,

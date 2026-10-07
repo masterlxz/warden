@@ -70,6 +70,7 @@ export interface HubAgent {
   approvalRequired?: string[];
   role?: string | null;
   reportsTo?: string | null;
+  delegationModels?: string[];
   sharedWith?: string[];
 }
 
@@ -185,6 +186,7 @@ export function agentFromHub(agent: HubAgent): AgentEntry {
     ...(agent.role ? { role: agent.role } : {}),
     ...(agent.reportsTo ? { reportsTo: agent.reportsTo } : {}),
     ...(agent.sharedWith && agent.sharedWith.length > 0 ? { sharedWith: agent.sharedWith } : {}),
+    ...(agent.delegationModels && agent.delegationModels.length > 0 ? { delegationModels: agent.delegationModels } : {}),
   };
 }
 

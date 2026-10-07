@@ -99,6 +99,7 @@ fn agent(id: &str, persona: &str, manage: bool) -> AgentConfig {
         reports_to: None,
         owner: None,
         shared_with: Vec::new(),
+        delegation_models: Vec::new(),
     }
 }
 

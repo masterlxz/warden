@@ -11,6 +11,7 @@ use crate::jobs::{JobBoard, JobsGuard, TaskContext, TaskLink, TaskRecorder};
 use crate::memory::Vault;
 use crate::model::{Attachment, Message, ModelProvider, ProviderFallback, Role, StreamEvent, ToolCall, Usage};
 use crate::spend::{SpendContext, SpendGuard};
+use crate::tool::delegate::ModelChoices;
 use crate::tool::{Approver, Tool, ToolProvider, ToolSpec};
 
 /// Caps how many rounds of tool calls a single `handle_message` will chase before
@@ -162,6 +163,19 @@ impl Orchestrator {
         }
         for tool in &mut clone.tools {
             if let Some(held) = tool.with_approval_rules(&clone.approval_required, clone.classifier.as_ref()) {
+                *tool = held;
+            }
+        }
+        clone
+    }
+
+    /// Returns a copy whose delegation tools (`delegate_task`, `delegate_to_agent`, the nested ones too) offer exactly `choices` as the
+    /// models of a task, with its default for a call that names none (P123). A person's limit on what this agent may pick: `None` offers
+    /// no choice at all, so every task runs on the sub-agent's own model.
+    pub fn with_model_choices(&self, choices: Option<ModelChoices>) -> Self {
+        let mut clone = self.clone();
+        for tool in &mut clone.tools {
+            if let Some(held) = tool.with_model_choices(choices.as_ref()) {
                 *tool = held;
             }
         }

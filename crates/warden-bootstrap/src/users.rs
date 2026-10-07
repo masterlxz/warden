@@ -839,6 +839,7 @@ pub fn save_member_agent(config: &mut FileConfig, owner: &str, original_id: Opti
         reports_to: None,
         owner: Some(owner.to_string()),
         shared_with: Vec::new(),
+        delegation_models: Vec::new(),
     };
     match original_id {
         Some(original) => {
@@ -1330,6 +1331,7 @@ mod tests {
             reports_to: None,
             owner: owner.map(Into::into),
             shared_with: shared_with.iter().map(|s| s.to_string()).collect(),
+            delegation_models: Vec::new(),
         }
     }
 

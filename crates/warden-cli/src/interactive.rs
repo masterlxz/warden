@@ -2273,6 +2273,7 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         reports_to,
         owner: None,
         shared_with: Vec::new(),
+        delegation_models: Vec::new(),
     });
     if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
         return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
@@ -2342,6 +2343,8 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         reports_to,
         owner: None,
         shared_with: current.shared_with.clone(),
+        // Not asked by this wizard: a limit on the models it delegates with (P123) stays as it was.
+        delegation_models: current.delegation_models.clone(),
     };
     // Whoever reported to it under the old name reports to it under the new one.
     warden_bootstrap::org::rename_in_reports(&mut config.agents, &old_id, &new_id);

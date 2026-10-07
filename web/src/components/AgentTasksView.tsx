@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TaskError, type ServerConnection } from "../hub/connection";
 import type { AgentTask, AgentTaskAction } from "../hub/messages";
-import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, STATE_LABEL, STATE_MARK, type TaskGroup } from "../hub/agentTasks";
+import { ACTION_LABEL, actionsFor, durationLabel, formatTokens, groupTasks, involvingAgent, STATE_LABEL, STATE_MARK, type TaskGroup } from "../hub/agentTasks";
 
 const REFRESH_MS = 3000;
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
@@ -91,7 +91,7 @@ function TaskItem({ task, depth, now, onAsk }: { task: AgentTask; depth: number;
 /** P123 — o trabalho que os agentes passaram uns aos outros em segundo plano: quem faz o quê, até onde foi o lote de cada
  * gerente e quanto custou. Atualiza enquanto a aba está aberta. Uma tarefa que ainda roda no hub pode ser pausada, retomada ou
  * parada (com as subtarefas), e isso pede a chave de pareamento, como toda mudança no hub. */
-export default function AgentTasksView({ conn }: { conn: ServerConnection | null }) {
+export default function AgentTasksView({ conn, agent = null, onClearAgent }: { conn: ServerConnection | null; agent?: string | null; onClearAgent?: () => void }) {
   const [tasks, setTasks] = useState<AgentTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -172,7 +172,7 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
     </form>
   );
 
-  const groups = useMemo(() => groupTasks(tasks ?? []), [tasks]);
+  const groups = useMemo(() => groupTasks(agent ? involvingAgent(tasks ?? [], agent) : (tasks ?? [])), [tasks, agent]);
 
   return (
     <div className="usage-view">
@@ -180,10 +180,20 @@ export default function AgentTasksView({ conn }: { conn: ServerConnection | null
         Tarefas que os agentes passaram uns aos outros em segundo plano neste hub, com onde cada uma está e quanto custou. O gerente escolhe o
         agente, e o modelo, de cada tarefa.
       </p>
+      {agent && (
+        <p className="skills-hint">
+          Só as tarefas de <strong>{agent}</strong>: as que ele recebeu e as que ele delegou.{" "}
+          {onClearAgent && (
+            <button type="button" className="link-button" onClick={onClearAgent}>
+              Mostrar todos
+            </button>
+          )}
+        </p>
+      )}
       {error && <p className="error-banner">{error}</p>}
       {keyPrompt}
       {tasks === null && !error && <p className="skills-hint">Carregando…</p>}
-      {tasks !== null && groups.length === 0 && <p className="skills-hint">Nada ainda. Quando um agente delega uma tarefa com "background", ela aparece aqui.</p>}
+      {tasks !== null && groups.length === 0 && <p className="skills-hint">{agent ? `Nenhuma tarefa envolve ${agent} ainda.` : 'Nada ainda. Quando um agente delega uma tarefa com "background", ela aparece aqui.'}</p>}
       {groups.map((group) => (
         <section key={group.group} className="agent-work-group">
           <GroupHeader group={group} />

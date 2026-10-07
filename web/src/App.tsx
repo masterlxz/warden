@@ -99,6 +99,8 @@ export default function App() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   /** The agent the open conversation speaks with — "" for none. */
   const [agentId, setAgentId] = useState("");
+  /** O agente cujas tarefas a aba "Trabalho dos agentes" mostra (definido a partir da árvore da organização). */
+  const [agentWorkFilter, setAgentWorkFilter] = useState<string | null>(null);
   /** The person's projects (P103), for the chat's picker and the list's groups. */
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   /** The project the open conversation is in — "" for none. Chosen before its first message, fixed after. */
@@ -485,6 +487,17 @@ export default function App() {
     if (connection) void loadConversation(connection, id);
   }
 
+  /** Uma conversa nova com `id`, a partir da árvore da organização. */
+  function openChatWith(id: string) {
+    setSidebarOpen(false);
+    setView("chat");
+    setActiveId(newConversationId());
+    setEntries([]);
+    setAgentId(id);
+    setProjectId("");
+    setWorkdir("");
+  }
+
   function handleNewConversation() {
     setSidebarOpen(false);
     setView("chat");
@@ -657,7 +670,14 @@ export default function App() {
               <button type="button" className={view === "organization" ? "tab tab--active" : "tab"} onClick={() => setView("organization")}>
                 Organização
               </button>
-              <button type="button" className={view === "agentWork" ? "tab tab--active" : "tab"} onClick={() => setView("agentWork")}>
+              <button
+                type="button"
+                className={view === "agentWork" ? "tab tab--active" : "tab"}
+                onClick={() => {
+                  setAgentWorkFilter(null);
+                  setView("agentWork");
+                }}
+              >
                 Trabalho dos agentes
               </button>
               <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
@@ -860,9 +880,17 @@ export default function App() {
         ) : view === "settings" ? (
           <SettingsView conn={conn} />
         ) : view === "agentWork" ? (
-          <AgentTasksView conn={conn} />
+          <AgentTasksView conn={conn} agent={agentWorkFilter} onClearAgent={() => setAgentWorkFilter(null)} />
         ) : view === "organization" ? (
-          <OrganizationView conn={conn} onEdit={() => setView("settings")} />
+          <OrganizationView
+            conn={conn}
+            onEdit={() => setView("settings")}
+            onOpenChat={openChatWith}
+            onOpenTasks={(id) => {
+              setAgentWorkFilter(id);
+              setView("agentWork");
+            }}
+          />
         ) : (
           <SkillsView
             conn={conn}

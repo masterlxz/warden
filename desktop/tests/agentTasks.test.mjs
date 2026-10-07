@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { actionsFor, durationLabel, formatTokens, groupTasks } from "../src/lib/agentTasks.ts";
+import { actionsFor, durationLabel, formatTokens, groupTasks, involvingAgent } from "../src/lib/agentTasks.ts";
 
 const task = (id, group, state, extra = {}) => ({ id, group, owner: "chief", assignee: id, objective: `do ${id}`, channel: "desktop", state, createdAtMs: 1000, ...extra });
 
@@ -78,6 +78,20 @@ describe("how a task is shown", () => {
     assert.equal(durationLabel(task("a", "g", "running", { startedAtMs: 1000 }), 5000), "4s");
     assert.equal(durationLabel(task("a", "g", "done", { startedAtMs: 0, finishedAtMs: 125000 }), 999999), "2m 05s");
     assert.equal(durationLabel(task("a", "g", "done", { startedAtMs: 0, finishedAtMs: 3780000 }), 0), "1h 03m");
+  });
+});
+
+describe("the tasks of one agent", () => {
+  test("it keeps the ones the agent was given and the ones it delegated, and nobody else's", () => {
+    const tasks = [
+      task("backend", "g1", "done", { owner: "chief" }),
+      task("frontend", "g1", "done", { owner: "chief" }),
+      task("db", "g1", "running", { owner: "backend", parentId: "backend" }),
+      task("docs", "g2", "done", { owner: "writer" }),
+    ];
+    assert.deepEqual(involvingAgent(tasks, "backend").map((t) => t.id), ["backend", "db"], "given to it, and delegated by it");
+    assert.deepEqual(involvingAgent(tasks, "chief").map((t) => t.id), ["backend", "frontend"]);
+    assert.deepEqual(involvingAgent(tasks, "ghost"), []);
   });
 });
 

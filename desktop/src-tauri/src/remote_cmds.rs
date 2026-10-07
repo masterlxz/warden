@@ -316,6 +316,7 @@ mod tests {
             reports_to: None,
             shared_with: Vec::new(),
             owner: None,
+            delegation_models: Vec::new(),
         })
         .unwrap();
         for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "allowedTools", "autonomy", "approvalRequired", "sharedWith"] {

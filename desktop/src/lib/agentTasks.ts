@@ -119,6 +119,12 @@ export function groupTasks(tasks: AgentTask[]): TaskGroup[] {
   return groups.sort((a, b) => b.createdAtMs - a.createdAtMs);
 }
 
+/** The tasks that involve one agent: the ones it was given to do and the ones it delegated (P120, from a node of the tree). The tasks of
+ * the subtasks it started keep their place under it because they are the ones it delegated. */
+export function involvingAgent(tasks: AgentTask[], agent: string): AgentTask[] {
+  return tasks.filter((t) => t.assignee === agent || t.owner === agent);
+}
+
 /** `1,284` up to 999, `12.9K` beyond. */
 export function formatTokens(n: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n);

@@ -38,6 +38,15 @@ export interface Combo {
   providers: string[];
 }
 
+/** Mirrors `warden_bootstrap::ModelPolicyConfig` (P123): a name an agent that delegates can use for a task's model ("fast", "reasoning"...),
+ * answered by `model` (a provider or combo). `description` is what the agent reads to know when to pick it. Its id shares one namespace
+ * with the providers' and the combos'. */
+export interface ModelPolicy {
+  id: string;
+  model: string;
+  description?: string;
+}
+
 /** Mirrors `ProviderFallbackDto` (P79): `from` failed with `reason`, `to` answered with `model`. */
 export interface ProviderFallback {
   from: string;
@@ -171,6 +180,9 @@ export interface AgentEntry {
   reportsTo?: string | null;
   /** P84 — the people this agent is shared with, by username, or ["*"] for everyone. */
   sharedWith?: string[];
+  /** P123 — the models (provider, combo or policy ids) this agent may pick for the tasks it delegates; the first is what a delegation that
+   * names none gets, so a list of one dictates the model. Empty or absent leaves the choice open. */
+  delegationModels?: string[];
 }
 
 /** Mirrors `ssh_cmds::SshHostPayload` (P47) — an SSH server the AI can run commands on through the
@@ -582,6 +594,8 @@ export interface Settings {
   /** Named routing combos (P90): picked like a provider (active model, an agent's default, a
    * conversation's model); tries its providers in order when one is down. */
   combos: Combo[];
+  /** Named model policies (P123): "fast", "reasoning"..., each answered by a provider or combo. */
+  modelPolicies: ModelPolicy[];
   vaultPath: string;
   /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
    * means "unset", resolving at bootstrap time to a sibling of the vault path. */

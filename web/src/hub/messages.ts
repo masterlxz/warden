@@ -233,6 +233,17 @@ export interface AgentSettings {
   sharedWith?: string[];
   /** P84 — in a member's view, their username on their own agents; absent on the shared ones. */
   owner?: string;
+  /** P123 — os modelos (ids de provedor, combo ou política) que este agente pode escolher para as tarefas que delega; o primeiro é o que uma
+   * delegação sem `model` recebe, então uma lista de um dita o modelo. Vazia ou ausente deixa a escolha aberta. */
+  delegationModels?: string[];
+}
+
+/** Espelha `ModelPolicyDto` (P123): um nome ("fast", "reasoning"...) que um agente que delega pode usar para o modelo de uma tarefa,
+ * respondido por `model` (um provedor ou combo). `description` é o que o agente lê para saber quando escolher. */
+export interface ModelPolicy {
+  id: string;
+  model: string;
+  description?: string;
 }
 
 /** P84 — `person` is one workspace member, on every channel. */
@@ -263,6 +274,8 @@ export interface HubSettings {
   activeProvider: string;
   /** Named routing combos (P90): picked like a provider; tries its providers in order when one is down. */
   combos: Combo[];
+  /** Named model policies (P123). */
+  modelPolicies?: ModelPolicy[];
   agents: AgentSettings[];
   tavilyKey: SecretStatus;
   whisperKey: SecretStatus;
@@ -636,6 +649,8 @@ export interface HubSettingsUpdate {
   prices: PriceSettings[];
   /** Omitted: the combos stay, minus any provider this save removed. */
   combos?: Combo[];
+  /** Omitted: the model policies stay, minus any whose model this save removed (P123). */
+  modelPolicies?: ModelPolicy[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
   /** Omitted: `[learning]` and the bots' lists stay as they are. */

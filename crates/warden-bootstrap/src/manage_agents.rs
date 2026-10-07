@@ -279,6 +279,8 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 reports_to: superior.clone(),
                 owner: None,
                 shared_with: Vec::new(),
+                // Never granted from here either: a person limits the models of an agent.
+                delegation_models: Vec::new(),
             });
             org::check_hierarchy(&updated).map_err(|why| anyhow::anyhow!(why))?;
             format!(
@@ -676,6 +678,7 @@ mod tests {
             reports_to: None,
             owner: None,
             shared_with: Vec::new(),
+            delegation_models: Vec::new(),
         }
     }
 

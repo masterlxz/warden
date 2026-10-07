@@ -6,6 +6,16 @@
 
 ---
 
+### 2026-10-06 — Sessão 156
+
+- **Objetivo**: o item 2 da lista, fechar P123 e P120 por dentro: limitar os modelos por agente, uma tela para as políticas, atalhos por nó da árvore e a pessoa ditar o modelo de uma subtarefa. O usuário escolheu as quatro partes; sem testes manuais nesta rodada.
+- **Decisão**: **uma lista só** cobre o limite e o ditar. `AgentConfig.delegation_models`: só esses ids são oferecidos e o **primeiro** é o modelo de uma delegação que não nomeia nenhum (em vez do modelo do sub-agente); uma lista de um dita o modelo. Vazia = aberto. Falha fechado: uma lista sem nenhum id que exista não oferece escolha, nunca tudo.
+- **Feito**: `ModelChoices.default`, `Tool::with_model_choices` e `Orchestrator::with_model_choices` (o `delegate_task` aninhado acompanha), `model_choices_for`/`model_choices_of` e a aplicação em `scope_to_agent` e nos dois construtores do `delegate_to_agent`; o campo no `AgentConfig` (44 literais ajustados à mão; o wizard do CLI preserva a lista ao editar) e no `AgentSettingsDto`; cascatas ao renomear e remover provedor, combo e política (`prune_delegation_models` em todo salvamento); `ModelPolicyDto`, `check_policies` e o protocolo de configurações com `modelPolicies`; desktop (`get_settings` e `save_settings` com as políticas, seção "Model policies", editor do limite no cartão do agente, `lib/modelPolicies.ts`) e web (seção "Políticas de modelo", o limite no cartão, `hub/modelPolicies.ts`); "Chat" e "Tasks" em cada nó da árvore (desktop e web) com o Agent work filtrado (`involvingAgent`).
+- **Testes**: 1401 Rust verdes (`--no-fail-fast`), `npm test` do desktop 45 de 45, `tsc` e builds de desktop e web, clippy sem aviso novo. Dois testes do `message_agent` estouraram os 30 s na primeira rodada depois do `cargo clean` (a busca semântica carrega um modelo a frio) e passaram em 0,75 s na seguinte: não é regressão. Novos: o limite e o padrão em `delegate.rs`, `model_choices_for`, o limite visto em `delegate_task` e `delegate_to_agent` pelo `scope_to_agent`, a cascata, as políticas e a poda nas configurações do hub, e 9 do desktop (`modelPolicies.test.mjs` e o filtro por agente).
+- **Não verificado**: as telas numa janela (seção das políticas, editor do limite, atalhos da árvore, o "novo chat com o agente" no desktop); um modelo real vendo só os modelos do limite.
+- **Disco**: o `/home` chegou a 99% por causa do `target/` do cargo (53G); foi limpo com `cargo clean` (57 GiB), então o primeiro build seguinte recompila tudo.
+- **Fica**: o wizard do CLI perguntar o limite, celular e extensão, arrastar nós, a atividade de cada nó, a hierarquia por pessoa (P84).
+
 ### 2026-10-06 — Sessão 155
 
 - **Objetivo**: o item 3 da lista, editar a hierarquia pela árvore (P120, fatia 3), a pedido do usuário; sem testes manuais nesta rodada.

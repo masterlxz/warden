@@ -51,6 +51,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     let read_only: Vec<String> = SAFE_AGENT_TOOLS.iter().map(|t| t.to_string()).collect();
     let classifier = crate::risk::build_classifier(&config.tool_categories, base.tools());
     let orchestrator = orchestrator.with_autonomy(level, &read_only).with_approval_rules(&agent.approval_required, Some(classifier));
+    // P123: a person limited the models this agent may pick for its delegations, `delegate_task` included.
+    let orchestrator = if agent.delegation_models.is_empty() { orchestrator } else { orchestrator.with_model_choices(crate::model_choices_for(config, Some(agent))) };
 
     // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
     let agents_revision = AgentsRevision::default();
