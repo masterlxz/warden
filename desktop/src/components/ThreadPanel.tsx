@@ -13,7 +13,8 @@ function ThreadPanel({
   threadId,
   parent,
   anchor,
-  agentId,
+  agentIds,
+  initialAgentId,
   ready,
   onClose,
   onChanged,
@@ -22,14 +23,17 @@ function ThreadPanel({
   parent: { conversationId: string; messageId: string };
   /** The message the thread came from, shown at the top. */
   anchor: ChatMessage;
-  /** The agent of the main conversation: the thread talks to the same one. */
-  agentId: string;
+  /** The hub's configured agents, to choose who the thread talks to. */
+  agentIds: string[];
+  /** Who the thread starts with: the agent it last spoke with, or the main conversation's if it is new. The person can change it here. */
+  initialAgentId: string;
   /** The hub is connected. */
   ready: boolean;
   onClose: () => void;
   /** A reply was saved: the list of conversations has a new counter to read. */
   onChanged: () => void;
 }) {
+  const [agentId, setAgentId] = useState(initialAgentId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +78,21 @@ function ThreadPanel({
     <aside className="thread-panel" aria-label="Thread">
       <div className="thread-header">
         <strong>Thread</strong>
+        {(agentIds.length > 0 || agentId !== "") && (
+          // Each thread talks to the agent the person picks, the main conversation's or another; locked while an answer is on the way.
+          <label className="thread-agent">
+            Agent
+            <select value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={sending}>
+              <option value="">None</option>
+              {agentIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+              {agentId !== "" && !agentIds.includes(agentId) && <option value={agentId}>{agentId} (removed)</option>}
+            </select>
+          </label>
+        )}
         <button type="button" className="settings-browse-btn" onClick={onClose} aria-label="Close the thread">
           Close
         </button>

@@ -700,7 +700,8 @@ function App() {
             threadId={thread.threadId}
             parent={{ conversationId: activeConversation.id, messageId: thread.messageId }}
             anchor={activeConversation.messages.find((m) => m.hubId === thread.messageId)!}
-            agentId={selectedAgentId}
+            agentIds={settings.agents.map((a) => a.id)}
+            initialAgentId={conversations.find((c) => c.id === thread.threadId)?.agentId ?? selectedAgentId}
             ready={remoteReady}
             onClose={() => setThread(null)}
             onChanged={() => void loadConversations()}

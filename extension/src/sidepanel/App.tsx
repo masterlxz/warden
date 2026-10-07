@@ -120,6 +120,27 @@ export default function App() {
                   ← Voltar à conversa
                 </button>
                 <strong>Thread</strong>
+                {(conversationState.agentIds.length > 0 || conversationState.agentId !== null) && (
+                  // Each thread talks to the agent the person picks, the main conversation's or another; locked while an answer is on the way.
+                  <label className="conversation-bar-agent">
+                    Agente
+                    <select
+                      value={conversationState.agentId ?? ""}
+                      disabled={pendingChat}
+                      onChange={(e) => void chrome.runtime.sendMessage({ type: "selectAgent", agentId: e.target.value || null })}
+                    >
+                      <option value="">Nenhum</option>
+                      {conversationState.agentIds.map((id) => (
+                        <option key={id} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                      {conversationState.agentId !== null && !conversationState.agentIds.includes(conversationState.agentId) && (
+                        <option value={conversationState.agentId}>{conversationState.agentId} (removido)</option>
+                      )}
+                    </select>
+                  </label>
+                )}
               </header>
             ) : (
               <ConversationBar {...conversationState} />

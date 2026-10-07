@@ -6,6 +6,13 @@
 
 ---
 
+### 2026-10-07 — Sessão 162
+
+- **Objetivo**: escolher o agente da thread (P125). Decisão do usuário: cada thread fala com o agente que a pessoa escolher nela, o mesmo da conversa principal ou outro.
+- **Feito**: só interface, o hub já usa o `agentId` de cada turno e guarda o último agente da conversa. Web e desktop: seletor no cabeçalho do `ThreadPanel` (`agentIds` e `initialAgentId`, que é o agente da própria thread se ela já existe, senão o da principal; travado enquanto a resposta não vem). Extensão: o seletor entra na barra da thread, usando o `selectAgent` que já existia (reabrir a thread restaura o agente dela). Celular: nada a mudar, o menu de agente do `AppBar` já vale para a conversa aberta, thread incluída.
+- **Testes**: `tsc` de web, desktop e extensão; `npm test` web 8, desktop 63, extensão 48. Sem teste novo de unidade (é só seletor); o e2e de navegador e o celular não foram rodados.
+- **Não verificado**: o seletor numa janela, e uma thread com agente diferente respondendo de verdade.
+
 ### 2026-10-07 — Sessão 161
 
 - **Objetivo**: a segunda fatia do P125 (threads), escolhida pelo usuário: a extensão e o celular, em tela cheia em vez de painel. O hub não mudou.

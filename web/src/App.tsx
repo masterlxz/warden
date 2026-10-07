@@ -886,7 +886,8 @@ export default function App() {
                 threadId={thread.threadId}
                 parent={{ conversationId: activeId, messageId: thread.messageId }}
                 anchor={entries.find((e) => e.id === thread.messageId)!}
-                agentId={agentId}
+                agentIds={agentIds}
+                initialAgentId={conversations.find((c) => c.id === thread.threadId)?.agentId ?? agentId}
                 disabled={!phase.connected}
                 onClose={() => setThread(null)}
               />

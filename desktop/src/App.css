@@ -384,8 +384,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.6rem 1rem;
   border-bottom: 1px solid var(--color-border);
+}
+
+.thread-agent {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.thread-agent select {
+  min-width: 0;
+  max-width: 8rem;
 }
 
 .thread-anchor {

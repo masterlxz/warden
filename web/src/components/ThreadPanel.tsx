@@ -19,7 +19,8 @@ export default function ThreadPanel({
   threadId,
   parent,
   anchor,
-  agentId,
+  agentIds,
+  initialAgentId,
   disabled,
   onClose,
 }: {
@@ -28,11 +29,14 @@ export default function ThreadPanel({
   parent: { conversationId: string; messageId: string };
   /** A mensagem de onde a thread saiu, para o topo do painel. */
   anchor: ChatEntry;
-  /** O agente da conversa principal: a thread fala com o mesmo. */
-  agentId: string;
+  /** Os agentes configurados no hub, para escolher com quem a thread fala. */
+  agentIds: string[];
+  /** Com quem a thread começa: o agente com que ela falou da última vez, ou o da conversa principal se é nova. A pessoa troca no painel. */
+  initialAgentId: string;
   disabled: boolean;
   onClose: () => void;
 }) {
+  const [agentId, setAgentId] = useState(initialAgentId);
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [pending, setPending] = useState(false);
   const threadRef = useRef(threadId);
@@ -81,6 +85,21 @@ export default function ThreadPanel({
     <aside className="thread-panel" aria-label="Thread">
       <div className="thread-header">
         <strong>Thread</strong>
+        {(agentIds.length > 0 || agentId !== "") && (
+          // Cada thread fala com o agente que a pessoa escolher, o mesmo da conversa principal ou outro; trava enquanto a resposta não vem.
+          <label className="agent-picker">
+            <span className="agent-picker-label">Agente</span>
+            <select value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={pending}>
+              <option value="">Nenhum</option>
+              {agentIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+              {agentId !== "" && !agentIds.includes(agentId) && <option value={agentId}>{agentId} (removido)</option>}
+            </select>
+          </label>
+        )}
         <button type="button" className="link-button" onClick={onClose} aria-label="Fechar a thread">
           Fechar
         </button>
