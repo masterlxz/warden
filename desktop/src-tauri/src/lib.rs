@@ -748,6 +748,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         tasks: existing.tasks,
         // Incoming webhooks (P105) have no Settings screen either (`warden-server webhooks`): dropping them here would delete them.
         webhooks: existing.webhooks,
+        // The agents allowed to start messages (P121) are edited in `config.toml` only: dropping them here would take that permission away.
+        outreach: existing.outreach,
         tool_categories: existing.tool_categories,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,
