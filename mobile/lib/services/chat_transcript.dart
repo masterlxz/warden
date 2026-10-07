@@ -53,7 +53,17 @@ abstract interface class ConversationBackend {
   Future<List<ConversationSummary>> listConversations();
   Future<void> renameConversation(String conversationId, String title);
   Future<void> deleteConversation(String conversationId);
+
+  /// P121 — the id of the conversation that is [agentId]'s channel with this person (the hub makes it).
+  Future<String> openAgentChannel(String agentId);
 }
+
+/// P121 — the start of the id of an agent's channel: the one conversation an agent keeps with the person. The same as the hub's
+/// `CHANNEL_PREFIX`.
+const channelPrefix = 'channel-';
+
+/// Whether [id] is an agent's channel.
+bool isAgentChannel(String id) => id.startsWith(channelPrefix);
 
 /// P41 — the in-memory transcript of one server connection, owned by whoever owns the connection
 /// (`ConnectionScreen`) rather than by `ChatScreen`'s `State`. Before this, leaving the chat with
@@ -112,8 +122,62 @@ class ChatTranscript extends ChangeNotifier {
   List<ChatEntry> get entries => List.unmodifiable(_entries);
   List<ConversationSummary> get conversations => List.unmodifiable(_conversations);
 
-  /// P125 — the conversations the list shows: threads are left out, they show from the message they came from.
-  List<ConversationSummary> get visibleConversations => List.unmodifiable(_conversations.where((c) => c.parent == null));
+  /// P125 — the conversations the list shows: threads are left out, they show from the message they came from, and so are the
+  /// agents' channels (P121), which have a place of their own.
+  List<ConversationSummary> get visibleConversations => List.unmodifiable(_conversations.where(_isLoose));
+
+  static bool _isLoose(ConversationSummary c) => c.parent == null && !isAgentChannel(c.id);
+
+  /// P121 — the id of each agent's channel (the hub makes it from the agent's name), asked for once per agent.
+  final _channels = <String, String>{};
+
+  /// The agents' channels by agent; an agent the hub has not answered for is not here.
+  Map<String, String> get channels => Map.unmodifiable(_channels);
+
+  /// P121 — the agent whose channel the open conversation is, when it is one.
+  String? get channelAgent {
+    for (final e in _channels.entries) {
+      if (e.value == _activeId) return e.key;
+    }
+    return null;
+  }
+
+  /// P121 — the id of every configured agent's channel, to line them up with the conversations' last activity. An agent the hub does
+  /// not answer for just has none yet.
+  Future<void> _loadChannels() async {
+    for (final agent in _agentIds) {
+      if (_channels.containsKey(agent)) continue;
+      try {
+        final id = await backend.openAgentChannel(agent);
+        if (_disposed) return;
+        _channels[agent] = id;
+      } catch (_) {
+        // Asked again the next time the agents are read.
+      }
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  /// P121 — opens the channel of [agent]: the one conversation it keeps with the person, with the agent fixed and no folder. Throws
+  /// when the hub does not answer.
+  Future<void> openAgentChannel(String agent) async {
+    var id = _channels[agent];
+    if (id == null) {
+      id = await backend.openAgentChannel(agent);
+      if (_disposed) return;
+      _channels[agent] = id;
+    }
+    open(id);
+    _agentId = agent;
+    _workdir = null;
+    notifyListeners();
+  }
+
+  /// P121 — leaves a channel for the first loose conversation, or a new one.
+  void leaveChannel() {
+    if (channelAgent == null) return;
+    open(_firstVisible(_conversations)?.id ?? _newConversationId());
+  }
 
   /// P125 — what the open conversation hangs from, when it is a thread (on the hub already, or still a draft).
   ThreadParent? get threadParent {
@@ -189,6 +253,7 @@ class ChatTranscript extends ChangeNotifier {
     if (_disposed) return;
     _agentIds = ids;
     notifyListeners();
+    unawaited(_loadChannels());
   }
 
   /// Speak as [agentId] from the next turn on (null: no agent).
@@ -294,7 +359,7 @@ class ChatTranscript extends ChangeNotifier {
   /// P125 — the first conversation of [list] that is not a thread.
   ConversationSummary? _firstVisible(List<ConversationSummary> list) {
     for (final c in list) {
-      if (c.parent == null) return c;
+      if (_isLoose(c)) return c;
     }
     return null;
   }

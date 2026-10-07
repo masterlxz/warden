@@ -249,6 +249,9 @@ mod tests {
         assert_eq!(message, ClientMessage::ListConversations { request_id: 7 });
         let dirs = message_with_request_id(json!({ "type": "listDirs", "path": "/srv" }), 8).unwrap();
         assert_eq!(dirs, ClientMessage::ListDirs { request_id: 8, path: Some("/srv".into()) });
+        // P121: the page asks for an agent's channel by the agent's name.
+        let channel = message_with_request_id(json!({ "type": "openAgentChannel", "agentId": "poet" }), 5).unwrap();
+        assert_eq!(channel, ClientMessage::OpenAgentChannel { request_id: 5, agent_id: "poet".into() });
         // The id is the connection's to give: one the page sent is replaced.
         let replaced = message_with_request_id(json!({ "type": "listConversations", "requestId": 1 }), 9).unwrap();
         assert_eq!(replaced, ClientMessage::ListConversations { request_id: 9 });

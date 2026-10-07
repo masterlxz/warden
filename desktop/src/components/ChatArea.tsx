@@ -56,6 +56,8 @@ interface ChatAreaProps {
   onOpenThread?: (messageId: string) => void;
   /** The threads of this conversation by the id of the message they came from: the chip with the replies in place of the button. */
   threads?: Record<string, ThreadInfo>;
+  /** The conversation is an agent's channel (P121): the agent is the channel's, there is no pick screen, project or folder; only the chat. */
+  channel?: boolean;
 }
 
 function personaPreview(persona: string): string {
@@ -141,6 +143,7 @@ function ChatArea({
   hubFolders,
   onOpenThread,
   threads,
+  channel = false,
 }: ChatAreaProps) {
   // The hub's folder browser (P102), open while the person chooses.
   const [browsingHub, setBrowsingHub] = useState(false);
@@ -163,18 +166,18 @@ function ChatArea({
   // A conversation starts with an agent chosen or with the choice of none (P124), and the agent can be changed later from the header
   // (P45 locked it for good). This is the "not decided yet" gate: no messages yet, no agent picked and no "without an agent" either
   // (picking one doesn't send a message by itself, see onSelectAgent below).
-  const needsAgentPick = !hasMessages && !selectedAgentId && !withoutAgent;
+  const needsAgentPick = !channel && !hasMessages && !selectedAgentId && !withoutAgent;
   // Like the agent, a conversation's project is chosen before its first message and then fixed (P103). One whose
   // project was removed since has nothing to show.
   const knownProject = projects.some((p) => p.id === selectedProjectId);
   // A conversation that works in a folder can't be moved into a project (P102), so it has no project picker.
-  const showProjectPicker = (projects.length > 0 || knownProject) && !(hasMessages && selectedWorkdir);
+  const showProjectPicker = !channel && (projects.length > 0 || knownProject) && !(hasMessages && selectedWorkdir);
   // The folder (P102): picked before the first message — with the system's own dialog on this computer, in the hub's
   // folder browser on a hub — then only shown. Not inside a project, which has its own.
   const hubNodes = hubFolders?.nodes ?? [];
   const folderName = remote ? folderLabel(selectedWorkdir, hubNodes) : (selectedWorkdir.split("/").filter(Boolean).pop() ?? selectedWorkdir);
   const folderTitle = remote ? folderPlace(selectedWorkdir, hubNodes) : selectedWorkdir;
-  const showFolder = !knownProject && (hasMessages ? selectedWorkdir !== "" : true) && (!remote || hubFolders !== undefined);
+  const showFolder = !channel && !knownProject && (hasMessages ? selectedWorkdir !== "" : true) && (!remote || hubFolders !== undefined);
 
   async function chooseFolder() {
     if (remote && hubFolders) {
@@ -208,6 +211,11 @@ function ChatArea({
       <div className="chat-header">
         {needsAgentPick ? (
           <span className="chat-header-label chat-header-label--muted">Pick an agent to start</span>
+        ) : channel ? (
+          // An agent's channel is that agent's for good: no switching it here.
+          <span className="chat-header-label" title="The agent whose channel this is">
+            {selectedAgentId}
+          </span>
         ) : agents.length > 0 || selectedAgentId ? (
           // The agent can be changed at any time (P124): the next messages speak as the new one. Locked while an answer is on the way.
           <select

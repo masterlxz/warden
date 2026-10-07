@@ -31,6 +31,7 @@ import {
   hubListNodes,
   hubListProjects,
   hubMoveConversation,
+  hubOpenAgentChannel,
   hubSend,
   needsSignIn,
   type HubCredential,
@@ -38,7 +39,8 @@ import {
   type RemoteStatePayload,
 } from "./lib/hub";
 import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
-import { threadHistory, threadsOf, visibleConversations } from "./lib/threads";
+import { isAgentChannel, threadHistory, threadsOf, visibleConversations } from "./lib/threads";
+import AgentContacts from "./components/AgentContacts";
 import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
@@ -119,9 +121,11 @@ function App() {
   // How much each code conversation asks (P103 b), by conversation id — "new" for one that hasn't started. Only here,
   // never saved: a conversation opened again asks everything.
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
-  const [view, setView] = useState<"chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
+  const [view, setView] = useState<"chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
+  /** P121 — the id of each agent's channel on the hub in use (the hub makes it from the agent's name), asked for when the Agents screen opens. */
+  const [channels, setChannels] = useState<Record<string, string>>({});
   /** The agent a conversation that isn't started yet speaks with (set from the organization tree), so choosing it survives the
    * reload of the settings that opening the chat triggers. Empty once a conversation is open. */
   const [newChatAgent, setNewChatAgent] = useState("");
@@ -288,19 +292,22 @@ function App() {
   // whenever the user comes back from there so the chat header's selectors stay in sync without
   // needing an app restart.
   useEffect(() => {
-    if (view !== "chat" || (remote && !remoteReady)) return;
+    if ((view !== "chat" && view !== "agents") || (remote && !remoteReady)) return;
     void loadSettings();
+    if (view === "agents") loadConversations();
   }, [view, activeHubId, remoteReady]);
 
   // Restores the agent/model this conversation was last using (P3) whenever it's switched, or
   // falls back to defaults if that id no longer matches anything configured (deleted since).
   useEffect(() => {
-    const storedAgentId = activeConversation?.agentId ?? (activeConversationId === null ? newChatAgent : "");
+    // An agent's channel that the hub does not have yet (nothing sent): its agent is the one the channel is of.
+    const channelOf = Object.keys(channels).find((agent) => channels[agent] === activeConversationId) ?? "";
+    const storedAgentId = activeConversation?.agentId ?? (activeConversationId === null ? newChatAgent : channelOf);
     setSelectedAgentId(settings.agents.some((a) => a.id === storedAgentId) ? storedAgentId : "");
 
     const storedProviderId = activeConversation?.providerId ?? "";
     setSelectedProviderId(isModel(settings, storedProviderId) ? storedProviderId : settings.activeProvider);
-  }, [activeConversationId, settings, newChatAgent]);
+  }, [activeConversationId, settings, newChatAgent, channels]);
 
   /** Moves the open conversation into a project, or out of any with "" (P103); the saved copy replaces the one shown. */
   async function handleMoveProject(projectId: string) {
@@ -329,6 +336,27 @@ function App() {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
       return next;
     });
+  }
+
+  /** P121 — opens the channel of `agent`: the one conversation it keeps with the person, on this hub. The hub says its id (it exists on disk
+   * from the first message); one that is already listed is read again from the hub, as any hub conversation is. */
+  async function openAgentChannel(agent: string) {
+    let id = channels[agent];
+    if (!id) {
+      try {
+        id = await hubOpenAgentChannel(agent);
+      } catch (err) {
+        setSendError(`Could not open the channel: ${String(err)}`);
+        return;
+      }
+      const known = id;
+      setChannels((prev) => ({ ...prev, [agent]: known }));
+    }
+    setActiveConversationId(id);
+    setSelectedProjectId("");
+    setSelectedWorkdir("");
+    setSendError(null);
+    if (conversations.some((c) => c.id === id)) loadHistory(id);
   }
 
   /** A new conversation with `agentId`, from the organization tree. */
@@ -411,8 +439,21 @@ function App() {
     }
   }
 
+  // The Agents screen shows each agent's last activity, so it needs the id of every channel: asked once per agent.
+  useEffect(() => {
+    if (view !== "agents" || !remoteReady) return;
+    for (const agent of settings.agents) {
+      if (channels[agent.id]) continue;
+      hubOpenAgentChannel(agent.id).then(
+        (id) => setChannels((prev) => (prev[agent.id] ? prev : { ...prev, [agent.id]: id })),
+        () => undefined,
+      );
+    }
+  }, [view, remoteReady, settings, channels]);
+
   /** Leaves what the previous machine showed, so nothing of it lingers under the new one's name. */
   function resetForMachine() {
+    setChannels({});
     setActiveConversationId(null);
     setConversations([]);
     setProjects([]);
@@ -695,6 +736,7 @@ function App() {
         onOpenWebhooks={() => setView("webhooks")}
         onOpenWorkspace={() => setView("workspace")}
         onOpenOrganization={() => setView("organization")}
+        onOpenAgents={remote ? () => setView("agents") : undefined}
         onOpenAgentWork={() => {
           setAgentWorkFilter(null);
           setView("agentWork");
@@ -737,7 +779,25 @@ function App() {
         <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
       ) : (
         <div className="chat-with-thread">
+        {view === "agents" && (
+          <AgentContacts
+            agents={settings.agents}
+            channels={channels}
+            conversations={conversations}
+            activeAgent={Object.keys(channels).find((agent) => channels[agent] === activeConversationId) ?? ""}
+            answeringIds={Object.keys(liveTurns)}
+            disabled={!remoteReady}
+            onOpen={(agent) => void openAgentChannel(agent)}
+          />
+        )}
+        {view === "agents" && !isAgentChannel(activeConversationId ?? "") ? (
+          <div className="chat-area chat-empty-state">
+            <h1>Agents</h1>
+            <p>Pick an agent to talk with it. Each agent has one conversation, which stays here.</p>
+          </div>
+        ) : (
         <ChatArea
+          channel={view === "agents"}
           activeConversation={activeConversation}
           onSendMessage={handleSendMessage}
           isSending={isSending}
@@ -770,6 +830,7 @@ function App() {
           onOpenThread={activeConversation && !projects.some((p) => p.id === currentProjectId && p.code) ? openThread : undefined}
           threads={activeConversationId === null ? undefined : threadsOf(conversations, activeConversationId)}
         />
+        )}
         {remote && thread && activeConversation && activeConversation.messages.some((m) => m.hubId === thread.messageId) && (
           <ThreadPanel
             key={thread.threadId}

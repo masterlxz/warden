@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { repliesLabel, threadsOf, visibleConversations, withMessageIds } from "../src/protocol/threads.ts";
+import { isAgentChannel, repliesLabel, threadsOf, visibleConversations, withMessageIds } from "../src/protocol/threads.ts";
 
 const conversation = (id, extra = {}) => ({ id, title: id, createdAt: 1, updatedAt: 1, ...extra });
 const thread = (id, parentConversation, messageId, replies) => conversation(id, { parent: { conversationId: parentConversation, messageId }, replies });
@@ -12,6 +12,13 @@ describe("the list of conversations", () => {
     const list = [conversation("main"), thread("side", "main", "m1", 2), conversation("other")];
     assert.deepEqual(visibleConversations(list).map((c) => c.id), ["main", "other"]);
     assert.deepEqual(visibleConversations([]), []);
+  });
+
+  test("leaves the channels of the agents out (P121): they have a tab of their own", () => {
+    const list = [conversation("main"), conversation("channel-00ff00ff00ff00ff"), conversation("channeling")];
+    assert.deepEqual(visibleConversations(list).map((c) => c.id), ["main", "channeling"], "only the hub's prefix with the dash counts");
+    assert.equal(isAgentChannel("channel-00ff00ff00ff00ff"), true);
+    assert.equal(isAgentChannel("agents-00ff"), false, "an agent-to-agent conversation is not a channel");
   });
 });
 

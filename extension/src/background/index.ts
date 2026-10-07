@@ -50,6 +50,8 @@ let agentId: string | null = null;
 let workdir: string | null = null;
 /** P125 — a thread opened here whose first reply hasn't been sent: the hub only learns of it (and of what it hangs from) with that reply. */
 let threadDraft: { id: string; parent: ThreadParent } | null = null;
+/** P121 — the id of each agent's channel, asked of the hub once per agent. */
+let channels: Record<string, string> = {};
 /** P87 — approvals the hub is waiting on. The panel may be closed, so the icon shows a "!" too. */
 let approvals: ApprovalPrompt[] = [];
 
@@ -99,7 +101,7 @@ function addChatEntry(entry: ChatEntry): void {
 const HISTORY_LIMIT = 100;
 
 function conversationState(): ConversationState {
-  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir, threadParent: threadParentOfActive() };
+  return { conversations, activeConversationId, pendingIds: Object.keys(pendingTurns), agentIds, agentId, workdir, threadParent: threadParentOfActive(), channels };
 }
 
 /** P125 — what the open conversation hangs from, when it is a thread (already on the hub, or still a draft). */
@@ -126,6 +128,18 @@ async function refreshAgents(from: ServerConnection): Promise<void> {
   }
   if (connection !== from) return;
   agentIds = ids;
+  broadcastConversations();
+  await loadChannels(from, ids);
+}
+
+/** P121 — the id of every agent's channel, for the Channels tab to line them up with the conversations' last activity. An agent the hub
+ * does not answer for just has none yet. */
+async function loadChannels(from: ServerConnection, ids: string[]): Promise<void> {
+  const missing = ids.filter((id) => channels[id] === undefined);
+  if (missing.length === 0) return;
+  const found = await Promise.all(missing.map((id) => from.openAgentChannel(id).then((channel) => [id, channel] as const, () => null)));
+  if (connection !== from) return;
+  for (const entry of found) if (entry) channels = { ...channels, [entry[0]]: entry[1] };
   broadcastConversations();
 }
 
@@ -256,6 +270,7 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
       conversations = [];
       pendingTurns = {};
       threadDraft = null;
+      channels = {};
       agentIds = [];
       setApprovals([]);
       if (activeConversationId === null) {
@@ -382,6 +397,26 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         openConversation(crypto.randomUUID());
       }
       return { ok: true };
+
+    case "openAgentChannel": {
+      const from = connection;
+      if (!from || from.status.kind !== "connected") return { ok: false, error: "not connected" };
+      let id = channels[request.agentId];
+      if (id === undefined) {
+        try {
+          id = await from.openAgentChannel(request.agentId);
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        channels = { ...channels, [request.agentId]: id };
+      }
+      if (id !== activeConversationId) openConversation(id);
+      // The channel is the agent's for good, and has no folder.
+      agentId = request.agentId;
+      workdir = null;
+      broadcastConversations();
+      return { ok: true };
+    }
 
     case "openThread": {
       const parent = { conversationId: request.conversationId, messageId: request.messageId };

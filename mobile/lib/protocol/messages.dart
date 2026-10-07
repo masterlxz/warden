@@ -535,6 +535,18 @@ final class ListConversationsMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'listConversations', 'requestId': requestId};
 }
 
+/// P121 — asks for the id of an agent's channel, the one conversation it keeps with the person; answered by
+/// [AgentChannelMessage] or [ConversationErrorMessage] with the same `requestId`.
+final class OpenAgentChannelMessage extends ClientMessage {
+  const OpenAgentChannelMessage(this.requestId, this.agentId);
+
+  final int requestId;
+  final String agentId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'openAgentChannel', 'requestId': requestId, 'agentId': agentId};
+}
+
 /// P78 — answered by [ConversationOkMessage] or [ConversationErrorMessage].
 final class RenameConversationMessage extends ClientMessage {
   const RenameConversationMessage(this.requestId, this.conversationId, this.title);
@@ -742,6 +754,7 @@ sealed class ServerMessage {
         ),
       'dirError' => DirErrorMessage(json['requestId'] as int, json['message'] as String),
       'conversationOk' => ConversationOkMessage(json['requestId'] as int),
+      'agentChannel' => AgentChannelMessage(json['requestId'] as int, json['conversationId'] as String),
       'conversationError' => ConversationErrorMessage(json['requestId'] as int, json['message'] as String),
       'goodbye' => GoodbyeServerMessage(json['reason'] as String?),
       'settings' => SettingsMessage(
@@ -1068,6 +1081,14 @@ final class ConversationOkMessage extends ServerMessage {
   const ConversationOkMessage(this.requestId);
 
   final int requestId;
+}
+
+/// Reply to an [OpenAgentChannelMessage] (P121): the conversation id of that agent's channel.
+final class AgentChannelMessage extends ServerMessage {
+  const AgentChannelMessage(this.requestId, this.conversationId);
+
+  final int requestId;
+  final String conversationId;
 }
 
 /// A list/rename/delete failed (P78) — the raw error text.

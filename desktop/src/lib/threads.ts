@@ -3,9 +3,18 @@
 
 import type { ChatMessage, Conversation } from "../types";
 
-/** The conversations the list shows: threads are left out, they only show from the message they came from. */
+/** The start of the id of an agent's channel (P121): the one conversation an agent keeps with the person. Same as the hub's `CHANNEL_PREFIX`. */
+export const CHANNEL_PREFIX = "channel-";
+
+/** Whether `id` is an agent's channel. */
+export function isAgentChannel(id: string): boolean {
+  return id.startsWith(CHANNEL_PREFIX);
+}
+
+/** The conversations the list shows: threads are left out, they only show from the message they came from, and so are the agents'
+ * channels, which have a screen of their own. */
 export function visibleConversations(conversations: Conversation[]): Conversation[] {
-  return conversations.filter((c) => !c.parent);
+  return conversations.filter((c) => !c.parent && !isAgentChannel(c.id));
 }
 
 /** The thread of a message: its conversation and how many messages the person sent in it. */

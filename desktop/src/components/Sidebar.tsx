@@ -1,5 +1,5 @@
 import type { Conversation, ProjectEntry } from "../types";
-import { ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, OrgIcon, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
+import { AgentsIcon, ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, OrgIcon, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -19,7 +19,9 @@ interface SidebarProps {
   onOpenWorkspace: () => void;
   onOpenOrganization: () => void;
   onOpenAgentWork: () => void;
-  view: "chat" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork";
+  /** The screen of the agents' channels (P121), only on a hub: omitted on this computer, where there is none. */
+  onOpenAgents?: () => void;
+  view: "chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork";
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Which machine the screens use (P102): this computer or a hub. Shown under the brand, not in the collapsed bar. */
@@ -43,6 +45,7 @@ function Sidebar({
   onOpenWorkspace,
   onOpenOrganization,
   onOpenAgentWork,
+  onOpenAgents,
   view,
   collapsed,
   onToggleCollapsed,
@@ -117,6 +120,17 @@ function Sidebar({
       )}
 
       <div className="sidebar-footer">
+        {onOpenAgents && (
+          <button
+            type="button"
+            className={`sidebar-footer-btn${view === "agents" ? " sidebar-footer-btn--active" : ""}`}
+            onClick={onOpenAgents}
+            title="Agents"
+          >
+            <AgentsIcon size={17} />
+            {!collapsed && "Agents"}
+          </button>
+        )}
         <button
           type="button"
           className={`sidebar-footer-btn${view === "usage" ? " sidebar-footer-btn--active" : ""}`}

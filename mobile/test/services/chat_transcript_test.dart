@@ -36,6 +36,15 @@ class FakeBackend implements ConversationBackend {
   /// The thread link each sent turn carried, in order (P125).
   final sentThreadOf = <ThreadParent?>[];
 
+  /// The hub makes the id of an agent's channel (P121); here it is `channel-<agent>`.
+  final askedChannels = <String>[];
+
+  @override
+  Future<String> openAgentChannel(String agentId) async {
+    askedChannels.add(agentId);
+    return 'channel-$agentId';
+  }
+
   @override
   Future<DirListMessage> listDirs([String? path]) async {
     listedDirs.add(path);
@@ -440,6 +449,66 @@ void main() {
 
       expect(transcript.conversationsError, contains('hub is down'));
       expect(transcript.send('hello'), isTrue);
+    });
+  });
+
+  group('agent channels (P121)', () {
+    test('the list leaves the channels out, and the agents are asked for their channel once', () async {
+      backend.agentIds = ['poet', 'chief'];
+      backend.conversations = [summary('channel-poet', 'hi poet'), summary('main')];
+      final transcript = make(last: 'main');
+      await settle();
+
+      expect(transcript.visibleConversations.map((c) => c.id), ['main']);
+      expect(transcript.channels, {'poet': 'channel-poet', 'chief': 'channel-chief'});
+      await transcript.refreshAgents();
+      await settle();
+      expect(backend.askedChannels, ['poet', 'chief'], reason: 'asked once per agent');
+    });
+
+    test('opening one shows it with the agent fixed and no folder; the first message goes to it', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [ConversationSummary(id: 'main', title: 'main', createdAt: 0, updatedAt: 0, workdir: '/srv')];
+      final transcript = make(last: 'main');
+      await settle();
+      expect(transcript.workdir, '/srv');
+
+      await transcript.openAgentChannel('poet');
+      await settle();
+      expect(transcript.activeConversationId, 'channel-poet');
+      expect(transcript.channelAgent, 'poet');
+      expect(transcript.selectedAgentId, 'poet');
+      expect(transcript.workdir, isNull);
+
+      transcript.send('oi');
+      expect(backend.sent.last, ('oi', 'channel-poet'));
+      expect(backend.sentAgents.last, 'poet');
+      expect(backend.sentWorkdirs.last, isNull);
+    });
+
+    test('leaving goes to the first loose conversation, or a new one when there is none', () async {
+      backend.agentIds = ['poet'];
+      backend.conversations = [summary('channel-poet'), summary('main')];
+      final transcript = make(last: 'channel-poet');
+      await settle();
+      expect(transcript.channelAgent, 'poet');
+
+      transcript.leaveChannel();
+      expect(transcript.activeConversationId, 'main');
+      expect(transcript.channelAgent, isNull);
+
+      backend.conversations = [summary('channel-poet')];
+      final alone = make(last: 'channel-poet');
+      await settle();
+      alone.leaveChannel();
+      expect(alone.activeConversationId, startsWith('new-'));
+    });
+
+    test('starts on the first conversation that is not a channel', () async {
+      backend.conversations = [summary('channel-poet'), summary('main')];
+      final transcript = make();
+      await settle();
+      expect(transcript.activeConversationId, 'main');
     });
   });
 

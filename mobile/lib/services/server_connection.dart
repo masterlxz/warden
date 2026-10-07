@@ -334,6 +334,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
               HistoryErrorMessage() ||
               ConversationListMessage() ||
               ConversationOkMessage() ||
+              AgentChannelMessage() ||
               DirListMessage() ||
               DirErrorMessage() ||
               SettingsMessage() ||
@@ -416,7 +417,10 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
         _pendingHistory.remove(requestId)?.complete(messages);
       case HistoryErrorMessage(:final requestId, :final message):
         _pendingHistory.remove(requestId)?.completeError(HistoryException(message));
-      case ConversationListMessage(:final requestId) || ConversationOkMessage(:final requestId) || DirListMessage(:final requestId):
+      case ConversationListMessage(:final requestId) ||
+            ConversationOkMessage(:final requestId) ||
+            AgentChannelMessage(:final requestId) ||
+            DirListMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
       case DirErrorMessage(:final requestId, :final message):
         _pendingConversation.remove(requestId)?.completeError(ConversationException(message));
@@ -617,6 +621,15 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
   Future<List<ConversationSummary>> listConversations() async {
     final reply = await _conversationRequest(ListConversationsMessage.new);
     return reply is ConversationListMessage ? reply.conversations : const [];
+  }
+
+  /// P121 — the id of the conversation that is [agentId]'s channel with this person: the hub makes it, always the same, so
+  /// there is one per agent. It exists on the hub from the first message sent to it.
+  @override
+  Future<String> openAgentChannel(String agentId) async {
+    final reply = await _conversationRequest((requestId) => OpenAgentChannelMessage(requestId, agentId));
+    if (reply is AgentChannelMessage) return reply.conversationId;
+    throw ConversationException('Unexpected reply to the agent channel: $reply');
   }
 
   @override

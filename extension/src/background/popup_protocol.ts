@@ -28,6 +28,8 @@ export type PopupRequest =
   | { type: "selectConversation"; conversationId: string }
   /** P78 — an empty conversation, created on the hub by its first message. */
   | { type: "newConversation" }
+  /** P121 — opens the channel of an agent: the one conversation it keeps with the person, shown in the chat with the agent fixed. */
+  | { type: "openAgentChannel"; agentId: string }
   /** P125 — opens the thread of a message (the existing one, or an empty one the first reply creates). */
   | { type: "openThread"; conversationId: string; messageId: string }
   | { type: "renameConversation"; conversationId: string; title: string }
@@ -71,6 +73,8 @@ export interface ConversationState {
   workdir: string | null;
   /** P125 — set when the open conversation is a thread: the message it came from. */
   threadParent: ThreadParent | null;
+  /** P121 — the id of each agent's channel (the hub makes it from the agent's name). The open conversation is a channel when its id is one of these. */
+  channels: Record<string, string>;
 }
 
 export interface GetStatusResponse extends ConversationState {

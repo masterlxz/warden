@@ -84,6 +84,13 @@ export async function hubHistory(conversationId: string): Promise<ChatMessage[]>
   return messagesFromHistory(conversationId, reply.messages);
 }
 
+/** The id of the conversation that is `agentId`'s channel with this person (P121): the hub makes it, always the same, so there is one per
+ * agent. It exists on the hub from the first message sent to it. */
+export async function hubOpenAgentChannel(agentId: string): Promise<string> {
+  const reply = await ask<{ type: string; conversationId: string }>({ type: "openAgentChannel", agentId }, "agentChannel");
+  return reply.conversationId;
+}
+
 export async function hubListProjects(): Promise<ProjectEntry[]> {
   const reply = await ask<{ type: string; projects: HubProject[] }>({ type: "listProjects" }, "projectList");
   return reply.projects.map(projectFromHub);

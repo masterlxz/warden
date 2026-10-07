@@ -5,6 +5,7 @@ import ConversationBar from "./ConversationBar";
 import SkillsView from "./SkillsView";
 import AgentsView from "./AgentsView";
 import TabsView from "./TabsView";
+import ChannelsView from "./ChannelsView";
 import ApprovalCard from "./ApprovalCard";
 import type { ApprovalPrompt } from "../protocol/messages";
 import { threadsOf } from "../protocol/threads";
@@ -26,18 +27,19 @@ export default function App() {
     agentId: null,
     workdir: null,
     threadParent: null,
+    channels: {},
   });
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
-  const [tab, setTab] = useState<"chat" | "skills" | "tabs" | "agents">("chat");
+  const [tab, setTab] = useState<"chat" | "channels" | "skills" | "tabs" | "agents">("chat");
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "getStatus" }).then((res: GetStatusResponse) => {
       setStatus(res.status);
       setHistory(res.history);
       setSavedSettings(res.savedSettings);
-      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent } = res;
-      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent });
+      const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels } = res;
+      setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels });
       setApprovals(res.approvals);
     });
 
@@ -49,8 +51,8 @@ export default function App() {
       } else if (event.type === "historyLoaded") {
         setHistory(event.history);
       } else if (event.type === "conversationsChanged") {
-        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent } = event;
-        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent });
+        const { conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels } = event;
+        setConversationState({ conversations, activeConversationId, pendingIds, agentIds, agentId, workdir, threadParent, channels });
       } else if (event.type === "approvalsChanged") {
         setApprovals(event.approvals);
       }
@@ -86,6 +88,9 @@ export default function App() {
     setTab("chat");
   }
 
+  /** P121 — the agent whose channel the open conversation is, if it is one. */
+  const channelAgent = Object.keys(conversationState.channels).find((agent) => conversationState.channels[agent] === conversationState.activeConversationId);
+
   const pendingChat =conversationState.activeConversationId !== null && conversationState.pendingIds.includes(conversationState.activeConversationId);
 
   return (
@@ -96,6 +101,9 @@ export default function App() {
           <nav className="tab-bar">
             <button type="button" className={tab === "chat" ? "tab tab--active" : "tab"} onClick={() => setTab("chat")}>
               Chat
+            </button>
+            <button type="button" className={tab === "channels" ? "tab tab--active" : "tab"} onClick={() => setTab("channels")}>
+              Canais
             </button>
             <button type="button" className={tab === "skills" ? "tab tab--active" : "tab"} onClick={() => setTab("skills")}>
               Skills
@@ -142,6 +150,17 @@ export default function App() {
                   </label>
                 )}
               </header>
+            ) : channelAgent !== undefined ? (
+              // P121 — an agent's channel: the agent is the channel's, there is no agent, folder or conversation to pick here.
+              <header className="thread-bar">
+                <button type="button" className="link-button" onClick={() => setTab("channels")}>
+                  ← Canais
+                </button>
+                <strong>{channelAgent}</strong>
+                <button type="button" className="link-button" onClick={() => void chrome.runtime.sendMessage({ type: "newConversation" })}>
+                  Conversa nova
+                </button>
+              </header>
             ) : (
               <ConversationBar {...conversationState} />
             )}
@@ -159,6 +178,17 @@ export default function App() {
               onDisconnect={handleDisconnect}
             />
           </div>
+          {tab === "channels" && (
+            <div className="tab-panel">
+              <ChannelsView
+                agentIds={conversationState.agentIds}
+                channels={conversationState.channels}
+                conversations={conversationState.conversations}
+                pendingIds={conversationState.pendingIds}
+                onOpened={() => setTab("chat")}
+              />
+            </div>
+          )}
           {tab === "skills" && (
             <div className="tab-panel">
               <SkillsView />

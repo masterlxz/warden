@@ -203,6 +203,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
+  /// P121 — the agents as contacts: one conversation each, its channel. Picking one opens it in the chat.
+  void _openChannels() {
+    unawaited(widget.transcript.refreshAgents());
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => _ChannelsSheet(
+        transcript: widget.transcript,
+        onPick: (agent) async {
+          final messenger = ScaffoldMessenger.of(context);
+          Navigator.of(sheet).pop();
+          try {
+            await widget.transcript.openAgentChannel(agent);
+          } catch (e) {
+            messenger.showSnackBar(SnackBar(content: Text("Couldn't open the channel: $e")));
+          }
+        },
+      ),
+    );
+  }
+
   /// P120, P123 — the agents screen. "Chat" on a node leaves it and starts an empty conversation as that agent.
   void _openAgents() {
     Navigator.of(context).push(
@@ -293,7 +314,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           builder: (context, _) => Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(widget.transcript.activeTitle ?? 'New conversation', overflow: TextOverflow.ellipsis),
+              Text(widget.transcript.channelAgent ?? widget.transcript.activeTitle ?? 'New conversation', overflow: TextOverflow.ellipsis),
               Text(
                 [serverName, if (widget.transcript.selectedAgentId != null) 'as ${widget.transcript.selectedAgentId}'].join(' · '),
                 style: Theme.of(context).textTheme.bodySmall,
@@ -306,7 +327,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           // P87 — which configured agent this conversation speaks as.
           ListenableBuilder(
             listenable: widget.transcript,
-            builder: (context, _) => _AgentMenu(transcript: widget.transcript),
+            // In an agent's channel (P121) the agent is the channel's: nothing to pick.
+            builder: (context, _) => widget.transcript.channelAgent != null ? const SizedBox.shrink() : _AgentMenu(transcript: widget.transcript),
+          ),
+          // P121 — the agents as contacts: one conversation each.
+          IconButton(
+            key: const Key('channels-button'),
+            onPressed: _openChannels,
+            icon: const Icon(Icons.chat_outlined),
+            tooltip: 'Agent channels',
           ),
           // P120, P123 — the organization of the agents and the work they hand each other.
           IconButton(
@@ -352,10 +381,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ),
                   ),
           ),
-          // P102 — the folder this conversation works in, picked before its first message.
+          // P121 — in an agent's channel, the way back to the loose conversations.
           ListenableBuilder(
             listenable: widget.transcript,
-            builder: (context, _) => _FolderBar(transcript: widget.transcript, connected: _status is Connected),
+            builder: (context, _) => widget.transcript.channelAgent == null
+                ? const SizedBox.shrink()
+                : Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      key: const Key('channel-back'),
+                      onPressed: widget.transcript.leaveChannel,
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Back to the conversations'),
+                    ),
+                  ),
+          ),
+          // P102 — the folder this conversation works in, picked before its first message. A channel has none.
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) =>
+                widget.transcript.channelAgent != null ? const SizedBox.shrink() : _FolderBar(transcript: widget.transcript, connected: _status is Connected),
           ),
           Expanded(
             child: ListenableBuilder(
@@ -464,6 +509,58 @@ class _FolderBar extends StatelessWidget {
 
 /// P87 — picks the agent the next turns speak as, like the web's selector. Hidden while the hub has
 /// no agents configured (and none is selected); locked while the conversation waits on a reply.
+/// P121 — the agents as contacts: newest conversation first, the ones never spoken to at the end.
+class _ChannelsSheet extends StatelessWidget {
+  const _ChannelsSheet({required this.transcript, required this.onPick});
+
+  final ChatTranscript transcript;
+  final void Function(String agent) onPick;
+
+  static String _when(int millis) {
+    final date = DateTime.fromMillisecondsSinceEpoch(millis);
+    final now = DateTime.now();
+    final sameDay = date.year == now.year && date.month == now.month && date.day == now.day;
+    String two(int n) => n.toString().padLeft(2, '0');
+    return sameDay ? '${two(date.hour)}:${two(date.minute)}' : '${two(date.day)}/${two(date.month)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: transcript,
+        builder: (context, _) {
+          final rows = [
+            for (final agent in transcript.agentIds)
+              (
+                agent: agent,
+                channel: transcript.conversations.where((c) => c.id == transcript.channels[agent]).firstOrNull,
+                answering: transcript.channels[agent] != null && transcript.isAnswering(transcript.channels[agent]!),
+              ),
+          ]..sort((a, b) => (b.channel?.updatedAt ?? 0).compareTo(a.channel?.updatedAt ?? 0));
+          if (rows.isEmpty) {
+            return const Padding(padding: EdgeInsets.all(24), child: Text('No agents configured yet.', textAlign: TextAlign.center));
+          }
+          return ListView(
+            shrinkWrap: true,
+            children: [
+              for (final row in rows)
+                ListTile(
+                  key: Key('channel-${row.agent}'),
+                  selected: transcript.channelAgent == row.agent,
+                  leading: const Icon(Icons.person_outline),
+                  title: Text(row.agent),
+                  trailing: Text(row.answering ? 'answering…' : (row.channel == null ? 'new' : _when(row.channel!.updatedAt))),
+                  onTap: () => onPick(row.agent),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _AgentMenu extends StatelessWidget {
   const _AgentMenu({required this.transcript});
 

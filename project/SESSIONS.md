@@ -6,6 +6,15 @@
 
 ---
 
+### 2026-10-07 — Sessão 166
+
+- **Objetivo**: o canal fixo por agente (P121) nos outros clientes: desktop, extensão e celular. O hub não mudou.
+- **Desktop (modo hub; no local não há hub para dar o id)**: botão "Agents" na barra lateral só com hub; `AgentContacts` (os agentes como contatos, último primeiro) ao lado do `ChatArea`, que ganhou a propriedade `channel` (sem tela de escolha de agente, projeto nem pasta, agente fixo no cabeçalho); `hubOpenAgentChannel`; a lista de conversas esconde os ids `channel-`; o agente de um canal que o hub ainda não tem vem do mapa de canais. Teste Rust do pedido (`openAgentChannel` vira a mensagem do hub) e `npm test` 68.
+- **Extensão**: aba "Canais" (`ChannelsView`); o canal abre na aba do chat com uma barra "← Canais / agente / Conversa nova" no lugar da barra de conversas (como a thread); o background guarda os ids (`channels`, pedidos ao ler os agentes). `npm test` 49 e `tsc`.
+- **Celular**: botão "Agent channels" na barra do app abre uma folha com os contatos; `ChatTranscript` ganhou `channels`, `channelAgent`, `openAgentChannel`, `leaveChannel`, e a lista e a primeira conversa ao abrir ignoram os canais; no canal somem o menu de agente e a barra de pasta e aparece "Back to the conversations". `flutter analyze` limpo e 195 testes (4 novos).
+- **Não verificado**: as telas numa janela (desktop, extensão e celular); só a web tem teste de navegador contra um hub real.
+- **Fica no P121**: a mensagem iniciada pelo agente, o envio externo, a notificação e o não lido, o feed de atividade.
+
 ### 2026-10-07 — Sessão 165
 
 - **Objetivo**: começar o P121 (modo Agents). Decisões do usuário nesta sessão: (1) as conversas soltas continuam na tela do Chat; na tela de Agents há **uma conversa só por agente**, como um contato do WhatsApp (convive com o resto, não substitui); (2) quando o agente inicia uma mensagem, ela vai **no canal dele**, e dá para **configurar o envio também para canais externos** (Telegram, WhatsApp), gerando **notificação**.

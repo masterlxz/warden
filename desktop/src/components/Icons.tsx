@@ -65,6 +65,15 @@ export function OrgIcon({ size = 18 }: { size?: number }) {
   );
 }
 
+export function AgentsIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
+      <path d="M4 5h16v11H9l-5 4z" />
+      <path d="M8 9.5h8M8 12.5h5" />
+    </svg>
+  );
+}
+
 export function SettingsIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} {...outlineProps()} aria-hidden="true">
