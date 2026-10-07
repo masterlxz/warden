@@ -606,4 +606,26 @@ mod tests {
         assert!(!names("bia", Some(s.conversations.clone())).contains(&"message_agent".to_string()));
         assert!(scope_to_agent(&s.base, &config, Some(&s.config_path), "ghost", AgentExtras::default()).is_none());
     }
+
+    /// P121: `message_user` follows the `[[outreach]]` entry of the agent, needs the conversations folder to write in, and goes with the rest
+    /// of the opt-in tools at level one.
+    #[test]
+    fn only_an_agent_with_an_outreach_entry_gets_message_user() {
+        let s = setup(false);
+        let mut config = load_config_from_path(&s.config_path, true).unwrap();
+        let names = |config: &FileConfig, agent_id: &str, dir: Option<PathBuf>| -> Vec<String> {
+            let extras = AgentExtras { conversations_dir: dir, on_conversation_changed: None };
+            scope_to_agent(&s.base, config, Some(&s.config_path), agent_id, extras).unwrap().orchestrator.tools().iter().map(|t| t.spec().name).collect()
+        };
+        let has = |names: Vec<String>| names.contains(&"message_user".to_string());
+
+        assert!(!has(names(&config, "ana", Some(s.conversations.clone()))), "nobody has it until a person allows it");
+        config.outreach.push(crate::OutreachConfig { agent: "ana".to_string(), forward: Vec::new() });
+        assert!(has(names(&config, "ana", Some(s.conversations.clone()))));
+        assert!(!has(names(&config, "ana", None)), "with nowhere to write there is no tool");
+        assert!(!has(names(&config, "bia", Some(s.conversations.clone()))), "an entry is for one agent");
+
+        config.agents.iter_mut().find(|a| a.id == "ana").unwrap().autonomy = 1;
+        assert!(!has(names(&config, "ana", Some(s.conversations.clone()))), "level 1 has no tools at all");
+    }
 }

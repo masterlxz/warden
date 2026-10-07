@@ -48,6 +48,7 @@ pub mod manage_tasks;
 pub mod member_crypto;
 pub mod org;
 pub mod org_edit;
+pub mod outreach;
 pub mod recovery;
 pub mod risk;
 pub mod node_model;
@@ -65,6 +66,7 @@ pub use agent_scope::{scope_to_agent, AgentExtras, ScopedAgent};
 pub use config_file::render_config;
 pub use manage_agents::ManageAgentsTool;
 pub use manage_tasks::ManageTasksTool;
+pub use outreach::{MessageUserTool, OutreachConfig};
 pub use message_agent::{channel_id, ConversationsChanged, MessageAgentTool, CHANNEL_PREFIX};
 pub use project_scope::{check_node_path, node_folder, node_folder_ref, scope_to_project, scope_to_workdir, WITHHELD_IN_A_PROJECT};
 pub use tasks::TaskConfig;
@@ -497,6 +499,11 @@ pub struct FileConfig {
     /// Only a hub started with `--run-tasks` runs them — the file syncs, so every hub reads them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskConfig>,
+    /// The agents a person allowed to start messages (P121, TOML `[[outreach]]`): each gets the `message_user` tool, which writes in its own
+    /// channel, and may also forward the message to external channels. An agent with no entry cannot message the person first. Edited
+    /// in `config.toml` by the person; no tool writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outreach: Vec<OutreachConfig>,
     /// Incoming webhooks (P105, TOML `[[webhooks]]`): a prompt an agent runs when someone `POST`s to the hub's
     /// `/hooks/<id>` with the webhook's token. The tokens aren't here (they don't sync): see `webhooks`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2582,6 +2589,7 @@ oauth = true
                 enabled: false,
             }],
             webhooks: vec![webhooks::WebhookConfig { id: "build".to_string(), agent: Some("helper".to_string()), prompt: "why did it fail?".to_string(), enabled: false, auth: webhooks::WebhookAuth::Hmac }],
+            outreach: vec![OutreachConfig { agent: "helper".to_string(), forward: vec!["telegram".to_string()] }],
             nodes: vec![NodeAccessConfig { id: "home-pc".to_string(), enabled: true, agents: vec!["helper".to_string()], require_approval: true }],
             users: Vec::new(),
             removed_users: Vec::new(),

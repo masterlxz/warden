@@ -564,7 +564,7 @@ pub(crate) struct UnattendedTurn<'a> {
 /// why there is none — to the conversation.
 pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, conversations_dir: &Path, turn: UnattendedTurn<'_>) -> anyhow::Result<MessageOutcome> {
     let UnattendedTurn { conversation, title, agent, spend, input } = turn;
-    let outcome = match prepare(base, config, config_path, agent, spend) {
+    let outcome = match prepare(base, config, config_path, conversations_dir, agent, spend) {
         Ok((orchestrator, persona)) => {
             let history: Vec<Message> = load_conversation(conversations_dir, &conversation)?
                 .map(|c| {
@@ -589,13 +589,15 @@ pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig
 }
 
 /// The orchestrator and persona an unattended turn runs with: spending counted as `spend`, scoped to `agent` and that
-/// agent's model. No approver is attached — nobody is there to answer.
-fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, agent: Option<&str>, spend: SpendContext) -> anyhow::Result<(Orchestrator, Option<String>)> {
+/// agent's model. No approver is attached — nobody is there to answer. The conversations folder goes to the agent so one a person
+/// allowed to start messages (P121 `message_user`) can tell them what it found, unattended runs being where that matters most.
+fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, conversations_dir: &Path, agent: Option<&str>, spend: SpendContext) -> anyhow::Result<(Orchestrator, Option<String>)> {
     let base = base.with_spend_context(spend);
     let Some(agent_id) = agent else {
         return Ok((base, None));
     };
-    let scoped = scope_to_agent(&base, config, config_path, agent_id, AgentExtras::default())
+    let extras = AgentExtras { conversations_dir: Some(conversations_dir.to_path_buf()), on_conversation_changed: None };
+    let scoped = scope_to_agent(&base, config, config_path, agent_id, extras)
         .ok_or_else(|| anyhow::anyhow!("agent '{agent_id}' doesn't exist any more"))?;
     let mut orchestrator = scoped.orchestrator;
     if let Some(provider_id) = &scoped.provider_id {

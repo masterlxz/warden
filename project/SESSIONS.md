@@ -6,6 +6,13 @@
 
 ---
 
+### 2026-10-07 — Sessão 167
+
+- **Objetivo**: a mensagem iniciada pelo agente (P121). Decisão do usuário: **mensagem normal** no canal do agente, só personalizada se o agente quiser (o agente escolhe o texto e o formato; nada a marca como especial).
+- **Feito (`warden-bootstrap/src/outreach.rs`)**: a tool `message_user { message }` escreve uma mensagem comum do assistente no canal do próprio agente (`channel_id`, criado pela primeira mensagem, título = nome do agente) e avisa a tela pelo `ConversationsChanged` quando há onde avisar. **Autorização**: tabela `[[outreach]]` do `config.toml` (`agent`, e `forward` para os canais externos, ainda sem efeito): sem entrada, sem tool; só uma pessoa edita, nenhuma tool escreve nela. Ligada em `scope_to_agent` (precisa da pasta das conversas; nível 1 não tem tools) e também nas execuções sem ninguém olhando (`tasks.rs`, `webhooks`), onde um agente de monitoramento mais precisa dela. **Limite**: 12 mensagens por hora por agente (em memória, por processo), com o aviso de quando libera; mensagem vazia ou acima de 8000 caracteres é recusada.
+- **Testes**: `outreach` (4: grava no canal e avisa, recusas, limite por hora e janela, leitura do TOML), `message_agent` (a tool só vai com a entrada, a pasta e nível acima de 1) e o ciclo `save_config`/`load_config` com a entrada; `warden-bootstrap` 409 passam.
+- **Não feito**: o envio externo (`forward`: Telegram e WhatsApp), a notificação nos clientes e o contador de não lidas (hoje só o aviso de lista mudou, e uma tarefa sem ninguém ligado não avisa ninguém), uma tela para editar `[[outreach]]`, um teste de ponta a ponta com um modelo que chama a tool.
+
 ### 2026-10-07 — Sessão 166
 
 - **Objetivo**: o canal fixo por agente (P121) nos outros clientes: desktop, extensão e celular. O hub não mudou.
