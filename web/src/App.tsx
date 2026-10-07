@@ -29,6 +29,7 @@ import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
 import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
 import { isAgentChannel, threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
+import { baseline, isUnread, markSeen, notificationBody, unreadIds, type SeenMap } from "./hub/unread";
 import AgentContacts from "./components/AgentContacts";
 import { folderLabel, folderPlace, nodesWithFolders, parseNodeFolder } from "./hub/workdir";
 
@@ -46,6 +47,28 @@ type Phase =
   | { kind: "ready"; connected: boolean };
 
 type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization" | "agentWork" | "agents";
+
+const SEEN_KEY = "warden.channelSeen";
+
+/** The marks of the channels this browser has shown, or `null` when there are none yet (the first run). */
+function loadSeen(): SeenMap | null {
+  try {
+    const raw = localStorage.getItem(SEEN_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as SeenMap) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSeen(seen: SeenMap | null): void {
+  if (!seen) return;
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+  } catch {
+    // A browser that will not store it just forgets what was seen when the page closes.
+  }
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -102,8 +125,10 @@ export default function App() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   /** The agent the open conversation speaks with — "" for none. */
   const [agentId, setAgentId] = useState("");
-  /** P121 — the id of each agent's channel (the hub makes it from the agent's name), read when the Agents screen opens. */
+  /** P121 — the id of each agent's channel (the hub makes it from the agent's name), read once the agents are known. */
   const [channels, setChannels] = useState<Record<string, string>>({});
+  /** P121 — the time of the last change this browser showed of each channel; `null` before the first run has looked at what exists. */
+  const [seen, setSeen] = useState<SeenMap | null>(loadSeen);
   /** A thread open beside the chat (P125): the message it comes from and the conversation it lives in. Closed when the chat moves to another conversation. */
   const [thread, setThread] = useState<{ messageId: string; threadId: string } | null>(null);
   /** O agente cujas tarefas a aba "Trabalho dos agentes" mostra (definido a partir da árvore da organização). */
@@ -134,11 +159,36 @@ export default function App() {
   /** Mirrors `conversations` for the connection's callbacks. */
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
+  // What the connection's callbacks (which outlive any render) need to read about the screen, for the notifications of the channels (P121).
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const channelsRef = useRef(channels);
+  channelsRef.current = channels;
+  const seenRef = useRef(seen);
+  seenRef.current = seen;
+  const notifyChannelRef = useRef(notifyChannel);
+  notifyChannelRef.current = notifyChannel;
+  const openAgentChannelRef = useRef(openAgentChannel);
+  openAgentChannelRef.current = openAgentChannel;
+  // Remembered across visits, so a message that came while the page was closed is still unread when it opens.
+  useEffect(() => saveSeen(seen), [seen]);
+  // A channel that is open and in front shows its latest change, so it is read as it arrives.
+  useEffect(() => {
+    if (!seen || view !== "agents" || !isAgentChannel(activeId)) return;
+    const channel = conversations.find((c) => c.id === activeId);
+    if (!channel) return;
+    const next = markSeen(seen, channel);
+    if (next !== seen) setSeen(next);
+  }, [conversations, activeId, view, seen]);
+  // The channels with something the person has not seen, and the agents they belong to.
+  const unreadChannels = seen ? unreadIds(conversations, seen, view === "agents" ? activeId : null) : [];
+  const unreadAgents = Object.keys(channels).filter((agent) => unreadChannels.includes(channels[agent]));
   // A thread belongs to the conversation it was opened in: moving to another one closes it.
   useEffect(() => setThread(null), [activeId]);
-  // The Agents screen shows each agent's last activity, so it needs the id of every channel: asked once per agent.
+  // The Agents screen shows each agent's last activity, and a message from one has to be told by its name: so the id of every channel is
+  // asked once per agent as soon as the agents are known.
   useEffect(() => {
-    if (view !== "agents" || !conn) return;
+    if (!conn) return;
     for (const agent of agentIds) {
       if (channels[agent]) continue;
       conn.openAgentChannel(agent).then(
@@ -146,7 +196,7 @@ export default function App() {
         () => undefined,
       );
     }
-  }, [view, conn, agentIds, channels]);
+  }, [conn, agentIds, channels]);
 
   const forgetToken = useCallback(() => {
     const { deviceToken: _dropped, ...rest } = identityRef.current;
@@ -168,6 +218,8 @@ export default function App() {
       if (connRef.current !== connection) return;
       // A conversation started here whose first turn is still in flight isn't on the hub yet.
       setConversations((current) => [...current.filter((c) => c.id in pendingTurnsRef.current && !list.some((l) => l.id === c.id)), ...list]);
+      // The first run on this browser: what is there already counts as seen, so the first list does not light up every channel.
+      setSeen((current) => current ?? baseline(list));
       setConversationsError(null);
       return list;
     } catch (err) {
@@ -296,7 +348,9 @@ export default function App() {
       });
       // An agent left a message for another, or answered one (P46): new or changed conversations.
       connection.onConversationsChanged((conversationId) => {
-        void refreshConversations(connection);
+        void refreshConversations(connection).then((list) => {
+          if (list) void notifyChannelRef.current(connection, conversationId, list);
+        });
         if (conversationId === activeIdRef.current && !(conversationId in pendingTurnsRef.current)) {
           void loadConversation(connection, conversationId);
         }
@@ -555,6 +609,10 @@ export default function App() {
     if (next === "chat" && connRef.current) {
       void refreshProjects(connRef.current);
     }
+    // Opening the Agents screen is the click that can ask to be allowed to tell the person when an agent writes (browsers want a gesture).
+    if (next === "agents" && typeof Notification !== "undefined" && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
     // An agent's channel belongs to the Agents screen: coming back to the chat leaves it for the first loose conversation (or a new one).
     if (next === "chat" && isAgentChannel(activeIdRef.current)) {
       const first = visibleConversations(conversationsRef.current)[0];
@@ -563,6 +621,38 @@ export default function App() {
       } else {
         handleNewConversation();
       }
+    }
+  }
+
+  /** P121 — tells the person an agent wrote in its channel while they were not looking at it: a browser notification with the agent's name
+   * and the start of the message, which opens the channel when clicked. Nothing when the channel is open and the window has focus, when
+   * the change is not an agent's message (the person's own turn, a task), or when notifications are not allowed. */
+  async function notifyChannel(connection: ServerConnection, conversationId: string, list: ConversationSummary[]) {
+    if (!isAgentChannel(conversationId)) return;
+    const channel = list.find((c) => c.id === conversationId);
+    if (!channel) return;
+    const watching = viewRef.current === "agents" && activeIdRef.current === conversationId && document.hasFocus();
+    if (watching || !seenRef.current || !isUnread(channel, seenRef.current, null)) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    let last;
+    try {
+      const recent = await connection.fetchHistory(conversationId, 1);
+      last = recent[recent.length - 1];
+    } catch {
+      return;
+    }
+    if (!last || last.role !== "assistant") return;
+    const agent = Object.keys(channelsRef.current).find((a) => channelsRef.current[a] === conversationId) ?? channel.title;
+    try {
+      const note = new Notification(agent, { body: notificationBody(last.content), tag: conversationId });
+      note.onclick = () => {
+        window.focus();
+        setView("agents");
+        void openAgentChannelRef.current(agent);
+        note.close();
+      };
+    } catch {
+      // A browser that refuses a notification here just has none.
     }
   }
 
@@ -727,6 +817,11 @@ export default function App() {
           </button>
           <button type="button" className={view === "agents" ? "tab tab--active" : "tab"} onClick={() => showView("agents")}>
             Agents
+            {unreadChannels.length > 0 && (
+              <span className="tab-badge" aria-label={`${unreadChannels.length} com mensagens novas`}>
+                {unreadChannels.length}
+              </span>
+            )}
           </button>
           <button type="button" className={view === "vault" ? "tab tab--active" : "tab"} onClick={() => setView("vault")}>
             Vault
@@ -818,6 +913,7 @@ export default function App() {
                 channels={channels}
                 conversations={conversations}
                 activeAgent={agentId}
+                unreadAgents={unreadAgents}
                 pendingIds={Object.keys(pendingTurns)}
                 disabled={!phase.connected}
                 onOpen={(id) => void openAgentChannel(id)}

@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::broadcast;
-use warden_bootstrap::webhooks::{conversation_id, run_webhook, WebhookAuth, WebhookConfig, WebhookRequest, MAX_WEBHOOK_ID_LEN};
+use warden_bootstrap::webhooks::{conversation_id, run_webhook_notifying, WebhookAuth, WebhookConfig, WebhookRequest, MAX_WEBHOOK_ID_LEN};
 use warden_bootstrap::{load_config_from_path, FileConfig};
 use warden_core::orchestrator::Orchestrator;
 
@@ -95,7 +95,12 @@ impl WebhookRunner {
         tokio::spawn(async move {
             eprintln!("warden-server: running webhook '{}'", hook.id);
             let request = WebhookRequest { content_type: content_type.as_deref(), body: &body };
-            match run_webhook(&base, &config, Some(&config_path), &hook, &this.conversations_dir, request, now_millis()).await {
+            // P121: an agent that messages the person during the run changes its channel, which the connected devices should hear about.
+            let changes = this.changes.clone();
+            let on_changed: warden_bootstrap::ConversationsChanged = Arc::new(move |id: &str| {
+                let _ = changes.send(id.to_string());
+            });
+            match run_webhook_notifying(&base, &config, Some(&config_path), &hook, &this.conversations_dir, request, now_millis(), Some(on_changed)).await {
                 Ok(_) => eprintln!("warden-server: webhook '{}' done", hook.id),
                 Err(err) => eprintln!("warden-server: webhook '{}' failed: {err:#}", hook.id),
             }

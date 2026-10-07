@@ -8,6 +8,8 @@ interface Props {
   conversations: ConversationSummary[];
   /** The agent whose channel is open. */
   activeAgent: string;
+  /** The agents with something the person has not seen in their channel. */
+  unreadAgents: string[];
   /** Conversations with a turn waiting for its answer. */
   pendingIds: string[];
   /** The connection is down: reading is fine, opening a channel is not. */
@@ -25,7 +27,7 @@ function shortDate(millis: number): string {
 
 /** P121 — the agents as contacts: each has one conversation with the person, its channel, which stays where it was left. Newest first, the
  * ones never spoken to at the end. Same look as the list of conversations (and the same drawer on phones). */
-export default function AgentContacts({ agentIds, channels, conversations, activeAgent, pendingIds, disabled, onOpen }: Props) {
+export default function AgentContacts({ agentIds, channels, conversations, activeAgent, unreadAgents, pendingIds, disabled, onOpen }: Props) {
   const rows = agentIds
     .map((id) => {
       const channelId = channels[id];
@@ -45,7 +47,10 @@ export default function AgentContacts({ agentIds, channels, conversations, activ
             return (
               <li key={id} className={active ? "conversation conversation--active" : "conversation"}>
                 <button type="button" className="conversation-open" disabled={disabled} onClick={() => onOpen(id)} aria-current={active ? "true" : undefined}>
-                  <span className="conversation-title">{id}</span>
+                  <span className="conversation-title">
+                    {unreadAgents.includes(id) && <span className="unread-dot" role="img" aria-label="mensagem nova" />}
+                    {id}
+                  </span>
                   <span className="conversation-meta">{answering ? "respondendo…" : channel ? shortDate(channel.updatedAt) : "nova"}</span>
                 </button>
               </li>

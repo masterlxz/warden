@@ -215,12 +215,29 @@ pub async fn run_webhook(
     request: WebhookRequest<'_>,
     now_ms: i64,
 ) -> anyhow::Result<MessageOutcome> {
+    run_webhook_notifying(base, config, config_path, hook, conversations_dir, request, now_ms, None).await
+}
+
+/// `run_webhook` that also tells `on_changed` the id of each conversation the run changes besides its own: the channel of an agent that
+/// started a message to the person (P121), so the hub can tell the devices that are connected.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_webhook_notifying(
+    base: &Orchestrator,
+    config: &FileConfig,
+    config_path: Option<&Path>,
+    hook: &WebhookConfig,
+    conversations_dir: &Path,
+    request: WebhookRequest<'_>,
+    now_ms: i64,
+    on_changed: Option<crate::message_agent::ConversationsChanged>,
+) -> anyhow::Result<MessageOutcome> {
     let turn = UnattendedTurn {
         conversation: conversation_id(&hook.id),
         title: format!("Webhook: {}", hook.id),
         agent: hook.agent.as_deref(),
         spend: SpendContext::new("webhooks").with_user(format!("webhook:{}", hook.id)),
         input: input_for(hook, now_ms, request.content_type, request.body),
+        on_changed,
     };
     run_unattended_turn(base, config, config_path, conversations_dir, turn).await
 }

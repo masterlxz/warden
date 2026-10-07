@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
-use warden_bootstrap::tasks::{conversation_id, run_task, TaskStore};
+use warden_bootstrap::tasks::{conversation_id, run_task_notifying, TaskStore};
 use warden_bootstrap::{load_config_from_path, FileConfig, TaskConfig};
 use warden_core::orchestrator::Orchestrator;
 
@@ -61,7 +61,12 @@ impl TaskRunner {
         let this = self.clone();
         tokio::spawn(async move {
             eprintln!("warden-server: running task '{}'", task.id);
-            let result = run_task(&base, &config, Some(&config_path), &task, &this.store.conversations_dir(), now).await;
+            // P121: an agent that messages the person during the run changes its channel, which the connected devices should hear about.
+            let changes = this.changes.clone();
+            let on_changed: warden_bootstrap::ConversationsChanged = Arc::new(move |id: &str| {
+                let _ = changes.send(id.to_string());
+            });
+            let result = run_task_notifying(&base, &config, Some(&config_path), &task, &this.store.conversations_dir(), now, Some(on_changed)).await;
             let error = match &result {
                 Ok(_) => {
                     eprintln!("warden-server: task '{}' done", task.id);

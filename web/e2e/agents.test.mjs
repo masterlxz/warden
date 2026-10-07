@@ -18,6 +18,16 @@ after(async () => {
 });
 
 const chatFrames = (sent) => sent.filter((s) => s.includes('"type":"chat"')).map((s) => JSON.parse(s));
+
+/** The id the hub gives an agent's channel (`channel_id` in `message_agent.rs`: FNV-1a, 64 bits, of the name), to seed a conversation on disk. */
+function channelId(agent) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of Buffer.from(agent)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return `channel-${hash.toString(16).padStart(16, "0")}`;
+}
 const contacts = (page) => page.getByLabel("Agentes", { exact: true });
 
 describe("the channel of an agent", () => {
@@ -54,6 +64,44 @@ describe("the channel of an agent", () => {
       await page.getByRole("button", { name: "Chat", exact: true }).click();
       await page.locator("aside.conversations").waitFor();
       assert.doesNotMatch(await page.locator("aside.conversations").innerText(), /oi, writer/);
+    } finally {
+      await context?.close();
+      await hub.stop();
+    }
+  });
+
+  test("a message an agent left in its channel while the page was closed shows as unread until the channel is opened", { timeout: TIMEOUT }, async () => {
+    const message = { id: "m1", role: "assistant", content: "O disco está cheio", createdAt: 5000, attachments: [], generatedFiles: [] };
+    const channel = JSON.stringify({ id: channelId("writer"), title: "writer", messages: [message], createdAt: 5000, updatedAt: 5000, agentId: "writer" });
+    const hub = await startHub({ files: { [`warden/conversations-server/root/${channelId("writer")}.json`]: channel } });
+    let context;
+    try {
+      const opened = await signIn(browser, hub);
+      context = opened.context;
+      const { page } = opened;
+      await page.getByRole("button", { name: "Agents", exact: true }).waitFor();
+      // A browser that has been here before and last saw nothing of this channel: the mark is what the earlier visit left.
+      await page.evaluate(() => localStorage.setItem("warden.channelSeen", "{}"));
+      await page.reload();
+
+      const tab = page.getByRole("button", { name: /^Agents/ });
+      await tab.locator(".tab-badge").waitFor();
+      assert.equal(await tab.locator(".tab-badge").innerText(), "1");
+
+      await tab.click();
+      await contacts(page).locator(".unread-dot").waitFor();
+      assert.match(await contacts(page).getByRole("button", { name: /writer/ }).innerText(), /writer/);
+      assert.equal(await contacts(page).getByRole("button", { name: /ops/ }).locator(".unread-dot").count(), 0, "only the channel that changed");
+
+      await contacts(page).getByRole("button", { name: /writer/ }).click();
+      await page.getByText("O disco está cheio").waitFor();
+      await tab.locator(".tab-badge").waitFor({ state: "detached" });
+      assert.equal(await contacts(page).locator(".unread-dot").count(), 0, "read once it is open");
+
+      // The mark is kept: after a reload it is still read.
+      await page.reload();
+      await page.getByRole("button", { name: /^Agents/ }).waitFor();
+      assert.equal(await page.locator(".tab-badge").count(), 0);
     } finally {
       await context?.close();
       await hub.stop();

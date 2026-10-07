@@ -906,6 +906,29 @@ button:focus-visible {
   text-align: left;
 }
 
+/* P121 — a channel with something unseen: a count on the Agents tab and a dot before the agent's name. */
+.tab-badge {
+  margin-left: 0.35rem;
+  min-width: 1.1rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: white;
+  font-size: 0.7rem;
+  line-height: 1.1rem;
+  display: inline-block;
+  text-align: center;
+}
+
+.unread-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
 .conversation-title {
   flex: 1;
   min-width: 0;

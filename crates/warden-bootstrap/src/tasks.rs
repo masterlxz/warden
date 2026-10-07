@@ -27,6 +27,7 @@ use warden_core::orchestrator::{MessageOutcome, Orchestrator};
 use warden_core::spend::SpendContext;
 use warden_server_protocol::protocol::{TaskDto, TaskInfoDto};
 
+use crate::message_agent::ConversationsChanged;
 use crate::{
     append_messages, assistant_message, build_model_for, load_conversation, message_id, now_millis, scope_to_agent, to_message, AgentConfig, AgentExtras,
     AppendOptions, ChatRole, ConversationMessage, ConversationWriteGuard, FileConfig,
@@ -536,6 +537,20 @@ pub async fn run_task(
     conversations_dir: &Path,
     now_ms: i64,
 ) -> anyhow::Result<MessageOutcome> {
+    run_task_notifying(base, config, config_path, task, conversations_dir, now_ms, None).await
+}
+
+/// `run_task` that also tells `on_changed` the id of each conversation the run changes besides its own: the channel of an agent that
+/// started a message to the person (P121), so the hub can tell the devices that are connected.
+pub async fn run_task_notifying(
+    base: &Orchestrator,
+    config: &FileConfig,
+    config_path: Option<&Path>,
+    task: &TaskConfig,
+    conversations_dir: &Path,
+    now_ms: i64,
+    on_changed: Option<ConversationsChanged>,
+) -> anyhow::Result<MessageOutcome> {
     let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
     let input = format!("[Scheduled task '{}', {}]\n\n{}", task.id, zone.format(now_ms), task.prompt.trim());
     let turn = UnattendedTurn {
@@ -544,6 +559,7 @@ pub async fn run_task(
         agent: task.agent.as_deref(),
         spend: SpendContext::new("tasks").with_user(format!("task:{}", task.id)),
         input,
+        on_changed,
     };
     run_unattended_turn(base, config, config_path, conversations_dir, turn).await
 }
@@ -558,13 +574,15 @@ pub(crate) struct UnattendedTurn<'a> {
     /// Who the spending is counted for.
     pub spend: SpendContext,
     pub input: String,
+    /// Told the id of a conversation the run changes besides `conversation` (the channel of an agent that messaged the person, P121).
+    pub on_changed: Option<ConversationsChanged>,
 }
 
 /// Runs `turn` with the last `HISTORY_MESSAGES` of its conversation as history, and adds the input and the answer — or
 /// why there is none — to the conversation.
 pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, conversations_dir: &Path, turn: UnattendedTurn<'_>) -> anyhow::Result<MessageOutcome> {
-    let UnattendedTurn { conversation, title, agent, spend, input } = turn;
-    let outcome = match prepare(base, config, config_path, conversations_dir, agent, spend) {
+    let UnattendedTurn { conversation, title, agent, spend, input, on_changed } = turn;
+    let outcome = match prepare(base, config, config_path, conversations_dir, on_changed, agent, spend) {
         Ok((orchestrator, persona)) => {
             let history: Vec<Message> = load_conversation(conversations_dir, &conversation)?
                 .map(|c| {
@@ -591,12 +609,20 @@ pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig
 /// The orchestrator and persona an unattended turn runs with: spending counted as `spend`, scoped to `agent` and that
 /// agent's model. No approver is attached — nobody is there to answer. The conversations folder goes to the agent so one a person
 /// allowed to start messages (P121 `message_user`) can tell them what it found, unattended runs being where that matters most.
-fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>, conversations_dir: &Path, agent: Option<&str>, spend: SpendContext) -> anyhow::Result<(Orchestrator, Option<String>)> {
+fn prepare(
+    base: &Orchestrator,
+    config: &FileConfig,
+    config_path: Option<&Path>,
+    conversations_dir: &Path,
+    on_changed: Option<ConversationsChanged>,
+    agent: Option<&str>,
+    spend: SpendContext,
+) -> anyhow::Result<(Orchestrator, Option<String>)> {
     let base = base.with_spend_context(spend);
     let Some(agent_id) = agent else {
         return Ok((base, None));
     };
-    let extras = AgentExtras { conversations_dir: Some(conversations_dir.to_path_buf()), forward_outreach: true, ..AgentExtras::default() };
+    let extras = AgentExtras { conversations_dir: Some(conversations_dir.to_path_buf()), on_conversation_changed: on_changed, forward_outreach: true };
     let scoped = scope_to_agent(&base, config, config_path, agent_id, extras)
         .ok_or_else(|| anyhow::anyhow!("agent '{agent_id}' doesn't exist any more"))?;
     let mut orchestrator = scoped.orchestrator;
