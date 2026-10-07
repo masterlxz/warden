@@ -6,6 +6,14 @@
 
 ---
 
+### 2026-10-07 — Sessão 164
+
+- **Objetivo**: fechar o P125 (o que sobrava não se aplica ou depende do P121, registrado em `PENDING.md`) e a parte pequena do P124: o desktop obrigava escolher um agente antes da primeira mensagem e o fixava.
+- **Feito (`ChatArea`)**: a tela de escolha ganhou "Chat without an agent" (também quando não há agente nenhum configurado, onde antes só havia "Open Settings"); o rótulo do cabeçalho virou um seletor que troca o agente a qualquer hora e trava durante a resposta. Escolher "No agent" no seletor vale como decidir sem agente. A troca já era salva por mensagem (`appendMessage` grava o `agentId` atual), então o Rust e o hub não mudaram. Quando o `settings` é relido num hub, o agente volta ao da conversa salva; como cada turno grava o agente, isso só apaga uma troca ainda não enviada.
+- **Testes**: desktop `tsc` limpo; sem teste novo (é interface, sem lógica pura nova).
+- **Não verificado**: a tela numa janela do Tauri, em modo local e em hub.
+- **Fica no P124**: o resto da visão (o Chat entregando a um agente de programação, o Programming Manager).
+
 ### 2026-10-07 — Sessão 163
 
 - **Objetivo**: threads no desktop em modo local (P125), sem hub. O `warden-bootstrap` já gravava `parent` e o id estável de cada mensagem, e apagar a conversa-pai já apagava as filhas, então a mudança ficou no app.

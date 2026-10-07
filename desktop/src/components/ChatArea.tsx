@@ -155,11 +155,15 @@ function ChatArea({
   // Another conversation, another question.
   useEffect(() => setPendingMove(null), [activeConversation?.id]);
 
+  // The person chose to talk with no agent (P124): the pick screen is skipped. Per conversation, like the pick itself.
+  const [withoutAgent, setWithoutAgent] = useState(false);
+  useEffect(() => setWithoutAgent(false), [activeConversation?.id]);
+
   const hasMessages = !!activeConversation && activeConversation.messages.length > 0;
-  // A conversation's agent is chosen once, before its first message, then locked for good (P45)
-  // — this is the "not chosen yet" gate: no messages persisted yet, and no agent picked yet
-  // either (picking one doesn't send a message by itself, see onSelectAgent below).
-  const needsAgentPick = !hasMessages && !selectedAgentId;
+  // A conversation starts with an agent chosen or with the choice of none (P124), and the agent can be changed later from the header
+  // (P45 locked it for good). This is the "not decided yet" gate: no messages yet, no agent picked and no "without an agent" either
+  // (picking one doesn't send a message by itself, see onSelectAgent below).
+  const needsAgentPick = !hasMessages && !selectedAgentId && !withoutAgent;
   // Like the agent, a conversation's project is chosen before its first message and then fixed (P103). One whose
   // project was removed since has nothing to show.
   const knownProject = projects.some((p) => p.id === selectedProjectId);
@@ -204,10 +208,30 @@ function ChatArea({
       <div className="chat-header">
         {needsAgentPick ? (
           <span className="chat-header-label chat-header-label--muted">Pick an agent to start</span>
+        ) : agents.length > 0 || selectedAgentId ? (
+          // The agent can be changed at any time (P124): the next messages speak as the new one. Locked while an answer is on the way.
+          <select
+            className="chat-header-select"
+            aria-label="Agent"
+            title="The agent driving this conversation — the next messages speak as the one picked"
+            value={selectedAgentId}
+            disabled={isSending}
+            onChange={(e) => {
+              const next = e.currentTarget.value;
+              if (next === "") setWithoutAgent(true);
+              onSelectAgent(next);
+            }}
+          >
+            <option value="">No agent</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.id}
+              </option>
+            ))}
+            {selectedAgentId && !agents.some((a) => a.id === selectedAgentId) && <option value={selectedAgentId}>{selectedAgentId} (removed)</option>}
+          </select>
         ) : (
-          <span className="chat-header-label" title="The agent driving this conversation — locked once chosen">
-            {selectedAgentId || "No agent"}
-          </span>
+          <span className="chat-header-label">No agent</span>
         )}
         {showProjectPicker && (
           <select
@@ -322,9 +346,12 @@ function ChatArea({
               <>
                 <LogoMark size={40} />
                 <h1>No agents yet</h1>
-                <p>Create one in Settings to start a conversation.</p>
+                <p>Create one in Settings, or talk with no agent.</p>
                 <button type="button" className="agent-picker-settings-btn" onClick={onOpenSettings}>
                   Open Settings
+                </button>
+                <button type="button" className="agent-picker-skip" onClick={() => setWithoutAgent(true)}>
+                  Chat without an agent
                 </button>
               </>
             ) : (
@@ -343,6 +370,9 @@ function ChatArea({
                     </button>
                   ))}
                 </div>
+                <button type="button" className="agent-picker-skip" onClick={() => setWithoutAgent(true)}>
+                  Chat without an agent
+                </button>
               </>
             )}
           </div>

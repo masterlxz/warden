@@ -666,6 +666,22 @@ body {
   background-color: var(--color-accent-dark);
 }
 
+/* P124 — the way past the pick: talk with no agent. A quiet link, since choosing one is the usual start. */
+.agent-picker-skip {
+  margin-top: 0.8rem;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.9em;
+  color: var(--color-text-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.agent-picker-skip:hover {
+  color: var(--color-text);
+}
+
 .message-row {
   display: flex;
   align-items: flex-start;
