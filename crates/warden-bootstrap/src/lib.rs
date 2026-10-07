@@ -38,6 +38,7 @@ pub mod auto_sync;
 pub mod history;
 pub mod bot_access;
 pub mod bot_hub;
+pub mod bot_outbox;
 pub mod bot_pairing;
 pub mod code_turn;
 pub mod learning;

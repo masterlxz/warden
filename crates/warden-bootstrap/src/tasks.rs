@@ -596,7 +596,7 @@ fn prepare(base: &Orchestrator, config: &FileConfig, config_path: Option<&Path>,
     let Some(agent_id) = agent else {
         return Ok((base, None));
     };
-    let extras = AgentExtras { conversations_dir: Some(conversations_dir.to_path_buf()), on_conversation_changed: None };
+    let extras = AgentExtras { conversations_dir: Some(conversations_dir.to_path_buf()), forward_outreach: true, ..AgentExtras::default() };
     let scoped = scope_to_agent(&base, config, config_path, agent_id, extras)
         .ok_or_else(|| anyhow::anyhow!("agent '{agent_id}' doesn't exist any more"))?;
     let mut orchestrator = scoped.orchestrator;
@@ -824,6 +824,52 @@ mod tests {
             let content = format!("{persona}|{}|{last}", messages.len());
             Ok(response_stream(Response { content, tool_calls: Vec::new(), usage: None }))
         }
+    }
+
+    /// Asks for `message_user` on its first call and, once the tool answered, says it is done.
+    struct Alerts;
+
+    #[async_trait]
+    impl ModelProvider for Alerts {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            if messages.iter().any(|m| m.role == Role::Tool) {
+                return Ok(response_stream(Response { content: "told".into(), tool_calls: Vec::new(), usage: None }));
+            }
+            let call = warden_core::model::ToolCall { id: "c1".into(), name: "message_user".into(), arguments: serde_json::json!({ "message": "the disk is full" }), thought_signature: None };
+            Ok(response_stream(Response { content: String::new(), tool_calls: vec![call], usage: None }))
+        }
+    }
+
+    /// P121, end to end: a scheduled task of an agent the owner allowed to start messages (`[[outreach]]` with `forward`) ends with the
+    /// message in the agent's channel and left for the bot of each channel it lists; an agent with no entry cannot.
+    #[tokio::test]
+    async fn a_scheduled_run_can_message_the_user_in_the_agents_channel_and_forward_it_to_the_bots() {
+        use crate::bot_outbox::BotOutbox;
+        use crate::message_agent::channel_id;
+        use crate::OutreachConfig;
+
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        let base = Orchestrator::new(Arc::new(Alerts), Arc::new(Vault::new(dir.join("vault"))));
+        let conversations = dir.join("conversations");
+        let config = FileConfig { agents: vec![agent("ana"), agent("bia")], outreach: vec![OutreachConfig { agent: "ana".into(), forward: vec!["telegram".into()] }], ..FileConfig::default() };
+
+        let allowed = TaskConfig { agent: Some("ana".into()), ..task("watch") };
+        let outcome = run_task(&base, &config, Some(&config_path), &allowed, &conversations, 0).await.unwrap();
+        assert_eq!(outcome.content, "told");
+        let channel = load_conversation(&conversations, &channel_id("ana")).unwrap().expect("the agent's channel");
+        assert_eq!(channel.messages.len(), 1);
+        assert_eq!(channel.messages[0].content, "the disk is full");
+        let waiting = BotOutbox::beside(&config_path).take("telegram", crate::bot_access::unix_now()).unwrap();
+        assert_eq!(waiting.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["ana: the disk is full"]);
+
+        // No entry for bia: the model asks for a tool it does not have, and nothing is written anywhere.
+        let other = TaskConfig { agent: Some("bia".into()), ..task("watch-too") };
+        run_task(&base, &config, Some(&config_path), &other, &conversations, 0).await.ok();
+        assert!(load_conversation(&conversations, &channel_id("bia")).unwrap().is_none());
+        assert!(BotOutbox::beside(&config_path).take("telegram", crate::bot_access::unix_now()).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

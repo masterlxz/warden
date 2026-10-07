@@ -6,6 +6,17 @@
 
 ---
 
+### 2026-10-07 — Sessão 168
+
+- **Objetivo**: o envio externo da mensagem iniciada pelo agente (P121): o `forward` do `[[outreach]]` passa a valer para Telegram e WhatsApp.
+- **Desenho**: os bots são outros processos que só encontram o hub em arquivos ao lado do `config.toml` (como o `bot_pairing.json`), então o hub deixa a mensagem numa **caixa de saída** (`bot_outbox.rs`: uma pasta `bot_outbox/` com um arquivo pequeno por mensagem, sem lock e sem reescrever um arquivo compartilhado) e o bot do canal a lê a cada olhada, envia e apaga. Expira em 24 h, no máximo 50 por canal. Cada bot tem o `announce_outbox` ao lado do `announce_approved` (Telegram a cada poll; WhatsApp no tick, só conectado, lendo a configuração a cada tick porque as mensagens do agente não esperam uma mensagem da pessoa).
+- **Para quem vai**: só para os **chats do dono** (`owner_chats()`: listados e **sem** mapeamento para um membro; número do WhatsApp vira id inteiro). Sem chat do dono, nada é retirado: a mensagem espera (até 24 h).
+- **Quando vale**: só em execução **sem ninguém olhando e do dono** (tarefas agendadas e webhooks): `AgentExtras.forward_outreach`, ligado em `tasks.rs`. Num turno que uma pessoa começou fica desligado (web, desktop, CLI), porque ela lê o canal e porque pode ser um **membro**, cujas mensagens não podem ir parar nos chats do dono. O texto externo é `agente: mensagem` (sem canal para dizer de quem é).
+- **Testes**: `bot_outbox` (3), `owner_chats` (1), a tool com `forwarding` (1), cada bot (1 cada) e um de ponta a ponta em `tasks.rs` (uma tarefa de um agente com `[[outreach]]` chama `message_user` com um modelo de mentira: a mensagem vai ao canal e à caixa de saída; o agente sem entrada não escreve nada). `warden-bootstrap` 415, `warden-telegram` 26, `warden-whatsapp` 12, `warden-server` 148; `clippy --workspace --all-targets` só com o aviso antigo de `learning_eval`.
+- **Deslizes meus**: troquei `on_conversation_changed: None` por `..AgentExtras::default()` com um `sed` em dois arquivos (contra a regra de mostrar a edição; o diff é de 3 linhas e está no commit), e a verificação de `cargo check` do commit anterior vinha com `| tail`, que escondeu o erro de compilação do desktop (corrigido no commit seguinte, e desta vez conferi o código de saída).
+- **Não verificado**: um bot real mandando para um chat de verdade (Telegram/WhatsApp); o desktop com `[[outreach]]` salvando configurações.
+- **Fica**: a notificação nos clientes e o contador de não lidas, e uma tela para editar `[[outreach]]`.
+
 ### 2026-10-07 — Sessão 167
 
 - **Objetivo**: a mensagem iniciada pelo agente (P121). Decisão do usuário: **mensagem normal** no canal do agente, só personalizada se o agente quiser (o agente escolhe o texto e o formato; nada a marca como especial).

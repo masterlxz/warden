@@ -53,6 +53,12 @@ impl TelegramSettings {
         self.members.get(&user_id.to_string()).map(String::as_str).filter(|m| !m.is_empty())
     }
 
+    /// The people who talk to the bot as the owner (P121): listed and mapped to no member. What an agent forwards on its own
+    /// (`bot_outbox.rs`) goes to them and to nobody else; a member's chat is that member's, not the owner's to write in.
+    pub fn owner_chats(&self) -> Vec<i64> {
+        self.allowed_users.iter().copied().filter(|id| self.member_for(*id).is_none()).collect()
+    }
+
     /// Whether a message from user `user_id` in a chat of kind `chat_kind` (`private`, `group`,
     /// `supergroup`, `channel`) may be answered: only a listed person, only in a private chat.
     pub fn allows(&self, user_id: Option<i64>, chat_kind: &str) -> bool {
@@ -93,6 +99,17 @@ impl WhatsAppSettings {
     /// newsletter) that is listed, by its whole id or by its number.
     pub fn allows(&self, chat_id: &str) -> bool {
         is_private_chat(chat_id) && self.allowed_chats.iter().any(|entry| entry_names_chat(entry, chat_id))
+    }
+
+    /// The chats that talk to the bot as the owner (P121), as ids the sidecar can write to: listed and mapped to no member, a bare number
+    /// made a whole id. What an agent forwards on its own (`bot_outbox.rs`) goes to these and to nobody else.
+    pub fn owner_chats(&self) -> Vec<String> {
+        self.allowed_chats
+            .iter()
+            .map(|entry| entry.trim().trim_start_matches('+'))
+            .filter(|entry| !entry.is_empty() && self.member_for(entry).is_none())
+            .map(|entry| if entry.contains('@') { entry.to_string() } else { format!("{entry}@s.whatsapp.net") })
+            .collect()
     }
 
     /// The member `chat_id` speaks as, when the owner mapped them to one. The whole id wins over a bare number.
@@ -160,6 +177,17 @@ mod tests {
         assert_eq!(toml::from_str::<TelegramSettings>(&toml::to_string(&telegram).unwrap()).unwrap(), telegram);
         let whatsapp = WhatsAppSettings { allowed_chats: vec!["5511999999999".into()], pairing: true, ..Default::default() };
         assert_eq!(toml::from_str::<WhatsAppSettings>(&toml::to_string(&whatsapp).unwrap()).unwrap(), whatsapp);
+    }
+
+    /// P121: what an agent forwards goes to the owner's chats only, never to one that speaks as a member.
+    #[test]
+    fn the_owners_chats_leave_out_the_ones_mapped_to_a_member() {
+        let telegram: TelegramSettings = toml::from_str("allowed_users = [42, 7]\n[members]\n7 = \"ana\"\n").unwrap();
+        assert_eq!(telegram.owner_chats(), vec![42]);
+        assert!(TelegramSettings::default().owner_chats().is_empty());
+
+        let whatsapp: WhatsAppSettings = toml::from_str("allowed_chats = [\"+5511999999999\", \"5522888888888@lid\", \"5533777777777\"]\n[members]\n5533777777777 = \"bia\"\n").unwrap();
+        assert_eq!(whatsapp.owner_chats(), vec!["5511999999999@s.whatsapp.net".to_string(), "5522888888888@lid".to_string()], "a number becomes a whole id; the member's chat is out");
     }
 
     #[test]

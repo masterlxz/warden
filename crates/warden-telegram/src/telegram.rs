@@ -254,6 +254,9 @@ pub async fn run_bot(api: &impl TelegramApi, orchestrator: &Orchestrator, conver
                 if let Some(store) = access.pairing.as_ref() {
                     announce_approved(api, store).await;
                 }
+                if let Some(path) = config_path {
+                    announce_outbox(api, &warden_bootstrap::bot_outbox::BotOutbox::beside(path), &access.settings.owner_chats()).await;
+                }
                 let learning = live.as_ref().filter(|c| c.learning.enabled);
                 process_updates(api, orchestrator, conversations_dir, learning, &mut access, updates, &mut offset).await
             }
@@ -280,6 +283,29 @@ async fn announce_approved(api: &impl TelegramApi, store: &BotPairing) {
         let Ok(chat_id) = entry.sender.parse::<i64>() else { continue };
         if let Err(err) = api.send_message(chat_id, bot_pairing::APPROVED_REPLY).await {
             eprintln!("failed to tell telegram user {chat_id} they were approved: {err:#}");
+        }
+    }
+}
+
+/// Sends the owner's chats what agents left for Telegram since the last poll (P121 `[[outreach]]` `forward`): an agent the owner allowed
+/// to start messages wrote it to the outbox beside the config. With no owner chat listed nothing is taken, so the messages wait (a day
+/// at most) for the owner to be listed. A failed send is logged and not retried: the message is in the agent's channel either way.
+async fn announce_outbox(api: &impl TelegramApi, outbox: &warden_bootstrap::bot_outbox::BotOutbox, owner_chats: &[i64]) {
+    if owner_chats.is_empty() {
+        return;
+    }
+    let waiting = match outbox.take(bot_pairing::TELEGRAM, warden_bootstrap::bot_access::unix_now()) {
+        Ok(waiting) => waiting,
+        Err(err) => {
+            eprintln!("can't read the messages waiting for telegram: {err:#}");
+            return;
+        }
+    };
+    for message in waiting {
+        for chat_id in owner_chats {
+            if let Err(err) = api.send_message(*chat_id, &message.text).await {
+                eprintln!("failed to send an agent's message to telegram user {chat_id}: {err:#}");
+            }
         }
     }
 }
@@ -738,6 +764,27 @@ mod tests {
         announce_approved(&api, &store).await;
         announce_approved(&api, &store).await;
         assert_eq!(*api.sent.lock().unwrap(), [(7, bot_pairing::APPROVED_REPLY.to_string())], "told once, and only the approved one");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P121: what an agent forwarded to Telegram goes to the owner's chats once; with no owner chat it waits, and a member's chat gets nothing.
+    #[tokio::test]
+    async fn an_agents_forwarded_message_goes_to_the_owners_chats_once_and_waits_when_there_is_none() {
+        let dir = std::env::temp_dir().join(format!("warden-telegram-outbox-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let outbox = warden_bootstrap::bot_outbox::BotOutbox::beside(&dir.join("config.toml"));
+        let now = warden_bootstrap::bot_access::unix_now();
+        outbox.push(bot_pairing::TELEGRAM, "chief: build failed", now).unwrap();
+        outbox.push(bot_pairing::WHATSAPP, "chief: for the other bot", now).unwrap();
+        let api = ScriptedTelegramApi::new(Vec::new());
+
+        announce_outbox(&api, &outbox, &[]).await;
+        assert!(api.sent.lock().unwrap().is_empty(), "nobody to send to");
+
+        announce_outbox(&api, &outbox, &[42, 43]).await;
+        announce_outbox(&api, &outbox, &[42, 43]).await;
+        assert_eq!(*api.sent.lock().unwrap(), [(42, "chief: build failed".to_string()), (43, "chief: build failed".to_string())], "kept while there was nobody, then sent once to each");
+        assert_eq!(outbox.take(bot_pairing::WHATSAPP, now).unwrap().len(), 1, "the other bot's message was not touched");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

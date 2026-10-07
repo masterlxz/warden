@@ -236,6 +236,8 @@ async fn send_message(
                 on_conversation_changed: Some(Arc::new(move |conversation_id: &str| {
                     let _ = notify_app.emit("conversations-changed", conversation_id.to_string());
                 })),
+                // The person is at the window and reads the channel themselves (P121).
+                forward_outreach: false,
             };
             if let Some(scoped) = scope_to_agent(&orchestrator, &config, Some(&path), id, extras) {
                 persona = Some(scoped.persona);

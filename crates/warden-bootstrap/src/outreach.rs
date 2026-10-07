@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use warden_core::tool::{Tool, ToolSpec};
 
+use crate::bot_outbox::BotOutbox;
 use crate::message_agent::{channel_id, ConversationsChanged};
+use crate::{bot_access, bot_pairing};
 use crate::{append_to_conversation, message_id, now_millis, ChatRole, ConversationMessage};
 
 /// One agent a person allowed to start messages (TOML `[[outreach]]`). No entry, no tool.
@@ -30,7 +32,8 @@ pub struct OutreachConfig {
     /// The agent that may message the person first.
     pub agent: String,
     /// Other places the message also goes to, besides the agent's channel (P121): the names of external channels, `telegram` or `whatsapp`.
-    /// Read when the message is sent; a name nothing answers to is skipped.
+    /// Read when the message is sent; a name nothing answers to is skipped. It reaches the owner's chats on that bot and only from a run that
+    /// is the owner's own (a scheduled task or a webhook), not from a turn a member started.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forward: Vec<String>,
 }
@@ -64,11 +67,21 @@ pub struct MessageUserTool {
     agent: String,
     dir: PathBuf,
     on_changed: Option<ConversationsChanged>,
+    /// Where the message also goes besides the channel: the bots' outbox and the channels the owner listed (`OutreachConfig::forward`).
+    forward: Option<(BotOutbox, Vec<String>)>,
 }
 
 impl MessageUserTool {
     pub fn new(agent: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
-        Self { agent: agent.into(), dir: dir.into(), on_changed: None }
+        Self { agent: agent.into(), dir: dir.into(), on_changed: None, forward: None }
+    }
+
+    /// Also leaves the message in `outbox` for each of `channels` (`telegram`, `whatsapp`; anything else is skipped). Only for a run
+    /// that is the owner's own (a scheduled task, a webhook): the bots write to the owner's chats, so a turn a member started must not
+    /// carry the message there.
+    pub fn forwarding(mut self, outbox: BotOutbox, channels: Vec<String>) -> Self {
+        self.forward = Some((outbox, channels));
+        self
     }
 
     pub fn on_changed(mut self, notify: Option<ConversationsChanged>) -> Self {
@@ -125,7 +138,19 @@ impl Tool for MessageUserTool {
         if let Some(notify) = &self.on_changed {
             notify(&id);
         }
-        Ok(json!({ "status": "sent", "channel": id }))
+        // The outside channels get it as plain text with the agent's name, since there is no channel to tell them whose it is. A failure there
+        // does not undo the message, which is already where the person will find it.
+        let mut forwarded = Vec::new();
+        if let Some((outbox, channels)) = &self.forward {
+            let text = format!("{}: {message}", self.agent);
+            for channel in channels.iter().filter(|c| matches!(c.as_str(), bot_pairing::TELEGRAM | bot_pairing::WHATSAPP)) {
+                match outbox.push(channel, &text, bot_access::unix_now()) {
+                    Ok(()) => forwarded.push(channel.clone()),
+                    Err(err) => eprintln!("could not leave the message of agent '{}' for {channel}: {err:#}", self.agent),
+                }
+            }
+        }
+        Ok(json!({ "status": "sent", "channel": id, "forwarded": forwarded }))
     }
 }
 
@@ -161,6 +186,27 @@ mod tests {
 
         tool.call(json!({ "message": "second" })).await.unwrap();
         assert_eq!(load_conversation(&dir, &id).unwrap().unwrap().messages.len(), 2, "the same channel, appended");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_forwarding_agent_leaves_the_message_for_the_bots_it_lists_and_skips_the_rest() {
+        let dir = temp_dir();
+        let outbox = BotOutbox::new(dir.join("bot_outbox"));
+        let tool = MessageUserTool::new("outreach-d", &dir).forwarding(BotOutbox::new(dir.join("bot_outbox")), vec!["telegram".into(), "carrier-pigeon".into()]);
+
+        let reply = tool.call(json!({ "message": "disk is full" })).await.unwrap();
+        assert_eq!(reply["forwarded"], json!(["telegram"]), "an unknown channel is skipped");
+        let now = bot_access::unix_now();
+        let waiting = outbox.take("telegram", now).unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].text, "outreach-d: disk is full", "the agent's name goes ahead of it, where there is no channel to say whose it is");
+        assert!(outbox.take("whatsapp", now).unwrap().is_empty());
+        assert!(load_conversation(&dir, &channel_id("outreach-d")).unwrap().is_some(), "and it is in the channel as well");
+
+        let quiet = MessageUserTool::new("outreach-e", &dir);
+        assert_eq!(quiet.call(json!({ "message": "hi" })).await.unwrap()["forwarded"], json!([]), "no forwarding unless it was asked for");
+        assert!(outbox.take("telegram", now).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

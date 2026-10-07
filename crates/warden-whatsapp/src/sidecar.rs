@@ -157,6 +157,12 @@ pub async fn run_bot(sidecar: &mut impl WhatsAppSidecar, orchestrator: &Orchestr
                 if let (true, Some(store)) = (connected, access.pairing.as_ref()) {
                     announce_approved(sidecar, store).await;
                 }
+                if let (true, Some(path)) = (connected, config_path) {
+                    // The config is read on messages only; an agent's message should not wait for one, so the owner's chats are read here too.
+                    if let Ok(config) = warden_bootstrap::bot_access::read_config(path) {
+                        announce_outbox(sidecar, &warden_bootstrap::bot_outbox::BotOutbox::beside(path), &config.whatsapp.owner_chats()).await;
+                    }
+                }
                 continue;
             }
             // Reading a line is cancel-safe: losing the race to the tick drops no event.
@@ -205,6 +211,29 @@ async fn announce_approved(sidecar: &mut impl WhatsAppSidecar, store: &BotPairin
     for entry in approved {
         if let Err(err) = sidecar.send(&entry.sender, bot_pairing::APPROVED_REPLY).await {
             eprintln!("failed to tell whatsapp chat {} it was approved: {err:#}", entry.sender);
+        }
+    }
+}
+
+/// Sends the owner's chats what agents left for WhatsApp (P121 `[[outreach]]` `forward`), written to the outbox beside the config. Only while
+/// connected, like the approvals: a send while the sidecar is down would lose it. With no owner chat listed nothing is taken, so the messages
+/// wait (a day at most). A failed send is logged and not retried: the message is in the agent's channel either way.
+async fn announce_outbox(sidecar: &mut impl WhatsAppSidecar, outbox: &warden_bootstrap::bot_outbox::BotOutbox, owner_chats: &[String]) {
+    if owner_chats.is_empty() {
+        return;
+    }
+    let waiting = match outbox.take(bot_pairing::WHATSAPP, warden_bootstrap::bot_access::unix_now()) {
+        Ok(waiting) => waiting,
+        Err(err) => {
+            eprintln!("can't read the messages waiting for whatsapp: {err:#}");
+            return;
+        }
+    };
+    for message in waiting {
+        for chat in owner_chats {
+            if let Err(err) = sidecar.send(chat, &message.text).await {
+                eprintln!("failed to send an agent's message to whatsapp chat {chat}: {err:#}");
+            }
         }
     }
 }
@@ -615,6 +644,26 @@ mod tests {
         announce_approved(&mut sidecar, &store).await;
         announce_approved(&mut sidecar, &store).await;
         assert_eq!(*sidecar.sent.lock().unwrap(), [("5511999999999@lid".to_string(), bot_pairing::APPROVED_REPLY.to_string())], "told once, and only the approved one");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P121: what an agent forwarded to WhatsApp goes to the owner's chats once, at their whole ids; with no owner chat it waits.
+    #[tokio::test]
+    async fn an_agents_forwarded_message_goes_to_the_owners_chats_once_and_waits_when_there_is_none() {
+        let dir = std::env::temp_dir().join(format!("warden-whatsapp-outbox-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let outbox = warden_bootstrap::bot_outbox::BotOutbox::beside(&dir.join("config.toml"));
+        let now = warden_bootstrap::bot_access::unix_now();
+        outbox.push(bot_pairing::WHATSAPP, "chief: build failed", now).unwrap();
+        let mut sidecar = ScriptedSidecar::new(Vec::new());
+
+        announce_outbox(&mut sidecar, &outbox, &[]).await;
+        assert!(sidecar.sent.lock().unwrap().is_empty(), "nobody to send to");
+
+        let chats = vec!["5511999999999@s.whatsapp.net".to_string()];
+        announce_outbox(&mut sidecar, &outbox, &chats).await;
+        announce_outbox(&mut sidecar, &outbox, &chats).await;
+        assert_eq!(*sidecar.sent.lock().unwrap(), [("5511999999999@s.whatsapp.net".to_string(), "chief: build failed".to_string())]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

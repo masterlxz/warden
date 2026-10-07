@@ -1165,7 +1165,7 @@ fn resolve_turn_context(session: &CliSession, orchestrator: &Orchestrator) -> an
 /// desktop's directory: the "A → B" conversation shows up there, and `read` works here. Nothing is
 /// told when one changes (the desktop sees it on its next list reload).
 fn cli_agent_extras() -> AgentExtras {
-    AgentExtras { conversations_dir: warden_bootstrap::default_conversations_dir(), on_conversation_changed: None }
+    AgentExtras { conversations_dir: warden_bootstrap::default_conversations_dir(), ..AgentExtras::default() }
 }
 
 async fn cmd_help(terminal: &mut CliTerminal) -> anyhow::Result<()> {

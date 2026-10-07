@@ -1807,6 +1807,8 @@ fn scope_chat_agent(
                 let _ = tx.send(ServerMessage::ConversationsChanged { conversation_id: conversation_id.to_string() });
             }
         })),
+        // A turn a person started: they read the channel themselves, and may be a member whose messages must not reach the owner's chats.
+        forward_outreach: false,
     };
     let scoped = scope_to_agent(base, &config, Some(&path), agent_id, extras).ok_or_else(|| format!("agent '{agent_id}' not found"))?;
     let mut orchestrator = scoped.orchestrator;

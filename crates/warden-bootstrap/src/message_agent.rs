@@ -574,7 +574,7 @@ mod tests {
         let ana = config.agents.iter_mut().find(|a| a.id == "ana").unwrap();
         ana.can_message_agents = true;
         let scope = |config: &FileConfig| {
-            let extras = AgentExtras { conversations_dir: Some(s.conversations.clone()), on_conversation_changed: None };
+            let extras = AgentExtras { conversations_dir: Some(s.conversations.clone()), ..AgentExtras::default() };
             scope_to_agent(&s.base, config, Some(&s.config_path), "ana", extras).unwrap().orchestrator
         };
 
@@ -597,7 +597,7 @@ mod tests {
         let s = setup(false);
         let config = load_config_from_path(&s.config_path, true).unwrap();
         let names = |agent_id: &str, dir: Option<PathBuf>| -> Vec<String> {
-            let extras = AgentExtras { conversations_dir: dir, on_conversation_changed: None };
+            let extras = AgentExtras { conversations_dir: dir, ..AgentExtras::default() };
             let scoped = scope_to_agent(&s.base, &config, Some(&s.config_path), agent_id, extras).unwrap();
             scoped.orchestrator.tools().iter().map(|t| t.spec().name).collect()
         };
@@ -614,7 +614,7 @@ mod tests {
         let s = setup(false);
         let mut config = load_config_from_path(&s.config_path, true).unwrap();
         let names = |config: &FileConfig, agent_id: &str, dir: Option<PathBuf>| -> Vec<String> {
-            let extras = AgentExtras { conversations_dir: dir, on_conversation_changed: None };
+            let extras = AgentExtras { conversations_dir: dir, ..AgentExtras::default() };
             scope_to_agent(&s.base, config, Some(&s.config_path), agent_id, extras).unwrap().orchestrator.tools().iter().map(|t| t.spec().name).collect()
         };
         let has = |names: Vec<String>| names.contains(&"message_user".to_string());

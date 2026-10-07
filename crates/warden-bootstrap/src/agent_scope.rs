@@ -11,6 +11,7 @@ use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::Tool;
 
+use crate::bot_outbox::BotOutbox;
 use crate::message_agent::{ConversationsChanged, MessageAgentTool};
 use crate::{build_delegate_to_agent_tool, build_live_delegate_to_agent_tool, FileConfig, ManageAgentsTool, ManageTasksTool, MessageUserTool, SAFE_AGENT_TOOLS};
 
@@ -22,6 +23,10 @@ pub struct AgentExtras {
     pub conversations_dir: Option<PathBuf>,
     /// Told when `message_agent` creates or updates a conversation, so the UI can reload its list.
     pub on_conversation_changed: Option<ConversationsChanged>,
+    /// The run is the owner's own and unattended (a scheduled task, a webhook): a message the agent starts with `message_user` is also left
+    /// for the bots of the channels its `[[outreach]]` entry lists (P121). Off for a turn a person started, who is there to read the channel,
+    /// and who may be a member whose messages must not reach the owner's chats.
+    pub forward_outreach: bool,
 }
 
 /// An orchestrator ready to speak as one configured agent.
@@ -66,10 +71,12 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
         });
     }
     // P121: an agent a person allowed to start messages writes in its own channel. Needs only the conversations folder, not the config file.
-    if tools_allowed && config.outreach.iter().any(|o| o.agent == agent.id) {
-        if let Some(dir) = &extras.conversations_dir {
-            extra.push(Arc::new(MessageUserTool::new(agent.id.clone(), dir.clone()).on_changed(extras.on_conversation_changed.clone())));
+    if let (true, Some(entry), Some(dir)) = (tools_allowed, config.outreach.iter().find(|o| o.agent == agent.id), &extras.conversations_dir) {
+        let mut tool = MessageUserTool::new(agent.id.clone(), dir.clone()).on_changed(extras.on_conversation_changed.clone());
+        if let (true, Some(path)) = (extras.forward_outreach, config_path) {
+            tool = tool.forwarding(BotOutbox::beside(path), entry.forward.clone());
         }
+        extra.push(Arc::new(tool));
     }
     if let Some(path) = config_path.filter(|_| tools_allowed) {
         // Lets a "chief" create/edit other agents; every change waits for a person's yes.
