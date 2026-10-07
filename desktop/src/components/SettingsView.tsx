@@ -2,19 +2,21 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, Combo, GitSyncConfig, McpServer, ModelPolicy, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
+import type { AgentEntry, Combo, GitSyncConfig, McpServer, ModelPolicy, OutreachEntry, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
 import ApiKeysSection from "./ApiKeysSection";
 import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
 import { APPROVAL_CATEGORIES } from "../lib/approvalCategories";
 import { descendantsOf, removeFromOrg, renameInReports } from "../lib/org";
 import { delegationCandidates, delegationSummary, dropModel, dropPolicy, nextPolicyId, renameModel, renamePolicy, type PolicyForm } from "../lib/modelPolicies";
+import { dropOutreach, OUTREACH_CHANNELS, outreachForward, outreachOn, renameOutreach, setForward, setOutreach } from "../lib/outreach";
 
 const emptySettings: Settings = {
   providers: [],
   activeProvider: "",
   combos: [],
   modelPolicies: [],
+  outreach: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -632,10 +634,15 @@ function AgentCard({
   toolNames,
   people,
   allAgents,
+  outreach,
+  onOutreach,
   onChange,
   onDelete,
 }: {
   agent: AgentEntry;
+  /** P121 — the agents allowed to start messages, with the external channels each also reaches. */
+  outreach: OutreachEntry[];
+  onOutreach: (next: OutreachEntry[]) => void;
   /** Every agent of the owner's, for the "Reports to" list. */
   allAgents: AgentEntry[];
   providers: ProviderEntry[];
@@ -795,6 +802,33 @@ function AgentCard({
           agents whose tools fit in its own.
         </span>
       </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input type="checkbox" checked={outreachOn(outreach, agent.id)} onChange={(e) => onOutreach(setOutreach(outreach, agent.id, e.currentTarget.checked))} />
+          <span className="settings-label">Can start messages to you</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent write to you first, in its own channel (the Agents screen), for an alert, a report or a reminder. It is an
+          ordinary message in its own words, at most 12 an hour.
+        </span>
+      </label>
+      {outreachOn(outreach, agent.id) && (
+        <div className="settings-field">
+          <span className="settings-label">Also send to</span>
+          {OUTREACH_CHANNELS.map((channel) => (
+            <span key={channel} className="settings-checkbox-row">
+              <input
+                type="checkbox"
+                checked={outreachForward(outreach, agent.id).includes(channel)}
+                onChange={(e) => onOutreach(setForward(outreach, agent.id, channel, e.currentTarget.checked))}
+              />
+              <span className="settings-label">{channel === "telegram" ? "Telegram" : "WhatsApp"}</span>
+            </span>
+          ))}
+          <span className="settings-hint">Only for a scheduled task or a webhook, and only to your own chats on that bot.</span>
+        </div>
+      )}
 
       <label className="settings-field">
         <span className="settings-label">Autonomy</span>
@@ -1368,7 +1402,8 @@ function SettingsView() {
         prevId,
         next.id,
       );
-      return { ...f, agents, sshHosts };
+      // P121: the entry of an agent allowed to start messages follows its new name.
+      return { ...f, agents, sshHosts, outreach: renameOutreach(f.outreach, prevId, next.id) };
     });
   }
 
@@ -1383,7 +1418,7 @@ function SettingsView() {
         return { ...h, agents, enabled: agents.length === 0 ? false : h.enabled };
       });
       // P120: the ones that reported to it report to its superior from now on.
-      return { ...f, agents: removeFromOrg(f.agents, removed), sshHosts };
+      return { ...f, agents: removeFromOrg(f.agents, removed), sshHosts, outreach: dropOutreach(f.outreach, removed) };
     });
   }
 
@@ -1496,6 +1531,7 @@ function SettingsView() {
           active_provider: form.activeProvider,
           combos: form.combos,
           model_policies: form.modelPolicies,
+          outreach: form.outreach,
           vault_path: form.vaultPath,
           generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
@@ -1627,7 +1663,7 @@ function SettingsView() {
           )}
           <div className="provider-list">
             {form.agents.map((a, i) => (
-              <AgentCard key={i} agent={a} allAgents={form.agents} providers={form.providers} combos={form.combos} modelChoices={delegationCandidates(form.providers, form.combos, form.modelPolicies)} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+              <AgentCard key={i} agent={a} outreach={form.outreach} onOutreach={(next) => setForm((f) => ({ ...f, outreach: next }))} allAgents={form.agents} providers={form.providers} combos={form.combos} modelChoices={delegationCandidates(form.providers, form.combos, form.modelPolicies)} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
             ))}
           </div>
         </section>

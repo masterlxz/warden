@@ -21,12 +21,14 @@ import type {
   LimitSettings,
   MachineEdit,
   ModelPolicy,
+  OutreachEntry,
   PriceSettings,
   ProviderEdit,
   ProviderKind,
   UserInfo,
 } from "../hub/messages";
 import { delegationCandidates, delegationSummary, dropModel, dropPolicy, nextPolicyId, renameModel, renamePolicy } from "../hub/modelPolicies";
+import { dropOutreach, OUTREACH_CHANNELS, outreachForward, outreachOn, renameOutreach, setForward, setOutreach } from "../hub/outreach";
 
 // The hub's settings (P78): providers, agents, the Tavily/Whisper keys, spending limits, prices and
 // the git remote the vault syncs to (P61; the Sync tab runs it).
@@ -61,6 +63,8 @@ interface Draft {
   combos: Keyed<Combo>[];
   /** P123 — named model policies. */
   modelPolicies: Keyed<ModelPolicy>[];
+  /** P121 — os agentes que podem iniciar mensagens, por nome de agente (acompanha renomear e remover). */
+  outreach: OutreachEntry[];
   agents: Keyed<AgentSettings>[];
   tavilyKey: SecretDraft;
   whisperKey: SecretDraft;
@@ -98,6 +102,7 @@ function toDraft(s: HubSettings): Draft {
     activeProvider: s.activeProvider,
     combos: (s.combos ?? []).map((c) => keyed({ ...c })),
     modelPolicies: (s.modelPolicies ?? []).map((p) => keyed({ ...p })),
+    outreach: (s.outreach ?? []).map((o) => ({ ...o, forward: [...o.forward] })),
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
     tavilyKey: { saved: s.tavilyKey, edit: KEEP },
     whisperKey: { saved: s.whisperKey, edit: KEEP },
@@ -168,6 +173,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
     activeProvider: d.activeProvider,
     combos: d.combos.map(strip),
     modelPolicies: d.modelPolicies.map(strip),
+    outreach: d.outreach,
     agents: d.agents.map(strip),
     tavilyKey: d.tavilyKey.edit,
     whisperKey: d.whisperKey.edit,
@@ -473,7 +479,13 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
       const before = d.agents.find((a) => a.key === key);
       const agents = d.agents.map((a) => (a.key === key ? { ...a, ...patch } : a));
       // P120: quem reportava a um agente renomeado acompanha o nome novo.
-      return { ...d, agents: before && patch.id !== undefined ? renameInReports(agents, before.id, patch.id) : agents };
+      const renamed = before && patch.id !== undefined;
+      return {
+        ...d,
+        agents: renamed ? renameInReports(agents, before.id, patch.id!) : agents,
+        // P121: a entrada de quem pode iniciar mensagens também acompanha o nome novo.
+        outreach: renamed ? renameOutreach(d.outreach, before.id, patch.id!) : d.outreach,
+      };
     });
   }
 
@@ -836,6 +848,25 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                   Pode criar e editar tarefas agendadas (sempre com a sua aprovação)
                 </label>
                 <label className="settings-check">
+                  <input type="checkbox" checked={outreachOn(draft.outreach, a.id)} onChange={(e) => update((d) => ({ ...d, outreach: setOutreach(d.outreach, a.id, e.target.checked) }))} />
+                  Pode iniciar mensagens para você, no canal dele (no máximo 12 por hora)
+                </label>
+                {outreachOn(draft.outreach, a.id) && (
+                  <fieldset className="settings-tools">
+                    <legend>Mandar também para (só em tarefas agendadas e webhooks, para os seus chats)</legend>
+                    {OUTREACH_CHANNELS.map((channel) => (
+                      <label key={channel} className="settings-check">
+                        <input
+                          type="checkbox"
+                          checked={outreachForward(draft.outreach, a.id).includes(channel)}
+                          onChange={(e) => update((d) => ({ ...d, outreach: setForward(d.outreach, a.id, channel, e.target.checked) }))}
+                        />
+                        {channel === "telegram" ? "Telegram" : "WhatsApp"}
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+                <label className="settings-check">
                   <input
                     type="checkbox"
                     checked={a.allowedTools !== null}
@@ -963,7 +994,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 </fieldset>
               )}
               <div className="skills-actions">
-                <button type="button" className="link-button skills-danger" onClick={() => update((d) => ({ ...d, agents: removeFromOrg(d.agents, a.id) }))}>
+                <button type="button" className="link-button skills-danger" onClick={() => update((d) => ({ ...d, agents: removeFromOrg(d.agents, a.id), outreach: dropOutreach(d.outreach, a.id) }))}>
                   Remover agente
                 </button>
               </div>

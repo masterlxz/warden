@@ -51,6 +51,7 @@ const emptySettings: Settings = {
   activeProvider: "",
   combos: [],
   modelPolicies: [],
+  outreach: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",

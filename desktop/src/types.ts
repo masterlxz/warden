@@ -596,6 +596,13 @@ export interface PriceEntry {
   outputPerMtok: number;
 }
 
+/** An agent allowed to start messages (P121, `[[outreach]]`): it gets `message_user`, and `forward` names the bots (`telegram`,
+ * `whatsapp`) its messages also reach. */
+export interface OutreachEntry {
+  agent: string;
+  forward: string[];
+}
+
 export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
@@ -605,6 +612,8 @@ export interface Settings {
   combos: Combo[];
   /** Named model policies (P123): "fast", "reasoning"..., each answered by a provider or combo. */
   modelPolicies: ModelPolicy[];
+  /** The agents allowed to start messages (P121). */
+  outreach: OutreachEntry[];
   vaultPath: string;
   /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
    * means "unset", resolving at bootstrap time to a sibling of the vault path. */

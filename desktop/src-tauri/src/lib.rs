@@ -38,7 +38,7 @@ use warden_bootstrap::{
     aggregate_usage, bootstrap, build_model_for, default_config_path, scope_to_agent, AgentExtras,
     default_conversations_dir, default_limit_configs, env_switches_limits_off, list_conversations as read_conversations, load_config, load_config_from_path,
     oauth_credential_store_path, resolve_generated_path, resolve_vault_path, save_config,
-    append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig, ModelPolicyConfig,
+    append_messages, AgentConfig, AppendOptions, ChatRole as SavedRole, ConversationMessage, ApiKeys, ComboConfig, Conversation, FileConfig, GitSyncConfig, McpServerConfig, ModelPolicyConfig, OutreachConfig,
     Overrides,
     Provider, ProviderConfig, ThreadParent, UsageSummary,
 };
@@ -491,6 +491,8 @@ struct SettingsSnapshot {
     combos: Vec<ComboConfig>,
     /// Named model policies (P123): "fast", "reasoning"..., each answered by a provider or combo, offered to an agent that delegates.
     model_policies: Vec<ModelPolicyConfig>,
+    /// The agents allowed to start messages (P121, `[[outreach]]`): each gets `message_user`, and `forward` names the bots it also reaches.
+    outreach: Vec<OutreachConfig>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
@@ -526,6 +528,9 @@ struct SettingsFormPayload {
     /// Named model policies (P123). Left out (`null`) keeps the ones on disk, dropping any whose model this save removed.
     #[serde(default)]
     model_policies: Option<Vec<ModelPolicyConfig>>,
+    /// The agents allowed to start messages (P121). Left out (`null`) keeps the ones on disk whose agent this save kept.
+    #[serde(default)]
+    outreach: Option<Vec<OutreachConfig>>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
@@ -585,6 +590,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
         combos: config.combos,
         model_policies: config.model_policies,
+        outreach: config.outreach,
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
         limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
@@ -706,6 +712,13 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         None => existing.model_policies.iter().filter(|p| providers.iter().any(|x| x.id == p.model) || combos.iter().any(|c| c.id == p.model)).cloned().collect(),
     };
 
+    // The agents allowed to start messages (P121): what the form sent, checked against the agents as this save leaves them; with none
+    // sent, the ones on disk whose agent is still there.
+    let outreach = match payload.outreach {
+        Some(list) => warden_bootstrap::settings::check_outreach(list, &agents)?,
+        None => existing.outreach.iter().filter(|o| agents.iter().any(|a| a.owner.is_none() && a.id == o.agent)).cloned().collect(),
+    };
+
     let config = FileConfig {
         // The legacy single-provider fields are only ever read as a fallback when `providers`
         // is empty (see `resolve_model_provider` in warden-bootstrap) — once this screen has
@@ -750,8 +763,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         tasks: existing.tasks,
         // Incoming webhooks (P105) have no Settings screen either (`warden-server webhooks`): dropping them here would delete them.
         webhooks: existing.webhooks,
-        // The agents allowed to start messages (P121) are edited in `config.toml` only: dropping them here would take that permission away.
-        outreach: existing.outreach,
+        outreach,
         tool_categories: existing.tool_categories,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,

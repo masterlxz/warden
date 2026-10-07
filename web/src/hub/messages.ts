@@ -258,6 +258,12 @@ export interface ModelPolicy {
   description?: string;
 }
 
+/** P121 — an agent allowed to start messages (`message_user`); `forward` names the bots (`telegram`, `whatsapp`) it also reaches. */
+export interface OutreachEntry {
+  agent: string;
+  forward: string[];
+}
+
 /** P84 — `person` is one workspace member, on every channel. */
 export type LimitScope = "global" | "agent" | "channel" | "user" | "person";
 
@@ -288,6 +294,8 @@ export interface HubSettings {
   combos: Combo[];
   /** Named model policies (P123). */
   modelPolicies?: ModelPolicy[];
+  /** The agents allowed to start messages (P121). */
+  outreach?: OutreachEntry[];
   agents: AgentSettings[];
   tavilyKey: SecretStatus;
   whisperKey: SecretStatus;
@@ -665,6 +673,8 @@ export interface HubSettingsUpdate {
   combos?: Combo[];
   /** Omitted: the model policies stay, minus any whose model this save removed (P123). */
   modelPolicies?: ModelPolicy[];
+  /** Omitted: the agents allowed to start messages stay, minus any this save deleted (P121). */
+  outreach?: OutreachEntry[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
   /** Omitted: `[learning]` and the bots' lists stay as they are. */

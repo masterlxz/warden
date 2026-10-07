@@ -2,7 +2,21 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-06 (Sessão 152)
+> Última atualização: 2026-10-07 (Sessão 170)
+
+---
+
+### 2026-10-07 — Sessão 170
+
+- **Objetivo**: a tela de edição do `[[outreach]]` (P121): ligar `message_user` e os canais externos de um agente sem editar o `config.toml` à mão. Fiz plano antes e ele foi aprovado.
+- **Protocolo e hub**: `OutreachDto`; `HubSettingsDto.outreach` e `HubSettingsUpdate.outreach` (`Option`: `None` mantém). `settings::check_outreach` (agente do dono que existe, sem repetição, `forward` só `telegram`/`whatsapp`, sem repetição) e `carry_outreach` (sem a lista, as entradas seguem uma renomeação e somem com o agente apagado), ligados em `hub_settings` e `apply_hub_settings`.
+- **Desktop local (Tauri)**: o save deixou de carregar `outreach` adiante sem tocar; recebe `Option<Vec<OutreachConfig>>` e usa `check_outreach`, e o load devolve a lista.
+- **Telas**: no cartão de cada agente, na web (`hub/outreach.ts`, pt) e no desktop (`lib/outreach.ts`, en): checkbox "pode iniciar mensagens" e, ligado, Telegram e WhatsApp; renomear leva a entrada e remover a apaga.
+- **Testes**: `settings` (1 novo, 48 no módulo), protocolo (1 novo, 46), `warden-bootstrap` 416, `warden-server` lib 148, web 20 e desktop 78 (`npm test`), `tsc` limpo nos dois, `cargo check --workspace --all-targets` limpo.
+- **Falha que já existia, não minha**: `warden-server/tests/agent_tasks.rs` (pausar/retomar/parar tarefa) falha 2 de 5 quando os testes rodam em paralelo ("this task isn't running on this machine") e passa com `--test-threads=1`; reproduzi na árvore limpa (`git stash`) e está fora do que esta fatia mexe. Rodando o `warden-server` inteiro com uma thread, tudo passa.
+- **Não verificado**: as duas telas num navegador/janela (ligar, salvar, conferir o `config.toml` e a tool `message_user` aparecendo no agente); a extensão e o celular não têm tela de configurações.
+- **Deslize meu**: um ajuste de imports saiu por um script Python em vez do `Edit` (o diff está em `settings.rs`); o resto foi por `Edit`.
+- **Fica**: notificação do sistema no desktop e na extensão, o feed de atividade e o teste do `forward` com um bot real.
 
 ---
 

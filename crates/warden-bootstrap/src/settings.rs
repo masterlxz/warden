@@ -15,7 +15,7 @@ use anyhow::Context;
 use warden_core::memory::content_version;
 use warden_core::spend::Price;
 use warden_server_protocol::protocol::{
-    AgentSettingsDto, BotsSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, ModelPolicyDto, PriceSettingsDto,
+    AgentSettingsDto, BotsSettingsDto, ComboDto, GitSyncEditDto, GitSyncSettingsDto, HubSettingsDto, HubSettingsUpdate, LimitSettingsDto, ModelPolicyDto, OutreachDto, PriceSettingsDto,
     ProviderSettingsDto, SecretEdit, SecretStatusDto,
 };
 
@@ -24,7 +24,7 @@ use crate::learning::LearningSettings;
 use crate::machine_settings::{advanced_settings, apply_advanced, apply_machine, machine_settings};
 use crate::{
     default_limit_configs, default_model_for, env_switches_limits_off, forget_agent_in_nodes, remove_agent_from, AgentConfig, ComboConfig, FileConfig, GitSyncConfig, LimitConfig, LimitScope,
-    ModelPolicyConfig, Provider, ProviderConfig,
+    ModelPolicyConfig, OutreachConfig, Provider, ProviderConfig,
 };
 
 /// Shortest secret whose last four characters are shown as a hint. Below this, four characters
@@ -306,6 +306,48 @@ pub fn check_policies(policies: Vec<ModelPolicyConfig>, providers: &[ProviderCon
 
 const MAX_POLICY_DESCRIPTION: usize = 200;
 
+/// The agents allowed to start messages (P121), trimmed: each one is an agent of the owner's (a member's own agents are theirs to run, not
+/// this screen's), none twice, and `forward` only names a bot that exists (`telegram`, `whatsapp`), none twice. `agents` is the list as
+/// the save leaves it.
+pub fn check_outreach(list: Vec<OutreachConfig>, agents: &[AgentConfig]) -> Result<Vec<OutreachConfig>, String> {
+    let mut checked: Vec<OutreachConfig> = Vec::with_capacity(list.len());
+    for entry in list {
+        let agent = entry.agent.trim().to_string();
+        if !agents.iter().any(|a| a.owner.is_none() && a.id == agent) {
+            return Err(format!("'{agent}' can't start messages: there is no such agent"));
+        }
+        if checked.iter().any(|o| o.agent == agent) {
+            return Err(format!("agent '{agent}' is listed twice for starting messages"));
+        }
+        let mut forward: Vec<String> = Vec::with_capacity(entry.forward.len());
+        for channel in entry.forward {
+            let channel = channel.trim().to_string();
+            if !matches!(channel.as_str(), crate::bot_pairing::TELEGRAM | crate::bot_pairing::WHATSAPP) {
+                return Err(format!("agent '{agent}' forwards to '{channel}', which is not a channel (telegram or whatsapp)"));
+            }
+            if !forward.contains(&channel) {
+                forward.push(channel);
+            }
+        }
+        checked.push(OutreachConfig { agent, forward });
+    }
+    Ok(checked)
+}
+
+/// What a save that doesn't carry the list keeps (P121): the entries of agents that are still there, under the name a rename gave them.
+fn carry_outreach(existing: Vec<OutreachConfig>, renames: &[(String, String)], agents: &[AgentConfig]) -> Vec<OutreachConfig> {
+    existing
+        .into_iter()
+        .map(|mut entry| {
+            if let Some((_, new)) = renames.iter().find(|(original, _)| *original == entry.agent) {
+                entry.agent = new.trim().to_string();
+            }
+            entry
+        })
+        .filter(|entry| agents.iter().any(|a| a.owner.is_none() && a.id == entry.agent))
+        .collect()
+}
+
 /// The combos (P90), trimmed: a unique name that isn't also a provider's, and at least one
 /// provider, each one configured and none twice.
 pub fn check_combos(combos: Vec<ComboConfig>, providers: &[ProviderConfig]) -> Result<Vec<ComboConfig>, String> {
@@ -396,6 +438,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
         active_provider: config.active_provider.clone().unwrap_or_default(),
         combos: config.combos.iter().map(|c| ComboDto { id: c.id.clone(), providers: c.providers.clone() }).collect(),
         model_policies: config.model_policies.iter().map(|p| ModelPolicyDto { id: p.id.clone(), model: p.model.clone(), description: p.description.clone() }).collect(),
+        outreach: config.outreach.iter().map(|o| OutreachDto { agent: o.agent.clone(), forward: o.forward.clone() }).collect(),
         // P84: members' own agents are theirs — the owner's screen neither shows nor saves them.
         agents: config
             .agents
@@ -610,6 +653,12 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
         }
     }
 
+    // P121: a list that comes in is checked against the agents as this save leaves them; without one, the entries follow the agents.
+    let outreach = match update.outreach {
+        Some(dtos) => check_outreach(dtos.into_iter().map(|o| OutreachConfig { agent: o.agent, forward: o.forward }).collect(), &agents)?,
+        None => carry_outreach(std::mem::take(&mut config.outreach), &renames, &agents),
+    };
+
     config.limits = update.limits.map(limits_into_config).transpose()?;
     config.prices = prices_into_config(update.prices)?;
     config.api_keys.tavily = apply_secret(update.tavily_key, config.api_keys.tavily.take());
@@ -642,6 +691,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     config.active_provider = active_provider;
     config.combos = combos;
     config.model_policies = model_policies;
+    config.outreach = outreach;
     config.agents = agents;
     crate::prune_delegation_models(&mut config);
     Ok(config)
@@ -751,6 +801,7 @@ mod tests {
             git_sync: None,
             combos: None,
             model_policies: None,
+            outreach: None,
             bots: None,
             telegram_token: SecretEdit::Keep,
             advanced: None,
@@ -1420,5 +1471,61 @@ mod tests {
         let after = apply_hub_settings(base(), update).unwrap();
         assert!(after.model_policies.is_empty());
         assert_eq!(after.agents[0].delegation_models, ["main"]);
+    }
+
+    #[test]
+    fn outreach_is_shown_checked_and_follows_the_agents_when_not_sent() {
+        let entry = |agent: &str, forward: &[&str]| OutreachDto { agent: agent.into(), forward: forward.iter().map(|c| c.to_string()).collect() };
+        let base = || {
+            let mut base = sample();
+            base.outreach = vec![OutreachConfig { agent: "pirate".into(), forward: vec!["telegram".into()] }];
+            base
+        };
+        let config = base();
+        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).outreach, vec![entry("pirate", &["telegram"])]);
+
+        // Sent: trimmed, a repeated channel collapses, and the entry is saved as the screen sent it.
+        let mut update = untouched(&config);
+        update.outreach = Some(vec![entry(" pirate ", &[" telegram ", "whatsapp", "telegram"]), entry("chef", &[])]);
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert_eq!(saved.outreach, vec![
+            OutreachConfig { agent: "pirate".into(), forward: vec!["telegram".into(), "whatsapp".into()] },
+            OutreachConfig { agent: "chef".into(), forward: Vec::new() },
+        ]);
+
+        // An empty list turns every agent off.
+        let mut update = untouched(&config);
+        update.outreach = Some(Vec::new());
+        assert!(apply_hub_settings(base(), update).unwrap().outreach.is_empty());
+
+        for bad in [
+            vec![entry("ghost", &[])],
+            vec![entry("pirate", &["discord"])],
+            vec![entry("pirate", &[]), entry("pirate", &[])],
+            vec![entry(" ", &[])],
+        ] {
+            let mut update = untouched(&config);
+            update.outreach = Some(bad.clone());
+            assert!(apply_hub_settings(sample(), update).is_err(), "{bad:?}");
+        }
+
+        // A member's own agent is not on this screen's list.
+        let mut with_member = sample();
+        let mut member = agent("guest-bot");
+        member.owner = Some("guest".into());
+        with_member.agents.push(member);
+        let mut update = untouched(&with_member);
+        update.outreach = Some(vec![entry("guest-bot", &[])]);
+        assert!(apply_hub_settings(with_member, update).is_err());
+
+        // Not sent: kept, followed through a rename, and dropped with a deleted agent.
+        let mut update = untouched(&config);
+        update.agents[0].id = "captain".into();
+        let renamed = apply_hub_settings(base(), update).unwrap();
+        assert_eq!(renamed.outreach, vec![OutreachConfig { agent: "captain".into(), forward: vec!["telegram".into()] }]);
+        let mut update = untouched(&config);
+        update.agents.remove(0);
+        let removed = apply_hub_settings(base(), update).unwrap();
+        assert!(removed.outreach.is_empty());
     }
 }

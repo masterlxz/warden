@@ -859,6 +859,16 @@ pub struct ModelPolicyDto {
     pub description: String,
 }
 
+/// One agent a person allowed to start messages (P121, `[[outreach]]`): it gets `message_user`, and `forward` names the external channels
+/// (`telegram`, `whatsapp`) its messages also go to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutreachDto {
+    pub agent: String,
+    #[serde(default)]
+    pub forward: Vec<String>,
+}
+
 /// One provider switch in a turn (P79): `from` failed with `reason`, `to` answered with `model`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1005,6 +1015,9 @@ pub struct HubSettingsDto {
     /// Named model policies (P123): names an agent that delegates may use for a task's model, each answered by a provider or combo.
     #[serde(default)]
     pub model_policies: Vec<ModelPolicyDto>,
+    /// The agents allowed to start messages (P121): each gets the `message_user` tool.
+    #[serde(default)]
+    pub outreach: Vec<OutreachDto>,
     pub agents: Vec<AgentSettingsDto>,
     pub tavily_key: SecretStatusDto,
     pub whisper_key: SecretStatusDto,
@@ -1255,6 +1268,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) keeps the model policies (P123), dropping any whose model this save removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_policies: Option<Vec<ModelPolicyDto>>,
+    /// `None` (or absent) keeps the agents allowed to start messages (P121), dropping any this save deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outreach: Option<Vec<OutreachDto>>,
     /// `None` (or absent) leaves `[learning]` and the bots' lists as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<BotsSettingsDto>,
@@ -3231,6 +3247,21 @@ mod tests {
     }
 
     #[test]
+    fn the_outreach_list_is_camel_case_and_optional_in_a_save() {
+        let entry = OutreachDto { agent: "pirate".into(), forward: vec!["telegram".into()] };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json, serde_json::json!({ "agent": "pirate", "forward": ["telegram"] }));
+        assert_eq!(serde_json::from_value::<OutreachDto>(serde_json::json!({ "agent": "chef" })).unwrap().forward, Vec::<String>::new(), "no channel when absent");
+
+        // A save that doesn't send it leaves the key out, and a client that doesn't know it reads a view without it as empty.
+        let save = serde_json::json!({
+            "providers": [], "activeProvider": "", "agents": [], "tavilyKey": { "action": "keep" }, "whisperKey": { "action": "keep" },
+            "limits": null, "prices": []
+        });
+        assert_eq!(serde_json::from_value::<HubSettingsUpdate>(save).unwrap().outreach, None);
+    }
+
+    #[test]
     fn settings_messages_round_trip_through_json() {
         let update = HubSettingsUpdate {
             providers: vec![ProviderEditDto {
@@ -3251,6 +3282,7 @@ mod tests {
             git_sync: None,
             combos: None,
             model_policies: None,
+            outreach: None,
             bots: Some(BotsSettingsDto { telegram_allowed_users: vec![42], ..BotsSettingsDto::default() }),
             telegram_token: SecretEdit::Keep,
             advanced: None,
