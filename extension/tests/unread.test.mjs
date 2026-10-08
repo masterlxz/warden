@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { badgeText, baseline, channelsOf, isUnread, markSeen, unreadIds } from "../src/protocol/unread.ts";
+import { badgeText, baseline, channelsOf, isUnread, markSeen, notificationBody, unreadIds } from "../src/protocol/unread.ts";
 
 const conversation = (id, updatedAt) => ({ id, title: id, createdAt: 1, updatedAt });
 
@@ -38,5 +38,11 @@ describe("the unread channels", () => {
     assert.equal(badgeText(2, 5), "!");
     assert.equal(badgeText(0, 3), "3");
     assert.equal(badgeText(0, 0), "");
+  });
+
+  test("a notification shows one flattened, cut line", () => {
+    assert.equal(notificationBody("  **Build**\n\nfailed  on main "), "**Build** failed on main");
+    const long = notificationBody("palavra ".repeat(40), 20);
+    assert.ok(long.length <= 20 && long.endsWith("…"), long);
   });
 });

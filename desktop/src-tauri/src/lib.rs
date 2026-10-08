@@ -1037,6 +1037,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             // P71 — pulls (and, for the git backend, pushes) the vault automatically every few
             // minutes instead of requiring a manual click, for as long as the app stays open. See

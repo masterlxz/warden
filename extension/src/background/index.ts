@@ -19,10 +19,10 @@ import { discoverHubs } from "./discovery";
 import type { ConnectionSettings, ConversationState, PopupRequest } from "./popup_protocol";
 import type { ApprovalPrompt, ConversationSummary, ThreadParent } from "../protocol/messages";
 import { visibleConversations, withMessageIds } from "../protocol/threads";
-import { badgeText, baseline, markSeen, unreadIds, type SeenMap } from "../protocol/unread";
+import { badgeText, baseline, markSeen, notificationBody, unreadIds, type SeenMap } from "../protocol/unread";
 import { toolSpecs, toolHandlers } from "./tools";
 import { addActiveTabToGroup, listGroupTabs, removeTabFromGroup, setGroupChangeListener } from "./tab_group";
-import { setUpPanelOpening, supportsHubDiscovery } from "./platform";
+import { openPanel, setUpPanelOpening, supportsHubDiscovery } from "./platform";
 
 // Makes clicking the toolbar icon open the chat panel (Chrome's side panel, Firefox's sidebar)
 // instead of requiring a `default_popup`. Without this call the icon click has no effect.
@@ -154,6 +154,47 @@ function syncSeen(listLoaded = false): void {
   }
   updateBadge();
 }
+
+/** P121 — tells the person an agent wrote in its channel while the panel was not showing it: a system notification with the agent's name and
+ * the start of the message, as the web does. Its id is the channel's, so a newer one replaces it. Nothing when the change is not an agent's
+ * message (the person's own turn, a task). */
+async function notifyChannel(from: ServerConnection, conversationId: string, list: ConversationSummary[]): Promise<void> {
+  const channel = list.find((c) => c.id === conversationId);
+  if (!channel || !seen || !unreadIds([channel], seen, watching).length) return;
+  let last;
+  try {
+    const recent = await from.fetchHistory(conversationId, 1);
+    last = recent[recent.length - 1];
+  } catch {
+    return;
+  }
+  if (!last || last.role !== "assistant") return;
+  const agent = agentOfChannel(conversationId) ?? channel.title;
+  chrome.notifications
+    .create(conversationId, { type: "basic", iconUrl: chrome.runtime.getURL("icon-128.png"), title: agent, message: notificationBody(last.content) })
+    .catch(() => undefined);
+}
+
+/** The agent whose channel `conversationId` is, when its id was asked of the hub. */
+function agentOfChannel(conversationId: string): string | undefined {
+  return Object.keys(channels).find((a) => channels[a] === conversationId);
+}
+
+/** Makes `id`, the channel of `agent`, the open conversation: the agent is fixed and there is no folder. */
+function showChannel(agent: string, id: string): void {
+  if (id !== activeConversationId) openConversation(id);
+  agentId = agent;
+  workdir = null;
+  broadcastConversations();
+}
+
+// A click on a channel's notification puts the panel on that channel, and opens the panel when the browser lets it.
+chrome.notifications.onClicked.addListener((conversationId) => {
+  openPanel();
+  void chrome.notifications.clear(conversationId);
+  const agent = agentOfChannel(conversationId);
+  if (agent !== undefined) showChannel(agent, conversationId);
+});
 
 /** P87 — re-reads the configured agents. A hub that can't answer leaves the selector empty. */
 async function refreshAgents(from: ServerConnection): Promise<void> {
@@ -331,8 +372,11 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         else setApprovals(approvals.filter((a) => a.approvalId !== event.approvalId));
       });
       connection.onConversationChanged((conversationId) => {
-        // An agent left a note here, or answered one: new list, and the transcript if it's open.
-        void refreshConversations(next);
+        // An agent left a note here, or answered one: new list (and a notification when it is an agent's channel), and the transcript if
+        // it's open.
+        void refreshConversations(next).then((list) => {
+          if (list) void notifyChannel(next, conversationId, list);
+        });
         if (conversationId === activeConversationId && !(conversationId in pendingTurns)) void loadHistory(next, conversationId);
       });
       connection.onChatMessage((entry, conversationId) => {
@@ -451,11 +495,8 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         }
         channels = { ...channels, [request.agentId]: id };
       }
-      if (id !== activeConversationId) openConversation(id);
       // The channel is the agent's for good, and has no folder.
-      agentId = request.agentId;
-      workdir = null;
-      broadcastConversations();
+      showChannel(request.agentId, id);
       return { ok: true };
     }
 

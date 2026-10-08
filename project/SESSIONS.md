@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-07 (Sessão 172)
+> Última atualização: 2026-10-08 (Sessão 173)
+
+---
+
+### 2026-10-08 — Sessão 173
+
+- **Objetivo**: a notificação do sistema no desktop e na extensão (P121), o que faltava do aviso de mensagem nova. Plano aprovado antes.
+- **Regras**: as da web (`notifyChannel`): só canal, não lido, fora da frente (no desktop: a tela Agents com o canal aberto e a janela com foco), e só quando a última mensagem é do agente. `notificationBody` foi copiado para `desktop/src/lib/unread.ts` e `extension/src/protocol/unread.ts`, com teste.
+- **Desktop**: dependência nova `tauri-plugin-notification` (Cargo e npm), registrada em `lib.rs` e com `notification:default` na capability. `loadConversations` devolve a lista do hub; o listener `conversations-changed` chama `notifyChannel` por uma ref. A permissão é pedida ao abrir a tela Agents. Sem clique: o plugin só tem clique no celular. O `cargo add` atualizou o Tauri e o wry no `Cargo.lock` local (fora do git).
+- **Extensão**: permissão `notifications` nos dois navegadores, `public/icon-128.png` (o ícone do desktop), que também entrou como `icons` no manifest. O background cria a notificação com o id do canal; o clique chama `openPanel` (em `platform.ts`, sem `await` antes, para não perder o gesto), deixa o canal aberto (`showChannel`, que agora também serve ao pedido `openAgentChannel`) e fecha a notificação.
+- **Testes**: desktop `tsc` e `npm test` 89; extensão `tsc`, `npm test` 66, `npm run build` e `build:firefox`, com `notifications` e o ícone nos dois manifests; `cargo check -p desktop --all-targets` limpo.
+- **Não verificado**: nenhuma notificação de verdade, nem se o clique abre o painel na extensão. Fica para a rodada de testes juntos.
+- **Fica no P121**: eventos de criar e remover agente e das execuções agendadas; as conversas `A → B` e `task-*` na tela de Agents.
 
 ---
 

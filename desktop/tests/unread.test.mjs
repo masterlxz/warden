@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { baseline, channelsOf, isUnread, markSeen, unreadIds } from "../src/lib/unread.ts";
+import { baseline, channelsOf, isUnread, markSeen, notificationBody, unreadIds } from "../src/lib/unread.ts";
 
 const conversation = (id, updatedAt) => ({ id, title: id, messages: [], createdAt: 1, updatedAt });
 
@@ -33,5 +33,11 @@ describe("the unread channels", () => {
     assert.equal(markSeen(seen, conversation("channel-aa", 4)), seen, "never backwards");
     assert.deepEqual(markSeen(seen, conversation("channel-aa", 12)), { "channel-aa": 12 });
     assert.deepEqual(markSeen(seen, conversation("channel-bb", 3)), { "channel-aa": 10, "channel-bb": 3 });
+  });
+
+  test("a notification shows one flattened, cut line", () => {
+    assert.equal(notificationBody("  **Build**\n\nfailed  on main "), "**Build** failed on main");
+    const long = notificationBody("word ".repeat(40), 20);
+    assert.ok(long.length <= 20 && long.endsWith("…"), long);
   });
 });

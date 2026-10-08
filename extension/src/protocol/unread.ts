@@ -41,3 +41,9 @@ export function badgeText(approvals: number, unread: number): string {
   if (approvals > 0) return "!";
   return unread > 0 ? String(unread) : "";
 }
+
+/** The text of a notification: the last words of the message, cut so it fits one line or two. */
+export function notificationBody(text: string, max = 140): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+}

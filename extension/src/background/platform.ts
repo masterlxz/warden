@@ -24,6 +24,20 @@ export function setUpPanelOpening(): void {
   }
 }
 
+/** P121 — opens the chat panel from a click on a notification. Both browsers only open it from a user
+ * gesture, and whether a notification's click counts as one is theirs to say: a refusal just leaves
+ * the panel closed, already set on the channel for when the person opens it. Called with no `await`
+ * before the open: a gesture does not outlive one. */
+export function openPanel(): void {
+  // Not counted as a gesture here: the icon still opens it.
+  const refused = () => undefined;
+  if (chrome.sidePanel) {
+    chrome.sidePanel.open({ windowId: chrome.windows.WINDOW_ID_CURRENT }).catch(refused);
+    return;
+  }
+  chrome.sidebarAction?.open().catch(refused);
+}
+
 /** LAN hub discovery (`discovery.ts`) needs the machine's own IPv4 addresses, which only Chrome's
  * `system.network` exposes to an extension — Firefox has no equivalent, so there the host is
  * typed by hand. Safe to call from both the background and the panel. */

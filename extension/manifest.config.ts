@@ -20,7 +20,10 @@ export const PANEL_PAGE = "src/sidepanel/index.html";
 // side panel, and that click is itself the gesture that grants `activeTab` for that tab — this
 // permission only lets the extension *organize* tabs visually, it grants no content access by
 // itself. No broadening of `activeTab`'s reach, no `tabs`/`host_permissions` added.
-const SHARED_PERMISSIONS = ["storage", "scripting", "activeTab", "tabGroups"];
+// `notifications` (P121) — a system notification when an agent writes in its channel and the panel
+// isn't showing it, as the web and the phone do. Shows no page content; the browser asks for it on
+// install/update ("Display notifications").
+const SHARED_PERMISSIONS = ["storage", "scripting", "activeTab", "tabGroups", "notifications"];
 
 // Chrome-only permissions, dropped from the Firefox build (no such API there):
 // `sidePanel` — chat UI is a docked side panel, not a popup that closes on blur (see
@@ -36,6 +39,9 @@ const BASE = {
   name: "Warden",
   version: "0.1.0",
   description: "Chat com o Warden a partir do navegador.",
+  // The desktop app's icon (`public/`, copied as is into the build). Chrome won't show a notification
+  // without one (P121), and the toolbar and the extensions page use it too.
+  icons: { "128": "icon-128.png" },
   // No `default_popup` on purpose — the icon opens the panel (`background/platform.ts`). Firefox
   // needs the key to show a toolbar button at all; Chrome shows one either way.
   action: { default_title: "Warden" },

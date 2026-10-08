@@ -39,9 +39,10 @@ import {
   type RemoteState,
   type RemoteStatePayload,
 } from "./lib/hub";
-import { decorateLastAnswer, mergeConversations } from "./lib/hubMap";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { decorateLastAnswer, mergeConversations, type HubConversationSummary } from "./lib/hubMap";
 import { isAgentChannel, threadHistory, threadsOf, visibleConversations } from "./lib/threads";
-import { baseline, loadSeen, markSeen, saveSeen, unreadIds, type SeenMap } from "./lib/unread";
+import { baseline, isUnread, loadSeen, markSeen, notificationBody, saveSeen, unreadIds, type SeenMap } from "./lib/unread";
 import AgentContacts from "./components/AgentContacts";
 import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
@@ -196,21 +197,58 @@ function App() {
     return load.then(setSettings).catch((err) => console.error("failed to load settings:", err));
   }
 
-  /** The conversation list of the machine in use. On a hub it has no messages: they come when one is opened. */
-  function loadConversations(): Promise<void> {
+  /** The conversation list of the machine in use. On a hub it has no messages: they come when one is opened. Resolves to the hub's list,
+   * for the notification of a channel (P121); to nothing on this computer or when the hub could not answer. */
+  function loadConversations(): Promise<HubConversationSummary[] | undefined> {
     if (activeHubRef.current === null) {
       return invoke<Conversation[]>("list_conversations")
-        .then(setConversations)
-        .catch((err) => console.error("failed to load conversation history:", err));
+        .then((saved) => {
+          setConversations(saved);
+          return undefined;
+        })
+        .catch((err) => {
+          console.error("failed to load conversation history:", err);
+          return undefined;
+        });
     }
     return hubListConversations()
       .then((summaries) => {
         setConversations((prev) => mergeConversations(prev, summaries, startedHere.current));
         // The first run on this app: what is there already counts as seen, so the first list does not light up every channel (P121).
         setSeen((current) => current ?? baseline(summaries));
+        return summaries;
       })
-      .catch((err) => console.error("failed to load the hub's conversations:", err));
+      .catch((err) => {
+        console.error("failed to load the hub's conversations:", err);
+        return undefined;
+      });
   }
+
+  /** P121 — tells the person an agent wrote in its channel while they were not looking at it: a system notification with the agent's name
+   * and the start of the message. Nothing when the channel is open and the window has focus, when the change is not an agent's message
+   * (the person's own turn, a task), or when notifications are not allowed. The desktop plugin has no click on a notification (only the
+   * phone's has), so it only tells; the channel is a click away on the Agents screen, with its dot. */
+  async function notifyChannel(conversationId: string, list: HubConversationSummary[]) {
+    if (!isAgentChannel(conversationId)) return;
+    const channel = list.find((c) => c.id === conversationId);
+    if (!channel) return;
+    const watching = view === "agents" && activeConversationId === conversationId && document.hasFocus();
+    if (watching || !seen || !isUnread(channel, seen, null)) return;
+    let last;
+    try {
+      if (!(await isPermissionGranted())) return;
+      const recent = await hubHistory(conversationId);
+      last = recent[recent.length - 1];
+    } catch {
+      return;
+    }
+    if (!last || last.role !== "assistant") return;
+    const agent = Object.keys(channels).find((a) => channels[a] === conversationId) ?? channel.title;
+    sendNotification({ title: agent, body: notificationBody(last.content) });
+  }
+  // The listener below is set up once: it calls the latest one, which sees the current screen, marks and channels.
+  const notifyChannelRef = useRef(notifyChannel);
+  notifyChannelRef.current = notifyChannel;
 
   /** The hub's nodes, for the folder browser and for naming a folder that is on one. A hub with none, or a member (who can't
    * ask), leaves it empty: the hub's own folders are still there. */
@@ -269,8 +307,11 @@ function App() {
   useEffect(() => {
     const unlisten = listen<string>("conversations-changed", (event) => {
       if (activeHubRef.current !== null) {
-        // On a hub: the list again, and the open conversation's messages if it is the one that changed.
-        loadConversations();
+        // On a hub: the list again (and a notification when it is an agent's channel), and the open conversation's messages if it is the
+        // one that changed.
+        void loadConversations().then((list) => {
+          if (list) void notifyChannelRef.current(event.payload, list);
+        });
         if (event.payload === activeConversationRef.current) loadHistory(event.payload);
         return;
       }
@@ -460,6 +501,14 @@ function App() {
       );
     }
   }, [remoteReady, settings, channels]);
+
+  // Opening the Agents screen is when the app asks to be allowed to tell the person an agent wrote (P121), as the web does.
+  useEffect(() => {
+    if (view !== "agents") return;
+    isPermissionGranted()
+      .then((granted) => (granted ? undefined : requestPermission()))
+      .catch(() => undefined);
+  }, [view]);
 
   // Remembered across runs, so a message that came while the app was closed is still unread when it opens.
   useEffect(() => saveSeen(seen), [seen]);

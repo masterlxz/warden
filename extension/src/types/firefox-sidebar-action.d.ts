@@ -8,6 +8,7 @@ declare namespace chrome {
   var sidebarAction:
     | {
         toggle(): Promise<void>;
+        open(): Promise<void>;
       }
     | undefined;
 }
