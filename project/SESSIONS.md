@@ -2,7 +2,20 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-07 (Sessão 170)
+> Última atualização: 2026-10-07 (Sessão 171)
+
+---
+
+### 2026-10-07 — Sessão 171
+
+- **Objetivo**: o feed de atividade (P121, `VISAO_AGENTES` §32), primeira fatia: hub e web. Plano aprovado antes; a tela do `[[outreach]]` foi commitada antes de começar (`f03c25f`).
+- **Desenho**: **derivado, sem log novo** e sem ponto de escrita novo. `warden-bootstrap/src/activity.rs` lê as tarefas delegadas (`delegated`, `started`, `done`/`failed`/`cancelled`), os recados entre agentes (`note`/`reply`, conversas `agents-…`) e as mensagens que o agente escreveu primeiro (`messaged_user`, conversas `channel-…`; uma resposta à pessoa não conta). Só abre os arquivos com esses prefixos, no diretório do aparelho e no das tarefas agendadas (o dono tem os dois). Ordem: mais novo primeiro; no mesmo milissegundo a etapa mais adiantada vem antes (fim, início, delegação), e o id desempata.
+- **Protocolo e hub**: `ActivityEventDto`, `ListActivity` → `ActivityList`; `warden-server/src/activity_list.rs`; membro recebe a lista vazia.
+- **Web**: aba "Atividade" (`ActivityView`), `hub/activity.ts` puro (frase e marca por tipo, filtro por agente, grupos por dia, destino do clique), atualiza a cada 3 s; o clique abre o trabalho do agente, a conversa entre dois agentes ou o canal.
+- **Testes**: `activity.rs` (7), JSON do protocolo (1), integração `tests/activity.rs` com um hub real (2), web `npm test` 30 e `tsc`, e2e de navegador `activity.test.mjs` (2 de 2), `cargo check --workspace --all-targets` limpo, `warden-bootstrap` 423, protocolo 47, `warden-server` inteiro com uma thread só sem falha.
+- **Falhas que já existiam, não minhas** (reproduzidas na árvore limpa com `git stash`): `warden-server/tests/agent_tasks.rs` falha 2 de 5 em paralelo (passa com `--test-threads=1`); e o e2e `web/e2e/threads.test.mjs` ("the list opens the conversation and leaves the thread out...") falha na asserção do texto `E a da Itália?` dentro do painel de thread. Nenhum dos dois toca o feed.
+- **Não verificado**: a aba numa janela de verdade (só o teste de navegador contra o hub real).
+- **Fica**: o feed no desktop (hub), na extensão e no celular; eventos de criar e remover agente e das execuções agendadas (pedem um ponto de escrita); a notificação do sistema no desktop e na extensão.
 
 ---
 

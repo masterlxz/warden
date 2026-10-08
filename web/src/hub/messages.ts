@@ -258,6 +258,20 @@ export interface ModelPolicy {
   description?: string;
 }
 
+/** P121 — algo que aconteceu entre os agentes, no feed de atividade. `kind`: `delegated`, `started`, `done`, `failed`, `cancelled` (as
+ * tarefas, com `taskId`), `note`, `reply` (agentes escrevendo uns aos outros) ou `messaged_user` (o agente escrevendo primeiro para a
+ * pessoa); os três últimos trazem a `conversationId`. `actor` vazio é o assistente que atende sem agente escolhido. */
+export interface ActivityEvent {
+  id: string;
+  atMs: number;
+  kind: string;
+  actor: string;
+  target?: string;
+  text: string;
+  taskId?: string;
+  conversationId?: string;
+}
+
 /** P121 — an agent allowed to start messages (`message_user`); `forward` names the bots (`telegram`, `whatsapp`) it also reaches. */
 export interface OutreachEntry {
   agent: string;
@@ -798,6 +812,8 @@ export type ClientMessage =
   | { type: "listTasks"; requestId: number }
   /** P123 — o trabalho que os agentes passaram uns aos outros em segundo plano, respondido por `agentTaskList`. */
   | { type: "listAgentTasks"; requestId: number }
+  /** P121 — o feed de atividade, respondido por `activityList`. Só o dono; o membro recebe a lista vazia. */
+  | { type: "listActivity"; requestId: number }
   /** Pausa, retoma ou para (`pause`, `resume`, `cancel`) uma tarefa que roda no hub, com as subtarefas. Dono; pede a chave de pareamento. */
   | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
   /** P120 — uma mudança na organização dos agentes, pela árvore. Dono; pede a chave de pareamento; respondida como um salvar (`settingsSaved`). */
@@ -921,6 +937,7 @@ export type ServerMessage =
   /** `runsHere`: this hub runs the tasks on schedule. */
   | { type: "taskList"; requestId: number; tasks: TaskInfo[]; runsHere: boolean }
   | { type: "agentTaskList"; requestId: number; tasks: AgentTask[] }
+  | { type: "activityList"; requestId: number; events: ActivityEvent[] }
   | { type: "taskError"; requestId: number; message: string; authRejected: boolean }
   /** `servesHere`: this hub takes the calls (`/hooks/<id>`). */
   | { type: "webhookList"; requestId: number; webhooks: WebhookInfo[]; servesHere: boolean }
@@ -1064,6 +1081,10 @@ export function decode(text: string): ServerMessage {
     case "agentTaskList": {
       const raw = json as { requestId: number; tasks: AgentTask[] };
       return { type: "agentTaskList", requestId: raw.requestId, tasks: raw.tasks ?? [] };
+    }
+    case "activityList": {
+      const raw = json as { requestId: number; events: ActivityEvent[] };
+      return { type: "activityList", requestId: raw.requestId, events: raw.events ?? [] };
     }
     case "webhookList": {
       const raw = json as { requestId: number; webhooks: WebhookInfo[]; servesHere?: boolean };

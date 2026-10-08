@@ -1670,6 +1670,10 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::ListAgentTasks { request_id }) => {
                     let _ = tx.send(crate::agent_task_list::handle_list_agent_tasks(agent_tasks.as_deref().map(|p| p.as_path()), member.is_none(), request_id));
                 }
+                Ok(ClientMessage::ListActivity { request_id }) => {
+                    let dirs: Vec<&Path> = std::iter::once(conversation_dirs.device.as_path()).chain(conversation_dirs.tasks.as_deref()).collect();
+                    let _ = tx.send(crate::activity_list::handle_list_activity(agent_tasks.as_deref().map(|p| p.as_path()), &dirs, member.is_none(), request_id));
+                }
                 Ok(ClientMessage::ControlAgentTask { request_id, pairing_key, task_id, action }) => {
                     let (log, auth_key, is_owner, reply_tx) = (agent_tasks.clone(), auth_key.clone(), member.is_none(), tx.clone());
                     tokio::spawn(async move {

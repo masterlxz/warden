@@ -37,6 +37,7 @@ pub mod agent_tasks;
 pub mod auto_sync;
 pub mod history;
 pub mod bot_access;
+pub mod activity;
 pub mod bot_hub;
 pub mod bot_outbox;
 pub mod bot_pairing;

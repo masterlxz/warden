@@ -31,6 +31,7 @@ import {
   type UsageReport,
   type NodeInfo,
   type NodeFolder,
+  type ActivityEvent,
   type AgentTask,
   type AgentTaskAction,
   type DirListing,
@@ -553,6 +554,7 @@ export class ServerConnection {
       case "syncStatus":
       case "taskList":
       case "agentTaskList":
+      case "activityList":
       case "webhookList":
       case "webhookCreated":
       case "nodeList":
@@ -857,6 +859,13 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "listAgentTasks", requestId }));
     if (reply.type !== "agentTaskList") throw new Error("resposta inesperada do hub");
     return reply.tasks;
+  }
+
+  /** O feed de atividade (P121): o que aconteceu entre os agentes, do mais novo ao mais antigo. Só leitura. */
+  async listActivity(): Promise<ActivityEvent[]> {
+    const reply = await this.request((requestId) => ({ type: "listActivity", requestId }));
+    if (reply.type !== "activityList") throw new Error("resposta inesperada do hub");
+    return reply.events;
   }
 
   /** Pausa, retoma ou para uma tarefa delegada que roda no hub (P123), com as subtarefas abaixo dela. Pede a chave de pareamento; rejeita

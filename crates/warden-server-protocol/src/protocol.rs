@@ -859,6 +859,25 @@ pub struct ModelPolicyDto {
     pub description: String,
 }
 
+/// One thing that happened among the agents (P121), for the feed of activity. `kind` is `delegated`, `started`, `done`, `failed`, `cancelled`
+/// (the delegated tasks, with `task_id`), `note`, `reply` (agents writing each other) or `messaged_user` (an agent writing first to the
+/// person); the last three carry the `conversation_id` to open. An empty `actor` is the assistant the person talks to without picking an agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEventDto {
+    pub id: String,
+    pub at_ms: u64,
+    pub kind: String,
+    pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+}
+
 /// One agent a person allowed to start messages (P121, `[[outreach]]`): it gets `message_user`, and `forward` names the external channels
 /// (`telegram`, `whatsapp`) its messages also go to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1700,6 +1719,11 @@ pub enum ClientMessage {
     ListAgentTasks {
         request_id: u64,
     },
+    /// The feed of activity (P121): who delegated, started and finished what, the notes agents left each other and the messages they started
+    /// to the person, newest first, answered by `ActivityList`. Read only, for the owner: a member gets an empty list.
+    ListActivity {
+        request_id: u64,
+    },
     /// Pauses, resumes or stops (`action`: `pause`, `resume` or `cancel`) a task agents delegated (P123) that is running on this
     /// hub; the subtasks below it follow. Owner only and asks for the pairing key, like any change. Answered by the updated
     /// `AgentTaskList`, or by `TaskError` (a task that isn't running here, or a wrong key).
@@ -2310,6 +2334,11 @@ pub enum ServerMessage {
     AgentTaskList {
         request_id: u64,
         tasks: Vec<AgentTaskDto>,
+    },
+    /// Reply to `ListActivity` (P121): the events, newest first.
+    ActivityList {
+        request_id: u64,
+        events: Vec<ActivityEventDto>,
     },
     /// A task request failed. `auth_rejected`: the pairing key was wrong; nothing changed.
     TaskError {
@@ -3244,6 +3273,32 @@ mod tests {
         let json = serde_json::to_value(&answer).unwrap();
         assert_eq!(json, serde_json::json!({ "type": "providerTest", "requestId": 6, "ok": false, "kind": "rejected", "message": "Gemini rejected the key." }));
         assert_eq!(serde_json::from_value::<ServerMessage>(json).unwrap(), answer);
+    }
+
+    #[test]
+    fn the_feed_of_activity_is_asked_for_and_listed() {
+        let ask = ClientMessage::ListActivity { request_id: 9 };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(json, r#"{"type":"listActivity","requestId":9}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), ask);
+
+        let event = |kind: &str, target: Option<&str>, task: Option<&str>, conversation: Option<&str>| ActivityEventDto {
+            id: format!("{kind}-1"),
+            at_ms: 5,
+            kind: kind.into(),
+            actor: "manager".into(),
+            target: target.map(Into::into),
+            text: "build the API".into(),
+            task_id: task.map(Into::into),
+            conversation_id: conversation.map(Into::into),
+        };
+        let reply = ServerMessage::ActivityList { request_id: 9, events: vec![event("delegated", Some("backend"), Some("at-1"), None), event("messaged_user", None, None, Some("channel-00ff"))] };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"activityList","requestId":9,"events":[{"id":"delegated-1","atMs":5,"kind":"delegated","actor":"manager","target":"backend","text":"build the API","taskId":"at-1"},{"id":"messaged_user-1","atMs":5,"kind":"messaged_user","actor":"manager","text":"build the API","conversationId":"channel-00ff"}]}"#
+        );
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
     }
 
     #[test]

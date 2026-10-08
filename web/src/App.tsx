@@ -16,6 +16,7 @@ import RecoveryCodeView from "./components/RecoveryCodeView";
 import RecoveryNoticeView from "./components/RecoveryNoticeView";
 import SettingsView from "./components/SettingsView";
 import OrganizationView from "./components/OrganizationView";
+import ActivityView from "./components/ActivityView";
 import AgentTasksView from "./components/AgentTasksView";
 import SkillsView from "./components/SkillsView";
 import SyncView from "./components/SyncView";
@@ -46,7 +47,7 @@ type Phase =
   /** Paired. `connected: false` = the connection dropped and a reconnect is scheduled. */
   | { kind: "ready"; connected: boolean };
 
-type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization" | "agentWork" | "agents";
+type View = "chat" | "vault" | "usage" | "skills" | "projects" | "tasks" | "webhooks" | "devices" | "people" | "sync" | "settings" | "myAgents" | "myApi" | "organization" | "agentWork" | "activity" | "agents";
 
 const SEEN_KEY = "warden.channelSeen";
 
@@ -852,6 +853,9 @@ export default function App() {
               >
                 Trabalho dos agentes
               </button>
+              <button type="button" className={view === "activity" ? "tab tab--active" : "tab"} onClick={() => setView("activity")}>
+                Atividade
+              </button>
               <button type="button" className={view === "tasks" ? "tab tab--active" : "tab"} onClick={() => setView("tasks")}>
                 Tarefas
               </button>
@@ -1089,6 +1093,21 @@ export default function App() {
           <SettingsView conn={conn} />
         ) : view === "agentWork" ? (
           <AgentTasksView conn={conn} agent={agentWorkFilter} onClearAgent={() => setAgentWorkFilter(null)} />
+        ) : view === "activity" ? (
+          <ActivityView
+            conn={conn}
+            onOpen={(to) => {
+              if (to.kind === "tasks") {
+                setAgentWorkFilter(to.agent);
+                setView("agentWork");
+              } else if (to.kind === "conversation") {
+                openConversation(to.id);
+              } else {
+                setView("agents");
+                void openAgentChannel(to.agent);
+              }
+            }}
+          />
         ) : view === "organization" ? (
           <OrganizationView
             conn={conn}
