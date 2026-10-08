@@ -36,6 +36,10 @@ use crate::{
 /// A task's conversation is `task-<id>`, and a hub conversation id is at most 64 characters.
 pub const MAX_TASK_ID_LEN: usize = 59;
 pub const CONVERSATION_PREFIX: &str = "task-";
+/// How the prompt of a scheduled run starts in its conversation; the feed of activity (P121) tells a run from a person's message by it.
+pub(crate) const RUN_INPUT_PREFIX: &str = "[Scheduled task '";
+/// How the answer of an unattended run that could not run starts.
+pub(crate) const COULD_NOT_RUN_PREFIX: &str = "(could not run:";
 /// The shortest `every`.
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// How much of the task's conversation a run sends to the model: the last ten runs. A daily task
@@ -552,7 +556,7 @@ pub async fn run_task_notifying(
     on_changed: Option<ConversationsChanged>,
 ) -> anyhow::Result<MessageOutcome> {
     let zone = Zone::parse(task.timezone.as_deref()).unwrap_or(Zone::Local);
-    let input = format!("[Scheduled task '{}', {}]\n\n{}", task.id, zone.format(now_ms), task.prompt.trim());
+    let input = format!("{RUN_INPUT_PREFIX}{}', {}]\n\n{}", task.id, zone.format(now_ms), task.prompt.trim());
     let turn = UnattendedTurn {
         conversation: conversation_id(&task.id),
         title: format!("Tarefa: {}", task.id),
@@ -599,7 +603,7 @@ pub(crate) async fn run_unattended_turn(base: &Orchestrator, config: &FileConfig
     let reply = match &outcome {
         Ok(outcome) => assistant_message(outcome),
         // In the conversation too, so whoever opens it sees why this run has no answer.
-        Err(err) => plain_message(ChatRole::Assistant, format!("(could not run: {err:#})")),
+        Err(err) => plain_message(ChatRole::Assistant, format!("{COULD_NOT_RUN_PREFIX} {err:#})")),
     };
     let options = AppendOptions { title_seed: &title, agent_id: agent, provider_id: None, project_id: None, create: true, ..Default::default() };
     append_messages(conversations_dir, &conversation, options, vec![user, reply])?;

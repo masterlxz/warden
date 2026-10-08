@@ -20,8 +20,18 @@ describe("the sentence of an event", () => {
     assert.equal(headline(event("delegated", "", { target: "writer" })), "O assistente delegou uma tarefa a writer");
   });
 
+  test("tells agents made or removed by another, and the runs of scheduled tasks and webhooks", () => {
+    assert.equal(headline(event("created_agent", "chief", { target: "poet" })), "chief criou o agente poet");
+    assert.equal(headline(event("removed_agent", "chief", { target: "poet" })), "chief removeu o agente poet");
+    assert.equal(headline(event("scheduled_ran", "reporter", { target: "daily" })), "reporter rodou a tarefa agendada daily");
+    assert.equal(headline(event("scheduled_failed", "reporter", { target: "daily" })), "A tarefa agendada daily falhou");
+    assert.equal(headline(event("webhook_ran", "", { target: "build" })), "O assistente atendeu o webhook build");
+    assert.equal(headline(event("webhook_failed", "", { target: "build" })), "O webhook build falhou");
+  });
+
   test("every kind has a mark, and an unknown one still reads", () => {
-    for (const kind of ["delegated", "started", "done", "failed", "cancelled", "note", "reply", "messaged_user"]) assert.notEqual(mark(kind), "·");
+    const kinds = ["delegated", "started", "done", "failed", "cancelled", "note", "reply", "messaged_user", "created_agent", "removed_agent", "scheduled_ran", "scheduled_failed", "webhook_ran", "webhook_failed"];
+    for (const kind of kinds) assert.notEqual(mark(kind), "·");
     assert.equal(mark("later"), "·");
     assert.equal(headline(event("later", "x")), "x: later");
   });
@@ -37,6 +47,13 @@ describe("the agents", () => {
 
   test("the list of agents is sorted and leaves out the nameless one", () => {
     assert.deepEqual(agentsIn(events), ["backend", "manager", "pirate"]);
+  });
+
+  test("the task or webhook a run is about is not an agent; the agent it made is", () => {
+    const more = [event("scheduled_ran", "reporter", { target: "daily" }), event("created_agent", "chief", { target: "poet" })];
+    assert.deepEqual(agentsIn(more), ["chief", "poet", "reporter"]);
+    assert.deepEqual(involving(more, "daily"), []);
+    assert.deepEqual(involving(more, "poet").map((e) => e.kind), ["created_agent"]);
   });
 });
 
@@ -55,6 +72,11 @@ describe("where a click goes", () => {
     assert.deepEqual(destination(event("done", "backend", { taskId: "t1" })), { kind: "tasks", agent: "backend" });
     assert.equal(destination(event("done", "", { taskId: "t1" })), null, "no agent to filter by");
     assert.equal(destination(event("later", "x")), null);
+  });
+
+  test("a run opens its conversation, and an agent made or removed opens nothing", () => {
+    assert.deepEqual(destination(event("scheduled_ran", "reporter", { target: "daily", conversationId: "task-daily" })), { kind: "conversation", id: "task-daily" });
+    assert.equal(destination(event("created_agent", "chief", { target: "poet" })), null);
   });
 });
 

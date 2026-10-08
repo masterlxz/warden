@@ -22,8 +22,20 @@ void main() {
       expect(activityHeadline(_event('delegated', '', target: 'writer')), 'The assistant delegated a task to writer');
     });
 
+    test('tells agents made or removed by another, and the runs of scheduled tasks and webhooks', () {
+      expect(activityHeadline(_event('created_agent', 'chief', target: 'poet')), 'chief created the agent poet');
+      expect(activityHeadline(_event('removed_agent', 'chief', target: 'poet')), 'chief removed the agent poet');
+      expect(activityHeadline(_event('scheduled_ran', 'reporter', target: 'daily')), 'reporter ran the scheduled task daily');
+      expect(activityHeadline(_event('scheduled_failed', 'reporter', target: 'daily')), 'The scheduled task daily failed');
+      expect(activityHeadline(_event('webhook_ran', '', target: 'build')), 'The assistant answered the webhook build');
+      expect(activityHeadline(_event('webhook_failed', '', target: 'build')), 'The webhook build failed');
+    });
+
     test('every kind has a mark, and an unknown one still reads', () {
-      for (final kind in ['delegated', 'started', 'done', 'failed', 'cancelled', 'note', 'reply', 'messaged_user']) {
+      for (final kind in [
+        'delegated', 'started', 'done', 'failed', 'cancelled', 'note', 'reply', 'messaged_user', //
+        'created_agent', 'removed_agent', 'scheduled_ran', 'scheduled_failed', 'webhook_ran', 'webhook_failed',
+      ]) {
         expect(activityMark(kind), isNot('·'), reason: kind);
       }
       expect(activityMark('later'), '·');
@@ -47,6 +59,13 @@ void main() {
     test('the list of agents is sorted and leaves out the nameless one', () {
       expect(activityAgents(events), ['backend', 'manager', 'pirate']);
     });
+
+    test('the task or webhook a run is about is not an agent; the agent it made is', () {
+      final more = [_event('scheduled_ran', 'reporter', target: 'daily'), _event('created_agent', 'chief', target: 'poet')];
+      expect(activityAgents(more), ['chief', 'poet', 'reporter']);
+      expect(activityInvolving(more, 'daily'), isEmpty);
+      expect(activityInvolving(more, 'poet').map((e) => e.kind), ['created_agent']);
+    });
   });
 
   group('where a tap goes', () {
@@ -66,6 +85,14 @@ void main() {
       expect(activityDestination(_event('done', 'backend', taskId: 't1')), const ActivityDestination(ActivityTarget.tasks, agent: 'backend'));
       expect(activityDestination(_event('done', '', taskId: 't1')), isNull, reason: 'no agent to filter by');
       expect(activityDestination(_event('later', 'x')), isNull);
+    });
+
+    test('a run opens its conversation, and an agent made or removed opens nothing', () {
+      expect(
+        activityDestination(_event('scheduled_ran', 'reporter', target: 'daily', conversationId: 'task-daily')),
+        const ActivityDestination(ActivityTarget.conversation, conversationId: 'task-daily'),
+      );
+      expect(activityDestination(_event('created_agent', 'chief', target: 'poet')), isNull);
     });
   });
 

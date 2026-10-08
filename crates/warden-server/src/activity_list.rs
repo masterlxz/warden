@@ -22,9 +22,10 @@ pub fn to_dto(event: ActivityEvent) -> ActivityEventDto {
     }
 }
 
-/// Answers `ListActivity`. `tasks_log` is `None` on a hub that keeps none; `conversations_dirs` are the owner's (the device's and the
-/// scheduled tasks').
-pub fn handle_list_activity(tasks_log: Option<&Path>, conversations_dirs: &[&Path], is_owner: bool, request_id: u64) -> ServerMessage {
-    let events = if is_owner { read_activity(tasks_log, conversations_dirs, MAX_EVENTS).into_iter().map(to_dto).collect() } else { Vec::new() };
+/// Answers `ListActivity`. `tasks_log` is `None` on a hub that keeps none, and so is `config_path` on a hub with no settings file (the log of
+/// agents created and removed lives next to it); `conversations_dirs` are the owner's (the device's and the scheduled tasks').
+pub fn handle_list_activity(tasks_log: Option<&Path>, config_path: Option<&Path>, conversations_dirs: &[&Path], is_owner: bool, request_id: u64) -> ServerMessage {
+    let changes = config_path.map(warden_bootstrap::agent_changes::beside);
+    let events = if is_owner { read_activity(tasks_log, changes.as_deref(), conversations_dirs, MAX_EVENTS).into_iter().map(to_dto).collect() } else { Vec::new() };
     ServerMessage::ActivityList { request_id, events }
 }

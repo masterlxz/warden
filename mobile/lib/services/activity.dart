@@ -8,11 +8,23 @@ const noAgentName = 'The assistant';
 
 String _who(String name) => name.trim().isEmpty ? noAgentName : name;
 
+/// The runs of scheduled tasks and webhooks: their target is the id of the task or the webhook, not an agent.
+const _runKinds = {'scheduled_ran', 'scheduled_failed', 'webhook_ran', 'webhook_failed'};
+
+/// The agent the event is done to, when its target is an agent.
+String? _targetAgent(ActivityEvent event) => _runKinds.contains(event.kind) ? null : event.target;
+
 /// The sentence of an event, without its text (the text is the objective, the answer or the message).
 String activityHeadline(ActivityEvent event) {
   final actor = _who(event.actor);
   final target = event.target == null ? '' : _who(event.target!);
   return switch (event.kind) {
+    'created_agent' => '$actor created the agent $target',
+    'removed_agent' => '$actor removed the agent $target',
+    'scheduled_ran' => '$actor ran the scheduled task $target',
+    'scheduled_failed' => 'The scheduled task $target failed',
+    'webhook_ran' => '$actor answered the webhook $target',
+    'webhook_failed' => 'The webhook $target failed',
     'delegated' => '$actor delegated a task to $target',
     'started' => '$actor started the task',
     'done' => '$actor finished the task',
@@ -30,8 +42,12 @@ String activityMark(String kind) => switch (kind) {
       'delegated' => '→',
       'started' => '▶',
       'done' => '✓',
-      'failed' => '✕',
+      'failed' || 'scheduled_failed' || 'webhook_failed' => '✕',
       'cancelled' => '■',
+      'created_agent' => '+',
+      'removed_agent' => '−',
+      'scheduled_ran' => '⏱',
+      'webhook_ran' => '⚡',
       'note' || 'reply' => '✉',
       'messaged_user' => '●',
       _ => '·',
@@ -39,14 +55,14 @@ String activityMark(String kind) => switch (kind) {
 
 /// The events an agent appears in, doing or receiving.
 List<ActivityEvent> activityInvolving(List<ActivityEvent> events, String agent) =>
-    [for (final e in events) if (e.actor == agent || e.target == agent) e];
+    [for (final e in events) if (e.actor == agent || _targetAgent(e) == agent) e];
 
-/// The agents that appear in the events, alphabetical, without the nameless assistant.
+/// The agents that appear in the events, alphabetical, without the nameless assistant (nor the id of a scheduled task or a webhook).
 List<String> activityAgents(List<ActivityEvent> events) {
   final names = <String>{};
   for (final e in events) {
     if (e.actor.trim().isNotEmpty) names.add(e.actor);
-    final target = e.target;
+    final target = _targetAgent(e);
     if (target != null && target.trim().isNotEmpty) names.add(target);
   }
   return names.toList()..sort((a, b) => a.compareTo(b));

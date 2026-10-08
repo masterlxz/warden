@@ -4,13 +4,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use warden_bootstrap::agent_changes::{self, AgentChange};
 use warden_bootstrap::agent_tasks::FileTaskRecorder;
 use warden_bootstrap::message_agent::{channel_id, thread_id, thread_title};
 use warden_bootstrap::{append_messages, AppendOptions, ChatRole, ConversationMessage};
 use warden_core::jobs::{TaskOutcome, TaskRecorder, TaskSpec};
 use warden_core::memory::Vault;
 use warden_core::orchestrator::Orchestrator;
-use warden_server::{ClientMessage, Server, ServerConnection, ServerMessage};
+use warden_server::{ClientMessage, Server, ServerConnection, ServerMessage, SettingsHost};
 
 struct NoModel;
 
@@ -27,12 +28,27 @@ fn unique_dir(what: &str) -> PathBuf {
     dir
 }
 
+/// The settings file the hub was started with: the log of agents created and removed sits next to it.
+struct Settings(PathBuf);
+
+#[async_trait::async_trait]
+impl SettingsHost for Settings {
+    fn config_path(&self) -> PathBuf {
+        self.0.clone()
+    }
+
+    async fn build(&self) -> anyhow::Result<Orchestrator> {
+        anyhow::bail!("these tests never rebuild")
+    }
+}
+
 async fn spin_up(dir: &std::path::Path, log: Option<PathBuf>) -> String {
     let orchestrator = Orchestrator::new(Arc::new(NoModel), Arc::new(Vault::new(dir.join("vault"))));
     let server = Server::bind("127.0.0.1:0".parse().unwrap(), "test-key", "Test Hub", Arc::new(orchestrator), dir.join("conversations"), dir.join("devices.json"))
         .await
         .unwrap()
-        .with_agent_tasks(log);
+        .with_agent_tasks(log)
+        .with_settings(Arc::new(Settings(dir.join("config.toml"))));
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.serve());
     format!("ws://{addr}")
@@ -96,6 +112,26 @@ async fn the_feed_joins_tasks_notes_and_messages_the_agent_started_newest_first(
     assert_eq!((note.target.as_deref(), note.text.as_str(), note.conversation_id.as_deref()), (Some("bia"), "review this?", Some(thread_id("ana", "bia").as_str())));
     let done = events.iter().find(|e| e.kind == "done").unwrap();
     assert_eq!((done.text.as_str(), done.task_id.as_deref()), ("an API", Some(id.as_str())));
+}
+
+#[tokio::test]
+async fn a_scheduled_run_and_an_agent_another_one_created_are_in_the_feed() {
+    let dir = unique_dir("activity-runs");
+    let later = 9_000_000_000_000;
+    seed(
+        &dir,
+        "task-daily",
+        "Tarefa: daily",
+        vec![message("m1", ChatRole::User, "[Scheduled task 'daily', today]\n\nsum up", later), message("m2", ChatRole::Assistant, "all quiet", later + 1)],
+    );
+    let change = AgentChange { at_ms: later as u64 + 2, kind: "created".into(), actor: "chief".into(), agent: "poet".into(), detail: "Poet".into() };
+    agent_changes::record(&agent_changes::beside(&dir.join("config.toml")), &change);
+
+    let events = list(&spin_up(&dir, None).await).await;
+
+    let summary: Vec<_> = events.iter().map(|e| (e.kind.as_str(), e.actor.as_str(), e.target.as_deref())).collect();
+    assert_eq!(summary, [("created_agent", "chief", Some("poet")), ("scheduled_ran", "", Some("daily"))]);
+    assert_eq!(events[1].conversation_id.as_deref(), Some("task-daily"));
 }
 
 #[tokio::test]

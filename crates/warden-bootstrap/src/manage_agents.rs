@@ -30,6 +30,7 @@ use warden_core::autonomy::Category;
 use warden_core::tool::delegate_to_agent::AgentsRevision;
 use warden_core::tool::{ApprovalRequest, Approver, Tool, ToolSpec};
 
+use crate::agent_changes::{self, AgentChange};
 use crate::{load_config_from_path, org, remove_agent_from, save_config, AgentConfig, FileConfig, SshHostConfig, SAFE_AGENT_TOOLS};
 
 const MAX_ID_CHARS: usize = 64;
@@ -220,6 +221,7 @@ impl ManageAgentsTool {
         if let Some(revision) = &self.revision {
             revision.bump();
         }
+        self.record_change(&change);
         let message = match change {
             Change::Delete { .. } => format!("Agent '{}' deleted.", change.id()),
             Change::Create { .. } | Change::Update { .. } => format!(
@@ -230,6 +232,18 @@ impl ManageAgentsTool {
             ),
         };
         Ok(json!({ "status": "ok", "message": message }))
+    }
+
+    /// P121: an agent created or removed goes to the feed of activity, next to the config it was saved in. An edit does not.
+    fn record_change(&self, change: &Change) {
+        let (kind, detail) = match change {
+            Change::Create { persona, role, .. } => ("created", role.clone().unwrap_or_else(|| persona.chars().take(LIST_PERSONA_PREVIEW_CHARS).collect())),
+            Change::Delete { .. } => ("removed", String::new()),
+            Change::Update { .. } => return,
+        };
+        let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let actor = self.rules.caller.clone().unwrap_or_default();
+        agent_changes::record(&agent_changes::beside(&self.config_path), &AgentChange { at_ms, kind: kind.into(), actor, agent: change.id().to_string(), detail });
     }
 }
 
@@ -753,6 +767,27 @@ mod tests {
         let asked = approver.asked.lock().unwrap();
         assert_eq!((asked[0].action.as_str(), asked[0].target.as_str()), ("create_agent", "linux-admin"));
         assert!(asked[0].detail.contains("You administer Linux servers.") && asked[0].detail.contains("local"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_created_or_removed_is_written_for_the_feed_and_a_refused_or_edited_one_is_not() {
+        let path = write_config(vec![agent("chief", true, true)]);
+        let log = crate::agent_changes::beside(&path);
+        let with = |answer: bool| {
+            let approver = Arc::new(Scripted { answer, asked: Mutex::new(Vec::new()) });
+            ManageAgentsTool::new(&path).with_caller("chief").with_approver(approver).unwrap()
+        };
+
+        with(false).call(json!({ "action": "create", "id": "poet", "persona": "You write poems." })).await.unwrap_err();
+        assert!(crate::agent_changes::read_agent_changes(&log).is_empty(), "a refused change is not written");
+
+        with(true).call(json!({ "action": "create", "id": "poet", "persona": "You write poems.", "role": "Poet" })).await.unwrap();
+        with(true).call(json!({ "action": "update", "id": "poet", "persona": "You write short poems." })).await.unwrap();
+        with(true).call(json!({ "action": "delete", "id": "poet" })).await.unwrap();
+
+        let changes = crate::agent_changes::read_agent_changes(&log);
+        let seen: Vec<(&str, &str, &str, &str)> = changes.iter().map(|c| (c.kind.as_str(), c.actor.as_str(), c.agent.as_str(), c.detail.as_str())).collect();
+        assert_eq!(seen, vec![("created", "chief", "poet", "Poet"), ("removed", "chief", "poet", "")], "the edit is not written");
     }
 
     #[tokio::test]

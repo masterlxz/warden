@@ -8,11 +8,29 @@ export const NO_AGENT_NAME = "The assistant";
 
 const who = (name: string) => (name.trim() === "" ? NO_AGENT_NAME : name);
 
+/** The runs of scheduled tasks and webhooks: their target is the id of the task or the webhook, not an agent. */
+const RUN_KINDS = new Set(["scheduled_ran", "scheduled_failed", "webhook_ran", "webhook_failed"]);
+
+/** The agent the event is done to, when its target is an agent. */
+const targetAgent = (event: ActivityEvent) => (RUN_KINDS.has(event.kind) ? undefined : event.target ?? undefined);
+
 /** The sentence of an event, without its text (the text is the objective, the answer or the message). */
 export function headline(event: ActivityEvent): string {
   const actor = who(event.actor);
   const target = event.target ? who(event.target) : "";
   switch (event.kind) {
+    case "created_agent":
+      return `${actor} created the agent ${target}`;
+    case "removed_agent":
+      return `${actor} removed the agent ${target}`;
+    case "scheduled_ran":
+      return `${actor} ran the scheduled task ${target}`;
+    case "scheduled_failed":
+      return `The scheduled task ${target} failed`;
+    case "webhook_ran":
+      return `${actor} answered the webhook ${target}`;
+    case "webhook_failed":
+      return `The webhook ${target} failed`;
     case "delegated":
       return `${actor} delegated a task to ${target}`;
     case "started":
@@ -44,9 +62,19 @@ export function mark(kind: string): string {
     case "done":
       return "✓";
     case "failed":
+    case "scheduled_failed":
+    case "webhook_failed":
       return "✕";
     case "cancelled":
       return "■";
+    case "created_agent":
+      return "+";
+    case "removed_agent":
+      return "−";
+    case "scheduled_ran":
+      return "⏱";
+    case "webhook_ran":
+      return "⚡";
     case "note":
     case "reply":
       return "✉";
@@ -59,15 +87,16 @@ export function mark(kind: string): string {
 
 /** The events an agent appears in, doing or receiving. */
 export function involving(events: ActivityEvent[], agent: string): ActivityEvent[] {
-  return events.filter((e) => e.actor === agent || e.target === agent);
+  return events.filter((e) => e.actor === agent || targetAgent(e) === agent);
 }
 
-/** The agents that appear in the events, alphabetical, without the nameless assistant. */
+/** The agents that appear in the events, alphabetical, without the nameless assistant (nor the id of a scheduled task or a webhook). */
 export function agentsIn(events: ActivityEvent[]): string[] {
   const names = new Set<string>();
   for (const e of events) {
     if (e.actor.trim() !== "") names.add(e.actor);
-    if (e.target && e.target.trim() !== "") names.add(e.target);
+    const target = targetAgent(e);
+    if (target && target.trim() !== "") names.add(target);
   }
   return [...names].sort((a, b) => a.localeCompare(b));
 }

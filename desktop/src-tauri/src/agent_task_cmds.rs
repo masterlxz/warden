@@ -12,14 +12,16 @@ pub fn list_agent_tasks() -> Vec<AgentTaskDto> {
     warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok()).map(|path| agent_task_dtos(&path)).unwrap_or_default()
 }
 
-/// The feed of activity of this computer (P121): the tasks agents delegated and the notes they left each other, read from the files the
-/// engine already writes. There are no agent channels here (those are the hub's), so only what exists on this computer shows.
+/// The feed of activity of this computer (P121): the tasks agents delegated, the notes they left each other and the agents one created or
+/// removed, read from the files the engine already writes. There are no agent channels here (those are the hub's), so only what exists on
+/// this computer shows.
 #[tauri::command]
 pub fn list_activity() -> Vec<ActivityEventDto> {
     let tasks = warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok());
+    let changes = warden_bootstrap::default_config_path().map(|path| warden_bootstrap::agent_changes::beside(&path));
     let conversations = warden_bootstrap::default_conversations_dir();
     let dirs: Vec<&std::path::Path> = conversations.as_deref().into_iter().collect();
-    warden_bootstrap::activity::read_activity(tasks.as_deref(), &dirs, warden_bootstrap::activity::MAX_EVENTS).into_iter().map(to_dto).collect()
+    warden_bootstrap::activity::read_activity(tasks.as_deref(), changes.as_deref(), &dirs, warden_bootstrap::activity::MAX_EVENTS).into_iter().map(to_dto).collect()
 }
 
 /// Pauses, resumes or stops (`action`: `pause`, `resume` or `cancel`) a task of this computer's engine, with the subtasks below it.

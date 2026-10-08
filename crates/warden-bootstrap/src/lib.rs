@@ -32,6 +32,7 @@ use warden_core::tool::spend_tool::BudgetTool;
 use warden_core::tool::ssh::{ssh_tools, AuditLog, SshHost};
 use warden_core::tool::{Tool, ToolProvider};
 
+pub mod agent_changes;
 pub mod agent_scope;
 pub mod agent_tasks;
 pub mod auto_sync;

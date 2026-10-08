@@ -1672,7 +1672,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 }
                 Ok(ClientMessage::ListActivity { request_id }) => {
                     let dirs: Vec<&Path> = std::iter::once(conversation_dirs.device.as_path()).chain(conversation_dirs.tasks.as_deref()).collect();
-                    let _ = tx.send(crate::activity_list::handle_list_activity(agent_tasks.as_deref().map(|p| p.as_path()), &dirs, member.is_none(), request_id));
+                    let config_path = settings.as_deref().map(|host| host.config_path());
+                    let _ = tx.send(crate::activity_list::handle_list_activity(agent_tasks.as_deref().map(|p| p.as_path()), config_path.as_deref(), &dirs, member.is_none(), request_id));
                 }
                 Ok(ClientMessage::ControlAgentTask { request_id, pairing_key, task_id, action }) => {
                     let (log, auth_key, is_owner, reply_tx) = (agent_tasks.clone(), auth_key.clone(), member.is_none(), tx.clone());

@@ -2,7 +2,20 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-08 (Sessão 173)
+> Última atualização: 2026-10-08 (Sessão 174)
+
+---
+
+### 2026-10-08 — Sessão 174
+
+- **Objetivo**: os eventos que faltavam no feed de atividade (P121): criar e remover agente, e as execuções de tarefa agendada e de webhook. Plano aprovado antes. **Decisão do usuário**: criar/remover entra só quando um **agente** faz (`manage_agents`); o que a pessoa faz pela tela fica de fora.
+- **Achado**: cada execução sem ninguém olhando já acrescenta prompt e resposta à conversa dela (`run_unattended_turn`), então as execuções ficam **derivadas, sem ponto de escrita**. Os prefixos do prompt (`tasks::RUN_INPUT_PREFIX`, `webhooks::RUN_INPUT_PREFIX`) e o da falha (`COULD_NOT_RUN_PREFIX`) viraram constantes usadas por quem escreve e por quem lê.
+- **Bootstrap**: `activity::run_events` (`scheduled_ran`/`scheduled_failed`/`webhook_ran`/`webhook_failed`) e `change_events` (`created_agent`/`removed_agent`); `read_activity` abre também os `task-*` e recebe o log de mudanças. Módulo novo `agent_changes.rs` (JSONL ao lado do `config.toml`, append sem lock, lê os 200 mais novos, falha em silêncio); `ManageAgentsTool::record_change` depois do save aprovado (editar não grava).
+- **Hub e desktop**: `handle_list_activity` recebe o `config_path` do `SettingsHost`; o `list_activity` do Tauri usa `default_config_path()`. Protocolo sem mudança.
+- **Clientes**: frase e marca dos seis kinds nos quatro módulos puros; o alvo de uma execução (id da tarefa ou do webhook) não entra no filtro por agente; clique numa execução abre a conversa, em criar/remover não abre nada.
+- **Testes**: `warden-bootstrap` 429 (3 de `activity`, 2 de `agent_changes`, 1 de `manage_agents` novos), `warden-server --test activity` 3 (1 novo), `cargo check --workspace --all-targets` e clippy sem aviso novo; web 33 e `tsc`, desktop 92 e `tsc`, extensão 69 e `tsc`, celular 220 e `flutter analyze` limpo.
+- **Não verificado**: as telas numa janela.
+- **Fica**: compactar o `agent_changes.jsonl`; uma conversa de tarefa longa é lida inteira a cada pedido; as conversas `A → B` e `task-*` na tela de Agents (pede decisão).
 
 ---
 
