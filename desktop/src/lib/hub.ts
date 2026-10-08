@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Attachment,
   AgentEntry,
+  ActivityEvent,
   AgentTask,
   AgentTaskAction,
   ChatMessage,
@@ -213,6 +214,11 @@ export function hubTasks(askKey: KeyAsker) {
 /** The work agents delegated to each other on the hub in use (P123), newest first. Read only, so no pairing key. */
 export async function hubAgentTasks(): Promise<AgentTask[]> {
   return (await ask<{ type: string; tasks: AgentTask[] }>({ type: "listAgentTasks" }, "agentTaskList")).tasks;
+}
+
+/** The feed of activity of the hub in use (P121): what happened among the agents, newest first. Read only, so no pairing key. */
+export async function hubActivity(): Promise<ActivityEvent[]> {
+  return (await ask<{ type: string; events: ActivityEvent[] }>({ type: "listActivity" }, "activityList")).events;
 }
 
 /** Pauses, resumes or stops a task running on the hub in use (P123), with the subtasks below it. It changes what the hub is doing, so it

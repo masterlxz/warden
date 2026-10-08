@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../protocol/messages.dart';
+import '../services/activity.dart';
 import '../services/agent_work.dart';
 import '../services/server_connection.dart' show HubRequestException;
 
@@ -17,6 +18,8 @@ class AgentsScreen extends StatefulWidget {
     super.key,
     required this.backend,
     this.onOpenChat,
+    this.onOpenConversation,
+    this.onOpenChannel,
     this.refreshEvery = const Duration(seconds: 3),
   });
 
@@ -24,6 +27,12 @@ class AgentsScreen extends StatefulWidget {
 
   /// Starts a conversation with this agent; the screen closes after it. Null hides the action.
   final void Function(String agentId)? onOpenChat;
+
+  /// Opens a conversation by id (an event of the feed, P121); the screen closes after it. Null leaves those events without a tap.
+  final void Function(String conversationId)? onOpenConversation;
+
+  /// Opens the channel of this agent (an event of the feed, P121); the screen closes after it. Null leaves those events without a tap.
+  final void Function(String agentId)? onOpenChannel;
 
   /// How often the task list reloads while it is open. Null never reloads (tests).
   final Duration? refreshEvery;
@@ -33,7 +42,7 @@ class AgentsScreen extends StatefulWidget {
 }
 
 class _AgentsScreenState extends State<AgentsScreen> with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
+  late final TabController _tabs = TabController(length: 3, vsync: this);
 
   /// The agent whose tasks the Tasks tab shows (null: all).
   String? _taskAgent;
@@ -56,7 +65,11 @@ class _AgentsScreenState extends State<AgentsScreen> with SingleTickerProviderSt
         title: const Text('Agents'),
         bottom: TabBar(
           controller: _tabs,
-          tabs: const [Tab(key: Key('tab-organization'), text: 'Organization'), Tab(key: Key('tab-tasks'), text: 'Tasks')],
+          tabs: const [
+            Tab(key: Key('tab-organization'), text: 'Organization'),
+            Tab(key: Key('tab-tasks'), text: 'Tasks'),
+            Tab(key: Key('tab-activity'), text: 'Activity'),
+          ],
         ),
       ),
       body: TabBarView(
@@ -77,6 +90,28 @@ class _AgentsScreenState extends State<AgentsScreen> with SingleTickerProviderSt
             agent: _taskAgent,
             onClearAgent: () => setState(() => _taskAgent = null),
             refreshEvery: widget.refreshEvery,
+          ),
+          ActivityTab(
+            backend: widget.backend,
+            refreshEvery: widget.refreshEvery,
+            onOpen: (to) {
+              switch (to.target) {
+                case ActivityTarget.tasks:
+                  _openTasks(to.agent!);
+                case ActivityTarget.conversation:
+                  final open = widget.onOpenConversation;
+                  if (open != null) {
+                    Navigator.of(context).pop();
+                    open(to.conversationId!);
+                  }
+                case ActivityTarget.channel:
+                  final open = widget.onOpenChannel;
+                  if (open != null) {
+                    Navigator.of(context).pop();
+                    open(to.agent!);
+                  }
+              }
+            },
           ),
         ],
       ),
@@ -895,6 +930,124 @@ class _AgentTasksTabState extends State<AgentTasksTab> {
               child: Text(agent != null ? 'No task involves $agent yet.' : 'Nothing yet. When an agent delegates a task with "background", it shows up here.'),
             ),
           for (final g in groups) ...[_header(g), for (final row in g.rows) _row(row)],
+        ],
+      ),
+    );
+  }
+}
+
+/// P121 — the feed of activity: who did what among the agents, newest first, without opening each conversation. A tap goes to what
+/// the event touches ([onOpen]): the agent's tasks, the conversation between two agents, or the agent's channel.
+class ActivityTab extends StatefulWidget {
+  const ActivityTab({super.key, required this.backend, required this.onOpen, this.refreshEvery});
+
+  final AgentsBackend backend;
+  final void Function(ActivityDestination to) onOpen;
+  final Duration? refreshEvery;
+
+  @override
+  State<ActivityTab> createState() => _ActivityTabState();
+}
+
+class _ActivityTabState extends State<ActivityTab> {
+  List<ActivityEvent>? _events;
+  String? _error;
+  String _agent = '';
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    final every = widget.refreshEvery;
+    if (every != null) _timer = Timer.periodic(every, (_) => _load());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final events = await widget.backend.listActivity();
+      if (mounted) {
+        setState(() {
+          _events = events;
+          _error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  String _time(int ms) {
+    final t = DateTime.fromMillisecondsSinceEpoch(ms);
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(t.hour)}:${two(t.minute)}';
+  }
+
+  Widget _row(ActivityEvent event) {
+    final to = activityDestination(event);
+    return ListTile(
+      key: Key('activity-${event.id}'),
+      dense: true,
+      leading: Text(activityMark(event.kind), style: Theme.of(context).textTheme.titleMedium),
+      title: Text(activityHeadline(event)),
+      subtitle: event.text.isEmpty ? Text(_time(event.atMs)) : Text('${_time(event.atMs)} · ${event.text}', maxLines: 3, overflow: TextOverflow.ellipsis),
+      onTap: to == null ? null : () => widget.onOpen(to),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final events = _events;
+    if (events == null) {
+      return Center(
+        child: _error != null
+            ? Padding(padding: const EdgeInsets.all(16), child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)))
+            : const CircularProgressIndicator(),
+      );
+    }
+    final agents = activityAgents(events);
+    // The filter names an agent that may leave the feed (its events aged out): then it shows everyone again.
+    final chosen = agents.contains(_agent) ? _agent : '';
+    final days = activityByDay(chosen.isEmpty ? events : activityInvolving(events, chosen), DateTime.now());
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Text(
+            'What happened among the agents on this hub: who delegated, started and finished what, the notes they left each other and the messages an agent wrote first to you.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          DropdownButton<String>(
+            key: const Key('activity-filter'),
+            value: chosen,
+            isExpanded: true,
+            items: [
+              const DropdownMenuItem(value: '', child: Text('All agents')),
+              for (final name in agents) DropdownMenuItem(value: name, child: Text(name)),
+            ],
+            onChanged: (value) => setState(() => _agent = value ?? ''),
+          ),
+          if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
+          if (days.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text(chosen.isNotEmpty ? 'Nothing involves $chosen yet.' : 'Nothing yet. When agents delegate tasks, leave each other notes or write to you, it shows up here.'),
+            ),
+          for (final day in days) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 12, 4, 4),
+              child: Text(day.label, style: Theme.of(context).textTheme.titleSmall),
+            ),
+            for (final event in day.events) _row(event),
+          ],
         ],
       ),
     );

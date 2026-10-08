@@ -2465,6 +2465,65 @@ body {
   margin-top: 0.4em;
 }
 
+/* P121: the feed of activity. */
+.activity-filter {
+  max-width: 18rem;
+}
+
+.activity-day-title {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.9em;
+  opacity: 0.7;
+}
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.activity-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
+.activity-mark {
+  flex: none;
+  width: 1.2em;
+  text-align: center;
+}
+
+.activity-item--failed .activity-mark,
+.activity-item--cancelled .activity-mark {
+  color: #c0392b;
+}
+
+.activity-item--done .activity-mark {
+  color: #2e8b57;
+}
+
+.activity-headline {
+  text-align: left;
+}
+
+.activity-text {
+  margin: 0.1rem 0 0;
+  opacity: 0.75;
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
 /* P123: the work agents delegated to each other. */
 .agent-work-group {
   margin: 1rem 0;

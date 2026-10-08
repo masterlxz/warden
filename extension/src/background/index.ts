@@ -507,6 +507,14 @@ async function handleRequest(request: PopupRequest): Promise<unknown> {
         return { ok: false, tasks: [], error: err instanceof Error ? err.message : String(err), authRejected: err instanceof HubRequestError && err.authRejected };
       }
 
+    case "listActivity":
+      if (!connection || connection.status.kind !== "connected") return { ok: false, events: [], error: "not connected" };
+      try {
+        return { ok: true, events: await connection.listActivity() };
+      } catch (err) {
+        return { ok: false, events: [], error: err instanceof Error ? err.message : String(err) };
+      }
+
     case "listHubAgents":
     case "editAgentOrg":
       if (!connection || connection.status.kind !== "connected") return { ok: false, error: "not connected" };

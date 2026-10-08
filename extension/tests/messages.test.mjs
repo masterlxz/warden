@@ -87,6 +87,18 @@ describe("decoding the delegated tasks", () => {
   });
 });
 
+describe("decoding the feed of activity (P121)", () => {
+  test("the events come through as the hub sent them, optional fields left out", () => {
+    const events = [
+      { id: "at-1-delegated", atMs: 5, kind: "delegated", actor: "manager", target: "dev", text: "build it", taskId: "at-1" },
+      { id: "c-m1", atMs: 9, kind: "messaged_user", actor: "pirate", text: "disk full", conversationId: "channel-1" },
+    ];
+    const reply = decode(JSON.stringify({ type: "activityList", requestId: 8, events }));
+    assert.equal(reply.type, "activityList");
+    assert.deepEqual(reply.events, events);
+  });
+});
+
 describe("the models a hub offers", () => {
   test("settings carry the ids of the providers and combos, apart from the policies", () => {
     const reply = decode(

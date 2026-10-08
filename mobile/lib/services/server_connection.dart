@@ -341,6 +341,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
               SettingsSavedMessage() ||
               SettingsErrorMessage() ||
               AgentTaskListMessage() ||
+              ActivityListMessage() ||
               TaskErrorMessage() ||
               ApprovalRequestMessage() ||
               ApprovalCancelledMessage() ||
@@ -392,6 +393,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
             SettingsSavedMessage(:final requestId) ||
             SettingsErrorMessage(:final requestId) ||
             AgentTaskListMessage(:final requestId) ||
+            ActivityListMessage(:final requestId) ||
             TaskErrorMessage(:final requestId):
         _pendingConversation.remove(requestId)?.complete(msg);
       case PasswordChangedMessage(:final requestId) ||
@@ -512,6 +514,16 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
       AgentTaskListMessage(:final tasks) => tasks,
       TaskErrorMessage(:final message) => throw ConversationException(message),
       _ => throw ConversationException('Unexpected reply to the task list: $reply'),
+    };
+  }
+
+  /// P121 — the feed of activity: what happened among the agents, newest first.
+  @override
+  Future<List<ActivityEvent>> listActivity() async {
+    final reply = await _conversationRequest(ListActivityMessage.new);
+    return switch (reply) {
+      ActivityListMessage(:final events) => events,
+      _ => throw ConversationException('Unexpected reply to the activity list: $reply'),
     };
   }
 

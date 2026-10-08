@@ -236,6 +236,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             widget.transcript.startNew();
             widget.transcript.selectAgent(agentId);
           },
+          onOpenConversation: widget.transcript.open,
+          onOpenChannel: (agent) async {
+            final messenger = ScaffoldMessenger.of(context);
+            try {
+              await widget.transcript.openAgentChannel(agent);
+            } catch (e) {
+              messenger.showSnackBar(SnackBar(content: Text("Couldn't open the channel: $e")));
+            }
+          },
         ),
       ),
     );

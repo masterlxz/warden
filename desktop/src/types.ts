@@ -596,6 +596,20 @@ export interface PriceEntry {
   outputPerMtok: number;
 }
 
+/** Something that happened among the agents (P121), for the feed of activity. `kind`: `delegated`, `started`, `done`, `failed`, `cancelled`
+ * (the delegated tasks, with `taskId`), `note`, `reply` (agents writing each other) or `messaged_user` (an agent writing first to the
+ * person); the last three carry the `conversationId`. An empty `actor` is the assistant that answers with no agent picked. */
+export interface ActivityEvent {
+  id: string;
+  atMs: number;
+  kind: string;
+  actor: string;
+  target?: string;
+  text: string;
+  taskId?: string;
+  conversationId?: string;
+}
+
 /** An agent allowed to start messages (P121, `[[outreach]]`): it gets `message_user`, and `forward` names the bots (`telegram`,
  * `whatsapp`) its messages also reach. */
 export interface OutreachEntry {

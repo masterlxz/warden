@@ -9,6 +9,7 @@ import Sidebar from "./components/Sidebar";
 import SettingsView from "./components/SettingsView";
 import UsageView from "./components/UsageView";
 import OrganizationView from "./components/OrganizationView";
+import ActivityView from "./components/ActivityView";
 import AgentTasksView from "./components/AgentTasksView";
 import SkillsView from "./components/SkillsView";
 import ProjectsView from "./components/ProjectsView";
@@ -123,7 +124,7 @@ function App() {
   // How much each code conversation asks (P103 b), by conversation id — "new" for one that hasn't started. Only here,
   // never saved: a conversation opened again asks everything.
   const [codeModes, setCodeModes] = useState<Record<string, CodeMode>>({});
-  const [view, setView] = useState<"chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork">("chat");
+  const [view, setView] = useState<"chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork" | "activity">("chat");
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [selectedAgentId, setSelectedAgentId] = useState("");
   /** P121 — the id of each agent's channel on the hub in use (the hub makes it from the agent's name), asked for once the agents are known. */
@@ -765,6 +766,7 @@ function App() {
           setAgentWorkFilter(null);
           setView("agentWork");
         }}
+        onOpenActivity={() => setView("activity")}
         view={view}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
@@ -799,6 +801,22 @@ function App() {
         <WorkspaceView />
       ) : view === "agentWork" ? (
         <AgentTasksView key={activeHubId ?? "local"} remote={remote} agent={agentWorkFilter} onClearAgent={() => setAgentWorkFilter(null)} />
+      ) : view === "activity" ? (
+        <ActivityView
+          key={activeHubId ?? "local"}
+          remote={remote}
+          onOpen={(to) => {
+            if (to.kind === "tasks") {
+              setAgentWorkFilter(to.agent);
+              setView("agentWork");
+            } else if (to.kind === "conversation") {
+              selectConversation(to.id);
+            } else {
+              setView("agents");
+              void openAgentChannel(to.agent);
+            }
+          }}
+        />
       ) : view === "organization" ? (
         <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
       ) : (

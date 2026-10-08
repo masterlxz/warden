@@ -17,6 +17,9 @@ abstract interface class AgentsBackend {
   Future<HubAgents> editAgentOrg(String pairingKey, OrgEdit edit);
   Future<List<AgentTask>> listAgentTasks();
   Future<List<AgentTask>> controlAgentTask(String pairingKey, String taskId, String action);
+
+  /// P121 — the feed of activity, newest first.
+  Future<List<ActivityEvent>> listActivity();
 }
 
 // ---- P120: the organization tree. Mirrors `web/src/hub/org.ts`. ----

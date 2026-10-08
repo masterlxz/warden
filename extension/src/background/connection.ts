@@ -13,6 +13,7 @@
 import {
   encode,
   decode,
+  type ActivityEvent,
   type AgentTask,
   type AgentTaskAction,
   type ApprovalPrompt,
@@ -297,6 +298,7 @@ export class ServerConnection {
       case "settings":
       case "settingsSaved":
       case "agentTaskList":
+      case "activityList":
       case "skillList":
       case "skillOk":
       case "history":
@@ -379,6 +381,13 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "listAgentTasks", requestId }));
     if (reply.type !== "agentTaskList") throw new Error("unexpected reply from the hub");
     return reply.tasks;
+  }
+
+  /** P121 — the feed of activity: what happened among the agents, newest first. Read only. */
+  async listActivity(): Promise<ActivityEvent[]> {
+    const reply = await this.request((requestId) => ({ type: "listActivity", requestId }));
+    if (reply.type !== "activityList") throw new Error("unexpected reply from the hub");
+    return reply.events;
   }
 
   /** P123 — pauses, resumes or stops a task running on the hub, with the pairing key. Returns the updated list. Rejects with

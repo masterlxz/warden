@@ -92,6 +92,20 @@ export type AgentTaskState = "pending" | "running" | "waiting" | "paused" | "don
 /** O que dá para fazer com uma tarefa em andamento, pela tela. */
 export type AgentTaskAction = "pause" | "resume" | "cancel";
 
+/** Mirrors `ActivityEventDto` (P121): algo que aconteceu entre os agentes, no feed de atividade. `kind`: `delegated`, `started`, `done`, `failed`,
+ * `cancelled` (as tarefas, com `taskId`), `note`, `reply` (agentes escrevendo uns aos outros) ou `messaged_user` (o agente escrevendo primeiro para
+ * a pessoa); os três últimos trazem a `conversationId`. `actor` vazio é o assistente que atende sem agente escolhido. */
+export interface ActivityEvent {
+  id: string;
+  atMs: number;
+  kind: string;
+  actor: string;
+  target?: string;
+  text: string;
+  taskId?: string;
+  conversationId?: string;
+}
+
 /** Mirrors `AgentTaskDto` (P123): uma tarefa que um agente delegou em segundo plano. `group` é comum às tarefas que um turno começou. */
 export interface AgentTask {
   id: string;
@@ -186,6 +200,8 @@ export type ClientMessage =
   | { type: "resolveApproval"; approvalId: number; approved: boolean }
   /** P123 — the work agents delegated to each other, answered by `agentTaskList`. */
   | { type: "listAgentTasks"; requestId: number }
+  /** P121 — the feed of activity, answered by `activityList`. Owner only; a member gets it empty. */
+  | { type: "listActivity"; requestId: number }
   /** P123 — pauses, resumes or stops a task running on the hub (and the subtasks below it). Asks for the pairing key; answered by
    * `agentTaskList` or `taskError`. */
   | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
@@ -243,6 +259,7 @@ export type ServerMessage =
   /** `authRejected`: the pairing key was wrong; nothing was written. */
   | { type: "settingsError"; requestId: number; message: string; authRejected?: boolean }
   | { type: "agentTaskList"; requestId: number; tasks: AgentTask[] }
+  | { type: "activityList"; requestId: number; events: ActivityEvent[] }
   | { type: "taskError"; requestId: number; message: string; authRejected?: boolean }
   | ({ type: "approvalRequest" } & ApprovalPrompt)
   | { type: "approvalCancelled"; approvalId: number }
@@ -313,6 +330,7 @@ export function decode(text: string): ServerMessage {
       return { type: "settingsSaved", requestId: raw.requestId, ...hubAgents(raw.settings) };
     }
     case "agentTaskList":
+    case "activityList":
     case "taskError":
     case "settingsError":
     case "approvalRequest":

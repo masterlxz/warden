@@ -213,7 +213,16 @@ export default function App() {
           )}
           {tab === "agents" && (
             <div className="tab-panel">
-              <AgentsView onOpenChat={(id) => void handleOpenChat(id)} />
+              <AgentsView
+                onOpenChat={(id) => void handleOpenChat(id)}
+                onOpenConversation={(conversationId) => {
+                  void chrome.runtime.sendMessage({ type: "selectConversation", conversationId });
+                  setTab("chat");
+                }}
+                onOpenChannel={(agentId) => {
+                  void chrome.runtime.sendMessage({ type: "openAgentChannel", agentId }).then(() => setTab("chat"));
+                }}
+              />
             </div>
           )}
           {tab === "tabs" && (

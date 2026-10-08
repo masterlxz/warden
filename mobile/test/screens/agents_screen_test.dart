@@ -8,10 +8,16 @@ import 'package:mobile/services/server_connection.dart' show HubRequestException
 /// A hub in memory: it holds the agents and the tasks, checks the pairing key like the real one, and records
 /// what the screen asked for.
 class _FakeBackend implements AgentsBackend {
-  _FakeBackend({List<AgentInfo> agents = const [], List<ModelPolicy> policies = const [], this.modelIds = const [], List<AgentTask> tasks = const []})
-      : agents = List.of(agents),
+  _FakeBackend({
+    List<AgentInfo> agents = const [],
+    List<ModelPolicy> policies = const [],
+    this.modelIds = const [],
+    List<AgentTask> tasks = const [],
+    List<ActivityEvent> events = const [],
+  })  : agents = List.of(agents),
         policies = List.of(policies),
-        tasks = List.of(tasks);
+        tasks = List.of(tasks),
+        events = List.of(events);
 
   static const pairingKey = 'right-key';
 
@@ -19,6 +25,7 @@ class _FakeBackend implements AgentsBackend {
   List<ModelPolicy> policies;
   final List<String> modelIds;
   List<AgentTask> tasks;
+  List<ActivityEvent> events;
   final edits = <OrgEdit>[];
   final controls = <String>[];
 
@@ -54,6 +61,9 @@ class _FakeBackend implements AgentsBackend {
   Future<List<AgentTask>> listAgentTasks() async => List.of(tasks);
 
   @override
+  Future<List<ActivityEvent>> listActivity() async => List.of(events);
+
+  @override
   Future<List<AgentTask>> controlAgentTask(String key, String taskId, String action) async {
     if (key != pairingKey) throw const HubRequestException('wrong key', authRejected: true);
     controls.add('$taskId:$action');
@@ -76,7 +86,13 @@ AgentTask _task(String id, String state, {String? parentId, bool controllable = 
       result: result,
     );
 
-Future<void> _pump(WidgetTester tester, _FakeBackend backend, {void Function(String)? onOpenChat}) async {
+Future<void> _pump(
+  WidgetTester tester,
+  _FakeBackend backend, {
+  void Function(String)? onOpenChat,
+  void Function(String)? onOpenConversation,
+  void Function(String)? onOpenChannel,
+}) async {
   // Pushed like in the chat, so "Chat" on a node has a screen to leave.
   await tester.pumpWidget(
     MaterialApp(
@@ -85,7 +101,15 @@ Future<void> _pump(WidgetTester tester, _FakeBackend backend, {void Function(Str
           body: ElevatedButton(
             key: const Key('open-agents'),
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => AgentsScreen(backend: backend, onOpenChat: onOpenChat, refreshEvery: null)),
+              MaterialPageRoute(
+                builder: (_) => AgentsScreen(
+                  backend: backend,
+                  onOpenChat: onOpenChat,
+                  onOpenConversation: onOpenConversation,
+                  onOpenChannel: onOpenChannel,
+                  refreshEvery: null,
+                ),
+              ),
             ),
             child: const Text('open'),
           ),
@@ -324,6 +348,75 @@ void main() {
       expect(find.byKey(const Key('task-a-cancel')), findsNothing);
       expect(find.byKey(const Key('task-b-cancel')), findsNothing);
       expect(find.text('ok'), findsOneWidget);
+    });
+  });
+
+  group('activity', () {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    ActivityEvent event(String id, String kind, String actor, {String? target, String text = '', String? taskId, String? conversationId, int ago = 0}) =>
+        ActivityEvent(id: id, atMs: now - ago, kind: kind, actor: actor, target: target, text: text, taskId: taskId, conversationId: conversationId);
+
+    final events = [
+      event('e3', 'messaged_user', 'pirate', text: 'the disk is full', conversationId: 'channel-1'),
+      event('e2', 'note', 'ana', target: 'bia', text: 'review this?', conversationId: 'agents-1', ago: 1000),
+      event('e1', 'delegated', 'chief', target: 'dev', text: 'build it', taskId: 'at-1', ago: 2000),
+    ];
+
+    Future<void> openTab(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('tab-activity')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('lists the events under today, newest first, with their sentence', (tester) async {
+      await _pump(tester, _FakeBackend(events: events));
+      await openTab(tester);
+      expect(find.text('Today'), findsOneWidget);
+      expect(find.text('pirate wrote to you'), findsOneWidget);
+      expect(find.text('ana left a note for bia'), findsOneWidget);
+      expect(find.text('chief delegated a task to dev'), findsOneWidget);
+      expect(tester.getTopLeft(find.byKey(const Key('activity-e3'))).dy, lessThan(tester.getTopLeft(find.byKey(const Key('activity-e1'))).dy));
+    });
+
+    testWidgets('says so when there is nothing yet', (tester) async {
+      await _pump(tester, _FakeBackend());
+      await openTab(tester);
+      expect(find.textContaining('Nothing yet.'), findsOneWidget);
+    });
+
+    testWidgets('the filter keeps the events an agent did or received', (tester) async {
+      await _pump(tester, _FakeBackend(events: events));
+      await openTab(tester);
+      await tester.tap(find.byKey(const Key('activity-filter')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('bia').last);
+      await tester.pumpAndSettle();
+      expect(find.text('ana left a note for bia'), findsOneWidget);
+      expect(find.text('pirate wrote to you'), findsNothing);
+    });
+
+    testWidgets('a task event opens the tasks of the agent, narrowed to it', (tester) async {
+      await _pump(tester, _FakeBackend(events: events, tasks: [_task('dev', 'done'), _task('other', 'done')]));
+      await openTab(tester);
+      await tester.tap(find.byKey(const Key('activity-e1')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('show-all-tasks')), findsOneWidget);
+    });
+
+    testWidgets('a note opens its conversation and a message the agent started opens its channel, leaving the screen', (tester) async {
+      final opened = <String>[];
+      await _pump(tester, _FakeBackend(events: events), onOpenConversation: (id) => opened.add('conversation:$id'), onOpenChannel: (agent) => opened.add('channel:$agent'));
+      await openTab(tester);
+      await tester.tap(find.byKey(const Key('activity-e2')));
+      await tester.pumpAndSettle();
+      expect(opened, ['conversation:agents-1']);
+      expect(find.byKey(const Key('open-agents')), findsOneWidget, reason: 'the agents screen closed');
+
+      await tester.tap(find.byKey(const Key('open-agents')));
+      await tester.pumpAndSettle();
+      await openTab(tester);
+      await tester.tap(find.byKey(const Key('activity-e3')));
+      await tester.pumpAndSettle();
+      expect(opened, ['conversation:agents-1', 'channel:pirate']);
     });
   });
 }

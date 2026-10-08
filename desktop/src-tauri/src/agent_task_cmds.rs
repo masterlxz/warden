@@ -2,13 +2,24 @@
 //! the engine writes (`warden_bootstrap::agent_tasks`), read from disk. A hub in use is asked over the wire instead (`listAgentTasks`).
 
 use warden_bootstrap::agent_tasks::TaskControl;
+use warden_server::activity_list::to_dto;
 use warden_server::agent_task_list::agent_task_dtos;
-use warden_server_protocol::protocol::AgentTaskDto;
+use warden_server_protocol::protocol::{ActivityEventDto, AgentTaskDto};
 
 /// The tasks of this computer, newest first. No log yet is no tasks.
 #[tauri::command]
 pub fn list_agent_tasks() -> Vec<AgentTaskDto> {
     warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok()).map(|path| agent_task_dtos(&path)).unwrap_or_default()
+}
+
+/// The feed of activity of this computer (P121): the tasks agents delegated and the notes they left each other, read from the files the
+/// engine already writes. There are no agent channels here (those are the hub's), so only what exists on this computer shows.
+#[tauri::command]
+pub fn list_activity() -> Vec<ActivityEventDto> {
+    let tasks = warden_bootstrap::resolve_agent_tasks_path(std::env::var("WARDEN_AGENT_TASKS").ok());
+    let conversations = warden_bootstrap::default_conversations_dir();
+    let dirs: Vec<&std::path::Path> = conversations.as_deref().into_iter().collect();
+    warden_bootstrap::activity::read_activity(tasks.as_deref(), &dirs, warden_bootstrap::activity::MAX_EVENTS).into_iter().map(to_dto).collect()
 }
 
 /// Pauses, resumes or stops (`action`: `pause`, `resume` or `cancel`) a task of this computer's engine, with the subtasks below it.

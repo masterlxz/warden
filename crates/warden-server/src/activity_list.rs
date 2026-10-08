@@ -8,7 +8,8 @@ use warden_bootstrap::activity::{read_activity, ActivityEvent, MAX_EVENTS};
 use warden_server_protocol::protocol::ActivityEventDto;
 use warden_server_protocol::ServerMessage;
 
-fn to_dto(event: ActivityEvent) -> ActivityEventDto {
+/// An event as the screens get it. Also what the desktop shows for this computer.
+pub fn to_dto(event: ActivityEvent) -> ActivityEventDto {
     ActivityEventDto {
         id: event.id,
         at_ms: event.at_ms,

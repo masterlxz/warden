@@ -7,7 +7,7 @@
 
 import type { ChatEntry, ConnectionStatus } from "./connection";
 import type { DiscoveredHub } from "./discovery";
-import type { AgentTask, AgentTaskAction, ApprovalPrompt, ConversationSummary, DirListing, HubAgents, OrgEdit, SkillDto, ThreadParent } from "../protocol/messages";
+import type { ActivityEvent, AgentTask, AgentTaskAction, ApprovalPrompt, ConversationSummary, DirListing, HubAgents, OrgEdit, SkillDto, ThreadParent } from "../protocol/messages";
 import type { GroupTab } from "./tab_group";
 
 export interface ConnectionSettings {
@@ -47,6 +47,8 @@ export type PopupRequest =
   | { type: "discoverHubs"; port: number }
   /** P123 — the work agents delegated to each other. */
   | { type: "listAgentTasks" }
+  /** P121 — the feed of activity. */
+  | { type: "listActivity" }
   /** P123 — pauses, resumes or stops a task, with the hub's pairing key (asked every time, never kept). */
   | { type: "controlAgentTask"; pairingKey: string; taskId: string; action: AgentTaskAction }
   /** P120 — the agents with their roles, superiors and model limits, and the model policies. */
@@ -99,6 +101,13 @@ export interface OkResponse {
 export interface DiscoverHubsResponse {
   ok: boolean;
   hubs: DiscoveredHub[];
+  error?: string;
+}
+
+/** Reply to `listActivity` (P121). */
+export interface ActivityResponse {
+  ok: boolean;
+  events: ActivityEvent[];
   error?: string;
 }
 

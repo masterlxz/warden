@@ -1,5 +1,5 @@
 import type { Conversation, ProjectEntry } from "../types";
-import { AgentsIcon, ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, OrgIcon, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
+import { ActivityIcon, AgentsIcon, ChartIcon, ChevronIcon, ClockIcon, DevicesIcon, LogoMark, OrgIcon, PlusIcon, ProjectsIcon, SettingsIcon, SkillsIcon, SyncIcon, VaultIcon, WebhookIcon } from "./Icons";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -19,11 +19,13 @@ interface SidebarProps {
   onOpenWorkspace: () => void;
   onOpenOrganization: () => void;
   onOpenAgentWork: () => void;
+  /** The feed of activity (P121): what happened among the agents. */
+  onOpenActivity: () => void;
   /** The screen of the agents' channels (P121), only on a hub: omitted on this computer, where there is none. */
   onOpenAgents?: () => void;
   /** How many agent channels have something the person has not seen (P121): shown on the Agents button. */
   agentsUnread?: number;
-  view: "chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork";
+  view: "chat" | "agents" | "settings" | "usage" | "sync" | "vault" | "skills" | "projects" | "tasks" | "webhooks" | "workspace" | "organization" | "agentWork" | "activity";
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Which machine the screens use (P102): this computer or a hub. Shown under the brand, not in the collapsed bar. */
@@ -47,6 +49,7 @@ function Sidebar({
   onOpenWorkspace,
   onOpenOrganization,
   onOpenAgentWork,
+  onOpenActivity,
   onOpenAgents,
   agentsUnread = 0,
   view,
@@ -201,6 +204,15 @@ function Sidebar({
         >
           <ChartIcon size={17} />
           {!collapsed && "Agent work"}
+        </button>
+        <button
+          type="button"
+          className={`sidebar-footer-btn${view === "activity" ? " sidebar-footer-btn--active" : ""}`}
+          onClick={onOpenActivity}
+          title="Activity"
+        >
+          <ActivityIcon size={17} />
+          {!collapsed && "Activity"}
         </button>
         <button
           type="button"

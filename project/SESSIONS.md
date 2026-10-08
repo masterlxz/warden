@@ -2,7 +2,20 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-07 (Sessão 171)
+> Última atualização: 2026-10-07 (Sessão 172)
+
+---
+
+### 2026-10-07 — Sessão 172
+
+- **Objetivo**: o feed de atividade (P121) nos outros clientes: desktop, extensão e celular. Plano aprovado antes; a fatia anterior foi commitada (`f487585`). O hub e o protocolo não mudaram.
+- **Peça comum**: em cada cliente, um módulo puro espelho de `web/src/hub/activity.ts` (frase por tipo, marca, filtro por agente, lista de agentes, grupos por dia, destino do clique), no idioma da tela: desktop e celular em inglês, extensão em português. Um `kind` desconhecido ainda lê ("x: kind").
+- **Desktop**: `lib/activity.ts`, `ActivityView`, botão "Activity" na barra lateral e `view === "activity"`. No hub em uso, `hubActivity()`; neste computador, o comando Tauri `list_activity` (`agent_task_cmds.rs`), que usa `read_activity` com o log de tarefas e `default_conversations_dir()` e o `to_dto` do hub (agora `pub`). Sem canais aqui, então o clique em "escreveu para você" só abre no hub.
+- **Extensão**: `listActivity`/`activityList` no protocolo, na conexão e no popup, `sidepanel/lib/activity.ts`, `ActivityView` e o sub-aba "Atividade" em `AgentsView`; o clique de conversa usa `selectConversation` e o de canal usa `openAgentChannel`.
+- **Celular**: `ActivityEvent`, `ListActivityMessage`, `ActivityListMessage`, `listActivity()` na conexão e em `AgentsBackend`, `services/activity.dart` (puro), `ActivityTab` e a terceira aba; o clique abre pelo `transcript.open` e `openAgentChannel`.
+- **Testes**: desktop `npm test` 88 e `tsc`, `cargo check --workspace --all-targets` limpo; extensão 65, `tsc` e `npm run build`; celular `flutter analyze` limpo e 217 testes (protocolo, módulo puro e a aba com backend de mentira, com os toques).
+- **Não verificado**: nenhuma das três telas numa janela real (Tauri, extensão num Brave/Chrome, aparelho ou emulador). Fica para a rodada de testes juntos.
+- **Fica**: eventos de criar e remover agente e das execuções agendadas; a notificação do sistema no desktop e na extensão.
 
 ---
 

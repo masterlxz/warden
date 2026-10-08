@@ -15,6 +15,10 @@ void main() {
       );
     });
 
+    test('asking for the feed of activity', () {
+      expect(const ListActivityMessage(9).toJson(), {'type': 'listActivity', 'requestId': 9});
+    });
+
     test('an organization edit leaves out a blank role and a missing superior', () {
       expect(
         jsonDecode(const EditAgentOrgMessage(6, 'k', SetPositionEdit('dev', role: 'Backend', reportsTo: 'lead')).encode()),
@@ -164,6 +168,28 @@ void main() {
       expect(task.controllable, isTrue);
       expect(task.pausable, isTrue);
       expect(task.finishedAtMs, isNull);
+    });
+
+    test('the feed of activity keeps its events and leaves the optional fields null', () {
+      final msg = ServerMessage.decode(jsonEncode({
+        'type': 'activityList',
+        'requestId': 9,
+        'events': [
+          {'id': 'at-1-delegated', 'atMs': 5, 'kind': 'delegated', 'actor': 'chief', 'target': 'dev', 'text': 'build it', 'taskId': 'at-1'},
+          {'id': 'c-m1', 'atMs': 9, 'kind': 'messaged_user', 'actor': 'pirate', 'text': 'disk full', 'conversationId': 'channel-1'},
+        ],
+      })) as ActivityListMessage;
+      expect(msg.requestId, 9);
+      expect(msg.events.map((e) => e.kind), ['delegated', 'messaged_user']);
+      final first = msg.events.first;
+      expect((first.actor, first.target, first.taskId, first.conversationId), ('chief', 'dev', 'at-1', null));
+      final second = msg.events.last;
+      expect((second.target, second.taskId, second.conversationId), (null, null, 'channel-1'));
+    });
+
+    test('a feed with no events key is an empty one', () {
+      final msg = ServerMessage.decode(jsonEncode({'type': 'activityList', 'requestId': 1})) as ActivityListMessage;
+      expect(msg.events, isEmpty);
     });
   });
 }

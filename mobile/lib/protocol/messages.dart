@@ -217,6 +217,17 @@ final class ListAgentTasksMessage extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'listAgentTasks', 'requestId': requestId};
 }
 
+/// P121 — the feed of activity: what happened among the agents, newest first. Answered by [ActivityListMessage]. Owner only; a
+/// member gets it empty.
+final class ListActivityMessage extends ClientMessage {
+  const ListActivityMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'listActivity', 'requestId': requestId};
+}
+
 /// P123 — pauses, resumes or stops ([action]: `pause`, `resume` or `cancel`) a task running on the hub, with the
 /// subtasks below it. Asks for the pairing key every time. Answered by [AgentTaskListMessage] or [TaskErrorMessage].
 final class ControlAgentTaskMessage extends ClientMessage {
@@ -467,6 +478,45 @@ class AgentTask {
       finishedAtMs: map['finishedAtMs'] as int?,
       controllable: map['controllable'] as bool? ?? false,
       pausable: map['pausable'] as bool? ?? false,
+    );
+  }
+}
+
+/// Something that happened among the agents (P121), for the feed of activity. [kind] is `delegated`, `started`, `done`, `failed`,
+/// `cancelled` (the delegated tasks, with [taskId]), `note`, `reply` (agents writing each other) or `messaged_user` (an agent writing first
+/// to the person); the last three carry the [conversationId]. An empty [actor] is the assistant that answers with no agent picked.
+class ActivityEvent {
+  const ActivityEvent({
+    required this.id,
+    required this.atMs,
+    required this.kind,
+    required this.actor,
+    required this.text,
+    this.target,
+    this.taskId,
+    this.conversationId,
+  });
+
+  final String id;
+  final int atMs;
+  final String kind;
+  final String actor;
+  final String? target;
+  final String text;
+  final String? taskId;
+  final String? conversationId;
+
+  static ActivityEvent fromJson(dynamic json) {
+    final map = json as Map<String, dynamic>;
+    return ActivityEvent(
+      id: map['id'] as String,
+      atMs: map['atMs'] as int,
+      kind: map['kind'] as String,
+      actor: map['actor'] as String,
+      target: map['target'] as String?,
+      text: map['text'] as String,
+      taskId: map['taskId'] as String?,
+      conversationId: map['conversationId'] as String?,
     );
   }
 }
@@ -777,6 +827,10 @@ sealed class ServerMessage {
       'agentTaskList' => AgentTaskListMessage(
           json['requestId'] as int,
           (json['tasks'] as List<dynamic>).map(AgentTask.fromJson).toList(),
+        ),
+      'activityList' => ActivityListMessage(
+          json['requestId'] as int,
+          ((json['events'] as List<dynamic>?) ?? const []).map(ActivityEvent.fromJson).toList(),
         ),
       'taskError' => TaskErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'approvalRequest' => ApprovalRequestMessage(
@@ -1144,6 +1198,14 @@ final class AgentTaskListMessage extends ServerMessage {
 
   final int requestId;
   final List<AgentTask> tasks;
+}
+
+/// Reply to [ListActivityMessage] (P121): the events of the feed, newest first.
+final class ActivityListMessage extends ServerMessage {
+  const ActivityListMessage(this.requestId, this.events);
+
+  final int requestId;
+  final List<ActivityEvent> events;
 }
 
 /// A task request failed (P123). [authRejected]: the pairing key was wrong; nothing changed.
