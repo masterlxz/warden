@@ -92,7 +92,8 @@ describe("threads in the chat", () => {
       assert.ok(frame?.conversationId && frame.conversationId !== "main" && frame.conversationId !== "side", "a conversation id of its own");
 
       // The fake model fails: the error belongs to the thread, and the conversation it came from stays as it was.
-      await panel(page).locator(".bubble--error").waitFor({ timeout: 15_000 });
+      // The hub takes about 7 s to give the failed turn back (14 s on a loaded machine), even when the model refuses at once: 15 s was too tight.
+      await panel(page).locator(".bubble--error").waitFor({ timeout: 45_000 });
       assert.equal(await page.locator(".chat-pane .bubble--error").count(), 0);
     });
   });
