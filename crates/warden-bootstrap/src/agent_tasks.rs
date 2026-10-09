@@ -165,17 +165,21 @@ pub fn default_agent_tasks_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("warden").join("agent_tasks.jsonl"))
 }
 
+/// The counter at the end of a task's id. One per process, not per recorder: the registry that lets a person pause or stop a task
+/// (`warden_core::jobs::task_controls`) is process-wide and keyed by id, so two recorders in one process (a hub and a local desktop, two
+/// tests) must not make the same id in the same millisecond.
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
 /// Writes the tasks the background jobs run (P123). Cheap: one short line appended per event.
 pub struct FileTaskRecorder {
     path: PathBuf,
-    next: AtomicU64,
     /// Keeps this process's appends and the compaction from interleaving.
     write: Mutex<()>,
 }
 
 impl FileTaskRecorder {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), next: AtomicU64::new(0), write: Mutex::new(()) }
+        Self { path: path.into(), write: Mutex::new(()) }
     }
 
     fn append(&self, event: &Event) {
@@ -212,7 +216,7 @@ impl FileTaskRecorder {
 impl TaskRecorder for FileTaskRecorder {
     fn created(&self, spec: &TaskSpec) -> String {
         let now = now_ms();
-        let id = format!("at-{now}-{}-{}", std::process::id(), self.next.fetch_add(1, Ordering::Relaxed));
+        let id = format!("at-{now}-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed));
         self.append(&Event::Task {
             task: Box::new(AgentTask {
                 id: id.clone(),
@@ -352,6 +356,16 @@ mod tests {
             channel: "desktop".into(),
             parent: None,
         }
+    }
+
+    #[test]
+    fn two_recorders_in_one_process_never_make_the_same_id() {
+        let (first, second) = (FileTaskRecorder::new(temp_log()), FileTaskRecorder::new(temp_log()));
+        let ids: Vec<String> = (0..20).flat_map(|_| [first.created(&spec("a", "g")), second.created(&spec("b", "g"))]).collect();
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "the registry that stops a task is keyed by id for the whole process");
     }
 
     #[test]
