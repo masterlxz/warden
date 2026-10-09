@@ -2,7 +2,20 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-09 (Sessão 176)
+> Última atualização: 2026-10-09 (Sessão 177)
+
+---
+
+### 2026-10-09 — Sessão 177
+
+- **Objetivo**: fechar a P4 e atacar o que sobrou dela, o gasto atribuído por mensagem. Plano e escopo combinados com o usuário.
+- **P4 fechada** (`PENDING.md`, "✅ Resolvida na Sessão 177"). Eu tinha oferecido "medidor nas telas de limites" como lacuna e a leitura do código mostrou que o medidor de cada limite, com "Allow more", já está na aba Usage do desktop (`SpendingLimits`) e da web (`LimitCard`, `role="meter"`) desde a sessão 124; a nota da sessão 88 ("a tela só configura") estava velha. Disse isso ao usuário antes de escrever código e ele fechou a P4. O que sobrou virou a **P126**; ficam só as verificações reais (app Tauri numa janela e um modelo real reagindo ao aviso de 80%).
+- **P126, escopo "agente certo + provider quando conhecido"** (o usuário escolheu entre isso e "provider efetivo sempre", que pede passar o id a todos os chamadores). Descoberta que moldou o desenho: os dólares já são exatos (vêm do ledger, que grava modelo e provider de cada chamada); o que errava era só a quebra **em tokens** por agente e provider, que lia `Conversation.agent_id`/`provider_id`, a última seleção da conversa inteira.
+- **O que mudou**: `ConversationMessage.answered_by: Option<AnsweredBy>` (`agentId`, `providerId`; `serde(default)` e sem escrever nada quando vazio, então arquivo antigo carrega e o novo não incha). O carimbo é posto **em um ponto só**, `append_messages`, porque todo caminho de salvar passa por ele com o `agent_id` e, no desktop, o `provider_id` do turno: só nas respostas do assistente com `usage`, completando o que o turno já disse (`assistant_message` põe a reserva do fallback, e ela vale sobre a seleção). `aggregate_usage` usa o carimbo; sem carimbo, ou sem provider nele, cai na conversa como antes; uma resposta carimbada sem agente conta como "sem agente".
+- **Custo**: o campo novo obrigou a editar 24 literais de `ConversationMessage` (6 no código, 18 em testes e no desktop), todos por `Edit`; o compilador listou cada um.
+- **Testes**: agregador (4 novos), carimbo e conversa antiga (2); `warden-bootstrap` 439, `warden-server` completo, `cargo check --workspace --all-targets`, clippy só com o aviso antigo de `learning_eval`. Um teste de `engine_models` do hub falhou uma vez no pacote inteiro (estouro do `timeout` de 10 s, sob carga) e passou 5 de 5 sozinho e na rodada seguinte do pacote; não toca em mensagens.
+- **Não verificado**: as telas Usage com dados reais carimbados; os clientes web, desktop, extensão e celular não mudaram (o campo novo só aparece no JSON e eles o ignoram).
+- **Fica**: o provider efetivo dos canais que não o dizem (hub, bots, CLI, tarefas, webhooks); a hierarquia dos agentes (`VISAO_AGENTES`), que pede duas decisões do usuário; a rodada de testes juntos.
 
 ---
 
