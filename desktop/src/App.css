@@ -636,6 +636,60 @@ body {
   color: var(--color-text-muted);
 }
 
+.chat-header-action {
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.chat-header-action:hover {
+  color: var(--color-text);
+}
+
+.agent-work-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.agent-work-item {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-work-item:hover {
+  background-color: var(--color-surface);
+}
+
+.agent-work-kind,
+.agent-work-meta,
+.agent-work-empty {
+  color: var(--color-text-muted);
+  font-size: 0.85em;
+}
+
+.agent-work-empty {
+  padding: 1rem 1.5rem;
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;

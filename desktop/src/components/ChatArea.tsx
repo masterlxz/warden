@@ -58,6 +58,10 @@ interface ChatAreaProps {
   threads?: Record<string, ThreadInfo>;
   /** The conversation is an agent's channel (P121): the agent is the channel's, there is no pick screen, project or folder; only the chat. */
   channel?: boolean;
+  /** With `channel`: what the header says instead of the agent's name (a conversation of the agent outside its channel). */
+  channelTitle?: string;
+  /** With `channel`: a button beside the header's label (to the agent's notes and runs, or back to its channel). */
+  headerAction?: { label: string; onClick: () => void };
 }
 
 function personaPreview(persona: string): string {
@@ -144,6 +148,8 @@ function ChatArea({
   onOpenThread,
   threads,
   channel = false,
+  channelTitle,
+  headerAction,
 }: ChatAreaProps) {
   // The hub's folder browser (P102), open while the person chooses.
   const [browsingHub, setBrowsingHub] = useState(false);
@@ -213,9 +219,21 @@ function ChatArea({
           <span className="chat-header-label chat-header-label--muted">Pick an agent to start</span>
         ) : channel ? (
           // An agent's channel is that agent's for good: no switching it here.
-          <span className="chat-header-label" title="The agent whose channel this is">
-            {selectedAgentId}
-          </span>
+          <>
+            {headerAction && channelTitle !== undefined && (
+              <button type="button" className="chat-header-action" onClick={headerAction.onClick}>
+                {headerAction.label}
+              </button>
+            )}
+            <span className="chat-header-label" title="The agent whose channel this is">
+              {channelTitle ?? selectedAgentId}
+            </span>
+            {headerAction && channelTitle === undefined && (
+              <button type="button" className="chat-header-action" onClick={headerAction.onClick}>
+                {headerAction.label}
+              </button>
+            )}
+          </>
         ) : agents.length > 0 || selectedAgentId ? (
           // The agent can be changed at any time (P124): the next messages speak as the new one. Locked while an answer is on the way.
           <select

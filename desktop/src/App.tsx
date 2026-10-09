@@ -44,6 +44,8 @@ import { decorateLastAnswer, mergeConversations, type HubConversationSummary } f
 import { isAgentChannel, threadHistory, threadsOf, visibleConversations } from "./lib/threads";
 import { baseline, isUnread, loadSeen, markSeen, notificationBody, saveSeen, unreadIds, type SeenMap } from "./lib/unread";
 import AgentContacts from "./components/AgentContacts";
+import AgentWorkList from "./components/AgentWorkList";
+import { agentWork as sideWorkOf, workButtonLabel } from "./lib/agentWork";
 import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
@@ -130,6 +132,9 @@ function App() {
   const [selectedAgentId, setSelectedAgentId] = useState("");
   /** P121 — the id of each agent's channel on the hub in use (the hub makes it from the agent's name), asked for once the agents are known. */
   const [channels, setChannels] = useState<Record<string, string>>({});
+  /** P121 — on the Agents screen, the work of `agent` outside its channel (notes with other agents, runs nobody watched): the list when
+   * `open` is `null`, otherwise the conversation that is open. `null` when the channel itself is what is showing. */
+  const [work, setWork] = useState<{ agent: string; open: string | null } | null>(null);
   /** P121 — the time of the last change this app showed of each channel; `null` before the first run has looked at what exists. */
   const [seen, setSeen] = useState<SeenMap | null>(loadSeen);
   /** The agent a conversation that isn't started yet speaks with (set from the organization tree), so choosing it survives the
@@ -347,6 +352,11 @@ function App() {
     if (view === "agents") loadConversations();
   }, [view, activeHubId, remoteReady]);
 
+  // The notes and runs of an agent belong to the Agents screen: leaving it closes them.
+  useEffect(() => {
+    if (view !== "agents") setWork(null);
+  }, [view]);
+
   // Restores the agent/model this conversation was last using (P3) whenever it's switched, or
   // falls back to defaults if that id no longer matches anything configured (deleted since).
   useEffect(() => {
@@ -402,6 +412,17 @@ function App() {
       const known = id;
       setChannels((prev) => ({ ...prev, [agent]: known }));
     }
+    setWork(null);
+    setActiveConversationId(id);
+    setSelectedProjectId("");
+    setSelectedWorkdir("");
+    setSendError(null);
+    if (conversations.some((c) => c.id === id)) loadHistory(id);
+  }
+
+  /** P121 — opens a conversation of `agent` outside its channel (a note with another agent, a run) without leaving the Agents screen. */
+  function openAgentWork(agent: string, id: string) {
+    setWork({ agent, open: id });
     setActiveConversationId(id);
     setSelectedProjectId("");
     setSelectedWorkdir("");
@@ -875,14 +896,22 @@ function App() {
             agents={settings.agents}
             channels={channels}
             conversations={conversations}
-            activeAgent={Object.keys(channels).find((agent) => channels[agent] === activeConversationId) ?? ""}
+            activeAgent={work?.agent ?? Object.keys(channels).find((agent) => channels[agent] === activeConversationId) ?? ""}
             unreadAgents={unreadAgents}
             answeringIds={Object.keys(liveTurns)}
             disabled={!remoteReady}
             onOpen={(agent) => void openAgentChannel(agent)}
           />
         )}
-        {view === "agents" && !isAgentChannel(activeConversationId ?? "") ? (
+        {view === "agents" && work && work.open === null ? (
+          <AgentWorkList
+            agent={work.agent}
+            items={sideWorkOf(conversations, work.agent)}
+            answeringIds={Object.keys(liveTurns)}
+            onOpen={(id) => openAgentWork(work.agent, id)}
+            onBack={() => void openAgentChannel(work.agent)}
+          />
+        ) : view === "agents" && !work && !isAgentChannel(activeConversationId ?? "") ? (
           <div className="chat-area chat-empty-state">
             <h1>Agents</h1>
             <p>Pick an agent to talk with it. Each agent has one conversation, which stays here.</p>
@@ -890,6 +919,16 @@ function App() {
         ) : (
         <ChatArea
           channel={view === "agents"}
+          channelTitle={work ? activeConversation?.title ?? "Conversation" : undefined}
+          headerAction={
+            view !== "agents"
+              ? undefined
+              : work
+                ? { label: "← Channel", onClick: () => void openAgentChannel(work.agent) }
+                : selectedAgentId !== ""
+                  ? { label: workButtonLabel(sideWorkOf(conversations, selectedAgentId).length), onClick: () => setWork({ agent: selectedAgentId, open: null }) }
+                  : undefined
+          }
           activeConversation={activeConversation}
           onSendMessage={handleSendMessage}
           isSending={isSending}
