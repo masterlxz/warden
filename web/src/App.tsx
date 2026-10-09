@@ -28,6 +28,7 @@ import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type Approv
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
+import { orgAccessOf } from "./hub/org";
 import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
 import { isAgentChannel, threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
 import { baseline, isUnread, markSeen, notificationBody, unreadIds, type SeenMap } from "./hub/unread";
@@ -823,6 +824,8 @@ export default function App() {
   const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? "Nova conversa";
   /** P84: a member sees their chat, vault and skills — the rest is the owner's. */
   const isOwner = user === undefined;
+  /** P120: what the owner lets this member do with the organization of the agents (read at sign-in; the hub checks again at each request). */
+  const memberOrg = isOwner ? "none" : orgAccessOf(user?.orgAccess);
 
   return (
     <div className="app">
@@ -904,6 +907,11 @@ export default function App() {
           )}
           {!isOwner && (
             <>
+              {memberOrg !== "none" && (
+                <button type="button" className={view === "organization" ? "tab tab--active" : "tab"} onClick={() => setView("organization")}>
+                  Organização
+                </button>
+              )}
               <button type="button" className={view === "myAgents" ? "tab tab--active" : "tab"} onClick={() => setView("myAgents")}>
                 Agentes
               </button>
@@ -1154,6 +1162,7 @@ export default function App() {
         ) : view === "organization" ? (
           <OrganizationView
             conn={conn}
+            memberAccess={isOwner ? undefined : memberOrg}
             onEdit={() => setView("settings")}
             onOpenChat={openChatWith}
             onOpenTasks={(id) => {

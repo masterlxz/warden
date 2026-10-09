@@ -48,7 +48,7 @@ import {
   type UserInfo,
   type VaultSearchHit,
 } from "./messages";
-import type { OrgEdit } from "./org";
+import type { OrgAgent, OrgEdit } from "./org";
 
 /** The workspace's members (P84) — with the provisional password of the one just created or reset. */
 export interface UserList {
@@ -548,6 +548,7 @@ export class ServerConnection {
       case "limitExtended":
       case "settings":
       case "settingsSaved":
+      case "agentOrgList":
       case "deviceList":
       case "apiKeyList":
       case "apiKeyCreated":
@@ -811,6 +812,27 @@ export class ServerConnection {
     const reply = await this.request((requestId) => ({ type: "editAgentOrg", requestId, pairingKey, edit }), SAVE_SETTINGS_TIMEOUT_MS);
     if (reply.type !== "settingsSaved") throw new Error("resposta inesperada do hub");
     return reply.settings.agents;
+  }
+
+  /** A árvore da organização (P120) como o hub a mostra a um membro: só o id, o cargo e o superior, e o acesso que ele tem (`view` ou
+   * `edit`). Rejeita com `SettingsError` quando o dono não deu acesso. */
+  async listAgentOrg(): Promise<{ agents: OrgAgent[]; access: string }> {
+    const reply = await this.request((requestId) => ({ type: "listAgentOrg", requestId }));
+    if (reply.type !== "agentOrgList") throw new Error("resposta inesperada do hub");
+    return { agents: reply.agents, access: reply.access };
+  }
+
+  /** O mesmo que `editAgentOrg`, para um membro com acesso `edit` (P120): a sessão dele é a autorização, então não há chave. Só as três
+   * edições da árvore são dele (cargo e superior, subordinado novo, remoção). Devolve a árvore de agora. */
+  async editAgentOrgAsMember(edit: OrgEdit): Promise<{ agents: OrgAgent[]; access: string }> {
+    const reply = await this.request((requestId) => ({ type: "editAgentOrg", requestId, edit }), SAVE_SETTINGS_TIMEOUT_MS);
+    if (reply.type !== "agentOrgList") throw new Error("resposta inesperada do hub");
+    return { agents: reply.agents, access: reply.access };
+  }
+
+  /** O dono diz o que um membro faz com a organização dos agentes: `none`, `view` ou `edit` (P120). */
+  async setUserOrgAccess(pairingKey: string, id: string, access: string): Promise<UserList> {
+    return this.userRequest((requestId) => ({ type: "setUserOrgAccess", requestId, pairingKey, id, access }));
   }
 
   /** Every device that has ever connected to the hub (Sessão 103). */

@@ -7,7 +7,7 @@
  * "camelCase")]` on the Rust side) — locked by `protocol.rs`'s own round-trip tests, not guessed.
  */
 
-import type { OrgEdit } from "./org";
+import type { OrgAgent, OrgEdit } from "./org";
 
 export interface Usage {
   promptTokens: number;
@@ -515,6 +515,8 @@ export interface UserInfo {
   learningOptOut?: boolean;
   /** P115 — the provider or combo the owner chose for learning from their conversations; absent: the workspace's. */
   learningProvider?: string;
+  /** P120 — what the owner lets them do with the organization of the agents: "view" or "edit"; absent: none. */
+  orgAccess?: string;
   /** Only in `helloAck`: the workspace has learning on at all, so the member's switch means something. */
   learningEnabled?: boolean;
   /** Every time the owner recovered their data with the workspace's recovery key. */
@@ -816,8 +818,13 @@ export type ClientMessage =
   | { type: "listActivity"; requestId: number }
   /** Pausa, retoma ou para (`pause`, `resume`, `cancel`) uma tarefa que roda no hub, com as subtarefas. Dono; pede a chave de pareamento. */
   | { type: "controlAgentTask"; requestId: number; pairingKey: string; taskId: string; action: AgentTaskAction }
-  /** P120 — uma mudança na organização dos agentes, pela árvore. Dono; pede a chave de pareamento; respondida como um salvar (`settingsSaved`). */
-  | { type: "editAgentOrg"; requestId: number; pairingKey: string; edit: OrgEdit }
+  /** P120 — uma mudança na organização dos agentes, pela árvore. O dono pede a chave de pareamento e é respondido como um salvar
+   * (`settingsSaved`); um membro com acesso `edit` não manda chave e é respondido com `agentOrgList`. */
+  | { type: "editAgentOrg"; requestId: number; pairingKey?: string; edit: OrgEdit }
+  /** P120 — a árvore da organização, para o dono ou um membro com acesso `view` ou `edit`; respondida por `agentOrgList`. */
+  | { type: "listAgentOrg"; requestId: number }
+  /** P120 — o que um membro faz com a organização: "none", "view" ou "edit". Dono; pede a chave; respondida por `userList`. */
+  | { type: "setUserOrgAccess"; requestId: number; pairingKey: string; id: string; access: string }
   | { type: "saveTask"; requestId: number; pairingKey: string; originalId?: string; task: Task }
   | { type: "setTaskEnabled"; requestId: number; pairingKey: string; id: string; enabled: boolean }
   | { type: "deleteTask"; requestId: number; pairingKey: string; id: string }
@@ -925,6 +932,8 @@ export type ServerMessage =
   /** `secretsWritable` is false on plain http:// from another machine, where the hub refuses a new key. */
   | { type: "settings"; requestId: number; settings: HubSettings; version: string; secretsWritable: boolean }
   | { type: "settingsSaved"; requestId: number; settings: HubSettings; version: string }
+  /** P120 — a árvore como um membro a vê: só o id, o cargo e o superior de cada agente do dono. `access`: "view" ou "edit". */
+  | { type: "agentOrgList"; requestId: number; agents: OrgAgent[]; access: string }
   | { type: "settingsError"; requestId: number; message: string; conflict: boolean; authRejected: boolean }
   /** `you` is this browser's own device id. */
   | { type: "deviceList"; requestId: number; devices: HubDevice[]; you: string }
@@ -1036,6 +1045,7 @@ export function decode(text: string): ServerMessage {
     case "usageError":
     case "settings":
     case "settingsSaved":
+    case "agentOrgList":
     case "deviceList":
     case "apiKeyList":
     case "apiKeyCreated":

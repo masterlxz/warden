@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserError, type ServerConnection } from "../hub/connection";
 import type { NodeFolder, RemovedUser, UserInfo } from "../hub/messages";
+import { ORG_ACCESS_CHOICES, orgAccessLabel, orgAccessOf, type OrgAccess } from "../hub/org";
 import RecoveryPolicySection from "./RecoveryPolicySection";
 import SharedSpacesSection from "./SharedSpacesSection";
 
@@ -20,6 +21,8 @@ type Asking =
   | { kind: "tools"; user: UserInfo; tools: string[] | null }
   /** P115: `""` is the workspace's own model. */
   | { kind: "learning"; user: UserInfo; provider: string }
+  /** P120: what they do with the organization of the agents. */
+  | { kind: "orgAccess"; user: UserInfo; access: OrgAccess }
   /** P102: the folders they may work in, one per line — of the hub's machine, and on nodes as `<node id>:<path>`. */
   | { kind: "folders"; user: UserInfo; workdirs: string; nodeWorkdirs: string };
 
@@ -138,6 +141,8 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                 ? await conn.setUserTools(pairingKey, asking.user.id, asking.tools)
                 : asking.kind === "learning"
                   ? await conn.setUserLearningProvider(pairingKey, asking.user.id, asking.provider || null)
+                : asking.kind === "orgAccess"
+                  ? await conn.setUserOrgAccess(pairingKey, asking.user.id, asking.access)
                 : asking.kind === "folders"
                   ? await conn.setUserWorkdirs(pairingKey, asking.user.id, lines(asking.workdirs), parseNodeLines(asking.nodeWorkdirs))
                 : asking.kind === "restore"
@@ -275,6 +280,7 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                   {` · ${dataLabel(user)}`}
                   {` · ${foldersLabel(user)}`}
                   {user.learningProvider ? ` · aprendizado com: ${user.learningProvider}` : ""}
+                  {` · ${orgAccessLabel(orgAccessOf(user.orgAccess))}`}
                   {user.truthid ? ` · TruthID: @${user.truthid}` : user.inviteOpen ? " · convite de TruthID aberto" : ""}
                 </p>
                 {mine?.kind === "rename" &&
@@ -366,6 +372,22 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                       <span className="field-hint">O gasto conta no canal “learning”. Vale só se o aprendizado estiver ligado e a pessoa não tiver optado por sair.</span>
                     </label>,
                   )}
+                {mine?.kind === "orgAccess" &&
+                  keyForm(
+                    "Salvar acesso",
+                    false,
+                    <fieldset className="settings-field">
+                      <legend>O que {user.name} faz com o organograma dos agentes</legend>
+                      {ORG_ACCESS_CHOICES.map((choice) => (
+                        <label key={choice.value} className="settings-check">
+                          <input type="radio" name={`org-${user.id}`} checked={mine.access === choice.value} onChange={() => setAsking({ ...mine, access: choice.value })} />
+                          {choice.label}
+                          <span className="field-hint"> {choice.hint}</span>
+                        </label>
+                      ))}
+                      <span className="field-hint">A árvore é uma só, a do workspace. Com “Vê e edita”, quem tem acesso muda a hierarquia sem a chave do hub; os poderes de cada agente continuam só seus.</span>
+                    </fieldset>,
+                  )}
                 {mine?.kind === "remove" &&
                   keyForm(
                     "Remover",
@@ -402,6 +424,9 @@ export default function PeopleView({ conn }: { conn: ServerConnection | null }) 
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "learning", user, provider: user.learningProvider ?? "" })}>
                       Modelo do aprendizado
+                    </button>
+                    <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "orgAccess", user, access: orgAccessOf(user.orgAccess) })}>
+                      Organograma
                     </button>
                     <button type="button" className="link-button" disabled={!conn || asking !== null} onClick={() => setAsking({ kind: "reset", user })}>
                       Nova senha provisória

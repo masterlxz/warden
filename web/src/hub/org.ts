@@ -89,3 +89,24 @@ export function removeFromOrg<T extends OrgAgent>(agents: T[], removed: string):
   const superior = agents.find((a) => a.id === removed)?.reportsTo ?? null;
   return agents.filter((a) => a.id !== removed).map((a) => (a.reportsTo === removed ? { ...a, reportsTo: superior } : a));
 }
+
+/** O que um membro faz com a organização dos agentes (P120): o dono escolhe por membro. A árvore é uma só, a do dono. */
+export type OrgAccess = "none" | "view" | "edit";
+
+/** O acesso que o hub mandou (`orgAccess` do membro, ausente quando é nenhum); um valor que não conhecemos vale como nenhum, para não
+ * mostrar uma tela que o hub vai recusar. */
+export function orgAccessOf(value: string | null | undefined): OrgAccess {
+  return value === "view" || value === "edit" ? value : "none";
+}
+
+/** Os três níveis, na ordem em que o dono os escolhe. */
+export const ORG_ACCESS_CHOICES: Array<{ value: OrgAccess; label: string; hint: string }> = [
+  { value: "none", label: "Não vê", hint: "Não vê a árvore, como todo membro antes disso." },
+  { value: "view", label: "Só vê", hint: "Vê quem reporta a quem e o cargo de cada agente; não vê o que eles dizem nem o que podem fazer." },
+  { value: "edit", label: "Vê e edita", hint: "Muda cargo e superior, adiciona e remove agentes, com as mesmas regras de uma mudança sua, sem a chave de pareamento." },
+];
+
+/** A frase curta do cartão do membro. */
+export function orgAccessLabel(access: OrgAccess): string {
+  return access === "edit" ? "organograma: vê e edita" : access === "view" ? "organograma: só vê" : "organograma: não vê";
+}
