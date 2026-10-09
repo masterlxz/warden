@@ -942,6 +942,16 @@ button:focus-visible {
   color: var(--color-accent);
 }
 
+.work-list {
+  padding: 0.75rem;
+  overflow-y: auto;
+}
+
+.work-kind {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
 .conversation-meta {
   flex: none;
   font-size: 0.75rem;

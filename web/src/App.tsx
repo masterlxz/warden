@@ -32,6 +32,8 @@ import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, U
 import { isAgentChannel, threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
 import { baseline, isUnread, markSeen, notificationBody, unreadIds, type SeenMap } from "./hub/unread";
 import AgentContacts from "./components/AgentContacts";
+import AgentWorkList from "./components/AgentWorkList";
+import { agentWork as sideWorkOf, workButtonLabel } from "./hub/agentWork";
 import { folderLabel, folderPlace, nodesWithFolders, parseNodeFolder } from "./hub/workdir";
 
 /** How much of a conversation to load when it's opened — same cap the extension uses. */
@@ -128,6 +130,9 @@ export default function App() {
   const [agentId, setAgentId] = useState("");
   /** P121 — the id of each agent's channel (the hub makes it from the agent's name), read once the agents are known. */
   const [channels, setChannels] = useState<Record<string, string>>({});
+  /** P121 — on the Agents screen, the work of `agent` outside its channel (notes with other agents, runs nobody watched): the list when
+   * `open` is `null`, otherwise the conversation that is open. `null` when the channel itself is what is showing. */
+  const [work, setWork] = useState<{ agent: string; open: string | null } | null>(null);
   /** P121 — the time of the last change this browser showed of each channel; `null` before the first run has looked at what exists. */
   const [seen, setSeen] = useState<SeenMap | null>(loadSeen);
   /** A thread open beside the chat (P125): the message it comes from and the conversation it lives in. Closed when the chat moves to another conversation. */
@@ -603,6 +608,7 @@ export default function App() {
 
   function showView(next: View) {
     setView(next);
+    if (next !== "agents") setWork(null);
     // Agents may have been added or renamed in Settings meanwhile.
     if ((next === "chat" || next === "agents") && connRef.current) {
       void refreshAgents(connRef.current);
@@ -674,6 +680,7 @@ export default function App() {
       setChannels((prev) => ({ ...prev, [agent]: known }));
     }
     setSidebarOpen(false);
+    setWork(null);
     if (id !== activeIdRef.current) {
       setActiveId(id);
       setEntries([]);
@@ -682,6 +689,19 @@ export default function App() {
     setAgentId(agent);
     setProjectId("");
     setWorkdir("");
+  }
+
+  /** P121 — opens a conversation of `agent` outside its channel (a note with another agent, a run) without leaving the Agents screen. */
+  function openAgentWork(agent: string, id: string) {
+    setWork({ agent, open: id });
+    if (id === activeIdRef.current) return;
+    setActiveId(id);
+    setEntries([]);
+    setAgentId(conversationsRef.current.find((c) => c.id === id)?.agentId ?? agent);
+    setProjectId("");
+    setWorkdir("");
+    const connection = connRef.current;
+    if (connection) void loadConversation(connection, id);
   }
 
   /** The chat's project picker (P103). Before the conversation exists it only chooses where the first message goes;
@@ -916,7 +936,7 @@ export default function App() {
                 agentIds={agentIds}
                 channels={channels}
                 conversations={conversations}
-                activeAgent={agentId}
+                activeAgent={work?.agent ?? agentId}
                 unreadAgents={unreadAgents}
                 pendingIds={Object.keys(pendingTurns)}
                 disabled={!phase.connected}
@@ -942,7 +962,23 @@ export default function App() {
                 <button type="button" className="link-button drawer-toggle" onClick={() => setSidebarOpen(true)}>
                   {view === "agents" ? "☰ Agentes" : "☰ Conversas"}
                 </button>
-                <span className="chat-title">{view === "agents" ? agentId || "Agentes" : activeTitle}</span>
+                {view === "agents" && work && (
+                  <button type="button" className="link-button" onClick={() => void openAgentChannel(work.agent)}>
+                    ← Canal
+                  </button>
+                )}
+                <span className="chat-title">
+                  {view !== "agents"
+                    ? activeTitle
+                    : work
+                      ? work.open === null ? `${work.agent}: recados e execuções` : activeTitle
+                      : agentId || "Agentes"}
+                </span>
+                {view === "agents" && !work && isAgentChannel(activeId) && agentId !== "" && (
+                  <button type="button" className="link-button" onClick={() => setWork({ agent: agentId, open: null })}>
+                    {workButtonLabel(sideWorkOf(conversations, agentId).length)}
+                  </button>
+                )}
                 {/* P121 — in an agent's channel the agent is the channel's and there is no project or folder: only the chat. */}
                 {view === "chat" && (<>
                 {(agentIds.length > 0 || agentId !== "") && (
@@ -1030,7 +1066,14 @@ export default function App() {
                   onCancel={() => setPickingFolder(false)}
                 />
               )}
-              {view === "agents" && !isAgentChannel(activeId) ? (
+              {view === "agents" && work && work.open === null ? (
+                <AgentWorkList
+                  agent={work.agent}
+                  items={sideWorkOf(conversations, work.agent)}
+                  pendingIds={Object.keys(pendingTurns)}
+                  onOpen={(id) => openAgentWork(work.agent, id)}
+                />
+              ) : view === "agents" && !work && !isAgentChannel(activeId) ? (
                 <p className="skills-hint agents-empty">Escolha um agente para conversar com ele. Cada agente tem uma conversa só, que fica aqui.</p>
               ) : (
               <ChatView
