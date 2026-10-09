@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-09 (Sessão 175)
+> Última atualização: 2026-10-09 (Sessão 176)
+
+---
+
+### 2026-10-09 — Sessão 176
+
+- **Objetivo**: o que dava para fazer sem rodada de testes de tela: as duas falhas antigas de teste e as duas sobras técnicas da P121. Plano combinado com o usuário.
+- **`agent_tasks.rs` intermitente (corrigido)**: falhava em 19 de 25 rodadas, sempre em `…pauses_resumes_and_stops…` e `…waiting_on…`. Causa: o id de uma tarefa era `at-{ms}-{pid}-{contador}` com o contador **por gravador**, e o registro que pausa e para tarefas (`task_controls()`) é **do processo** e usa o id como chave; dois gravadores no mesmo milissegundo faziam o mesmo id e um sobrescrevia o outro. O contador virou `static NEXT_ID` (único no processo; a ordem por contador do fim do id continua valendo). Teste novo: dois gravadores nunca repetem um id. Depois: 25 de 25 rodadas passam, `warden-bootstrap` completo e clippy sem aviso novo.
+- **E2E de threads intermitente (corrigido o teste, causa não achada)**: o que falhava era o `waitFor` de 15 s do `.bubble--error` (falhava 2 de 5 rodadas). Medido: o hub leva **uns 7 s** entre receber o chat e devolver o `chatError` (14 s com a máquina carregada), **mesmo com o modelo recusando a conexão na hora** (testei com um provedor `openai_compatible` numa porta fechada: o mesmo ~7 s, então não é latência do Google). Não há laço de tentativas nem `sleep` no caminho que eu tenha achado; de onde vem fica **em aberto**. O prazo foi para 45 s; 10 de 10 rodadas passam. A falha de "E a da Itália?" que a sessão 171 anotou não apareceu.
+- **Feed de atividade (`activity.rs`)**: `read_activity` guarda os eventos de cada arquivo de conversa (`EVENT_CACHE`, por caminho, validado por data de modificação e tamanho) e só relê o que mudou ou apareceu; o que foi apagado sai do cache, só para os diretórios daquela chamada. Antes, cada pedido da tela (a cada 3 s na web) lia inteiras todas as conversas `task-*`. `activity_feed` ficou como era para os testes, sobre `conversation_events` e `sorted_and_cut`. Testes: arquivo que cresce é relido, apagado sai do feed e do cache, conversa solta nunca é aberta nem guardada. **Não provado**: que a releitura é *pulada* quando nada mudou (o teste confere o resultado, não a leitura).
+- **`agent_changes.jsonl` compactado**: depois de um registro, se o arquivo passa de 64 KiB conta as linhas, e acima de 400 reescreve só as 200 mais novas (arquivo ao lado e `rename`). O primeiro desenho gatilhava por tamanho (256 KiB) e um teste com linhas de 2 KB mostrou que o arquivo cortado ainda passava disso e seria reescrito a cada mudança; o gatilho passou a ser o número de linhas. Limite assumido: um registro que cair entre a leitura e o `rename` de uma compactação se perde (o append continua sem trava).
+- **Testes**: `warden-bootstrap` 433, `warden-server --test activity` 3, `agent_tasks` 25 de 25, e2e de threads 10 de 10; `clippy` só com o aviso antigo de `learning_eval`.
+- **Fica**: de onde vêm os ~7 s do turno que falha; a rodada de testes juntos nas telas.
 
 ---
 
