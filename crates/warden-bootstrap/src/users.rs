@@ -34,6 +34,54 @@ pub enum UserRole {
     Member,
 }
 
+/// What a member may do with the workspace's one organization of agents (P120): the owner sets it per member. There is a single tree,
+/// the owner's; this only says who besides the owner sees it and who changes it.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgAccess {
+    /// Does not see the tree (what every member had before this existed).
+    #[default]
+    None,
+    /// Sees the tree: each agent's id, position and superior, nothing of what it says or can do.
+    View,
+    /// Sees it and changes it: position, superior, adding and removing agents, with the same rules as the owner's edits.
+    Edit,
+}
+
+impl OrgAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OrgAccess::None => "none",
+            OrgAccess::View => "view",
+            OrgAccess::Edit => "edit",
+        }
+    }
+
+    /// `none`, `view` or `edit`; anything else is not an access.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "none" => Some(OrgAccess::None),
+            "view" => Some(OrgAccess::View),
+            "edit" => Some(OrgAccess::Edit),
+            _ => None,
+        }
+    }
+
+    pub fn can_view(self) -> bool {
+        self != OrgAccess::None
+    }
+
+    pub fn can_edit(self) -> bool {
+        self == OrgAccess::Edit
+    }
+}
+
+impl OrgAccess {
+    fn is_none(&self) -> bool {
+        *self == OrgAccess::None
+    }
+}
+
 /// One member (TOML `[[users]]`).
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -91,6 +139,9 @@ pub struct UserConfig {
     /// gets no folder on a node the owner didn't name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub node_workdirs: Vec<NodeFolder>,
+    /// Whether this member sees and changes the workspace's organization of agents (P120). Only the owner sets it.
+    #[serde(default, skip_serializing_if = "OrgAccess::is_none")]
+    pub org_access: OrgAccess,
 }
 
 /// A folder on a node a member may work in (`[[users]] node_workdirs`).
@@ -358,6 +409,7 @@ pub fn add_user(config: &mut FileConfig, id: &str, name: &str, temp_password: &s
         learning_provider: None,
         workdirs: Vec::new(),
         node_workdirs: Vec::new(),
+        org_access: OrgAccess::None,
     };
     let mut users = config.users.clone();
     anyhow::ensure!(!users.iter().any(|u| u.id == user.id), "there's already a user named '{}'", user.id);
@@ -766,6 +818,13 @@ pub fn set_user_tools(config: &mut FileConfig, id: &str, tools: Option<Vec<Strin
         list
     });
     find_mut(config, id)?.tools = tools;
+    Ok(())
+}
+
+/// The owner sets what a member does with the workspace's organization of agents (P120): `none`, `view` or `edit`.
+pub fn set_user_org_access(config: &mut FileConfig, id: &str, access: &str) -> anyhow::Result<()> {
+    let access = OrgAccess::parse(access).ok_or_else(|| anyhow::anyhow!("'{access}' is not an access to the organization (none, view or edit)"))?;
+    find_mut(config, id)?.org_access = access;
     Ok(())
 }
 
@@ -1359,6 +1418,30 @@ mod tests {
         assert_eq!(member_tools(&config.users[0], &hub), ["shell", "github__issue"], "a name the hub lacks is ignored");
         set_user_tools(&mut config, "ana", None).unwrap();
         assert_eq!(member_tools(&config.users[0], &hub), ["read_file", "write_file", "tavily-search"]);
+    }
+
+    #[test]
+    fn a_member_sees_no_organization_until_the_owner_says_so_and_the_choice_survives_the_file() {
+        let mut config = FileConfig::default();
+        add_user(&mut config, "ana", "Ana", "temporary-1").unwrap();
+        let access = |config: &FileConfig| config.users[0].org_access;
+        assert_eq!(access(&config), OrgAccess::None);
+        assert!(!access(&config).can_view() && !access(&config).can_edit());
+
+        set_user_org_access(&mut config, "ana", "view").unwrap();
+        assert!(access(&config).can_view() && !access(&config).can_edit(), "seeing is not changing");
+        set_user_org_access(&mut config, "ana", "edit").unwrap();
+        assert!(access(&config).can_view() && access(&config).can_edit());
+
+        assert!(set_user_org_access(&mut config, "ana", "admin").is_err(), "only none, view or edit");
+        assert!(set_user_org_access(&mut config, "nobody", "view").is_err(), "a member that exists");
+        assert_eq!(access(&config), OrgAccess::Edit, "a refused change leaves the access as it was");
+
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("org_access = \"edit\""), "{text}");
+        assert_eq!(toml::from_str::<FileConfig>(&text).unwrap().users[0].org_access, OrgAccess::Edit);
+        set_user_org_access(&mut config, "ana", "none").unwrap();
+        assert!(!toml::to_string(&config).unwrap().contains("org_access"), "none writes nothing, as it never existed");
     }
 
     #[test]

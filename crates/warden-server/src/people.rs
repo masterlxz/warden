@@ -37,7 +37,7 @@ impl MemberSpace {
     /// The same member with their vault opened again from the folder's current state — after their
     /// data key was created or opened (a connection's first vault was plain, or locked).
     pub fn reopened(&self, users_dir: &Path, conversations_root: &Path) -> Self {
-        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None, learning_opt_out: false, learning_provider: None, workdirs: Vec::new(), node_workdirs: Vec::new() };
+        let user = UserConfig { id: self.id.clone(), name: self.name.clone(), role: UserRole::Member, password_hash: String::new(), must_change_password: false, tools: None, key: None, key_needs_recovery: false, recoveries: Vec::new(), truthid: None, invite: None, learning_opt_out: false, learning_provider: None, workdirs: Vec::new(), node_workdirs: Vec::new(), org_access: Default::default() };
         Self::new(&user, users_dir, conversations_root)
     }
 
@@ -98,6 +98,7 @@ pub fn user_info(user: &UserConfig, agents: &[AgentConfig], workspace_policy: Re
         recovery_policy: String::new(),
         learning_opt_out: user.learning_opt_out,
         learning_provider: user.learning_provider.clone(),
+        org_access: if user.org_access.can_view() { user.org_access.as_str().to_string() } else { String::new() },
         learning_enabled: false,
         recoveries: user.recoveries.iter().map(|e| RecoveryEventDto { at_ms: e.at_ms, kind: e.kind.as_str().to_string(), seen: e.seen }).collect(),
         id: user.id.clone(),
@@ -149,7 +150,9 @@ const ROOT_ONLY: &str = "only the workspace's owner can do this";
 pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
     let message_text = ROOT_ONLY.to_string();
     Some(match message {
-        ClientMessage::SaveSettings { request_id, .. } | ClientMessage::EditAgentOrg { request_id, .. } => {
+        // `EditAgentOrg` and `ListAgentOrg` are not here: whether a member may is the access the owner gave them, which only the
+        // handler can read (P120).
+        ClientMessage::SaveSettings { request_id, .. } => {
             ServerMessage::SettingsError { request_id: *request_id, message: message_text, conflict: false, auth_rejected: true }
         }
         ClientMessage::ListDevices { request_id } | ClientMessage::SetDeviceStatus { request_id, .. } => {
@@ -182,6 +185,7 @@ pub fn member_refusal(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::SetUserTools { request_id, .. }
         | ClientMessage::SetUserLearningProvider { request_id, .. }
         | ClientMessage::SetUserWorkdirs { request_id, .. }
+        | ClientMessage::SetUserOrgAccess { request_id, .. }
         | ClientMessage::ListBotPairings { request_id }
         | ClientMessage::ResolveBotPairing { request_id, .. }
         | ClientMessage::TestProvider { request_id, .. }
@@ -227,7 +231,11 @@ pub fn password_gate(message: &ClientMessage) -> Option<ServerMessage> {
         | ClientMessage::DeleteVaultNote { request_id, .. }
         | ClientMessage::SearchVault { request_id, .. } => ServerMessage::VaultError { request_id: *request_id, message: text, conflict: false },
         ClientMessage::Transcribe { request_id, .. } => ServerMessage::TranscriptionError { request_id: *request_id, message: text },
-        ClientMessage::RequestSettings { request_id } | ClientMessage::SaveOwnAgent { request_id, .. } | ClientMessage::DeleteOwnAgent { request_id, .. } => {
+        ClientMessage::RequestSettings { request_id }
+        | ClientMessage::SaveOwnAgent { request_id, .. }
+        | ClientMessage::DeleteOwnAgent { request_id, .. }
+        | ClientMessage::ListAgentOrg { request_id }
+        | ClientMessage::EditAgentOrg { request_id, .. } => {
             ServerMessage::SettingsError { request_id: *request_id, message: text, conflict: false, auth_rejected: true }
         }
         ClientMessage::ListApiKeys { request_id } | ClientMessage::CreateApiKey { request_id, .. } | ClientMessage::RevokeApiKey { request_id, .. } => {
@@ -463,5 +471,20 @@ mod tests {
         assert!(matches!(password_gate(&ClientMessage::ListConversations { request_id: 5 }), Some(ServerMessage::ConversationError { .. })));
         assert!(password_gate(&ClientMessage::ChangePassword { request_id: 6, old_password: "a".into(), new_password: "b".into(), recovery_code: None }).is_none());
         assert!(matches!(password_gate(&ClientMessage::ListDevices { request_id: 7 }), Some(ServerMessage::DeviceError { .. })));
+    }
+
+    #[test]
+    fn the_organization_is_a_members_only_with_the_access_the_owner_gave_and_the_owner_alone_gives_it() {
+        use warden_server_protocol::protocol::AgentOrgEdit;
+        let list = ClientMessage::ListAgentOrg { request_id: 1 };
+        let edit = ClientMessage::EditAgentOrg { request_id: 2, pairing_key: String::new(), edit: AgentOrgEdit::Remove { id: "dev".into() } };
+        // Reading and editing go through to the handler, which reads the member's access from the config...
+        assert!(member_refusal(&list).is_none() && member_refusal(&edit).is_none());
+        // ...but not on a provisional password,
+        assert!(matches!(password_gate(&list), Some(ServerMessage::SettingsError { auth_rejected: true, .. })));
+        assert!(matches!(password_gate(&edit), Some(ServerMessage::SettingsError { auth_rejected: true, .. })));
+        // and giving the access is the owner's.
+        let give = ClientMessage::SetUserOrgAccess { request_id: 3, pairing_key: "k".into(), id: "ana".into(), access: "edit".into() };
+        assert!(matches!(member_refusal(&give), Some(ServerMessage::UserError { auth_rejected: true, .. })));
     }
 }

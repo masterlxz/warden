@@ -577,6 +577,9 @@ pub struct UserInfoDto {
     /// The workspace's recovery policy — only in `HelloAck`, for the member to read.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub recovery_policy: String,
+    /// P120: what the owner lets them do with the organization of the agents, `view` or `edit`; empty is none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub org_access: String,
     /// P115: the member turned off the assistant learning from their conversations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub learning_opt_out: bool,
@@ -1318,6 +1321,17 @@ impl HubSettingsUpdate {
     }
 }
 
+/// One agent of the organization as a member sees it (P120): where it stands, not what it says or can do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgAgentDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports_to: Option<String>,
+}
+
 /// One change a person makes to the organization of the owner's agents from the tree (P120), without touching anything else of the
 /// settings. `role` and `reports_to` left out (or blank) mean none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1733,12 +1747,25 @@ pub enum ClientMessage {
         task_id: String,
         action: String,
     },
-    /// Changes the organization of the agents from the tree (P120): a position, a new report, a removal. Owner only, asks for the
-    /// pairing key like a settings save, and is answered like one (`SettingsSaved` with the new settings, or `SettingsError`).
+    /// Changes the organization of the agents from the tree (P120): a position, a new report, a removal. The owner asks with the
+    /// pairing key like a settings save and is answered like one (`SettingsSaved` with the new settings, or `SettingsError`). A member
+    /// whose access is `edit` sends no key (their session is the authorization the owner gave) and is answered with `AgentOrgList`; only
+    /// the three tree edits (`setPosition`, `addReport`, `remove`) are theirs.
     EditAgentOrg {
         request_id: u64,
+        #[serde(default)]
         pairing_key: String,
         edit: AgentOrgEdit,
+    },
+    /// The organization of the agents as the tree shows it (P120), for a member the owner gave `view` or `edit`. Answered by
+    /// `AgentOrgList`, or `SettingsError` when their access is `none`.
+    ListAgentOrg { request_id: u64 },
+    /// What a member does with the organization of the agents: `none`, `view` or `edit` (P120). Answered by `UserList`.
+    SetUserOrgAccess {
+        request_id: u64,
+        pairing_key: String,
+        id: String,
+        access: String,
     },
     /// Creates a task, or replaces `original_id` with it (a rename when the ids differ).
     SaveTask {
@@ -2275,6 +2302,13 @@ pub enum ServerMessage {
         request_id: u64,
         settings: HubSettingsDto,
         version: String,
+    },
+    /// The organization of the owner's agents (P120), for a member: after `ListAgentOrg`, and after one of their `EditAgentOrg`.
+    /// `access` is what they may do with it, `view` or `edit`. Only each agent's id, position and superior, nothing of what it says or can do.
+    AgentOrgList {
+        request_id: u64,
+        agents: Vec<OrgAgentDto>,
+        access: String,
     },
     /// A settings request failed. `conflict`: the file changed since it was loaded. `auth_rejected`:
     /// the pairing key was wrong. Nothing was written in either case.
@@ -2958,6 +2992,29 @@ mod tests {
         assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), ask);
         let top = r#"{"type":"editAgentOrg","requestId":7,"pairingKey":"k","edit":{"kind":"remove","id":"dev"}}"#;
         assert!(matches!(serde_json::from_str::<ClientMessage>(top).unwrap(), ClientMessage::EditAgentOrg { edit: AgentOrgEdit::Remove { .. }, .. }));
+    }
+
+    #[test]
+    fn a_member_asks_for_the_organization_with_no_key_and_the_owner_sets_who_may() {
+        // A member's edit carries no key at all.
+        let edit = r#"{"type":"editAgentOrg","requestId":8,"edit":{"kind":"remove","id":"dev"}}"#;
+        assert!(matches!(serde_json::from_str::<ClientMessage>(edit).unwrap(), ClientMessage::EditAgentOrg { ref pairing_key, .. } if pairing_key.is_empty()));
+        let list = ClientMessage::ListAgentOrg { request_id: 9 };
+        assert_eq!(serde_json::to_string(&list).unwrap(), r#"{"type":"listAgentOrg","requestId":9}"#);
+
+        let set = ClientMessage::SetUserOrgAccess { request_id: 10, pairing_key: "k".into(), id: "ana".into(), access: "view".into() };
+        let json = serde_json::to_string(&set).unwrap();
+        assert_eq!(json, r#"{"type":"setUserOrgAccess","requestId":10,"pairingKey":"k","id":"ana","access":"view"}"#);
+        assert_eq!(serde_json::from_str::<ClientMessage>(&json).unwrap(), set);
+
+        let reply = ServerMessage::AgentOrgList {
+            request_id: 9,
+            agents: vec![OrgAgentDto { id: "lead".into(), role: Some("Manager".into()), reports_to: None }, OrgAgentDto { id: "dev".into(), role: None, reports_to: Some("lead".into()) }],
+            access: "edit".into(),
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(json, r#"{"type":"agentOrgList","requestId":9,"agents":[{"id":"lead","role":"Manager"},{"id":"dev","reportsTo":"lead"}],"access":"edit"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
     }
 
     #[test]

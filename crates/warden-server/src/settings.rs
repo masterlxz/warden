@@ -17,10 +17,11 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use warden_bootstrap::settings::{apply_hub_settings, config_version, hub_settings};
+use warden_bootstrap::users::OrgAccess;
 use warden_bootstrap::{load_config_from_path, render_config, FileConfig};
 use warden_core::orchestrator::Orchestrator;
 use warden_core::tool::Tool;
-use warden_server_protocol::protocol::{AgentOrgEdit, HubSettingsDto, HubSettingsUpdate};
+use warden_server_protocol::protocol::{AgentOrgEdit, HubSettingsDto, HubSettingsUpdate, OrgAgentDto};
 use warden_server_protocol::ServerMessage;
 
 /// How long a wrong pairing key waits before its answer, so guessing one over the socket is slow.
@@ -286,23 +287,38 @@ pub async fn handle_edit_agent_org(access: &SettingsAccess<'_>, request_id: u64,
         tokio::time::sleep(WRONG_KEY_DELAY).await;
         return ServerMessage::SettingsError { request_id, message: "wrong pairing key".to_string(), conflict: false, auth_rejected: true };
     }
+    let (config, orchestrator) = match save_org_edit(host, request_id, edit, |_| Ok(())).await {
+        Ok(done) => done,
+        Err(reply) => return *reply,
+    };
     let path = host.config_path();
-    let previous = match read_optional(&path) {
-        Ok(bytes) => bytes,
-        Err(err) => return settings_error(request_id, format!("{err:#}")),
-    };
-    let mut config = match load_config_from_path(&path, false) {
-        Ok(config) => config,
-        Err(err) => return settings_error(request_id, format!("{err:#}")),
-    };
-    if let Err(message) = warden_bootstrap::org_edit::apply_org_edit(&mut config, edit) {
-        return settings_error(request_id, message);
+    let settings = view(host, &config, &orchestrator, access);
+    host.installed(&orchestrator);
+    access.shared.replace(orchestrator);
+    match config_version(&path) {
+        Ok(version) => ServerMessage::SettingsSaved { request_id, settings, version },
+        Err(err) => settings_error(request_id, format!("saved, but reading it back failed: {err:#}")),
     }
-    if let Err(err) = write_config(&path, previous.as_deref(), &config) {
-        return settings_error(request_id, format!("{err:#}"));
-    }
-    let orchestrator = match host.build().await {
-        Ok(orchestrator) => orchestrator,
+}
+
+/// Writes one organization edit and starts the orchestrator on it, putting the previous file back when the hub can't start with the
+/// new one. `allow` looks at the config as it is on disk before anything changes (a member's access is read there, not trusted from
+/// the connection). The caller holds the settings lock, and installs the orchestrator this hands back.
+async fn save_org_edit(
+    host: &dyn SettingsHost,
+    request_id: u64,
+    edit: &AgentOrgEdit,
+    allow: impl FnOnce(&FileConfig) -> Result<(), Box<ServerMessage>>,
+) -> Result<(FileConfig, Orchestrator), Box<ServerMessage>> {
+    let fail = |message: String| Box::new(settings_error(request_id, message));
+    let path = host.config_path();
+    let previous = read_optional(&path).map_err(|err| fail(format!("{err:#}")))?;
+    let mut config = load_config_from_path(&path, false).map_err(|err| fail(format!("{err:#}")))?;
+    allow(&config)?;
+    warden_bootstrap::org_edit::apply_org_edit(&mut config, edit).map_err(fail)?;
+    write_config(&path, previous.as_deref(), &config).map_err(|err| fail(format!("{err:#}")))?;
+    match host.build().await {
+        Ok(orchestrator) => Ok((config, orchestrator)),
         Err(err) => {
             let restored = match &previous {
                 Some(bytes) => write_atomic(&path, bytes),
@@ -312,16 +328,67 @@ pub async fn handle_edit_agent_org(access: &SettingsAccess<'_>, request_id: u64,
             if let Err(restore_err) = restored {
                 message.push_str(&format!(" (and putting the previous file back failed: {restore_err:#})"));
             }
-            return settings_error(request_id, message);
+            Err(fail(message))
         }
+    }
+}
+
+fn org_refusal(request_id: u64, message: &str) -> Box<ServerMessage> {
+    Box::new(ServerMessage::SettingsError { request_id, message: message.to_string(), conflict: false, auth_rejected: true })
+}
+
+/// The agents of the organization as a member sees them: the owner's, each with its position and superior and nothing else. A member's
+/// own agents (P84) are not in the tree.
+pub fn org_agents(config: &FileConfig) -> Vec<OrgAgentDto> {
+    config.agents.iter().filter(|a| a.owner.is_none()).map(|a| OrgAgentDto { id: a.id.clone(), role: a.role.clone(), reports_to: a.reports_to.clone() }).collect()
+}
+
+fn org_access_of(config: &FileConfig, member: &str) -> OrgAccess {
+    config.users.iter().find(|u| u.id == member).map(|u| u.org_access).unwrap_or_default()
+}
+
+/// Answers `ListAgentOrg` (P120): the tree, for the owner or for a member whose access is `view` or `edit`. The access is read from the
+/// config on disk at the moment of the request, so taking it away takes effect on the next one.
+pub async fn handle_list_agent_org(access: &SettingsAccess<'_>, request_id: u64, member: Option<&str>) -> ServerMessage {
+    let Some(host) = access.host else {
+        return settings_error(request_id, NO_SETTINGS);
     };
-    let settings = view(host, &config, &orchestrator, access);
+    let _reading = access.lock.lock().await;
+    let config = match load_config_from_path(&host.config_path(), false) {
+        Ok(config) => config,
+        Err(err) => return settings_error(request_id, format!("{err:#}")),
+    };
+    let level = member.map_or(OrgAccess::Edit, |id| org_access_of(&config, id));
+    if !level.can_view() {
+        return *org_refusal(request_id, NO_ORG_ACCESS);
+    }
+    ServerMessage::AgentOrgList { request_id, agents: org_agents(&config), access: level.as_str().to_string() }
+}
+
+const NO_ORG_ACCESS: &str = "the workspace's owner hasn't given you access to the organization of the agents";
+
+/// Answers a member's `EditAgentOrg` (P120): their session is the authorization, as long as the owner gave them `edit`. Only the three
+/// edits of the tree are theirs; the delegation models and model policies are the owner's. Same rules and same restart as the owner's
+/// edit, answered with the tree they may see.
+pub async fn handle_member_edit_agent_org(access: &SettingsAccess<'_>, request_id: u64, member: &str, edit: &AgentOrgEdit) -> ServerMessage {
+    let Some(host) = access.host else {
+        return settings_error(request_id, NO_SETTINGS);
+    };
+    if !matches!(edit, AgentOrgEdit::SetPosition { .. } | AgentOrgEdit::AddReport { .. } | AgentOrgEdit::Remove { .. }) {
+        return *org_refusal(request_id, "only the workspace's owner changes that");
+    }
+    let _saving = access.lock.lock().await;
+    let allow = |config: &FileConfig| match org_access_of(config, member).can_edit() {
+        true => Ok(()),
+        false => Err(org_refusal(request_id, "the workspace's owner hasn't let you change the organization of the agents")),
+    };
+    let (config, orchestrator) = match save_org_edit(host, request_id, edit, allow).await {
+        Ok(done) => done,
+        Err(reply) => return *reply,
+    };
     host.installed(&orchestrator);
     access.shared.replace(orchestrator);
-    match config_version(&path) {
-        Ok(version) => ServerMessage::SettingsSaved { request_id, settings, version },
-        Err(err) => settings_error(request_id, format!("saved, but reading it back failed: {err:#}")),
-    }
+    ServerMessage::AgentOrgList { request_id, agents: org_agents(&config), access: OrgAccess::Edit.as_str().to_string() }
 }
 
 fn read_optional(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {

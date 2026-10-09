@@ -49,7 +49,7 @@ use crate::nodes::{handle_list_nodes, handle_set_node_access, ConnectedNode, Hub
 use crate::scheduler::{scheduler_loop, TaskRunner, DEFAULT_TICK as DEFAULT_TASK_TICK};
 use crate::task_admin::{handle_list_tasks, handle_task_change, TaskAccess, TaskChange};
 use crate::sync::{handle_sync_action, handle_sync_status, SyncAccess};
-use crate::settings::{handle_edit_agent_org, handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
+use crate::settings::{handle_edit_agent_org, handle_list_agent_org, handle_member_edit_agent_org, handle_request_settings, handle_save_settings, is_secure, SettingsAccess, SettingsHost, SharedOrchestrator};
 use crate::tls::HubTls;
 use crate::api_key_admin::{handle_api_key_change, handle_list_api_keys, ApiKeyChange};
 use crate::api_keys::ApiKeyStore;
@@ -1249,6 +1249,9 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                 Ok(ClientMessage::SetUserTools { request_id, pairing_key, id, tools }) => {
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
                 }
+                Ok(ClientMessage::SetUserOrgAccess { request_id, pairing_key, id, access }) => {
+                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetOrgAccess { id, access });
+                }
                 Ok(ClientMessage::SetUserWorkdirs { request_id, pairing_key, id, workdirs, node_workdirs }) => {
                     let node_workdirs = node_workdirs.into_iter().map(|f| warden_bootstrap::users::NodeFolder { node: f.node, path: f.path }).collect();
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetWorkdirs { id, workdirs, node_workdirs });
@@ -1606,11 +1609,25 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     });
                 }
                 Ok(ClientMessage::EditAgentOrg { request_id, pairing_key, edit }) => {
-                    // Starts the orchestrator again, like a save: off the reader loop.
+                    // Starts the orchestrator again, like a save: off the reader loop. A member's session is the authorization (P120): the
+                    // handler reads the access the owner gave them from the config, and never takes a pairing key from them.
                     let (settings, shared, lock, auth_key, reply_tx) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    let member_id = member.as_ref().map(|m| m.id.clone());
                     tokio::spawn(async move {
                         let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
-                        let _ = reply_tx.send(handle_edit_agent_org(&access, request_id, &pairing_key, &edit).await);
+                        let reply = match member_id {
+                            Some(id) => handle_member_edit_agent_org(&access, request_id, &id, &edit).await,
+                            None => handle_edit_agent_org(&access, request_id, &pairing_key, &edit).await,
+                        };
+                        let _ = reply_tx.send(reply);
+                    });
+                }
+                Ok(ClientMessage::ListAgentOrg { request_id }) => {
+                    let (settings, shared, lock, auth_key, reply_tx) = (settings.clone(), shared_orchestrator.clone(), settings_lock.clone(), auth_key.clone(), tx.clone());
+                    let member_id = member.as_ref().map(|m| m.id.clone());
+                    tokio::spawn(async move {
+                        let access = SettingsAccess { host: settings.as_deref(), shared: &shared, lock: &lock, auth_key: &auth_key, secure, allow_machine: allow_machine_settings, peer: Some(peer.ip()) };
+                        let _ = reply_tx.send(handle_list_agent_org(&access, request_id, member_id.as_deref()).await);
                     });
                 }
                 Ok(ClientMessage::ListDevices { request_id }) => {

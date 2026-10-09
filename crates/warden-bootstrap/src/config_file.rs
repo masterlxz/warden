@@ -337,6 +337,7 @@ model = "gemini-3.5-pro"
             learning_provider: None,
             workdirs: Vec::new(),
             node_workdirs: Vec::new(),
+            org_access: Default::default(),
         }
     }
 
