@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-08 (Sessão 174)
+> Última atualização: 2026-10-09 (Sessão 175)
+
+---
+
+### 2026-10-09 — Sessão 175
+
+- **Objetivo**: decidir e fazer o que ficou da P121: onde as conversas `A → B` e `task-*` aparecem na tela de Agents. **Decisão do usuário**: dentro do contato do agente (o canal fixo continua sendo a conversa principal). Plano aprovado antes; sem mudança no hub nem no protocolo, porque o resumo da conversa já traz o `agentId` e o título `A → B`.
+- **Peça comum**: um módulo puro por cliente, espelho de `web/src/hub/agentWork.ts` (`lib/agentWork.ts` no desktop, `sidepanel/lib/agentWork.ts` na extensão, `services/side_work.dart` no celular): recados (`agents-*`, o agente numa das pontas do título, "para"/"de" o colega) e execuções (`task-*` com o `agentId` dele; `task-hook-*` é webhook), mais novos primeiro, sem threads nem canais. O nome `agentWork` já era de uma tela (a aba de tarefas); aqui é só o nome do módulo.
+- **Web**: `AgentWorkList` e, no `App.tsx`, o estado `work` (`{ agent, open }`): botão "Recados e execuções (N)" no cabeçalho do canal, lista no lugar do chat, clique abre a conversa sem sair da tela de Agents, "← Canal" volta. **Desktop**: o mesmo, em inglês; o `ChatArea` ganhou `channelTitle` e `headerAction`. **Extensão**: o botão fica no cabeçalho do canal e leva à aba Canais, que mostra a lista; a conversa abre na aba Chat com a barra "← Recados e execuções". **Celular**: botão "Notes and runs (N)" ao lado de "Back to the conversations", uma folha com a lista e "Back to notes and runs" na conversa aberta.
+- **Testes**: web `npm test` 39, `tsc` e e2e novo `agent-work.test.mjs` (2 de 2) mais `agents` e `activity` (4 de 4) contra um hub real, no Brave (`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/brave`); desktop 98 e `tsc`; extensão 75, `tsc` e `npm run build`; celular `flutter analyze` limpo e 226 testes.
+- **Não verificado**: as telas do desktop, da extensão e do celular numa janela de verdade; o celular não tem teste de widget do `ChatScreen`, só o do módulo puro.
+- **Ambiente**: `cargo clean` no começo (11,6 GiB; o disco foi de 74% para 69%); o hub foi recompilado para o e2e (4 min). O `npm ci` no desktop trouxe o `@tauri-apps/plugin-notification` que o pull da sessão 173 pedia.
+- **Fica**: compactar o `agent_changes.jsonl`; uma conversa de tarefa longa é lida inteira a cada pedido do feed; a rodada de testes juntos.
 
 ---
 
