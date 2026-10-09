@@ -33,11 +33,37 @@ pub fn beside(config_path: &Path) -> PathBuf {
     config_path.with_file_name("agent_changes.jsonl")
 }
 
+/// Under this many bytes the log is not even looked at for a cut: counting its lines would cost more than they weigh.
+const CHECK_ABOVE_BYTES: u64 = 64 * 1024;
+/// A log with more changes than this is cut down to its newest `MAX_CHANGES`: a read never hands back more, so the rest is only weight. Twice
+/// what a read keeps, so the cut happens once every `MAX_CHANGES` changes at most, never on each one.
+const COMPACT_ABOVE_CHANGES: usize = 2 * MAX_CHANGES;
+
 /// Adds `change` to the log at `path`. A log that can't be written says nothing: the change it describes is already approved and saved.
 pub fn record(path: &Path, change: &AgentChange) {
     let Ok(mut line) = serde_json::to_string(change) else { return };
     line.push('\n');
-    let _ = OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(line.as_bytes()));
+    let appended = OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(line.as_bytes()));
+    if appended.is_ok() && std::fs::metadata(path).is_ok_and(|meta| meta.len() > CHECK_ABOVE_BYTES) {
+        compact(path);
+    }
+}
+
+/// Rewrites the log with only the changes a read would hand back, when it has grown to more than `COMPACT_ABOVE_CHANGES`. Written beside it
+/// and renamed over it, so a failure leaves the old log as it was. Appends are not locked (a change is rare and a lost line costs a line in a
+/// feed), so one that lands between the read and the rename of a compaction is lost: the price of not taking a lock for the log's whole life.
+fn compact(path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let all: Vec<AgentChange> = text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    if all.len() <= COMPACT_ABOVE_CHANGES {
+        return;
+    }
+    let kept = &all[all.len() - MAX_CHANGES..];
+    let Ok(text) = kept.iter().map(serde_json::to_string).collect::<Result<Vec<_>, _>>().map(|lines| lines.join("\n") + "\n") else { return };
+    let temp = path.with_extension("jsonl.tmp");
+    if std::fs::write(&temp, text).is_err() || std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
 }
 
 /// The changes in the log at `path`, oldest first, at most the newest `MAX_CHANGES`. A missing file is none; a line that can't be read is
@@ -85,5 +111,27 @@ mod tests {
         let changes = read_agent_changes(&log);
         assert_eq!(changes.len(), MAX_CHANGES);
         assert_eq!(changes[0].at_ms, 10, "the oldest one fell off; the bad line was never counted");
+    }
+
+    #[test]
+    fn a_log_that_grew_too_big_is_cut_to_the_newest_changes_and_keeps_taking_more() {
+        let log = temp_log();
+        let big = |at_ms: u64| AgentChange { detail: "x".repeat(2000), ..change(at_ms, "created", "a") };
+        let lines_in = |log: &Path| std::fs::read_to_string(log).unwrap().lines().count();
+        // 2 KB a line: the log passes the size worth checking long before it has too many changes, and is left alone until it has.
+        for n in 0..COMPACT_ABOVE_CHANGES as u64 {
+            record(&log, &big(n));
+        }
+        assert_eq!(lines_in(&log), COMPACT_ABOVE_CHANGES, "a big log with few enough changes is not cut");
+        record(&log, &big(COMPACT_ABOVE_CHANGES as u64));
+        assert_eq!(lines_in(&log), MAX_CHANGES, "one more than the limit: cut to the newest");
+        let kept = read_agent_changes(&log);
+        assert_eq!(kept.last().unwrap().at_ms, COMPACT_ABOVE_CHANGES as u64, "the newest is the last one written");
+        assert_eq!(kept[0].at_ms, COMPACT_ABOVE_CHANGES as u64 + 1 - MAX_CHANGES as u64);
+        assert!(kept.windows(2).all(|pair| pair[0].at_ms < pair[1].at_ms), "still oldest first");
+        record(&log, &change(1_000_000, "removed", "a"));
+        assert_eq!(read_agent_changes(&log).last().unwrap().at_ms, 1_000_000, "appending goes on after a cut");
+        assert_eq!(lines_in(&log), MAX_CHANGES + 1, "and the next change does not cut again");
+        assert!(!log.with_extension("jsonl.tmp").exists(), "no temporary file is left");
     }
 }

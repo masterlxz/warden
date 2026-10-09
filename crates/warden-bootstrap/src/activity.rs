@@ -10,7 +10,9 @@
 //! So it also covers what happened before it existed, and no part of the orchestrator has to know about it. The one thing written for it
 //! is an agent created or removed by another (`agent_changes`), which the settings, keeping only the agents that exist, can't tell.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use crate::agent_changes::{read_agent_changes, AgentChange};
 use crate::agent_tasks::{read_agent_tasks, AgentTask, TaskState};
@@ -217,19 +219,28 @@ fn step(kind: &str) -> u8 {
     }
 }
 
+/// The events of one conversation, by what kind it is by its id; a loose conversation has none.
+fn conversation_events(conversation: &Conversation) -> Vec<ActivityEvent> {
+    if conversation.id.starts_with(THREAD_PREFIX) {
+        thread_events(conversation)
+    } else if conversation.id.starts_with(CHANNEL_PREFIX) {
+        channel_events(conversation)
+    } else if conversation.id.starts_with(tasks::CONVERSATION_PREFIX) {
+        run_events(conversation)
+    } else {
+        Vec::new()
+    }
+}
+
 /// The feed of `tasks`, `changes` and `conversations` (any others are ignored): newest first, at most `limit`.
 pub fn activity_feed(tasks: &[AgentTask], changes: &[AgentChange], conversations: &[Conversation], limit: usize) -> Vec<ActivityEvent> {
     let mut events = task_events(tasks);
     events.extend(change_events(changes));
-    for conversation in conversations {
-        if conversation.id.starts_with(THREAD_PREFIX) {
-            events.extend(thread_events(conversation));
-        } else if conversation.id.starts_with(CHANNEL_PREFIX) {
-            events.extend(channel_events(conversation));
-        } else if conversation.id.starts_with(tasks::CONVERSATION_PREFIX) {
-            events.extend(run_events(conversation));
-        }
-    }
+    events.extend(conversations.iter().flat_map(conversation_events));
+    sorted_and_cut(events, limit)
+}
+
+fn sorted_and_cut(mut events: Vec<ActivityEvent>, limit: usize) -> Vec<ActivityEvent> {
     // Newest first. Within the same millisecond the later step comes first (an end before a start before the delegation, an answer before
     // the note), and the id settles the rest so the order is the same every time it is asked.
     events.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| step(b.kind).cmp(&step(a.kind))).then_with(|| a.id.cmp(&b.id)));
@@ -241,25 +252,53 @@ pub fn activity_feed(tasks: &[AgentTask], changes: &[AgentChange], conversations
 /// `conversations_dirs` (the owner keeps those of a run nobody watched apart from the others). Only the files of the conversations between
 /// agents, of agents' channels and of scheduled tasks and webhooks are opened, so a directory with many loose conversations costs nothing; one
 /// that cannot be read (a missing file, a locked directory) is skipped.
+///
+/// A screen asks for the feed every few seconds and a scheduled task's conversation grows with every run, so the events of each file are
+/// kept (`EVENT_CACHE`) with the time and size the file had, and the file is read again only when either changed.
 pub fn read_activity(tasks_log: Option<&Path>, agent_changes: Option<&Path>, conversations_dirs: &[&Path], limit: usize) -> Vec<ActivityEvent> {
-    let tasks = tasks_log.map(read_agent_tasks).unwrap_or_default();
-    let changes = agent_changes.map(read_agent_changes).unwrap_or_default();
-    let mut conversations = Vec::new();
+    let mut events = tasks_log.map(read_agent_tasks).map(|tasks| task_events(&tasks)).unwrap_or_default();
+    events.extend(agent_changes.map(read_agent_changes).map(|changes| change_events(&changes)).unwrap_or_default());
+    let mut cache = EVENT_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut seen = HashSet::new();
     for dir in conversations_dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")) else { continue };
+            let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".json")).map(str::to_owned) else { continue };
             if ![THREAD_PREFIX, CHANNEL_PREFIX, tasks::CONVERSATION_PREFIX].iter().any(|prefix| id.starts_with(prefix)) {
                 continue;
             }
-            if let Ok(Some(conversation)) = load_conversation(dir, id) {
-                conversations.push(conversation);
+            let stamp = std::fs::metadata(&path).ok().map(|meta| (meta.modified().ok(), meta.len()));
+            seen.insert(path.clone());
+            match (cache.get(&path), stamp) {
+                (Some(cached), Some(stamp)) if cached.stamp == stamp => events.extend(cached.events.iter().cloned()),
+                (_, stamp) => {
+                    let found = match load_conversation(dir, &id) {
+                        Ok(Some(conversation)) => conversation_events(&conversation),
+                        _ => Vec::new(),
+                    };
+                    events.extend(found.iter().cloned());
+                    match stamp {
+                        Some(stamp) => cache.insert(path, CachedEvents { stamp, events: found }),
+                        None => cache.remove(&path),
+                    };
+                }
             }
         }
     }
-    activity_feed(&tasks, &changes, &conversations, limit)
+    // A conversation deleted since: its entry goes, but only for the directories this call looked at (another caller may use others).
+    cache.retain(|path, _| seen.contains(path) || !conversations_dirs.iter().any(|dir| path.parent() == Some(*dir)));
+    drop(cache);
+    sorted_and_cut(events, limit)
 }
+
+/// The events of a conversation file and what the file looked like when they were read.
+struct CachedEvents {
+    stamp: (Option<std::time::SystemTime>, u64),
+    events: Vec<ActivityEvent>,
+}
+
+static EVENT_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedEvents>>> = LazyLock::new(Mutex::default);
 
 #[cfg(test)]
 mod tests {
@@ -451,5 +490,40 @@ mod tests {
         let text = task_events(&[long])[0].text.clone();
         assert_eq!(text.chars().count(), MAX_TEXT_CHARS + 1);
         assert!(text.ends_with('…'));
+    }
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("warden-activity-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn notes(dir: &Path) -> Vec<String> {
+        read_activity(None, None, &[dir], 50).into_iter().map(|e| e.text).collect()
+    }
+
+    #[test]
+    fn a_conversation_file_is_read_again_only_when_it_changed_and_forgotten_when_deleted() {
+        let dir = temp_dir();
+        let mut thread = conversation("agents-01", "ana → bia", vec![message("m1", ChatRole::User, "first", 10)]);
+        crate::save_conversation(&dir, &thread).unwrap();
+        assert_eq!(notes(&dir), ["first"]);
+        assert_eq!(notes(&dir), ["first"], "asked again without a change: the same feed");
+
+        thread.messages.push(message("m2", ChatRole::Assistant, "second", 20));
+        crate::save_conversation(&dir, &thread).unwrap();
+        assert_eq!(notes(&dir), ["second", "first"], "a file that grew is read again");
+
+        std::fs::remove_file(dir.join("agents-01.json")).unwrap();
+        assert!(notes(&dir).is_empty(), "a deleted conversation leaves the feed");
+        assert!(!EVENT_CACHE.lock().unwrap().keys().any(|path| path.starts_with(&dir)), "and the cache");
+    }
+
+    #[test]
+    fn loose_conversations_are_never_opened_or_kept() {
+        let dir = temp_dir();
+        crate::save_conversation(&dir, &conversation("loose", "ana → bia", vec![message("m1", ChatRole::User, "hi", 10)])).unwrap();
+        assert!(notes(&dir).is_empty());
+        assert!(!EVENT_CACHE.lock().unwrap().keys().any(|path| path.starts_with(&dir)));
     }
 }
