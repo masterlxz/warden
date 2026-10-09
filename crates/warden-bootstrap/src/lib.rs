@@ -892,6 +892,18 @@ pub enum ChatRole {
     Assistant,
 }
 
+/// Who answered one message (P126), so the tokens of a conversation that changed agent or provider partway are counted under the one that
+/// ran each call and not under whichever is selected now. `None` in a field means the turn did not say: an agent that was not picked, or a
+/// provider the channel does not track (the usage then falls back to the conversation's own selection).
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnsweredBy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
@@ -903,6 +915,11 @@ pub struct ConversationMessage {
     /// `#[serde(default)]` so conversations saved before this field existed still load.
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// Who answered (P126): stamped by `append_messages` on the assistant messages that carry usage, with the turn's agent and, when the
+    /// turn says it, the provider (the desktop's selection, or the reserve that answered after a fallback). Absent on older messages and on
+    /// the user's: the usage of those is counted under the conversation's own selection, as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<AnsweredBy>,
     /// Media attached to this message — user-attached images on the user turn (P28), or media
     /// extracted from an MCP tool's `CallToolResult` on the assistant turn (P64 frente 2).
     /// `#[serde(default)]` so conversations saved before this field existed still load.
@@ -1343,6 +1360,7 @@ pub async fn handle_agent_turn_in(
         content: user_input.to_string(),
         created_at: now_millis(),
         usage: None,
+        answered_by: None,
         attachments,
         generated_files: Vec::new(),
         tools_used: Vec::new(),
@@ -1367,6 +1385,8 @@ fn assistant_message(outcome: &MessageOutcome) -> ConversationMessage {
         content: outcome.content.clone(),
         created_at: now_millis(),
         usage: outcome.usage,
+        // The reserve that answered after a fallback (P79) is the provider that ran the call; `append_messages` adds the agent.
+        answered_by: outcome.fallbacks.last().map(|switch| AnsweredBy { agent_id: None, provider_id: Some(switch.to.clone()) }),
         attachments: outcome.attachments.clone(),
         generated_files: outcome.generated_files.clone(),
         tools_used: outcome.tools_used.clone(),
@@ -1426,7 +1446,16 @@ pub fn append_messages(dir: &Path, id: &str, options: AppendOptions<'_>, message
             }
         }
     };
-    conversation.messages.extend(messages);
+    let stamp = |mut message: ConversationMessage| {
+        // Only an answer that spent tokens is counted anywhere (P126); what the turn already said about itself stays.
+        if message.role == ChatRole::Assistant && message.usage.is_some() {
+            let by = message.answered_by.get_or_insert_with(AnsweredBy::default);
+            by.agent_id = by.agent_id.take().or_else(|| options.agent_id.map(str::to_string));
+            by.provider_id = by.provider_id.take().or_else(|| options.provider_id.flatten().map(str::to_string));
+        }
+        message
+    };
+    conversation.messages.extend(messages.into_iter().map(stamp));
     conversation.agent_id = options.agent_id.map(str::to_string);
     if let Some(session) = options.engine_session_id {
         conversation.engine_session_id = Some(session.to_string());
@@ -2666,6 +2695,7 @@ oauth = true
                 content: "hello".to_string(),
                 created_at: updated_at,
                 usage: None,
+                answered_by: None,
                 attachments: Vec::new(),
                 generated_files: Vec::new(),
                 tools_used: Vec::new(),
@@ -2773,6 +2803,7 @@ oauth = true
             content: id.into(),
             created_at: 1,
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
             tools_used: Vec::new(),
@@ -2793,6 +2824,57 @@ oauth = true
         assert_eq!(append_messages(&dir, "gone", AppendOptions::default(), vec![note("x", ChatRole::User)]).unwrap(), None);
         assert_eq!(list_conversations(&dir).unwrap().len(), 1, "the lock file isn't a conversation");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn append_messages_stamps_who_answered_on_the_answers_that_spent_tokens_only() {
+        let dir = temp_dir("answered-by");
+        let spent = Some(Usage { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
+        let message = |id: &str, role: ChatRole, usage: Option<Usage>, answered_by: Option<AnsweredBy>| ConversationMessage {
+            id: id.into(),
+            role,
+            content: id.into(),
+            created_at: 1,
+            usage,
+            answered_by,
+            attachments: Vec::new(),
+            generated_files: Vec::new(),
+            tools_used: Vec::new(),
+        };
+        let options = AppendOptions { title_seed: "t", agent_id: Some("writer"), provider_id: Some(Some("openai")), create: true, ..Default::default() };
+        let reserve = AnsweredBy { agent_id: None, provider_id: Some("gemini".into()) };
+        let saved = append_messages(
+            &dir,
+            "c1",
+            options,
+            vec![
+                message("question", ChatRole::User, None, None),
+                message("answer", ChatRole::Assistant, spent, None),
+                message("by-reserve", ChatRole::Assistant, spent, Some(reserve)),
+                message("error-note", ChatRole::Assistant, None, None),
+            ],
+        )
+        .unwrap()
+        .unwrap();
+        let by = |id: &str| saved.messages.iter().find(|m| m.id == id).unwrap().answered_by.clone();
+        assert_eq!(by("answer"), Some(AnsweredBy { agent_id: Some("writer".into()), provider_id: Some("openai".into()) }));
+        assert_eq!(by("by-reserve"), Some(AnsweredBy { agent_id: Some("writer".into()), provider_id: Some("gemini".into()) }), "the reserve that answered wins over the selection");
+        assert_eq!((by("question"), by("error-note")), (None, None), "no tokens, nothing to attribute");
+
+        // A channel that tracks no provider (the hub's turn) stamps the agent alone, and the stamp survives the file.
+        let options = AppendOptions { agent_id: Some("poet"), ..Default::default() };
+        let saved = append_messages(&dir, "c1", options, vec![message("later", ChatRole::Assistant, spent, None)]).unwrap().unwrap();
+        assert_eq!(saved.messages.last().unwrap().answered_by, Some(AnsweredBy { agent_id: Some("poet".into()), provider_id: None }));
+        assert_eq!(load_conversation(&dir, "c1").unwrap(), Some(saved));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_conversation_saved_before_the_stamp_still_loads_and_a_message_without_one_writes_none() {
+        let old = r#"{"id":"m","role":"assistant","content":"x","createdAt":1,"usage":{"promptTokens":1,"completionTokens":1,"totalTokens":2}}"#;
+        let message: ConversationMessage = serde_json::from_str(old).unwrap();
+        assert_eq!(message.answered_by, None);
+        assert!(!serde_json::to_string(&message).unwrap().contains("answeredBy"), "an unstamped message adds nothing to the file");
     }
 
     const CHILD_CONVERSATIONS: &str = "WARDEN_CONVERSATION_LOCK_CHILD";
@@ -3088,6 +3170,7 @@ oauth = true
             content: format!("line-{i:03}-end"),
             created_at: i as i64,
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
             tools_used: Vec::new(),
@@ -3239,7 +3322,7 @@ oauth = true
     #[test]
     fn a_conversation_can_be_moved_between_projects_and_out_of_one_without_counting_as_activity() {
         let dir = temp_dir("move-project");
-        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
+        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
         let new = AppendOptions { title_seed: "t", project_id: Some("tax"), create: true, ..Default::default() };
         let created = append_messages(&dir, "c1", new, vec![note("a")]).unwrap().unwrap();
 
@@ -3261,7 +3344,7 @@ oauth = true
     #[test]
     fn append_messages_gives_a_new_conversation_its_project_and_never_changes_an_existing_one() {
         let dir = temp_dir("append-project");
-        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
+        let note = |text: &str| ConversationMessage { id: message_id(), role: ChatRole::User, content: text.into(), created_at: 1, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
         let new = AppendOptions { title_seed: "t", project_id: Some("tax"), create: true, ..Default::default() };
         assert_eq!(append_messages(&dir, "c1", new, vec![note("a")]).unwrap().unwrap().project_id.as_deref(), Some("tax"));
         for sent in [None, Some("other")] {

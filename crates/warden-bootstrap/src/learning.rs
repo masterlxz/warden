@@ -468,7 +468,7 @@ mod tests {
         let model = Scripted { script: Mutex::new(script.iter().map(|s| s.to_string()).collect()), asked: asked.clone() };
         let orchestrator = Orchestrator::new(Arc::new(model), Arc::new(Vault::new(temp_dir(&format!("{name}-vault")))));
         let conversations = temp_dir(&format!("{name}-conv"));
-        let message = |role, content: &str, at| ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
+        let message = |role, content: &str, at| ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() };
         save_conversation(
             &conversations,
             &Conversation {
@@ -602,6 +602,7 @@ mod tests {
             content: "ok".into(),
             created_at: 1,
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
             tools_used: tools.iter().map(|t| t.to_string()).collect(),

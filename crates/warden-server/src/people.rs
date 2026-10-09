@@ -399,6 +399,7 @@ mod tests {
                 content: text.into(),
                 created_at: 1,
                 usage: None,
+                answered_by: None,
                 attachments: Vec::new(),
                 generated_files: Vec::new(), tools_used: Vec::new(),
             }],

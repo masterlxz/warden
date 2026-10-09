@@ -201,6 +201,7 @@ mod tests {
                 content: String::new(),
                 created_at,
                 usage: Some(Usage { prompt_tokens: t, completion_tokens: 0, total_tokens: t }),
+                answered_by: None,
                 attachments: Vec::new(),
                 generated_files: Vec::new(), tools_used: Vec::new(),
             })

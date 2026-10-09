@@ -55,7 +55,7 @@ async fn spin_up(dir: &std::path::Path, log: Option<PathBuf>) -> String {
 }
 
 fn message(id: &str, role: ChatRole, content: &str, at: i64) -> ConversationMessage {
-    ConversationMessage { id: id.into(), role, content: content.into(), created_at: at, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+    ConversationMessage { id: id.into(), role, content: content.into(), created_at: at, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
 }
 
 /// Writes a conversation the way the hub would, in the owner's folder.

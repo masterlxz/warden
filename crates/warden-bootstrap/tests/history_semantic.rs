@@ -10,7 +10,7 @@ use warden_bootstrap::{save_conversation, ChatRole, Conversation, ConversationMe
 use warden_core::tool::Tool;
 
 fn message(role: ChatRole, content: &str, at: i64) -> ConversationMessage {
-    ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+    ConversationMessage { id: format!("m{at}"), role, content: content.into(), created_at: at, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
 }
 
 fn conversation(id: &str, title: &str, messages: Vec<ConversationMessage>) -> Conversation {

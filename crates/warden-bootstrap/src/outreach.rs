@@ -129,6 +129,7 @@ impl Tool for MessageUserTool {
             content: message.to_string(),
             created_at: now_millis(),
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
             tools_used: Vec::new(),

@@ -644,6 +644,7 @@ fn plain_message(role: ChatRole, content: String) -> ConversationMessage {
         content,
         created_at: now_millis(),
         usage: None,
+        answered_by: None,
         attachments: Vec::new(),
         generated_files: Vec::new(), tools_used: Vec::new(),
     }

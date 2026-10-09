@@ -12,13 +12,12 @@
 //!
 //! Token-only, on purpose: dollars come from the spend ledger (`warden_core::spend`, priced by the model that
 //! actually ran, with the provider that answered), which the usage screens and the `budget` tool read; this is what
-//! the conversations themselves hold. Deliberately no per-message model
-//! attribution either: `Conversation.agent_id`/`provider_id` record only the *last* selection for
-//! the whole conversation (the desktop's per-conversation selectors), not per-message — a
-//! conversation that switched provider partway through has every message's usage counted under
-//! whichever provider is selected now. Exact per-message attribution would need recording the
-//! provider/agent alongside each `ConversationMessage`, which doesn't exist today; out of scope
-//! for this on-demand aggregation (the option deliberately chosen over a new persisted index).
+//! the conversations themselves hold. Attribution is per message since P126: `append_messages` stamps each
+//! answer that spent tokens with `ConversationMessage.answered_by` (the turn's agent, and the provider when the
+//! turn says it: the desktop's selection or the reserve that answered after a fallback), and the breakdown reads
+//! that. Without it — messages saved before P126, and the provider of channels that don't track one — the
+//! conversation's `agent_id`/`provider_id` apply, which are only the *last* selection of the whole conversation
+//! (a conversation that switched partway has those messages counted under whichever is selected now).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,17 +67,19 @@ pub fn aggregate_usage(conversations: &[Conversation]) -> UsageSummary {
             summary.message_count += 1;
             summary.total += usage;
 
-            let agent_bucket = by_agent.entry(conversation.agent_id.clone()).or_insert_with(|| UsageByKey {
-                key: conversation.agent_id.clone(),
-                ..Default::default()
-            });
+            // The agent and provider that ran this call (P126) when the message says; otherwise the conversation's own selection. A stamped
+            // message with no agent is an answer with none picked, not an unknown one; no provider means the channel doesn't track it.
+            let agent = match &message.answered_by {
+                Some(by) => by.agent_id.clone(),
+                None => conversation.agent_id.clone(),
+            };
+            let provider = message.answered_by.as_ref().and_then(|by| by.provider_id.clone()).or_else(|| conversation.provider_id.clone());
+
+            let agent_bucket = by_agent.entry(agent.clone()).or_insert_with(|| UsageByKey { key: agent, ..Default::default() });
             agent_bucket.message_count += 1;
             agent_bucket.usage += usage;
 
-            let provider_bucket = by_provider.entry(conversation.provider_id.clone()).or_insert_with(|| UsageByKey {
-                key: conversation.provider_id.clone(),
-                ..Default::default()
-            });
+            let provider_bucket = by_provider.entry(provider.clone()).or_insert_with(|| UsageByKey { key: provider, ..Default::default() });
             provider_bucket.message_count += 1;
             provider_bucket.usage += usage;
         }
@@ -212,7 +213,7 @@ mod tests {
     use crate::ChatRole;
 
     fn message(usage: Option<Usage>) -> crate::ConversationMessage {
-        crate::ConversationMessage { id: "m".to_string(), role: ChatRole::Assistant, content: String::new(), created_at: 0, usage, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+        crate::ConversationMessage { id: "m".to_string(), role: ChatRole::Assistant, content: String::new(), created_at: 0, usage, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
     }
 
     fn conversation(agent_id: Option<&str>, provider_id: Option<&str>, messages: Vec<crate::ConversationMessage>) -> Conversation {
@@ -229,6 +230,51 @@ mod tests {
             workdir: None,
             parent: None,
         }
+    }
+
+    fn tokens(n: u32) -> Option<Usage> {
+        Some(Usage { prompt_tokens: n, completion_tokens: 0, total_tokens: n })
+    }
+
+    fn answered(by_agent: Option<&str>, by_provider: Option<&str>, n: u32) -> crate::ConversationMessage {
+        crate::ConversationMessage {
+            answered_by: Some(crate::AnsweredBy { agent_id: by_agent.map(str::to_string), provider_id: by_provider.map(str::to_string) }),
+            ..message(tokens(n))
+        }
+    }
+
+    fn totals(buckets: &[UsageByKey]) -> Vec<(Option<&str>, u64)> {
+        let mut found: Vec<_> = buckets.iter().map(|b| (b.key.as_deref(), b.usage.total_tokens as u64)).collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn each_message_counts_under_the_agent_and_provider_that_answered_it() {
+        // The conversation ends on agent `b` / provider `p2`, but its first answers were `a` on `p1`.
+        let summary = aggregate_usage(&[conversation(Some("b"), Some("p2"), vec![answered(Some("a"), Some("p1"), 10), answered(Some("b"), Some("p2"), 5)])]);
+        assert_eq!(totals(&summary.by_agent), [(Some("a"), 10), (Some("b"), 5)]);
+        assert_eq!(totals(&summary.by_provider), [(Some("p1"), 10), (Some("p2"), 5)]);
+    }
+
+    #[test]
+    fn a_message_with_no_stamp_falls_back_to_the_conversation_as_it_always_did() {
+        let summary = aggregate_usage(&[conversation(Some("b"), Some("p2"), vec![message(tokens(7)), answered(Some("a"), Some("p1"), 3)])]);
+        assert_eq!(totals(&summary.by_agent), [(Some("a"), 3), (Some("b"), 7)]);
+        assert_eq!(totals(&summary.by_provider), [(Some("p1"), 3), (Some("p2"), 7)]);
+    }
+
+    #[test]
+    fn an_answer_with_no_agent_is_not_charged_to_the_agent_the_conversation_ended_on() {
+        // Stamped, no agent: it was answered with none picked, even though the conversation has an agent now.
+        let summary = aggregate_usage(&[conversation(Some("b"), None, vec![answered(None, None, 4)])]);
+        assert_eq!(totals(&summary.by_agent), [(None, 4)]);
+    }
+
+    #[test]
+    fn a_provider_the_turn_did_not_say_is_the_conversations() {
+        let summary = aggregate_usage(&[conversation(Some("a"), Some("p2"), vec![answered(Some("a"), None, 6)])]);
+        assert_eq!(totals(&summary.by_provider), [(Some("p2"), 6)]);
     }
 
     #[test]

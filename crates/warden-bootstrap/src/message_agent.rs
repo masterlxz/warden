@@ -197,6 +197,7 @@ impl MessageAgentTool {
             content: content.clone(),
             created_at: now_millis(),
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(), tools_used: Vec::new(),
         };
@@ -227,6 +228,7 @@ impl MessageAgentTool {
                         content: format!("(could not answer: {err:#})"),
                         created_at: now_millis(),
                         usage: None,
+                        answered_by: None,
                         attachments: Vec::new(),
                         generated_files: Vec::new(), tools_used: Vec::new(),
                     };

@@ -1174,7 +1174,7 @@ mod tests {
     use super::*;
 
     fn said(role: SavedRole) -> ConversationMessage {
-        ConversationMessage { id: "m".into(), role, content: "hi".into(), created_at: 1, usage: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+        ConversationMessage { id: "m".into(), role, content: "hi".into(), created_at: 1, usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
     }
 
     #[test]

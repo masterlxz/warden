@@ -62,6 +62,7 @@ impl CodeTurn<'_> {
             content,
             created_at: now_millis(),
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(),
             tools_used,

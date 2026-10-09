@@ -298,6 +298,7 @@ async fn measure_what_the_assistant_learns_with_a_real_model() {
                 content: text.to_string(),
                 created_at: i as i64,
                 usage: None,
+                answered_by: None,
                 attachments: Vec::new(),
                 generated_files: Vec::new(),
                 tools_used: tools.iter().map(|t| t.to_string()).collect(),

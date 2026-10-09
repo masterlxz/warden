@@ -207,6 +207,7 @@ mod tests {
             content: content.into(),
             created_at,
             usage: None,
+            answered_by: None,
             attachments: Vec::new(),
             generated_files: Vec::new(), tools_used: Vec::new(),
         }
