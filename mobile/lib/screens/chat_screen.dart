@@ -12,6 +12,7 @@ import '../services/chat_notifications.dart';
 import '../services/chat_transcript.dart';
 import '../services/mobile_file_tool.dart';
 import '../services/server_connection.dart';
+import '../services/side_work.dart';
 import '../services/sync_auto_pull.dart';
 import '../services/vault_paths.dart';
 import '../src/rust/api/sync.dart' as sync_bridge;
@@ -37,6 +38,9 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _inputController = TextEditingController();
   final _scrollController = ScrollController();
+
+  /// P121 — the note or run of an agent that was opened from its list: the way back to the list while it is the open conversation.
+  ({String agent, String id})? _workOpen;
 
   StreamSubscription<ServerMessage>? _chatSubscription;
   StreamSubscription<ConnectionStatus>? _statusSubscription;
@@ -226,6 +230,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// P121 — what [agent] did outside its channel: the notes it traded with other agents and the runs nobody watched. Picking one opens
+  /// it as the conversation it is, with a way back to this list.
+  void _openWork(String agent) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheet) => _WorkSheet(
+        agent: agent,
+        transcript: widget.transcript,
+        onPick: (id) {
+          Navigator.of(sheet).pop();
+          setState(() => _workOpen = (agent: agent, id: id));
+          widget.transcript.open(id);
+        },
+      ),
+    );
+  }
+
   /// P120, P123 — the agents screen. "Chat" on a node leaves it and starts an empty conversation as that agent.
   void _openAgents() {
     Navigator.of(context).push(
@@ -401,17 +424,46 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           // P121 — in an agent's channel, the way back to the loose conversations.
           ListenableBuilder(
             listenable: widget.transcript,
-            builder: (context, _) => widget.transcript.channelAgent == null
-                ? const SizedBox.shrink()
-                : Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      key: const Key('channel-back'),
-                      onPressed: widget.transcript.leaveChannel,
-                      icon: const Icon(Icons.arrow_back),
-                      label: const Text('Back to the conversations'),
-                    ),
+            builder: (context, _) {
+              final agent = widget.transcript.channelAgent;
+              if (agent == null) return const SizedBox.shrink();
+              return Row(
+                children: [
+                  TextButton.icon(
+                    key: const Key('channel-back'),
+                    onPressed: widget.transcript.leaveChannel,
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('Back to the conversations'),
                   ),
+                  const Spacer(),
+                  TextButton(
+                    key: const Key('channel-work'),
+                    onPressed: () => _openWork(agent),
+                    child: Text(sideWorkButtonLabel(sideWork(widget.transcript.conversations, agent).length)),
+                  ),
+                ],
+              );
+            },
+          ),
+          // P121 — a note or run opened from an agent's list: the way back to the list.
+          ListenableBuilder(
+            listenable: widget.transcript,
+            builder: (context, _) {
+              final open = _workOpen;
+              if (open == null || open.id != widget.transcript.activeConversationId) return const SizedBox.shrink();
+              return Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const Key('work-back'),
+                  onPressed: () {
+                    setState(() => _workOpen = null);
+                    _openWork(open.agent);
+                  },
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Back to notes and runs'),
+                ),
+              );
+            },
           ),
           // P102 — the folder this conversation works in, picked before its first message. A channel has none.
           ListenableBuilder(
@@ -574,6 +626,46 @@ class _ChannelsSheet extends StatelessWidget {
                   title: Text(row.agent),
                   trailing: Text(row.answering ? 'answering…' : (row.channel == null ? 'new' : _when(row.channel!.updatedAt))),
                   onTap: () => onPick(row.agent),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// P121 — the notes and runs of an agent outside its channel, newest first.
+class _WorkSheet extends StatelessWidget {
+  const _WorkSheet({required this.agent, required this.transcript, required this.onPick});
+
+  final String agent;
+  final ChatTranscript transcript;
+  final void Function(String conversationId) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: transcript,
+        builder: (context, _) {
+          final items = sideWork(transcript.conversations, agent);
+          if (items.isEmpty) {
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text('$agent has not traded notes with other agents or run on its own yet.', textAlign: TextAlign.center),
+            );
+          }
+          return ListView(
+            shrinkWrap: true,
+            children: [
+              for (final item in items)
+                ListTile(
+                  key: Key('work-${item.id}'),
+                  title: Text(item.title, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(sideWorkLabel(item)),
+                  trailing: Text(transcript.isAnswering(item.id) ? 'answering…' : _ChannelsSheet._when(item.updatedAt)),
+                  onTap: () => onPick(item.id),
                 ),
             ],
           );
