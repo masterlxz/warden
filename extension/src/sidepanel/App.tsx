@@ -6,6 +6,8 @@ import SkillsView from "./SkillsView";
 import AgentsView from "./AgentsView";
 import TabsView from "./TabsView";
 import ChannelsView from "./ChannelsView";
+import AgentWorkList from "./AgentWorkList";
+import { agentWork, workButtonLabel } from "./lib/agentWork";
 import ApprovalCard from "./ApprovalCard";
 import type { ApprovalPrompt } from "../protocol/messages";
 import { threadsOf } from "../protocol/threads";
@@ -33,6 +35,10 @@ export default function App() {
   /** P87 — approvals the hub is waiting on, kept by the background. */
   const [approvals, setApprovals] = useState<ApprovalPrompt[]>([]);
   const [tab, setTab] = useState<"chat" | "channels" | "skills" | "tabs" | "agents">("chat");
+  /** P121 — the agent whose notes and runs (outside its channel) the Canais tab lists, instead of the contacts; `null` for the contacts. */
+  const [workOf, setWorkOf] = useState<string | null>(null);
+  /** P121 — the conversation of that list that the chat tab is showing, to come back to the list from it. */
+  const [workOpen, setWorkOpen] = useState<{ agent: string; id: string } | null>(null);
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "getStatus" }).then((res: GetStatusResponse) => {
@@ -166,13 +172,45 @@ export default function App() {
                   </label>
                 )}
               </header>
+            ) : workOpen && workOpen.id === conversationState.activeConversationId ? (
+              // P121 — a note or a run of an agent, opened from its list: back to the list, not to the loose conversations.
+              <header className="thread-bar">
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setWorkOpen(null);
+                    setTab("channels");
+                  }}
+                >
+                  ← Recados e execuções
+                </button>
+                <strong>{conversationState.conversations.find((c) => c.id === workOpen.id)?.title ?? workOpen.agent}</strong>
+              </header>
             ) : channelAgent !== undefined ? (
               // P121 — an agent's channel: the agent is the channel's, there is no agent, folder or conversation to pick here.
               <header className="thread-bar">
-                <button type="button" className="link-button" onClick={() => setTab("channels")}>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setWorkOf(null);
+                    setTab("channels");
+                  }}
+                >
                   ← Canais
                 </button>
                 <strong>{channelAgent}</strong>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setWorkOf(channelAgent);
+                    setTab("channels");
+                  }}
+                >
+                  {workButtonLabel(agentWork(conversationState.conversations, channelAgent).length)}
+                </button>
                 <button type="button" className="link-button" onClick={() => void chrome.runtime.sendMessage({ type: "newConversation" })}>
                   Conversa nova
                 </button>
@@ -196,14 +234,28 @@ export default function App() {
           </div>
           {tab === "channels" && (
             <div className="tab-panel">
-              <ChannelsView
-                agentIds={conversationState.agentIds}
-                channels={conversationState.channels}
-                conversations={conversationState.conversations}
-                pendingIds={conversationState.pendingIds}
-                unreadChannels={conversationState.unreadChannels}
-                onOpened={() => setTab("chat")}
-              />
+              {workOf !== null ? (
+                <AgentWorkList
+                  agent={workOf}
+                  items={agentWork(conversationState.conversations, workOf)}
+                  pendingIds={conversationState.pendingIds}
+                  onOpen={(conversationId) => {
+                    setWorkOpen({ agent: workOf, id: conversationId });
+                    void chrome.runtime.sendMessage({ type: "selectConversation", conversationId });
+                    setTab("chat");
+                  }}
+                  onBack={() => setWorkOf(null)}
+                />
+              ) : (
+                <ChannelsView
+                  agentIds={conversationState.agentIds}
+                  channels={conversationState.channels}
+                  conversations={conversationState.conversations}
+                  pendingIds={conversationState.pendingIds}
+                  unreadChannels={conversationState.unreadChannels}
+                  onOpened={() => setTab("chat")}
+                />
+              )}
             </div>
           )}
           {tab === "skills" && (
