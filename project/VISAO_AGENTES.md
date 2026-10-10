@@ -1622,13 +1622,14 @@ levar isto a `/plan`.
    Programming Manager do Warden coordenando o trabalho de código. O gerente comanda o opencode como ferramenta, ou
    há subagentes de programação do próprio Warden (P89)?
    **Decidido (Sessão 180)**: o opencode como ferramenta. Um agente do Warden (o gerente é um agente comum, com persona
-   de gerente) manda tarefas a um projeto de código por uma tool (`code_task`, ainda não feita), pela camada
+   de gerente) manda tarefas a um projeto de código por uma tool (`code_task`, feita na Sessão 180, só no hub), pela camada
    `CodeEngine`; os "subagentes de programação" são sessões do opencode, não agentes do Warden com motor próprio. Fica
    para depois: várias sessões ao mesmo tempo, cada uma com o seu cargo na árvore. Coerente com a decisão da P89 (usar
    o opencode, não construir motor).
-4. **Canal por agente × conversas por conversa.** O modo Agents quer uma conversa principal persistente por agente. Hoje
-   há conversas avulsas, conversas "A → B" (`message_agent`) e `task-*` (tarefas). Elas viram vistas dessa conversa
-   principal, ou convivem?
+4. ~~**Canal por agente × conversas por conversa.**~~ **Já decidida e feita (P121; decisão do usuário na Sessão 165, a
+   lista dos recados na 175; conferido no `PENDING.md` na Sessão 180)**: o canal **convive** com o resto. As conversas
+   soltas ficam no Chat, a tela de Agents tem uma conversa fixa por agente (como um contato), e os recados "A → B" e as
+   execuções `task-*` ficam numa lista dentro do contato.
 5. ~~**Conversa sem agente no desktop.**~~ **Já resolvida (P124, commit `4bca2ee`; conferido no código na Sessão 180)**:
    o desktop começa com "Chat without an agent" ou com um agente, e troca de agente pelo cabeçalho a qualquer hora.
 
