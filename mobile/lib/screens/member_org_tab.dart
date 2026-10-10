@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../protocol/messages.dart';
@@ -8,8 +10,9 @@ import 'agents_screen.dart' show NewAgentDialog, PositionDialog;
 /// P120 — the organization tab of a member of the hub. The tree is the owner's, and what the member does with it is the
 /// access the owner gave them: none (a note and nothing else), view (the tree, with no way to change it) or edit (a role and a
 /// superior, a new report, a removal — by their own session, with no pairing key). It starts from the access the hub sent
-/// at sign-in and asks again when the tab opens, when the app comes back to the front and on a pull, because the owner may
-/// have changed it since; the hub checks the access at every request anyway. The agents' powers are not part of what a
+/// at sign-in and follows the hub, which says so the moment the owner saves a new level; it also asks again when the tab opens,
+/// when the app comes back to the front and on a pull (a change made in the config file is not pushed). The hub checks the access
+/// at every request anyway. The agents' powers are not part of what a
 /// member sees, and neither are their chats and tasks (the owner's agents are not always theirs).
 class MemberOrganizationTab extends StatefulWidget {
   const MemberOrganizationTab({super.key, required this.backend, this.initialAccess = OrgAccess.none});
@@ -29,17 +32,36 @@ class _MemberOrganizationTabState extends State<MemberOrganizationTab> with Widg
   String? _error;
   bool _busy = false;
 
+  StreamSubscription<String>? _told;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _told = widget.backend.orgAccessChanges.listen(_onTold);
     _load();
   }
 
   @override
   void dispose() {
+    _told?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// The hub says the owner just changed the access: take it at once. Gaining it needs the tree, so it is read; losing it drops the
+  /// tree and any message about a refused edit.
+  void _onTold(String access) {
+    if (!mounted) return;
+    final next = orgAccessOf(access);
+    setState(() {
+      _access = next;
+      if (next == OrgAccess.none) {
+        _agents = null;
+        _error = null;
+      }
+    });
+    if (next != OrgAccess.none) _load(quiet: true);
   }
 
   @override

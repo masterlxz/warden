@@ -265,6 +265,37 @@ fn ana() -> Option<RemoteCredential> {
 }
 
 #[tokio::test]
+async fn a_member_is_told_when_the_owner_changes_her_access_to_the_organization() {
+    let hub = spin_up().await;
+    let (owner, owner_sink) = connect(hub.addr, "desktop-owner", owner_key(), None);
+    connected(&owner).await;
+    let (member, sink) = connect(hub.addr, "desktop-ana", ana(), None);
+    connected(&member).await;
+
+    let set = |access: &'static str| {
+        let owner = owner.clone();
+        async move {
+            let reply = owner
+                .request(|request_id| Ok(ClientMessage::SetUserOrgAccess { request_id, pairing_key: KEY.into(), id: "ana".into(), access: access.into() }), Duration::from_secs(10))
+                .await
+                .unwrap();
+            assert!(matches!(reply, ServerMessage::UserList { .. }), "{reply:?}");
+        }
+    };
+    let told = |sink: &Arc<Collector>| -> Vec<String> {
+        sink.events().into_iter().filter_map(|e| if let RemoteEvent::OrgAccessChanged { access } = e { Some(access) } else { None }).collect()
+    };
+
+    set("edit").await;
+    until("the new level to reach her", || told(&sink) == ["edit"]).await;
+    set("none").await;
+    until("the second level to reach her", || told(&sink) == ["edit", "none"]).await;
+    assert!(told(&owner_sink).is_empty(), "the owner is not told about a member's access");
+    member.stop();
+    owner.stop();
+}
+
+#[tokio::test]
 async fn a_member_signs_in_with_a_password_sees_only_her_conversations_and_returns_by_token() {
     let hub = spin_up().await;
     let (owner, _) = connect(hub.addr, "desktop-owner", owner_key(), None);

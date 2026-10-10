@@ -45,6 +45,9 @@ class MemberOrg {
 /// What the organization tab of a member needs from the hub — `ServerConnection` in the app, a fake in tests. The owner's
 /// calls are in [AgentsBackend]; these two ask by the member's own session, with no pairing key.
 abstract interface class MemberOrgBackend {
+  /// The level the owner just set, as the hub says it (`none`, `view` or `edit`), the moment it is saved.
+  Stream<String> get orgAccessChanges;
+
   /// Throws a `HubRequestException` when the owner gave no access, and a `ConversationException` when the hub can't be asked.
   Future<MemberOrg> listAgentOrg();
   Future<MemberOrg> editAgentOrgAsMember(OrgEdit edit);

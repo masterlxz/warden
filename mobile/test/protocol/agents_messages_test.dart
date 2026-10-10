@@ -223,6 +223,11 @@ void main() {
       expect(msg.agents.every((a) => !a.canDelegateToAgents && a.autonomy == 4), isTrue, reason: 'no powers are sent, so none are shown');
     });
 
+    test('the hub pushes the new level with no request id', () {
+      final msg = ServerMessage.decode(jsonEncode({'type': 'orgAccessChanged', 'access': 'view'})) as OrgAccessChangedMessage;
+      expect(msg.access, 'view');
+    });
+
     test('the access comes with the user at sign-in and survives what changes in the user afterwards', () {
       final user = UserInfo.fromJson({'id': 'ana', 'name': 'Ana', 'mustChangePassword': false, 'orgAccess': 'view'});
       expect(user.orgAccess, 'view');

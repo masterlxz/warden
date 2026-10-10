@@ -99,6 +99,15 @@ export function orgAccessOf(value: string | null | undefined): OrgAccess {
   return value === "view" || value === "edit" ? value : "none";
 }
 
+/** O membro com o acesso que o hub acabou de dizer (o aviso do hub, ou a resposta de uma consulta). O mesmo objeto quando nada muda, para
+ * não renderizar de novo; `none` tira o campo, como o hub, que não manda nada para quem não tem acesso. */
+export function userWithOrgAccess<T extends { orgAccess?: string }>(user: T, access: string): T {
+  const next = orgAccessOf(access);
+  if (orgAccessOf(user.orgAccess) === next) return user;
+  const { orgAccess: _before, ...rest } = user;
+  return (next === "none" ? rest : { ...rest, orgAccess: next }) as T;
+}
+
 /** Os três níveis, na ordem em que o dono os escolhe. */
 export const ORG_ACCESS_CHOICES: Array<{ value: OrgAccess; label: string; hint: string }> = [
   { value: "none", label: "Não vê", hint: "Não vê a árvore, como todo membro antes disso." },

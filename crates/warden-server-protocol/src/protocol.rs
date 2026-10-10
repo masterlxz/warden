@@ -2310,6 +2310,10 @@ pub enum ServerMessage {
         agents: Vec<OrgAgentDto>,
         access: String,
     },
+    /// Pushed to a member's open connections when the owner changes what they may do with the organization of the agents (P120):
+    /// `none`, `view` or `edit`, as the hub saved it. Not an answer to a request: a client that shows the tree takes the new level
+    /// at once instead of waiting to be asked. The owner never gets it.
+    OrgAccessChanged { access: String },
     /// A settings request failed. `conflict`: the file changed since it was loaded. `auth_rejected`:
     /// the pairing key was wrong. Nothing was written in either case.
     SettingsError {
@@ -3015,6 +3019,12 @@ mod tests {
         let json = serde_json::to_string(&reply).unwrap();
         assert_eq!(json, r#"{"type":"agentOrgList","requestId":9,"agents":[{"id":"lead","role":"Manager"},{"id":"dev","reportsTo":"lead"}],"access":"edit"}"#);
         assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), reply);
+
+        // The push the hub makes to a member when the owner changes the level: no request id, just the level.
+        let pushed = ServerMessage::OrgAccessChanged { access: "view".into() };
+        let json = serde_json::to_string(&pushed).unwrap();
+        assert_eq!(json, r#"{"type":"orgAccessChanged","access":"view"}"#);
+        assert_eq!(serde_json::from_str::<ServerMessage>(&json).unwrap(), pushed);
     }
 
     #[test]

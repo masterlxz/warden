@@ -118,6 +118,9 @@ pub struct Server {
     task_tick: Duration,
     /// Conversations changed outside any one connection (a task ran): every connection hears it.
     changes: broadcast::Sender<String>,
+    /// The owner changed what a member may do with the organization of the agents (P120): the member's id and the new level. Only that
+    /// member's connections forward it.
+    org_access_changes: broadcast::Sender<(String, String)>,
     /// Who is connected as a node (P93), for the node tools and the screens.
     nodes: NodeRegistry,
     /// Where node calls are logged; `None` in tests that don't care.
@@ -166,6 +169,7 @@ impl Server {
             agent_tasks: None,
             task_tick: DEFAULT_TASK_TICK,
             changes: broadcast::channel(64).0,
+            org_access_changes: broadcast::channel(16).0,
             nodes: NodeRegistry::default(),
             node_audit: warden_bootstrap::default_node_audit_log_path(),
             users_dir: None,
@@ -351,6 +355,7 @@ impl Server {
             tasks: self.tasks,
             agent_tasks: self.agent_tasks,
             changes: self.changes.clone(),
+            org_access_changes: self.org_access_changes.clone(),
             nodes: self.nodes.clone(),
             node_tools: None,
             users_dir: self.users_dir.map(Arc::new),
@@ -444,6 +449,8 @@ struct ConnectionContext {
     /// The log of tasks agents delegated to each other (P123).
     agent_tasks: Option<Arc<PathBuf>>,
     changes: broadcast::Sender<String>,
+    /// A member's access to the organization changed (P120): who, and the new level.
+    org_access_changes: broadcast::Sender<(String, String)>,
     nodes: NodeRegistry,
     /// Rebuilds the nodes' MCP tools when one joins or leaves (fatia 2). `None` without a settings file.
     node_tools: Option<NodeToolFactory>,
@@ -817,6 +824,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         tasks,
         agent_tasks,
         changes,
+        org_access_changes,
         nodes,
         node_tools,
         users_dir,
@@ -1050,6 +1058,27 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
         }
     }));
 
+    // P120: the owner changed this member's access to the organization: they hear it at once, on every device of theirs. A member who
+    // is not the one named, and the owner, hear nothing.
+    let mut org_access = org_access_changes.subscribe();
+    let org_member = member.as_ref().map(|m| m.id.clone());
+    let weak_tx = tx.downgrade();
+    let _forward_org_access = AbortOnDrop(tokio::spawn(async move {
+        loop {
+            match org_access.recv().await {
+                Ok((who, access)) => {
+                    if org_member.as_deref() != Some(who.as_str()) {
+                        continue;
+                    }
+                    let Some(tx) = weak_tx.upgrade() else { break };
+                    let _ = tx.send(ServerMessage::OrgAccessChanged { access });
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }));
+
     // Fase 9.3: every connected device is a valid routing target for `CallDeviceTool`, whether or
     // not it advertised any `Hello.tools` — registered before the loop starts so a routed call
     // arriving right after this device's own Hello can never race the registration.
@@ -1250,7 +1279,20 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                     spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetTools { id, tools });
                 }
                 Ok(ClientMessage::SetUserOrgAccess { request_id, pairing_key, id, access }) => {
-                    spawn_user_change(&settings, &devices_path, &api_keys, &settings_lock, &auth_key, &data_dirs, &tx, request_id, pairing_key, UserChange::SetOrgAccess { id, access });
+                    // The member hears the new level on every open connection of theirs, once it is saved (P120).
+                    let (settings, lock, auth_key, reply_tx, data_dirs, announce) = (settings.clone(), settings_lock.clone(), auth_key.clone(), tx.clone(), data_dirs.clone(), org_access_changes.clone());
+                    let pairing = PairingStore::new(devices_path.as_ref().clone());
+                    let keys = api_keys.as_deref().map(|path| ApiKeyStore::new(path.clone()));
+                    tokio::spawn(async move {
+                        let dirs = data_dirs.as_ref().map(|(users_dir, conversations_root)| DataDirs { users_dir, conversations_root });
+                        let level = warden_bootstrap::users::OrgAccess::parse(&access);
+                        let change = UserChange::SetOrgAccess { id: id.clone(), access };
+                        let reply = handle_user_change(settings.as_deref(), &pairing, keys.as_ref(), &lock, &auth_key, request_id, &pairing_key, dirs, change).await;
+                        if let (Some(level), false) = (level, matches!(reply, ServerMessage::UserError { .. })) {
+                            let _ = announce.send((id, level.as_str().to_string()));
+                        }
+                        let _ = reply_tx.send(reply);
+                    });
                 }
                 Ok(ClientMessage::SetUserWorkdirs { request_id, pairing_key, id, workdirs, node_workdirs }) => {
                     let node_workdirs = node_workdirs.into_iter().map(|f| warden_bootstrap::users::NodeFolder { node: f.node, path: f.path }).collect();

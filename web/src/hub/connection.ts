@@ -296,6 +296,7 @@ export class ServerConnection {
   private readonly chatListeners = new Set<ChatListener>();
   private readonly approvalListeners = new Set<ApprovalListener>();
   private readonly conversationsListeners = new Set<ConversationsListener>();
+  private readonly orgAccessListeners = new Set<(access: string) => void>();
   private readonly chatEventListeners = new Set<ChatEventListener>();
   private recoveryCodeListener: ((code: string) => void) | null = null;
   private unclaimedRecoveryCode: string | null = null;
@@ -373,6 +374,12 @@ export class ServerConnection {
   onConversationsChanged(listener: ConversationsListener): () => void {
     this.conversationsListeners.add(listener);
     return () => this.conversationsListeners.delete(listener);
+  }
+
+  /** P120 — the owner changed what this member may do with the organization of the agents; the hub says so as soon as it is saved. */
+  onOrgAccessChanged(listener: (access: string) => void): () => void {
+    this.orgAccessListeners.add(listener);
+    return () => this.orgAccessListeners.delete(listener);
   }
 
   /** P84 fatia 4: the hub turned encryption on for this member's data when they signed in and sent the
@@ -524,6 +531,9 @@ export class ServerConnection {
         break;
       case "conversationsChanged":
         for (const listener of this.conversationsListeners) listener(message.conversationId);
+        break;
+      case "orgAccessChanged":
+        for (const listener of this.orgAccessListeners) listener(message.access);
         break;
       case "toolCallRequest":
         // Never advertised any tools, so the hub shouldn't ask — answer anyway so it isn't left waiting.

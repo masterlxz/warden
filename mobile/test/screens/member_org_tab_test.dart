@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/protocol/messages.dart';
@@ -13,6 +15,18 @@ class _FakeHub implements MemberOrgBackend {
   OrgAccess access;
   List<AgentInfo> agents;
   final edits = <OrgEdit>[];
+
+  /// What the hub pushes when the owner saves a new level.
+  final told = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get orgAccessChanges => told.stream;
+
+  /// The owner saves a new level: the hub holds it and tells the member.
+  Future<void> ownerSets(OrgAccess next) async {
+    access = next;
+    told.add(next.name);
+  }
 
   /// The hub can't be reached: neither a refusal nor an answer.
   bool unreachable = false;
@@ -123,6 +137,27 @@ void main() {
       await _pump(tester, _FakeHub(OrgAccess.view, agents: _team));
       expect(find.text('chief'), findsOneWidget);
       expect(find.byKey(const Key('member-org-none')), findsNothing);
+    });
+
+    testWidgets('the owner saves a new level while the tab is open: it changes at once, with no pull and no return to the app', (tester) async {
+      final hub = _FakeHub(OrgAccess.none, agents: _team);
+      await _pump(tester, hub);
+      expect(find.byKey(const Key('member-org-none')), findsOneWidget);
+
+      await hub.ownerSets(OrgAccess.view);
+      await tester.pumpAndSettle();
+      expect(find.text('chief'), findsOneWidget, reason: 'gaining the access reads the tree');
+      expect(find.byKey(const Key('member-org-none')), findsNothing);
+      expect(find.byKey(const Key('member-menu-chief')), findsNothing);
+
+      await hub.ownerSets(OrgAccess.edit);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('member-menu-chief')), findsOneWidget, reason: 'view to edit gives the menu');
+
+      await hub.ownerSets(OrgAccess.none);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('member-org-none')), findsOneWidget);
+      expect(find.text('chief'), findsNothing, reason: 'losing the access drops the tree');
     });
 
     testWidgets('an edit the hub refuses shows the hub\'s reason and looks at the access again', (tester) async {

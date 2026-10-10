@@ -986,6 +986,8 @@ export type ServerMessage =
   | { type: "approvalCancelled"; approvalId: number }
   /** An agent left a message for another, or answered one, in one of this browser's conversations. */
   | { type: "conversationsChanged"; conversationId: string }
+  /** P120 — the owner changed what this member may do with the organization of the agents: "none", "view" or "edit", as the hub saved it. */
+  | { type: "orgAccessChanged"; access: string }
   /** Reply to `ClientMessage.discover` — just enough to let the operator recognize which machine
    * this is, never a secret. */
   /** `secureUrl` — set by a TLS-only hub (P36): the wss:// URL to connect to instead. */
@@ -1053,6 +1055,7 @@ export function decode(text: string): ServerMessage {
     case "approvalRequest":
     case "approvalCancelled":
     case "conversationsChanged":
+    case "orgAccessChanged":
     case "passwordChanged":
     case "recoveryCode":
     case "recoveryPolicy":

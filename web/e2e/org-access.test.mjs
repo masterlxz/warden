@@ -130,15 +130,13 @@ describe("the organization for a member", () => {
       assert.match(config, /role = "Operações"/);
       assert.match(config, /reports_to = "writer"/);
 
-      // Taking it back: the hub reads the access at each request, so even the page she already has open is refused.
+      // Taking it back: the hub tells her page at once, so the tree she had open goes away with the tab. (That the hub also refuses an
+      // edit sent after the access is gone, whatever the page shows, is proved by `tests/org_access.rs`.)
       await giveAccess(owner.page, "Não vê");
       await owner.page.locator("li", { hasText: "Ana Souza" }).getByText("organograma: não vê").waitFor();
-      await ops.getByRole("button", { name: "Editar", exact: true }).click();
-      await editor.page.getByLabel("Cargo").fill("Outra coisa");
-      await editor.page.getByRole("button", { name: "Salvar", exact: true }).click();
-      // The hub's refusal, as it words it (the hub's own errors are in English), shown on her page.
-      await editor.page.getByText("hasn't let you change the organization of the agents").waitFor();
-      assert.doesNotMatch(fs.readFileSync(hub.config, "utf8"), /Outra coisa/, "the refused edit changed nothing");
+      await editor.page.getByRole("button", { name: "Organização", exact: true }).waitFor({ state: "detached" });
+      await editor.page.getByText("O dono deixou você mudar a hierarquia").waitFor({ state: "detached" });
+      assert.equal(await editor.page.locator(".org-card").count(), 0, "no tree is left on her page");
     } finally {
       for (const member of members) await member.context.close();
       await owner.context.close();
@@ -157,17 +155,21 @@ describe("the organization for a member", () => {
       members.push(ana);
       assert.equal(await hasOrgTab(ana.page), 0);
 
-      // The page comes back to the front: the tab appears. (`focus` is what a window coming back fires.)
+      // The hub tells her as soon as the owner saves: nothing is done on her page (no focus, no click), and the tab appears.
       await giveAccess(owner.page, "Só vê");
       await owner.page.locator("li", { hasText: "Ana Souza" }).getByText("organograma: só vê").waitFor();
-      await ana.page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await ana.page.getByRole("button", { name: "Organização", exact: true }).waitFor();
 
       // And goes away when the owner takes it back.
       await giveAccess(owner.page, "Não vê");
       await owner.page.locator("li", { hasText: "Ana Souza" }).getByText("organograma: não vê").waitFor();
-      await ana.page.evaluate(() => window.dispatchEvent(new Event("focus")));
       await ana.page.getByRole("button", { name: "Organização", exact: true }).waitFor({ state: "detached" });
+
+      // A change made outside the hub's screens (the file) is not pushed: the page finds it when it comes back to the front.
+      const config = fs.readFileSync(hub.config, "utf8");
+      fs.writeFileSync(hub.config, config.replace(/org_access = "[a-z]+"\n?/, "").replace(/(\[\[users\]\]\n(?:.*\n)*?id = "ana"\n)/, '$1org_access = "view"\n'));
+      await ana.page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await ana.page.getByRole("button", { name: "Organização", exact: true }).waitFor();
     } finally {
       for (const member of members) await member.context.close();
       await owner.context.close();

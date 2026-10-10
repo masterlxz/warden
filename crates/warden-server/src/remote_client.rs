@@ -188,6 +188,8 @@ pub enum RemoteEvent {
     Approval { approval_id: u64, target: String, action: String, detail: String, always: Option<String>, category: Option<String> },
     ApprovalCancelled { approval_id: u64 },
     ConversationsChanged { conversation_id: String },
+    /// The owner changed what this member may do with the organization of the agents (P120): `none`, `view` or `edit`.
+    OrgAccessChanged { access: String },
 }
 
 /// Where [`RemoteEvent`]s go. The desktop emits Tauri events; a test collects them.
@@ -485,6 +487,7 @@ impl Core {
                 sink.emit(RemoteEvent::ApprovalCancelled { approval_id });
             }
             ServerMessage::ConversationsChanged { conversation_id } => sink.emit(RemoteEvent::ConversationsChanged { conversation_id }),
+            ServerMessage::OrgAccessChanged { access } => sink.emit(RemoteEvent::OrgAccessChanged { access }),
             ServerMessage::ChatResponse { conversation_id: ref id, .. } | ServerMessage::ChatError { conversation_id: ref id, .. } => {
                 let key = id.clone().filter(|c| self.turns.contains_key(c)).or_else(|| if self.turns.len() == 1 { self.turns.keys().next().cloned() } else { None });
                 let Some(key) = key else {

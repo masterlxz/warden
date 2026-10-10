@@ -28,7 +28,7 @@ import { HandshakeError, historyToEntries, hubUrl, ServerConnection, SettingsErr
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
-import { orgAccessOf } from "./hub/org";
+import { orgAccessOf, userWithOrgAccess } from "./hub/org";
 import type { Attachment, CodeMode, ConversationSummary, NodeInfo, ProjectDto, UserInfo } from "./hub/messages";
 import { isAgentChannel, threadsOf, visibleConversations, withMessageIds } from "./hub/threads";
 import { baseline, isUnread, markSeen, notificationBody, unreadIds, type SeenMap } from "./hub/unread";
@@ -439,7 +439,7 @@ export default function App() {
         access = "none";
       }
       if (!live) return;
-      setUser((current) => (current && orgAccessOf(current.orgAccess) !== orgAccessOf(access) ? { ...current, orgAccess: access === "none" ? undefined : access } : current));
+      setUser((current) => (current ? userWithOrgAccess(current, access) : current));
     };
     const onShow = () => {
       if (document.visibilityState === "visible") void probe();
@@ -447,12 +447,20 @@ export default function App() {
     void probe();
     document.addEventListener("visibilitychange", onShow);
     window.addEventListener("focus", onShow);
+    // The hub also says so itself, as soon as the owner saves; the probe stays for a change made outside it (the config file).
+    const stopListening = conn.onOrgAccessChanged((access) => setUser((current) => (current ? userWithOrgAccess(current, access) : current)));
     return () => {
       live = false;
+      stopListening();
       document.removeEventListener("visibilitychange", onShow);
       window.removeEventListener("focus", onShow);
     };
   }, [conn, isMember]);
+  // The screen goes with the access: a member who loses it while looking at the tree is taken back to the chat.
+  const memberOrgAccess = user?.orgAccess;
+  useEffect(() => {
+    if (isMember && orgAccessOf(memberOrgAccess) === "none") setView((current) => (current === "organization" ? "chat" : current));
+  }, [isMember, memberOrgAccess]);
 
   function cancelTruthId() {
     truthIdAbort.current?.abort();

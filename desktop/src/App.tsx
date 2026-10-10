@@ -342,6 +342,18 @@ function App() {
     };
   }, []);
 
+  // P120: the owner changed what a member may do with the organization, and the hub says so at once. Named by the hub it came from, so
+  // one that is not in use only lands in its own entry.
+  useEffect(() => {
+    const unlisten = listen<{ hubId: string; access: string }>("remote-org-access", ({ payload }) => {
+      const access = orgAccessOf(payload.access);
+      setProbedOrg((current) => (current?.hubId === payload.hubId && current.access === access ? current : { hubId: payload.hubId, access }));
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // A project made, edited or removed in its screen shows up in the sidebar and the picker on coming back.
   useEffect(() => {
     if (view === "chat" && (!remote || remoteReady)) loadProjects();

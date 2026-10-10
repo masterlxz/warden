@@ -507,6 +507,27 @@ void main() {
     await expectLater(refused, throwsA(isA<HubRequestException>().having((e) => e.message, 'message', 'no access')));
   });
 
+  test('the level the owner saves reaches the member as it happens, through the stream (P120)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final told = StreamQueue<String>(conn.orgAccessChanges);
+    controller.local.sink.add('{"type":"orgAccessChanged","access":"edit"}');
+    controller.local.sink.add('{"type":"orgAccessChanged","access":"none"}');
+    expect(await told.next, 'edit');
+    expect(await told.next, 'none');
+    await told.cancel();
+  });
+
   test('the folder list is asked for and answered by request id, and a refusal becomes an exception (P102)', () async {
     final controller = StreamChannelController<dynamic>();
     final fromClient = StreamQueue<dynamic>(controller.local.stream);

@@ -78,6 +78,7 @@ async fn spin_up() -> Hub {
     let path = dir.join("config.toml");
     let mut config = FileConfig { agents: vec![agent("chief", None, None), agent("lead", Some("chief"), None), agent("dev", Some("lead"), None), agent("anas-own", None, Some("ana"))], ..FileConfig::default() };
     warden_bootstrap::users::add_user(&mut config, "ana", "Ana", TEMP).unwrap();
+    warden_bootstrap::users::add_user(&mut config, "bo", "Bo", TEMP).unwrap();
     save_config(&path, &config).unwrap();
     let builds = Arc::new(AtomicUsize::new(0));
     let orchestrator = Orchestrator::new(Arc::new(NoModel), Arc::new(Vault::new(dir.join("vault"))));
@@ -94,7 +95,8 @@ async fn spin_up() -> Hub {
 async fn next(conn: &mut ServerConnection) -> ServerMessage {
     loop {
         match tokio::time::timeout(Duration::from_secs(10), conn.recv()).await.expect("no reply").unwrap().expect("connection closed") {
-            ServerMessage::ConversationsChanged { .. } | ServerMessage::Pong { .. } => continue,
+            // The push of a new level is not an answer to anything these helpers asked (`pushed_access` reads it).
+            ServerMessage::ConversationsChanged { .. } | ServerMessage::Pong { .. } | ServerMessage::OrgAccessChanged { .. } => continue,
             message => return message,
         }
     }
@@ -225,4 +227,53 @@ async fn the_owner_always_sees_the_tree_and_a_wrong_pairing_key_still_changes_no
     assert_eq!(agents.len(), 3, "her own agent is not in the tree");
     assert!(refused(&edit(&mut owner, "wrong", position("dev", "chief")).await), "the owner still needs the key");
     assert_eq!(boss_of(&hub, "dev").as_deref(), Some("lead"));
+}
+
+/// What the connection is told next, apart from the chatter every connection gets; `None` when nothing comes.
+async fn pushed(conn: &mut ServerConnection, wait: Duration) -> Option<ServerMessage> {
+    loop {
+        match tokio::time::timeout(wait, conn.recv()).await {
+            Err(_) => return None,
+            Ok(message) => match message.unwrap().expect("connection closed") {
+                ServerMessage::ConversationsChanged { .. } | ServerMessage::Pong { .. } => continue,
+                other => return Some(other),
+            },
+        }
+    }
+}
+
+const HEARD: Duration = Duration::from_secs(10);
+const QUIET: Duration = Duration::from_millis(600);
+
+#[tokio::test]
+async fn a_member_hears_the_new_access_on_every_device_at_once_and_nobody_else_does() {
+    let hub = spin_up().await;
+    let mut owner = ServerConnection::connect(&hub.url, "laptop", "Laptop", KEY).await.unwrap();
+    let mut phone = ana(&hub).await;
+    let (mut tablet, _, _) =
+        ServerConnection::handshake_as_member(&hub.url, "ana-tablet", "Ana's tablet", "ana", "anas-own-pass", None, warden_server_protocol::tls::default_client_config()).await.unwrap();
+    let (mut bo, _, _) = ServerConnection::handshake_as_member(&hub.url, "bo-phone", "Bo's phone", "bo", TEMP, None, warden_server_protocol::tls::default_client_config()).await.unwrap();
+
+    // The owner gives `view`: both of Ana's devices are told, with the level the hub saved; the owner's own screen and Bo's are not.
+    owner.send(&ClientMessage::SetUserOrgAccess { request_id: 1, pairing_key: KEY.into(), id: "ana".into(), access: "view".into() }).await.unwrap();
+    assert!(matches!(next(&mut owner).await, ServerMessage::UserList { .. }));
+    for device in [&mut phone, &mut tablet] {
+        assert_eq!(pushed(device, HEARD).await, Some(ServerMessage::OrgAccessChanged { access: "view".into() }));
+    }
+    assert_eq!(pushed(&mut bo, QUIET).await, None, "another member hears nothing about Ana");
+    assert_eq!(pushed(&mut owner, QUIET).await, None);
+
+    // Taking it back is told too, and the level is the one saved, not the one typed.
+    owner.send(&ClientMessage::SetUserOrgAccess { request_id: 2, pairing_key: KEY.into(), id: "ana".into(), access: "none".into() }).await.unwrap();
+    assert!(matches!(next(&mut owner).await, ServerMessage::UserList { .. }));
+    assert_eq!(pushed(&mut phone, HEARD).await, Some(ServerMessage::OrgAccessChanged { access: "none".into() }));
+
+    // A change that did not happen is not announced: a wrong key, and a value that is not an access.
+    owner.send(&ClientMessage::SetUserOrgAccess { request_id: 3, pairing_key: "wrong".into(), id: "ana".into(), access: "edit".into() }).await.unwrap();
+    assert!(matches!(next(&mut owner).await, ServerMessage::UserError { auth_rejected: true, .. }));
+    owner.send(&ClientMessage::SetUserOrgAccess { request_id: 4, pairing_key: KEY.into(), id: "ana".into(), access: "admin".into() }).await.unwrap();
+    assert!(matches!(next(&mut owner).await, ServerMessage::UserError { auth_rejected: false, .. }));
+    assert_eq!(pushed(&mut phone, QUIET).await, None);
+    assert_eq!(pushed(&mut tablet, QUIET).await, Some(ServerMessage::OrgAccessChanged { access: "none".into() }), "the tablet had not read the second push yet; nothing after it");
+    assert_eq!(pushed(&mut tablet, QUIET).await, None);
 }

@@ -182,6 +182,11 @@ class ServerConnection implements ConversationBackend, AgentsBackend, MemberOrgB
   final _approvalController = StreamController<ServerMessage>.broadcast();
   Stream<ServerMessage> get approvalStream => _approvalController.stream;
 
+  // P120 — what the owner just set as this member's access to the organization (`none`, `view`, `edit`), pushed by the hub.
+  final _orgAccessController = StreamController<String>.broadcast();
+  @override
+  Stream<String> get orgAccessChanges => _orgAccessController.stream;
+
   // P40 — in-flight `fetchHistory` calls, keyed by the `requestId` the reply echoes back.
   final _pendingHistory = <int, Completer<List<HistoryEntry>>>{};
   // P78 — in-flight conversation list/rename/delete calls, same keying.
@@ -347,6 +352,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend, MemberOrgB
               ApprovalRequestMessage() ||
               ApprovalCancelledMessage() ||
               ConversationsChangedMessage() ||
+              OrgAccessChangedMessage() ||
               UnknownServerMessage() ||
               PasswordChangedMessage() ||
               RecoveryCodeMessage() ||
@@ -387,6 +393,8 @@ class ServerConnection implements ConversationBackend, AgentsBackend, MemberOrgB
       case ChatErrorMessage():
       case ConversationsChangedMessage():
         _chatController.add(msg);
+      case OrgAccessChangedMessage(:final access):
+        _orgAccessController.add(access);
       case ApprovalRequestMessage():
       case ApprovalCancelledMessage():
         _approvalController.add(msg);

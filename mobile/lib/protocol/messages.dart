@@ -862,6 +862,7 @@ sealed class ServerMessage {
         ),
       'approvalCancelled' => ApprovalCancelledMessage(json['approvalId'] as int),
       'conversationsChanged' => ConversationsChangedMessage(json['conversationId'] as String),
+      'orgAccessChanged' => OrgAccessChangedMessage(json['access'] as String? ?? ''),
       // A message this app doesn't know yet (a newer hub) is skipped, not a broken connection.
       final String other => UnknownServerMessage(other),
       _ => throw const FormatException('ServerMessage without a type'),
@@ -1283,6 +1284,14 @@ final class ConversationsChangedMessage extends ServerMessage {
   const ConversationsChangedMessage(this.conversationId);
 
   final String conversationId;
+}
+
+/// P120 — the owner changed what this member may do with the organization of the agents. [access] is `none`, `view` or `edit`,
+/// as the hub saved it. Pushed, not an answer to a request.
+final class OrgAccessChangedMessage extends ServerMessage {
+  const OrgAccessChangedMessage(this.access);
+
+  final String access;
 }
 
 /// A message type this app doesn't handle.

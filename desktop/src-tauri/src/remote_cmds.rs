@@ -105,6 +105,9 @@ impl<R: tauri::Runtime> RemoteSink for TauriSink<R> {
             RemoteEvent::ConversationsChanged { conversation_id } => {
                 let _ = self.app.emit("conversations-changed", conversation_id);
             }
+            RemoteEvent::OrgAccessChanged { access } => {
+                let _ = self.app.emit("remote-org-access", json!({ "hubId": self.hub_id, "access": access }));
+            }
         }
     }
 }
@@ -405,7 +408,7 @@ mod tests {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let seen: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
-        for name in ["remote-hub-state", "chat-event", "approval-request", "approval-cancelled", "conversations-changed"] {
+        for name in ["remote-hub-state", "chat-event", "approval-request", "approval-cancelled", "conversations-changed", "remote-org-access"] {
             let seen = seen.clone();
             handle.listen(name, move |event| seen.lock().unwrap().push((name.to_string(), serde_json::from_str(event.payload()).unwrap())));
         }
@@ -435,6 +438,9 @@ mod tests {
 
         sink.emit(RemoteEvent::ConversationsChanged { conversation_id: "c1".into() });
         assert_eq!(events("conversations-changed"), vec![json!("c1")], "a bare id, as the local engine sends it");
+
+        sink.emit(RemoteEvent::OrgAccessChanged { access: "view".into() });
+        assert_eq!(events("remote-org-access"), vec![json!({ "hubId": "hub-1", "access": "view" })], "named by the hub it came from, which the screen compares with the one in use");
 
         sink.emit(RemoteEvent::Approval { approval_id: 5, target: "critic".into(), action: "create_agent".into(), detail: "d".into(), always: Some("git *".into()), category: Some("critical_infra".into()) });
         let asked = events("approval-request");
