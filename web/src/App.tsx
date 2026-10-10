@@ -24,7 +24,7 @@ import TasksView from "./components/TasksView";
 import WebhooksView from "./components/WebhooksView";
 import UsageView from "./components/UsageView";
 import VaultView from "./components/VaultView";
-import { HandshakeError, historyToEntries, hubUrl, ServerConnection, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
+import { HandshakeError, historyToEntries, hubUrl, ServerConnection, SettingsError, type ApprovalPrompt, type ChatEntry } from "./hub/connection";
 import { loadIdentity, loadLastConversation, newConversationId, saveIdentity, saveLastConversation, type Identity } from "./hub/identity";
 import { applyEvent, type LiveTurn } from "./hub/liveTurn";
 import { nextCodeMode } from "./hub/messages";
@@ -422,6 +422,37 @@ export default function App() {
       connRef.current?.goodbye("page closed");
     };
   }, [connect, clearReconnect]);
+
+  // P120: the access the owner gave a member arrives at sign-in only, so a change made afterwards is looked for: a `listAgentOrg` is the
+  // probe (the hub reads the access at each request), asked when the page comes back to the front and when the connection is made anew.
+  const isMember = user !== undefined;
+  useEffect(() => {
+    if (!conn || !isMember) return;
+    let live = true;
+    const probe = async () => {
+      let access: string;
+      try {
+        access = (await conn.listAgentOrg()).access;
+      } catch (err) {
+        // A refusal from the hub is "none"; a timeout or a closed connection says nothing about the access.
+        if (!(err instanceof SettingsError)) return;
+        access = "none";
+      }
+      if (!live) return;
+      setUser((current) => (current && orgAccessOf(current.orgAccess) !== orgAccessOf(access) ? { ...current, orgAccess: access === "none" ? undefined : access } : current));
+    };
+    const onShow = () => {
+      if (document.visibilityState === "visible") void probe();
+    };
+    void probe();
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    return () => {
+      live = false;
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+    };
+  }, [conn, isMember]);
 
   function cancelTruthId() {
     truthIdAbort.current?.abort();
@@ -824,7 +855,7 @@ export default function App() {
   const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? "Nova conversa";
   /** P84: a member sees their chat, vault and skills — the rest is the owner's. */
   const isOwner = user === undefined;
-  /** P120: what the owner lets this member do with the organization of the agents (read at sign-in; the hub checks again at each request). */
+  /** P120: what the owner lets this member do with the organization of the agents (read at sign-in and looked for again when the page comes back; the hub checks at each request). */
   const memberOrg = isOwner ? "none" : orgAccessOf(user?.orgAccess);
 
   return (

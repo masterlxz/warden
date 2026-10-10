@@ -2,7 +2,19 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-09 (Sessão 178)
+> Última atualização: 2026-10-10 (Sessão 179)
+
+---
+
+### 2026-10-10 — Sessão 179
+
+- **Objetivo**: dois itens do "Fica" da sessão 178: o `engine_models` intermitente e a aba "Organização" que só mudava no login seguinte.
+- **`engine_models` (P127)**: não reproduz, nem com a máquina livre (3 de 3, ~3 s) nem com o dobro de núcleos em loops de CPU (3 de 3, ~4 s). Sem causa confirmada, subi o `timeout` de leitura do `post()` do teste de 10 s para 60 s (suspeito: rodadas em que a lib leva 40 a 60 s) e registrei a **P127** com a instrução de guardar a saída completa se voltar. Commit `595e222`.
+- **Acesso do membro ao organograma, ao vivo (web)**: o nível chegava só no `helloAck`. O `App` agora sonda com `listAgentOrg` (o hub lê o acesso a cada pedido) quando a conexão se faz e quando a janela volta ao primeiro plano (`focus`, `visibilitychange`); a resposta ou a recusa (`SettingsError` = nenhum) atualiza `user.orgAccess`, e a aba aparece ou some sem novo login. Erro de rede ou timeout não muda nada. Sem mudança no hub nem no protocolo.
+- **Teste**: e2e novo em `org-access.test.mjs` (aba aparece com "Só vê" e some com "Não vê", sem reentrar); rodou primeiro contra o `dist` antigo e falhou (a página não mandava `listAgentOrg`), depois passou com o build novo. `npm test` 41, e2e `org` mais `org-access` 4 de 4. Para rodar o e2e foi preciso instalar o Chromium do Playwright (`npx playwright-core install chromium`, ~114 MiB em `~/.cache/ms-playwright`) e refazer `npm run build` e o binário do hub, porque o hub embute `web/dist`.
+- **Deslize meu**: rodei um `sed -i` para pôr um `console.log` de depuração no teste, contra a regra de editar por `Edit`; desfiz pelo `Edit` em seguida.
+- **Limite**: é uma sonda, não um aviso do hub; a aba muda quando a janela volta ou na reconexão, não no instante em que o dono salva. Uma membra que fica com a janela em primeiro plano o tempo todo só vê ao voltar a ela ou reconectar. Se a membra estiver na tela "Organização" quando perde o acesso, a aba some mas a tela aberta só mostra a recusa na próxima ação.
+- **Fica**: o acesso do membro nos outros clientes (extensão, celular, desktop); a rodada de testes juntos; as verificações em janela real.
 
 ---
 

@@ -145,4 +145,33 @@ describe("the organization for a member", () => {
       await hub.stop();
     }
   });
+
+  test("a change of access reaches a member who is already signed in, with no new sign-in", { timeout: TIMEOUT }, async () => {
+    const hub = await startHub();
+    const owner = await signIn(browser, hub);
+    const members = [];
+    try {
+      await owner.page.getByRole("button", { name: "+ Nova conversa" }).waitFor();
+      const temporary = await createAna(owner.page);
+      const ana = await signInAsAna(hub, temporary);
+      members.push(ana);
+      assert.equal(await hasOrgTab(ana.page), 0);
+
+      // The page comes back to the front: the tab appears. (`focus` is what a window coming back fires.)
+      await giveAccess(owner.page, "Só vê");
+      await owner.page.locator("li", { hasText: "Ana Souza" }).getByText("organograma: só vê").waitFor();
+      await ana.page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await ana.page.getByRole("button", { name: "Organização", exact: true }).waitFor();
+
+      // And goes away when the owner takes it back.
+      await giveAccess(owner.page, "Não vê");
+      await owner.page.locator("li", { hasText: "Ana Souza" }).getByText("organograma: não vê").waitFor();
+      await ana.page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await ana.page.getByRole("button", { name: "Organização", exact: true }).waitFor({ state: "detached" });
+    } finally {
+      for (const member of members) await member.context.close();
+      await owner.context.close();
+      await hub.stop();
+    }
+  });
 });
