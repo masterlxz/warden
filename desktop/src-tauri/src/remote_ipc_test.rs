@@ -88,6 +88,8 @@ async fn spin_up_hub(dir: &Path) -> (std::net::SocketAddr, PathBuf) {
         delegation_models: Vec::new(),
         can_start_tasks: true,
         can_create_workers: true,
+        can_message_user: true,
+        can_choose_models: true,
     };
     save_config(&config_path, &FileConfig { agents: vec![chief], ..FileConfig::default() }).unwrap();
     let orchestrator = Orchestrator::new(Arc::new(Scripted), Arc::new(Vault::new(dir.join("hub-vault"))));

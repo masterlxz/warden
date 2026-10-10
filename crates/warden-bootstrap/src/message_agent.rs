@@ -498,6 +498,8 @@ mod tests {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }
     }
 
@@ -828,5 +830,20 @@ mod tests {
 
         config.agents.iter_mut().find(|a| a.id == "ana").unwrap().autonomy = 1;
         assert!(!has(names(&config, "ana", Some(s.conversations.clone()))), "level 1 has no tools at all");
+    }
+
+    /// P122: the permission decides whether the agent may send; the `[[outreach]]` entry only says where the message goes.
+    #[test]
+    fn without_the_permission_to_message_the_user_an_agent_with_an_outreach_entry_has_no_message_user() {
+        let s = setup(false);
+        let mut config = load_config_from_path(&s.config_path, true).unwrap();
+        config.outreach.push(crate::OutreachConfig { agent: "ana".to_string(), forward: Vec::new() });
+        let has = |config: &FileConfig| {
+            let extras = AgentExtras { conversations_dir: Some(s.conversations.clone()), ..AgentExtras::default() };
+            scope_to_agent(&s.base, config, Some(&s.config_path), "ana", extras).unwrap().orchestrator.tools().iter().any(|t| t.spec().name == "message_user")
+        };
+        assert!(has(&config), "on by default, as before");
+        config.agents.iter_mut().find(|a| a.id == "ana").unwrap().can_message_user = false;
+        assert!(!has(&config), "the entry alone does not give it back");
     }
 }

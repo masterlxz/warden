@@ -343,9 +343,11 @@ mod tests {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         })
         .unwrap();
-        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "canStartTasks", "canCreateWorkers", "allowedTools", "autonomy", "approvalRequired", "sharedWith"] {
+        for field in ["id", "persona", "providerId", "canDelegateToAgents", "canManageAgents", "canMessageAgents", "canManageTasks", "canStartTasks", "canCreateWorkers", "canMessageUser", "canChooseModels", "allowedTools", "autonomy", "approvalRequired", "sharedWith"] {
             assert!(agent.get(field).is_some(), "the agent has no '{field}': {agent}");
         }
         assert!(agent["allowedTools"].is_null(), "null, as the mapper's `string[] | null` says");

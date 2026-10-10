@@ -200,6 +200,15 @@ pub struct AgentConfig {
     /// turn). Same default and same rule as `can_start_tasks`.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub can_create_workers: bool,
+    /// P122: whether this agent may start a message to the person, `message_user`, in its own channel. The `[[outreach]]`
+    /// entry says where the message goes; this says whether the agent may send one. On (the default) is what every agent
+    /// did; off takes the tool away even with an entry. An agent made by another agent starts with it off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub can_message_user: bool,
+    /// P122: whether this agent may pick the model of a task it delegates (the `model` argument). Off, every task runs on
+    /// the sub-agent's own model, whatever `delegation_models` says. Same default and same rule as `can_message_user`.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub can_choose_models: bool,
 }
 
 fn is_true(value: &bool) -> bool {
@@ -2236,6 +2245,10 @@ pub fn model_choices(config: &FileConfig) -> Option<ModelChoices> {
 /// that still exist are offered, in the order given, and the first is what a delegation naming none gets — even a list of one, which is the
 /// person dictating the model. A limit with nothing left in it offers no choice at all (the sub-agent's own model runs), never everything.
 pub fn model_choices_for(config: &FileConfig, agent: Option<&AgentConfig>) -> Option<ModelChoices> {
+    // P122: an agent that may not choose models offers no choice at all, so every task runs on the sub-agent's own model.
+    if agent.is_some_and(|a| !a.can_choose_models) {
+        return None;
+    }
     let Some(agent) = agent.filter(|a| !a.delegation_models.is_empty()) else {
         return model_choices(config);
     };
@@ -2609,6 +2622,8 @@ oauth = true
                 delegation_models: Vec::new(),
                 can_start_tasks: true,
                 can_create_workers: true,
+                can_message_user: true,
+                can_choose_models: true,
             }],
             tool_categories: vec![risk::ToolCategoryConfig { tool: "pay".to_string(), category: warden_core::autonomy::Category::SpendMoney }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
@@ -3701,6 +3716,8 @@ oauth = true
                 delegation_models: Vec::new(),
                 can_start_tasks: true,
                 can_create_workers: true,
+                can_message_user: true,
+                can_choose_models: true,
             }],
             ..Default::default()
         };
@@ -3835,6 +3852,8 @@ oauth = true
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }
     }
 
@@ -4100,6 +4119,40 @@ oauth = true
         let scoped = scope_to_agent(&base, &open, None, "manager", AgentExtras::default()).unwrap();
         let spec = scoped.orchestrator.tools().iter().map(|t| t.spec()).find(|s| s.name == "delegate_to_agent").unwrap();
         assert_eq!(spec.parameters["properties"]["model"]["enum"], serde_json::json!(["small", "big", "reasoning"]));
+    }
+
+    #[tokio::test]
+    async fn without_the_permission_to_choose_models_no_delegation_tool_offers_a_model_whatever_the_limit_says() {
+        let mut config = models_with_policy();
+        config.agents = vec![limited_to(&["reasoning", "small"]), agent_config("worker", None)];
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-no-choice-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default(), worker_model: None }), vault);
+        base.register_tool(Arc::new(DelegateTool::new(base.clone()).with_models(model_choices(&config).unwrap())));
+        let offers_model = |config: &FileConfig, tool: &str| {
+            let scoped = scope_to_agent(&base, config, None, "manager", AgentExtras::default()).unwrap();
+            let spec = scoped.orchestrator.tools().iter().map(|t| t.spec()).find(|s| s.name == tool).unwrap_or_else(|| panic!("no {tool}"));
+            spec.parameters["properties"].get("model").is_some()
+        };
+        for tool in ["delegate_task", "delegate_to_agent"] {
+            assert!(offers_model(&config, tool), "{tool}: on by default");
+        }
+        config.agents[0].can_choose_models = false;
+        for tool in ["delegate_task", "delegate_to_agent"] {
+            assert!(!offers_model(&config, tool), "{tool}: no `model` argument without the permission");
+        }
+        assert!(model_choices_for(&config, Some(&config.agents[0])).is_none());
+        assert!(model_choices_for(&config, Some(&config.agents[1])).is_some(), "another agent keeps its choice");
+    }
+
+    #[test]
+    fn the_message_and_model_permissions_are_on_in_an_old_config_and_not_written_while_they_are() {
+        let old: AgentConfig = toml::from_str("id = \"a\"\npersona = \"p\"\n").unwrap();
+        assert!(old.can_message_user && old.can_choose_models);
+        let text = toml::to_string(&old).unwrap();
+        assert!(!text.contains("can_message_user") && !text.contains("can_choose_models"), "{text}");
+        let off = AgentConfig { can_message_user: false, can_choose_models: false, ..old };
+        let back: AgentConfig = toml::from_str(&toml::to_string(&off).unwrap()).unwrap();
+        assert!(!back.can_message_user && !back.can_choose_models);
     }
 
     #[tokio::test]

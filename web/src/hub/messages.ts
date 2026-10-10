@@ -236,6 +236,8 @@ export interface AgentSettings {
   /** P122 — trabalho em segundo plano (`jobs`) e workers temporários (`delegate_task`); ligados quando o hub não diz nada. */
   canStartTasks?: boolean;
   canCreateWorkers?: boolean;
+  canMessageUser?: boolean;
+  canChooseModels?: boolean;
   allowedTools: string[] | null;
   /** P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone, 5 also manages its subordinates without asking. */
   autonomy: number;

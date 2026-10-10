@@ -57,7 +57,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     let classifier = crate::risk::build_classifier(&config.tool_categories, base.tools());
     let orchestrator = orchestrator.with_autonomy(level, &read_only).with_approval_rules(&agent.approval_required, Some(classifier));
     // P123: a person limited the models this agent may pick for its delegations, `delegate_task` included.
-    let orchestrator = if agent.delegation_models.is_empty() { orchestrator } else { orchestrator.with_model_choices(crate::model_choices_for(config, Some(agent))) };
+    // P122: without the permission to choose models there is no choice to offer, whatever the list says.
+    let orchestrator = if agent.delegation_models.is_empty() && agent.can_choose_models { orchestrator } else { orchestrator.with_model_choices(crate::model_choices_for(config, Some(agent))) };
 
     // Shared by both tools: an agent `manage_agents` creates mid-turn shows up in `delegate_to_agent` at once.
     let agents_revision = AgentsRevision::default();
@@ -71,7 +72,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
         });
     }
     // P121: an agent a person allowed to start messages writes in its own channel. Needs only the conversations folder, not the config file.
-    if let (true, Some(entry), Some(dir)) = (tools_allowed, config.outreach.iter().find(|o| o.agent == agent.id), &extras.conversations_dir) {
+    // P122: and only if the agent has the permission; the entry says where the message goes, not whether it may send one.
+    if let (true, true, Some(entry), Some(dir)) = (tools_allowed, agent.can_message_user, config.outreach.iter().find(|o| o.agent == agent.id), &extras.conversations_dir) {
         let mut tool = MessageUserTool::new(agent.id.clone(), dir.clone()).on_changed(extras.on_conversation_changed.clone());
         if let (true, Some(path)) = (extras.forward_outreach, config_path) {
             tool = tool.forwarding(BotOutbox::beside(path), entry.forward.clone());

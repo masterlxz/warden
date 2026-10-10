@@ -2110,14 +2110,22 @@ async fn prompt_agent_can_start_tasks(terminal: &mut CliTerminal, initial: bool)
     prompt_agent_flag(terminal, " pode iniciar trabalho em segundo plano (tarefas que correm sozinhas)? (s/n) ", initial).await
 }
 
+async fn prompt_agent_can_message_user(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode puxar conversa com você, mandando mensagens no canal dele (precisa de [[outreach]])? (s/n) ", initial).await
+}
+
+async fn prompt_agent_can_choose_models(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode escolher o modelo de cada tarefa que delega? (s/n) ", initial).await
+}
+
 async fn prompt_agent_can_create_workers(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
     prompt_agent_flag(terminal, " pode criar agentes temporários (workers que somem no fim do turno)? (s/n) ", initial).await
 }
 
-/// 1 to 4, how much the agent may do without asking (P122).
+/// 1 to 5, how much the agent may do without asking (P122).
 async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyhow::Result<Option<u8>> {
     loop {
-        let Some(input) = prompt_field(terminal, " autonomia: 1 só responde, 2 sugere, 3 pede aprovação a cada mudança, 4 age sozinho ", &initial.to_string()).await? else {
+        let Some(input) = prompt_field(terminal, " autonomia: 1 só responde, 2 sugere, 3 pede aprovação a cada mudança, 4 age sozinho, 5 gerente: muda os subordinados sem pedir ", &initial.to_string()).await? else {
             return Ok(None);
         };
         match parse_agent_autonomy(&input) {
@@ -2293,6 +2301,12 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_create_workers) = prompt_agent_can_create_workers(terminal, true).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_message_user) = prompt_agent_can_message_user(terminal, true).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+    let Some(can_choose_models) = prompt_agent_can_choose_models(terminal, true).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
     let Some(autonomy) = prompt_agent_autonomy(terminal, warden_bootstrap::default_autonomy()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
@@ -2330,6 +2344,8 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         delegation_models,
         can_start_tasks,
         can_create_workers,
+        can_message_user,
+        can_choose_models,
     });
     if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
         return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
@@ -2374,6 +2390,12 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_create_workers) = prompt_agent_can_create_workers(terminal, current.can_create_workers).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_message_user) = prompt_agent_can_message_user(terminal, current.can_message_user).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(can_choose_models) = prompt_agent_can_choose_models(terminal, current.can_choose_models).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
     let Some(autonomy) = prompt_agent_autonomy(terminal, current.autonomy).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
@@ -2412,6 +2434,8 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         delegation_models,
         can_start_tasks,
         can_create_workers,
+        can_message_user,
+        can_choose_models,
     };
     // Whoever reported to it under the old name reports to it under the new one.
     warden_bootstrap::org::rename_in_reports(&mut config.agents, &old_id, &new_id);

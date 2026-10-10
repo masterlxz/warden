@@ -835,6 +835,36 @@ function AgentCard({
 
       <label className="settings-field settings-checkbox-field">
         <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canMessageUser}
+            onChange={(e) => onChange({ ...agent, canMessageUser: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can message you on its own</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent start a message in its own channel (the tool message_user). The switch below says where those
+          messages go; this one says whether it may send any. An agent another agent creates starts with this off.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canChooseModels}
+            onChange={(e) => onChange({ ...agent, canChooseModels: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can choose the model of each task it delegates</span>
+        </span>
+        <span className="settings-hint">
+          Off, every task it hands out runs on the helper's own model, whatever list of models it has. An agent another
+          agent creates starts with this off.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
           <input type="checkbox" checked={outreachOn(outreach, agent.id)} onChange={(e) => onOutreach(setOutreach(outreach, agent.id, e.currentTarget.checked))} />
           <span className="settings-label">Can start messages to you</span>
         </span>
@@ -1417,7 +1447,7 @@ function SettingsView() {
       ...f,
       agents: [
         ...f.agents,
-        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, allowedTools: null, autonomy: 4, approvalRequired: [] },
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, canMessageUser: true, canChooseModels: true, allowedTools: null, autonomy: 4, approvalRequired: [] },
       ],
     }));
   }

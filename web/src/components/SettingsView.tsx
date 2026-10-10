@@ -779,7 +779,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 ...d,
                 agents: [
                   ...d.agents,
-                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, allowedTools: null, autonomy: 4, approvalRequired: [] }),
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, canMessageUser: true, canChooseModels: true, allowedTools: null, autonomy: 4, approvalRequired: [] }),
                 ],
               }))
             }
@@ -854,6 +854,14 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 <label className="settings-check">
                   <input type="checkbox" checked={a.canCreateWorkers ?? true} onChange={(e) => patchAgent(a.key, { canCreateWorkers: e.target.checked })} />
                   Pode criar agentes temporários (somem no fim do turno; um agente criado por outro agente começa sem isto)
+                </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={a.canMessageUser ?? true} onChange={(e) => patchAgent(a.key, { canMessageUser: e.target.checked })} />
+                  Pode puxar conversa com você, mandando mensagens no canal dele (um agente criado por outro agente começa sem isto)
+                </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={a.canChooseModels ?? true} onChange={(e) => patchAgent(a.key, { canChooseModels: e.target.checked })} />
+                  Pode escolher o modelo de cada tarefa que delega (um agente criado por outro agente começa sem isto)
                 </label>
                 <label className="settings-check">
                   <input type="checkbox" checked={outreachOn(draft.outreach, a.id)} onChange={(e) => update((d) => ({ ...d, outreach: setOutreach(d.outreach, a.id, e.target.checked) }))} />

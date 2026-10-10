@@ -767,6 +767,11 @@ pub struct AgentSettingsDto {
     pub can_start_tasks: bool,
     #[serde(default = "default_true")]
     pub can_create_workers: bool,
+    /// P122: may the agent start a message to the person (`message_user`), and pick the model of a delegation. On when absent.
+    #[serde(default = "default_true")]
+    pub can_message_user: bool,
+    #[serde(default = "default_true")]
+    pub can_choose_models: bool,
 }
 
 fn default_autonomy() -> u8 {

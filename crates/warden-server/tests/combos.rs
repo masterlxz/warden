@@ -95,6 +95,8 @@ async fn an_agent_on_a_combo_gets_the_next_provider_when_the_first_is_down() {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }],
         ..FileConfig::default()
     };

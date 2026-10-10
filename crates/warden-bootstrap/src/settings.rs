@@ -463,6 +463,8 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 delegation_models: a.delegation_models.clone(),
                 can_start_tasks: a.can_start_tasks,
                 can_create_workers: a.can_create_workers,
+                can_message_user: a.can_message_user,
+                can_choose_models: a.can_choose_models,
             })
             .collect(),
         tavily_key: secret_status(config.api_keys.tavily.as_deref()),
@@ -628,6 +630,8 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             delegation_models: dto.delegation_models,
             can_start_tasks: dto.can_start_tasks,
             can_create_workers: dto.can_create_workers,
+            can_message_user: dto.can_message_user,
+            can_choose_models: dto.can_choose_models,
         });
     }
     let kept: HashSet<String> = renames.iter().map(|(original, _)| original.clone()).chain(agents.iter().map(|a| a.id.trim().to_string())).collect();
@@ -756,6 +760,8 @@ mod tests {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }
     }
 
@@ -1429,6 +1435,25 @@ mod tests {
         update.providers.retain(|p| p.id != "spare");
         assert_eq!(apply_hub_settings(with(vec!["main".into(), "spare".into()]), update.clone()).unwrap().combos[0].providers, vec!["main".to_string()]);
         assert!(apply_hub_settings(with(vec!["spare".into()]), update).unwrap().combos.is_empty());
+    }
+
+    #[test]
+    fn the_permissions_to_message_the_user_and_choose_models_round_trip_through_the_settings() {
+        let config = sample();
+        let shown = hub_settings(&config, Vec::new(), Vec::new());
+        assert!(shown.agents[0].can_message_user && shown.agents[0].can_choose_models, "an agent from before them shows on");
+        let mut update = untouched(&config);
+        update.agents[0].can_message_user = false;
+        update.agents[0].can_choose_models = false;
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert!(!saved.agents[0].can_message_user && !saved.agents[0].can_choose_models);
+        let shown = hub_settings(&saved, Vec::new(), Vec::new());
+        assert!(!shown.agents[0].can_message_user && !shown.agents[0].can_choose_models);
+        let mut json = serde_json::to_value(&shown.agents[0]).unwrap();
+        json.as_object_mut().unwrap().remove("can_message_user");
+        json.as_object_mut().unwrap().remove("canMessageUser");
+        let old: AgentSettingsDto = serde_json::from_value(json).unwrap();
+        assert!(old.can_message_user, "a screen that doesn't know it reads as on");
     }
 
     #[test]

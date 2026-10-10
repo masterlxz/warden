@@ -128,6 +128,8 @@ async fn spin_up() -> Hub {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }],
         ..FileConfig::default()
     };
@@ -408,6 +410,8 @@ async fn what_a_member_may_use_is_what_the_owner_shares_and_allows() {
         delegation_models: Vec::new(),
         can_start_tasks: true,
         can_create_workers: true,
+        can_message_user: true,
+        can_choose_models: true,
     };
     ana.send(&ClientMessage::SaveOwnAgent { request_id: 5, original_id: None, agent: own }).await.unwrap();
     assert!(agent_ids(&reply(&mut ana).await).contains(&("cook".to_string(), Some("ana".to_string()))));

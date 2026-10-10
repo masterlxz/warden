@@ -440,6 +440,11 @@ struct AgentPayload {
     can_start_tasks: bool,
     #[serde(default = "payload_true")]
     can_create_workers: bool,
+    /// P122 — may the agent start a message to the person (`message_user`) and pick the model of a delegation; on when absent.
+    #[serde(default = "payload_true")]
+    can_message_user: bool,
+    #[serde(default = "payload_true")]
+    can_choose_models: bool,
 }
 
 fn payload_true() -> bool {
@@ -596,6 +601,8 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 delegation_models: a.delegation_models,
                 can_start_tasks: a.can_start_tasks,
                 can_create_workers: a.can_create_workers,
+                can_message_user: a.can_message_user,
+                can_choose_models: a.can_choose_models,
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
@@ -688,6 +695,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 delegation_models: a.delegation_models,
                 can_start_tasks: a.can_start_tasks,
                 can_create_workers: a.can_create_workers,
+                can_message_user: a.can_message_user,
+                can_choose_models: a.can_choose_models,
             })
         })
         .collect::<Result<Vec<AgentConfig>, String>>()?;

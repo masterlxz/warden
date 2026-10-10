@@ -309,6 +309,8 @@ fn plan(config: &FileConfig, change: &Change, rules: &ToolRules) -> anyhow::Resu
                 // Like its autonomy level and its categories: the new agent is the cautious one, and only a person turns these on.
                 can_start_tasks: false,
                 can_create_workers: false,
+                can_message_user: false,
+                can_choose_models: false,
             });
             org::check_hierarchy(&updated).map_err(|why| anyhow::anyhow!(why))?;
             format!(
@@ -709,6 +711,8 @@ mod tests {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }
     }
 
@@ -978,6 +982,7 @@ mod tests {
         tool.call(json!({ "action": "create", "id": "fresh", "persona": "p" })).await.unwrap();
         assert_eq!(agents_on_disk(&path)[0].autonomy, 3);
         assert_eq!(agents_on_disk(&path)[0].approval_required, Category::ALL.to_vec(), "every kind of risky action needs a yes at first");
+        assert!(!agents_on_disk(&path)[0].can_message_user && !agents_on_disk(&path)[0].can_choose_models, "only a person lets it message them or pick models");
         assert!(!agents_on_disk(&path)[0].can_start_tasks && !agents_on_disk(&path)[0].can_create_workers, "only a person lets it start background work or create workers");
         let detail = approver.asked.lock().unwrap()[0].detail.clone();
         assert!(detail.contains("Autonomy 3: asks before every change"), "{detail}");

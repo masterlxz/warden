@@ -62,6 +62,8 @@ pub fn apply_org_edit(config: &mut FileConfig, edit: &AgentOrgEdit) -> Result<()
                 // Cautious like an agent a manager creates: only a person turns these on.
                 can_start_tasks: false,
                 can_create_workers: false,
+                can_message_user: false,
+                can_choose_models: false,
             });
         }
         AgentOrgEdit::SetDelegationModels { id, models } => {
@@ -124,6 +126,8 @@ mod tests {
             delegation_models: Vec::new(),
             can_start_tasks: true,
             can_create_workers: true,
+            can_message_user: true,
+            can_choose_models: true,
         }
     }
 

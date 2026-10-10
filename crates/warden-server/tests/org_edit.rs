@@ -61,6 +61,8 @@ fn agent(id: &str, boss: Option<&str>) -> AgentConfig {
         delegation_models: Vec::new(),
         can_start_tasks: true,
         can_create_workers: true,
+        can_message_user: true,
+        can_choose_models: true,
     }
 }
 
