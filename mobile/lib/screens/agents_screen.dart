@@ -645,6 +645,11 @@ class _OrganizationTabState extends State<OrganizationTab> {
         if (a.canManageAgents) 'manages agents',
         if (a.canMessageAgents) 'leaves notes',
         if (a.canManageTasks) 'schedules tasks',
+        // On by default: only what was taken away shows.
+        if (!a.canStartTasks) 'no background work',
+        if (!a.canCreateWorkers) 'no temporary agents',
+        if (!a.canMessageUser) 'cannot start a chat',
+        if (!a.canChooseModels) 'cannot pick models',
         if (a.autonomy != 4) 'autonomy ${a.autonomy}: ${_autonomy[a.autonomy] ?? ''}'.trim(),
         if (a.approvalRequired.isNotEmpty) 'asks first: ${a.approvalRequired.length} kind${a.approvalRequired.length > 1 ? 's' : ''} of action',
       ];

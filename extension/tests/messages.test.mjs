@@ -42,12 +42,23 @@ describe("decoding the hub's settings", () => {
       canManageAgents: true,
       canMessageAgents: false,
       canManageTasks: false,
+      canStartTasks: true,
+      canCreateWorkers: true,
+      canMessageUser: true,
+      canChooseModels: true,
       autonomy: 3,
       approvalRequired: ["spend_money"],
       delegationModels: ["fast"],
     });
     assert.equal(reply.agents[1].reportsTo, "chief");
     assert.deepEqual(reply.modelPolicies, [{ id: "fast", model: "gpt-mini", description: "quick" }]);
+  });
+
+  test("reads the permissions a person took away, and an older hub that doesn't send them reads as on", () => {
+    const reply = decode(JSON.stringify({ type: "settings", requestId: 1, settings: settings([{ id: "a", canStartTasks: false, canMessageUser: false }, { id: "b" }]) }));
+    const [a, b] = reply.agents;
+    assert.deepEqual([a.canStartTasks, a.canCreateWorkers, a.canMessageUser, a.canChooseModels], [false, true, false, true]);
+    assert.deepEqual([b.canStartTasks, b.canCreateWorkers, b.canMessageUser, b.canChooseModels], [true, true, true, true]);
   });
 
   test("fills what an older hub leaves out: no policies, autonomy 4, an open model choice", () => {

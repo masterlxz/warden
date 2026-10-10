@@ -143,6 +143,11 @@ export interface AgentInfo {
   canManageAgents: boolean;
   canMessageAgents: boolean;
   canManageTasks: boolean;
+  /** P122 — ligadas por padrão; desligadas, o agente não inicia trabalho em segundo plano, não cria agentes temporários, não puxa conversa nem escolhe o modelo das tarefas. */
+  canStartTasks: boolean;
+  canCreateWorkers: boolean;
+  canMessageUser: boolean;
+  canChooseModels: boolean;
   /** 1 só responde, 2 sugere, 3 pede antes, 4 age sozinho, 5 também gerencia os subordinados sem perguntar. */
   autonomy: number;
   approvalRequired: string[];
@@ -290,6 +295,10 @@ function hubAgents(settings: RawSettings): HubAgents {
       canManageAgents: a.canManageAgents ?? false,
       canMessageAgents: a.canMessageAgents ?? false,
       canManageTasks: a.canManageTasks ?? false,
+      canStartTasks: a.canStartTasks ?? true,
+      canCreateWorkers: a.canCreateWorkers ?? true,
+      canMessageUser: a.canMessageUser ?? true,
+      canChooseModels: a.canChooseModels ?? true,
       autonomy: a.autonomy ?? 4,
       approvalRequired: a.approvalRequired ?? [],
       delegationModels: a.delegationModels ?? [],

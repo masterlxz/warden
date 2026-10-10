@@ -236,4 +236,11 @@ void main() {
       expect(UserInfo.fromJson({'id': 'bo', 'name': 'Bo'}).orgAccess, '', reason: 'absent is none');
     });
   });
+
+  test('the permissions a person took away are read, and a hub that does not send them reads as on (P122)', () {
+    final off = AgentInfo.fromJson({'id': 'a', 'canStartTasks': false, 'canMessageUser': false});
+    expect([off.canStartTasks, off.canCreateWorkers, off.canMessageUser, off.canChooseModels], [false, true, false, true]);
+    final old = AgentInfo.fromJson({'id': 'b'});
+    expect([old.canStartTasks, old.canCreateWorkers, old.canMessageUser, old.canChooseModels], [true, true, true, true]);
+  });
 }

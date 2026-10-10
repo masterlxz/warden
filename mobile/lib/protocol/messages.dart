@@ -368,6 +368,10 @@ class AgentInfo {
     this.canManageAgents = false,
     this.canMessageAgents = false,
     this.canManageTasks = false,
+    this.canStartTasks = true,
+    this.canCreateWorkers = true,
+    this.canMessageUser = true,
+    this.canChooseModels = true,
     this.autonomy = 4,
     this.approvalRequired = const [],
     this.delegationModels = const [],
@@ -380,6 +384,13 @@ class AgentInfo {
   final bool canManageAgents;
   final bool canMessageAgents;
   final bool canManageTasks;
+
+  /// On unless a person took them away (P122): starting background work, creating temporary agents, starting a message to the
+  /// person, and picking the model of a delegated task.
+  final bool canStartTasks;
+  final bool canCreateWorkers;
+  final bool canMessageUser;
+  final bool canChooseModels;
 
   /// 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone, 5 also manages its subordinates without asking.
   final int autonomy;
@@ -398,6 +409,10 @@ class AgentInfo {
       canManageAgents: map['canManageAgents'] as bool? ?? false,
       canMessageAgents: map['canMessageAgents'] as bool? ?? false,
       canManageTasks: map['canManageTasks'] as bool? ?? false,
+      canStartTasks: map['canStartTasks'] as bool? ?? true,
+      canCreateWorkers: map['canCreateWorkers'] as bool? ?? true,
+      canMessageUser: map['canMessageUser'] as bool? ?? true,
+      canChooseModels: map['canChooseModels'] as bool? ?? true,
       autonomy: map['autonomy'] as int? ?? 4,
       approvalRequired: [for (final c in (map['approvalRequired'] as List<dynamic>? ?? const [])) c as String],
       delegationModels: [for (final m in (map['delegationModels'] as List<dynamic>? ?? const [])) m as String],

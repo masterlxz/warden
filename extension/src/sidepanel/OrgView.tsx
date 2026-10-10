@@ -9,12 +9,17 @@ import PairingKeyForm from "./PairingKeyForm";
 const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho", 5: "gerencia sozinho" };
 
 /** O que o agente pode fazer, como a tela de Configurações define. */
-function selos(agent: AgentInfo): string[] {
+export function selos(agent: AgentInfo): string[] {
   const lista: string[] = [];
   if (agent.canDelegateToAgents) lista.push("delega");
   if (agent.canManageAgents) lista.push("gerencia agentes");
   if (agent.canMessageAgents) lista.push("deixa recados");
   if (agent.canManageTasks) lista.push("agenda tarefas");
+  // Ligadas por padrão: só o que foi tirado aparece.
+  if (!agent.canStartTasks) lista.push("sem trabalho em segundo plano");
+  if (!agent.canCreateWorkers) lista.push("sem agentes temporários");
+  if (!agent.canMessageUser) lista.push("sem puxar conversa");
+  if (!agent.canChooseModels) lista.push("sem escolher modelo");
   if (agent.autonomy !== 4) lista.push(`autonomia ${agent.autonomy}: ${AUTONOMIA[agent.autonomy] ?? ""}`.trim());
   if (agent.approvalRequired.length > 0) lista.push(`pede antes: ${agent.approvalRequired.length} tipo${agent.approvalRequired.length > 1 ? "s" : ""} de ação`);
   return lista;
