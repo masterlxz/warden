@@ -277,6 +277,13 @@ export interface ActivityEvent {
   conversationId?: string;
 }
 
+/** P122 — one entry of the person's own map of tools to risk categories (`[[tool_categories]]`): the tool by the name the model sees,
+ * and the id of the category its calls belong to. */
+export interface ToolCategoryEntry {
+  tool: string;
+  category: string;
+}
+
 /** P121 — an agent allowed to start messages (`message_user`); `forward` names the bots (`telegram`, `whatsapp`) it also reaches. */
 export interface OutreachEntry {
   agent: string;
@@ -315,6 +322,8 @@ export interface HubSettings {
   modelPolicies?: ModelPolicy[];
   /** The agents allowed to start messages (P121). */
   outreach?: OutreachEntry[];
+  /** Which risk category a tool belongs to, for the tools the hub has no entry for (P122). */
+  toolCategories?: ToolCategoryEntry[];
   agents: AgentSettings[];
   tavilyKey: SecretStatus;
   whisperKey: SecretStatus;
@@ -696,6 +705,8 @@ export interface HubSettingsUpdate {
   modelPolicies?: ModelPolicy[];
   /** Omitted: the agents allowed to start messages stay, minus any this save deleted (P121). */
   outreach?: OutreachEntry[];
+  /** Omitted: the map of tools to risk categories stays (P122). */
+  toolCategories?: ToolCategoryEntry[];
   /** Omitted: `[git_sync]` stays as it is. An empty `remoteUrl` turns git sync off. */
   gitSync?: { remoteUrl: string; token: SecretEdit };
   /** Omitted: `[learning]` and the bots' lists stay as they are. */

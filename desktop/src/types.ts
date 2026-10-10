@@ -622,6 +622,13 @@ export interface OutreachEntry {
   forward: string[];
 }
 
+/** One entry of the person's own map of tools to risk categories (P122, `[[tool_categories]]`): the tool by the name the model
+ * sees, and the id of the category its calls belong to. */
+export interface ToolCategoryEntry {
+  tool: string;
+  category: string;
+}
+
 export interface Settings {
   providers: ProviderEntry[];
   /** `id` of the `providers` entry currently in use — empty string means none selected. */
@@ -633,6 +640,8 @@ export interface Settings {
   modelPolicies: ModelPolicy[];
   /** The agents allowed to start messages (P121). */
   outreach: OutreachEntry[];
+  /** Which risk category a tool belongs to, for the tools Warden has no entry for (P122). */
+  toolCategories: ToolCategoryEntry[];
   vaultPath: string;
   /** Where `generate_document` and oversized MCP media (P64/P66) get written — empty string
    * means "unset", resolving at bootstrap time to a sibling of the vault path. */

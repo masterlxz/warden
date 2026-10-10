@@ -906,6 +906,15 @@ pub struct OutreachDto {
     pub forward: Vec<String>,
 }
 
+/// One entry of the person's own map of tools to risk categories (P122, `[[tool_categories]]`): `tool` is the name the model sees, `category`
+/// one of `delete_data`, `spend_money`, `critical_infra`, `external_message`, `publish_code`, `important_config`, `elevated_agent`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCategoryDto {
+    pub tool: String,
+    pub category: String,
+}
+
 /// One provider switch in a turn (P79): `from` failed with `reason`, `to` answered with `model`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1055,6 +1064,9 @@ pub struct HubSettingsDto {
     /// The agents allowed to start messages (P121): each gets the `message_user` tool.
     #[serde(default)]
     pub outreach: Vec<OutreachDto>,
+    /// The person's own map of tools to risk categories (P122): the tools Warden has no table entry for.
+    #[serde(default)]
+    pub tool_categories: Vec<ToolCategoryDto>,
     pub agents: Vec<AgentSettingsDto>,
     pub tavily_key: SecretStatusDto,
     pub whisper_key: SecretStatusDto,
@@ -1308,6 +1320,9 @@ pub struct HubSettingsUpdate {
     /// `None` (or absent) keeps the agents allowed to start messages (P121), dropping any this save deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outreach: Option<Vec<OutreachDto>>,
+    /// `None` (or absent) keeps the map of tools to risk categories (P122).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_categories: Option<Vec<ToolCategoryDto>>,
     /// `None` (or absent) leaves `[learning]` and the bots' lists as they are.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<BotsSettingsDto>,
@@ -3384,6 +3399,17 @@ mod tests {
     }
 
     #[test]
+    fn the_tool_categories_are_optional_in_a_save_and_read_as_empty_in_a_view_without_them() {
+        let entry = ToolCategoryDto { tool: "pay".into(), category: "spend_money".into() };
+        assert_eq!(serde_json::to_value(&entry).unwrap(), serde_json::json!({ "tool": "pay", "category": "spend_money" }));
+        let save = serde_json::json!({
+            "providers": [], "activeProvider": "", "agents": [], "tavilyKey": { "action": "keep" }, "whisperKey": { "action": "keep" },
+            "limits": null, "prices": []
+        });
+        assert_eq!(serde_json::from_value::<HubSettingsUpdate>(save).unwrap().tool_categories, None);
+    }
+
+    #[test]
     fn the_outreach_list_is_camel_case_and_optional_in_a_save() {
         let entry = OutreachDto { agent: "pirate".into(), forward: vec!["telegram".into()] };
         let json = serde_json::to_value(&entry).unwrap();
@@ -3420,6 +3446,7 @@ mod tests {
             combos: None,
             model_policies: None,
             outreach: None,
+            tool_categories: None,
             bots: Some(BotsSettingsDto { telegram_allowed_users: vec![42], ..BotsSettingsDto::default() }),
             telegram_token: SecretEdit::Keep,
             advanced: None,

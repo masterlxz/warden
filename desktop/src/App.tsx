@@ -58,6 +58,7 @@ const emptySettings: Settings = {
   combos: [],
   modelPolicies: [],
   outreach: [],
+  toolCategories: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",

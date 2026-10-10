@@ -562,6 +562,7 @@ api_key = "sk-ant-original-secret-9999"
             combos: None,
             model_policies: None,
             outreach: None,
+            tool_categories: None,
             bots: None,
             telegram_token: SecretEdit::Keep,
             advanced: None,

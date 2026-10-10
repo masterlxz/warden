@@ -507,6 +507,8 @@ struct SettingsSnapshot {
     model_policies: Vec<ModelPolicyConfig>,
     /// The agents allowed to start messages (P121, `[[outreach]]`): each gets `message_user`, and `forward` names the bots it also reaches.
     outreach: Vec<OutreachConfig>,
+    /// The person's own map of tools to risk categories (P122, `[[tool_categories]]`): `tool` and `category` (`delete_data`...).
+    tool_categories: Vec<warden_bootstrap::risk::ToolCategoryConfig>,
     /// SSH servers the AI can run commands on (P47) — see `ssh_cmds::SshHostPayload`.
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     /// The spending limits in `config.toml` (P4). `None` = no `[[limits]]` at all, which means the
@@ -545,6 +547,9 @@ struct SettingsFormPayload {
     /// The agents allowed to start messages (P121). Left out (`null`) keeps the ones on disk whose agent this save kept.
     #[serde(default)]
     outreach: Option<Vec<OutreachConfig>>,
+    /// The map of tools to risk categories (P122). Left out (`null`) keeps the one on disk.
+    #[serde(default)]
+    tool_categories: Option<Vec<warden_bootstrap::risk::ToolCategoryConfig>>,
     ssh_hosts: Vec<ssh_cmds::SshHostPayload>,
     // No `#[serde(default)]` on these two: a form that forgot to send them must fail loudly, not
     // read as "no limits configured" and quietly swap the user's own limits for the safety net.
@@ -609,6 +614,7 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
         combos: config.combos,
         model_policies: config.model_policies,
         outreach: config.outreach,
+        tool_categories: config.tool_categories,
         ssh_hosts: config.ssh_hosts.into_iter().map(Into::into).collect(),
         limits: config.limits.map(|l| l.into_iter().map(Into::into).collect()),
         default_limits: default_limit_configs().into_iter().map(Into::into).collect(),
@@ -736,6 +742,10 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
 
     // The agents allowed to start messages (P121): what the form sent, checked against the agents as this save leaves them; with none
     // sent, the ones on disk whose agent is still there.
+    let tool_categories = match payload.tool_categories {
+        Some(list) => warden_bootstrap::settings::check_tool_categories(list)?,
+        None => existing.tool_categories.clone(),
+    };
     let outreach = match payload.outreach {
         Some(list) => warden_bootstrap::settings::check_outreach(list, &agents)?,
         None => existing.outreach.iter().filter(|o| agents.iter().any(|a| a.owner.is_none() && a.id == o.agent)).cloned().collect(),
@@ -786,7 +796,7 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
         // Incoming webhooks (P105) have no Settings screen either (`warden-server webhooks`): dropping them here would delete them.
         webhooks: existing.webhooks,
         outreach,
-        tool_categories: existing.tool_categories,
+        tool_categories,
         // Nodes (P93) are edited on the Workspace screen (`node_cmds`), not this form.
         nodes: existing.nodes,
         // People (P84) are managed on the Workspace screen and the hub, not this form.

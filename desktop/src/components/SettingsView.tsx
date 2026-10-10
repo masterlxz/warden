@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isMcpServerHttp } from "../types";
-import type { AgentEntry, Combo, GitSyncConfig, McpServer, ModelPolicy, OutreachEntry, ProviderEntry, ProviderKind, Settings, SshHostEntry } from "../types";
+import type { AgentEntry, Combo, GitSyncConfig, McpServer, ModelPolicy, OutreachEntry, ProviderEntry, ProviderKind, Settings, SshHostEntry, ToolCategoryEntry } from "../types";
 import ApiKeysSection from "./ApiKeysSection";
 import BotsSection from "./BotsSection";
 import SpendingSection, { validateSpending } from "./SpendingSection";
@@ -17,6 +17,7 @@ const emptySettings: Settings = {
   combos: [],
   modelPolicies: [],
   outreach: [],
+  toolCategories: [],
   vaultPath: "",
   generatedPath: "",
   tavilyKey: "",
@@ -575,6 +576,34 @@ function ComboCard({
   );
 }
 
+/** One entry of the map of tools to risk categories (P122): the tool's name and the kind of action its calls are. */
+function ToolCategoryRow({ entry, onChange, onDelete }: { entry: ToolCategoryEntry; onChange: (next: ToolCategoryEntry) => void; onDelete: () => void }) {
+  return (
+    <div className="provider-card">
+      <div className="provider-card-header">
+        <input
+          className="settings-input provider-name-input"
+          type="text"
+          value={entry.tool}
+          placeholder="tool name"
+          aria-label="Tool name"
+          onChange={(e) => onChange({ ...entry, tool: e.currentTarget.value })}
+        />
+        <select className="settings-select" value={entry.category} aria-label="Risk category" onChange={(e) => onChange({ ...entry, category: e.currentTarget.value })}>
+          {APPROVAL_CATEGORIES.map((c) => (
+            <option key={c.id} value={c.id} title={c.hint}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="provider-delete-btn" onClick={onDelete} aria-label={`Remove ${entry.tool || "this tool"}`} title="Remove this tool">
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** One model policy (P123): its name (also its id), the provider or combo that answers it, and what an agent reads to know when to pick it. */
 function PolicyCard({
   policy,
@@ -935,7 +964,7 @@ function AgentCard({
         ))}
         <span className="settings-hint">
           Even at autonomy 4, a call in a ticked kind waits for your yes. Which tool belongs to which kind is built in;
-          add your own in config.toml with [[tool_categories]].
+          add your own under Risk categories below.
         </span>
       </div>
 
@@ -1595,6 +1624,7 @@ function SettingsView() {
           combos: form.combos,
           model_policies: form.modelPolicies,
           outreach: form.outreach,
+          tool_categories: form.toolCategories,
           vault_path: form.vaultPath,
           generated_path: form.generatedPath,
           tavily_key: form.tavilyKey,
@@ -1727,6 +1757,35 @@ function SettingsView() {
           <div className="provider-list">
             {form.agents.map((a, i) => (
               <AgentCard key={i} agent={a} outreach={form.outreach} onOutreach={(next) => setForm((f) => ({ ...f, outreach: next }))} allAgents={form.agents} providers={form.providers} combos={form.combos} modelChoices={delegationCandidates(form.providers, form.combos, form.modelPolicies)} toolNames={toolNames} people={people} onChange={(next) => updateAgent(i, next)} onDelete={() => deleteAgent(i)} />
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-header">
+            <h3 className="settings-section-title">Risk categories</h3>
+            <button
+              type="button"
+              className="settings-browse-btn"
+              onClick={() => setForm((f) => ({ ...f, toolCategories: [...f.toolCategories, { tool: "", category: APPROVAL_CATEGORIES[0].id }] }))}
+            >
+              + Add tool
+            </button>
+          </div>
+          <p className="settings-hint">
+            Which kind of action a tool belongs to, for the agents told to get that kind approved. Warden's own tools and
+            what an MCP server says about its tools are classified already; list here a tool they don't cover (a payments
+            or a Slack server), by the exact name the model sees. What you list wins over both.
+          </p>
+          {form.toolCategories.length === 0 && <p className="settings-hint">No tools mapped yet.</p>}
+          <div className="provider-list">
+            {form.toolCategories.map((entry, i) => (
+              <ToolCategoryRow
+                key={i}
+                entry={entry}
+                onChange={(next) => setForm((f) => ({ ...f, toolCategories: f.toolCategories.map((c, j) => (j === i ? next : c)) }))}
+                onDelete={() => setForm((f) => ({ ...f, toolCategories: f.toolCategories.filter((_, j) => j !== i) }))}
+              />
             ))}
           </div>
         </section>

@@ -25,6 +25,7 @@ import type {
   PriceSettings,
   ProviderEdit,
   ProviderKind,
+  ToolCategoryEntry,
   UserInfo,
 } from "../hub/messages";
 import { delegationCandidates, delegationSummary, dropModel, dropPolicy, nextPolicyId, renameModel, renamePolicy } from "../hub/modelPolicies";
@@ -65,6 +66,8 @@ interface Draft {
   modelPolicies: Keyed<ModelPolicy>[];
   /** P121 — os agentes que podem iniciar mensagens, por nome de agente (acompanha renomear e remover). */
   outreach: OutreachEntry[];
+  /** P122 — o mapa de ferramenta para categoria de risco. */
+  toolCategories: ToolCategoryEntry[];
   agents: Keyed<AgentSettings>[];
   tavilyKey: SecretDraft;
   whisperKey: SecretDraft;
@@ -103,6 +106,7 @@ function toDraft(s: HubSettings): Draft {
     combos: (s.combos ?? []).map((c) => keyed({ ...c })),
     modelPolicies: (s.modelPolicies ?? []).map((p) => keyed({ ...p })),
     outreach: (s.outreach ?? []).map((o) => ({ ...o, forward: [...o.forward] })),
+    toolCategories: (s.toolCategories ?? []).map((c) => ({ ...c })),
     agents: s.agents.map((a) => keyed({ ...a, originalId: a.id })),
     tavilyKey: { saved: s.tavilyKey, edit: KEEP },
     whisperKey: { saved: s.whisperKey, edit: KEEP },
@@ -174,6 +178,7 @@ function toUpdate(d: Draft): HubSettingsUpdate {
     combos: d.combos.map(strip),
     modelPolicies: d.modelPolicies.map(strip),
     outreach: d.outreach,
+    toolCategories: d.toolCategories,
     agents: d.agents.map(strip),
     tavilyKey: d.tavilyKey.edit,
     whisperKey: d.whisperKey.edit,
@@ -1115,6 +1120,47 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
             <textarea rows={3} value={draft.botsLearningChats} onChange={(e) => update((d) => ({ ...d, botsLearningChats: e.target.value }))} />
           </Field>
         </div>
+      </Section>
+
+      <Section title="Categorias de risco" hint="Que tipo de ação cada ferramenta faz, para os agentes que precisam de aprovação para esse tipo. As ferramentas do Warden e o que um servidor MCP diz sobre as suas já estão classificados; liste aqui uma que eles não cobrem (um servidor de pagamentos, o Slack), pelo nome exato que o modelo vê. O que você lista vale mais que os dois.">
+        {draft.toolCategories.length === 0 && <p className="muted">Nenhuma ferramenta mapeada.</p>}
+        <ul className="skills-list">
+          {draft.toolCategories.map((entry, i) => (
+            <li key={i} className="skills-item settings-card">
+              <div className="settings-grid">
+                <Field label="Ferramenta">
+                  <input
+                    value={entry.tool}
+                    placeholder="nome da ferramenta"
+                    onChange={(e) => update((d) => ({ ...d, toolCategories: d.toolCategories.map((c, j) => (j === i ? { ...c, tool: e.target.value } : c)) }))}
+                  />
+                </Field>
+                <Field label="Tipo de ação">
+                  <select
+                    value={entry.category}
+                    onChange={(e) => update((d) => ({ ...d, toolCategories: d.toolCategories.map((c, j) => (j === i ? { ...c, category: e.target.value } : c)) }))}
+                  >
+                    {APPROVAL_CATEGORIES.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <button type="button" className="link-button skills-danger" onClick={() => update((d) => ({ ...d, toolCategories: d.toolCategories.filter((_, j) => j !== i) }))}>
+                Remover
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => update((d) => ({ ...d, toolCategories: [...d.toolCategories, { tool: "", category: APPROVAL_CATEGORIES[0].id }] }))}
+        >
+          + Adicionar ferramenta
+        </button>
       </Section>
 
       <Section title="Limites de gasto" hint="Valem para todos os canais desta máquina. A janela é móvel: “24 h” são as últimas 24 horas, não desde a meia-noite.">

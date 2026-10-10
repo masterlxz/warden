@@ -334,6 +334,27 @@ pub fn check_outreach(list: Vec<OutreachConfig>, agents: &[AgentConfig]) -> Resu
     Ok(checked)
 }
 
+/// The map of tools to risk categories (P122), trimmed: a tool named, a category that exists, no tool twice.
+pub fn check_tool_categories(list: Vec<crate::risk::ToolCategoryConfig>) -> Result<Vec<crate::risk::ToolCategoryConfig>, String> {
+    let mut checked: Vec<crate::risk::ToolCategoryConfig> = Vec::with_capacity(list.len());
+    for entry in list {
+        let tool = entry.tool.trim().to_string();
+        if tool.is_empty() {
+            return Err("a tool category needs the name of a tool".to_string());
+        }
+        if checked.iter().any(|c| c.tool == tool) {
+            return Err(format!("tool '{tool}' is listed twice in the risk categories"));
+        }
+        checked.push(crate::risk::ToolCategoryConfig { tool, category: entry.category });
+    }
+    Ok(checked)
+}
+
+/// A category as it comes over the wire, by its id.
+pub fn parse_category(id: &str) -> Result<warden_core::autonomy::Category, String> {
+    warden_core::autonomy::Category::ALL.into_iter().find(|c| c.as_str() == id.trim()).ok_or_else(|| format!("'{id}' is not a risk category"))
+}
+
 /// What a save that doesn't carry the list keeps (P121): the entries of agents that are still there, under the name a rename gave them.
 fn carry_outreach(existing: Vec<OutreachConfig>, renames: &[(String, String)], agents: &[AgentConfig]) -> Vec<OutreachConfig> {
     existing
@@ -439,6 +460,7 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
         combos: config.combos.iter().map(|c| ComboDto { id: c.id.clone(), providers: c.providers.clone() }).collect(),
         model_policies: config.model_policies.iter().map(|p| ModelPolicyDto { id: p.id.clone(), model: p.model.clone(), description: p.description.clone() }).collect(),
         outreach: config.outreach.iter().map(|o| OutreachDto { agent: o.agent.clone(), forward: o.forward.clone() }).collect(),
+        tool_categories: config.tool_categories.iter().map(|c| warden_server_protocol::protocol::ToolCategoryDto { tool: c.tool.clone(), category: c.category.as_str().to_string() }).collect(),
         // P84: members' own agents are theirs — the owner's screen neither shows nor saves them.
         agents: config
             .agents
@@ -667,6 +689,12 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
         None => carry_outreach(std::mem::take(&mut config.outreach), &renames, &agents),
     };
 
+    // P122: the map of tools to risk categories is replaced when it comes in, and kept as it is when it doesn't.
+    let tool_categories = match update.tool_categories {
+        Some(dtos) => check_tool_categories(dtos.into_iter().map(|c| Ok(crate::risk::ToolCategoryConfig { tool: c.tool, category: parse_category(&c.category)? })).collect::<Result<Vec<_>, String>>()?)?,
+        None => std::mem::take(&mut config.tool_categories),
+    };
+
     config.limits = update.limits.map(limits_into_config).transpose()?;
     config.prices = prices_into_config(update.prices)?;
     config.api_keys.tavily = apply_secret(update.tavily_key, config.api_keys.tavily.take());
@@ -700,6 +728,7 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
     config.combos = combos;
     config.model_policies = model_policies;
     config.outreach = outreach;
+    config.tool_categories = tool_categories;
     config.agents = agents;
     crate::prune_delegation_models(&mut config);
     Ok(config)
@@ -814,6 +843,7 @@ mod tests {
             combos: None,
             model_policies: None,
             outreach: None,
+            tool_categories: None,
             bots: None,
             telegram_token: SecretEdit::Keep,
             advanced: None,
@@ -1435,6 +1465,35 @@ mod tests {
         update.providers.retain(|p| p.id != "spare");
         assert_eq!(apply_hub_settings(with(vec!["main".into(), "spare".into()]), update.clone()).unwrap().combos[0].providers, vec!["main".to_string()]);
         assert!(apply_hub_settings(with(vec!["spare".into()]), update).unwrap().combos.is_empty());
+    }
+
+    #[test]
+    fn the_map_of_tools_to_risk_categories_is_shown_checked_and_kept_when_not_sent() {
+        use warden_server_protocol::protocol::ToolCategoryDto;
+        let dto = |tool: &str, category: &str| ToolCategoryDto { tool: tool.into(), category: category.into() };
+        let with_map = || {
+            let mut config = sample();
+            config.tool_categories = vec![crate::risk::ToolCategoryConfig { tool: "pay".into(), category: warden_core::autonomy::Category::SpendMoney }];
+            config
+        };
+        let config = with_map();
+        assert_eq!(hub_settings(&config, Vec::new(), Vec::new()).tool_categories, vec![dto("pay", "spend_money")]);
+
+        // Not sent: kept. Sent: replaced, trimmed, and an empty list clears the map.
+        assert_eq!(apply_hub_settings(with_map(), untouched(&config)).unwrap().tool_categories.len(), 1);
+        let mut update = untouched(&config);
+        update.tool_categories = Some(vec![dto(" git_push ", " publish_code "), dto("slack_post", "external_message")]);
+        let saved = apply_hub_settings(with_map(), update).unwrap();
+        assert_eq!(saved.tool_categories.iter().map(|c| (c.tool.as_str(), c.category.as_str())).collect::<Vec<_>>(), [("git_push", "publish_code"), ("slack_post", "external_message")]);
+        let mut update = untouched(&config);
+        update.tool_categories = Some(Vec::new());
+        assert!(apply_hub_settings(with_map(), update).unwrap().tool_categories.is_empty());
+
+        for bad in [vec![dto("", "spend_money")], vec![dto("pay", "spending")], vec![dto("pay", "spend_money"), dto(" pay", "delete_data")]] {
+            let mut update = untouched(&config);
+            update.tool_categories = Some(bad.clone());
+            assert!(apply_hub_settings(with_map(), update).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
