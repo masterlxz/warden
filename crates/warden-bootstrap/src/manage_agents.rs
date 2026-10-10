@@ -102,6 +102,8 @@ struct ToolRules {
 
 /// The `autonomy` an agent made by another agent starts at (P122): it asks before every change.
 pub(crate) const ASK_FIRST_LEVEL: u8 = 3;
+/// Autonomy level 5: changes the agents below it without a person's yes.
+const MANAGER_LEVEL: u8 = 5;
 
 #[derive(Clone)]
 pub struct ManageAgentsTool {
@@ -199,16 +201,20 @@ impl ManageAgentsTool {
         // Check first, so a request that can't succeed never costs the user a prompt.
         let Planned { detail, .. } = plan(&self.load()?, &change, &self.rules)?;
 
-        let Some(approver) = &self.approver else {
-            anyhow::bail!(
-                "creating, changing or deleting agents needs the user's approval, and this channel can't ask for it \
-                 (use the desktop app or the interactive CLI)"
-            );
-        };
-        let request = ApprovalRequest::new(change.id(), change.action(), detail);
-        let approved = tokio::time::timeout(self.approval_timeout, approver.approve(request)).await.unwrap_or(false);
-        if !approved {
-            anyhow::bail!("the user did not approve this change to agent '{}'", change.id());
+        // P122: a manager (level 5) acts on the agents below it without a yes; `plan` above and below still holds it to its branch.
+        let alone = self.rules.caller.is_some() && self.rules.caller_autonomy == Some(MANAGER_LEVEL);
+        if !alone {
+            let Some(approver) = &self.approver else {
+                anyhow::bail!(
+                    "creating, changing or deleting agents needs the user's approval, and this channel can't ask for it \
+                     (use the desktop app or the interactive CLI)"
+                );
+            };
+            let request = ApprovalRequest::new(change.id(), change.action(), detail);
+            let approved = tokio::time::timeout(self.approval_timeout, approver.approve(request)).await.unwrap_or(false);
+            if !approved {
+                anyhow::bail!("the user did not approve this change to agent '{}'", change.id());
+            }
         }
 
         // The prompt can sit open for a while and the user may have edited agents meanwhile, so
@@ -221,13 +227,14 @@ impl ManageAgentsTool {
         if let Some(revision) = &self.revision {
             revision.bump();
         }
-        self.record_change(&change);
+        self.record_change(&change, alone);
         let message = match change {
             Change::Delete { .. } => format!("Agent '{}' deleted.", change.id()),
             Change::Create { .. } | Change::Update { .. } => format!(
-                "Agent '{}' {}. It can be picked as the conversation's agent from the user's next message{}.",
+                "Agent '{}' {}{}. It can be picked as the conversation's agent from the user's next message{}.",
                 change.id(),
                 if matches!(change, Change::Create { .. }) { "created" } else { "updated" },
+                if alone { " (no approval needed at autonomy level 5)" } else { "" },
                 if self.revision.is_some() { "; delegate_to_agent already lists it" } else { "" }
             ),
         };
@@ -235,10 +242,12 @@ impl ManageAgentsTool {
     }
 
     /// P121: an agent created or removed goes to the feed of activity, next to the config it was saved in. An edit does not.
-    fn record_change(&self, change: &Change) {
+    fn record_change(&self, change: &Change, unattended: bool) {
         let (kind, detail) = match change {
             Change::Create { persona, role, .. } => ("created", role.clone().unwrap_or_else(|| persona.chars().take(LIST_PERSONA_PREVIEW_CHARS).collect())),
             Change::Delete { .. } => ("removed", String::new()),
+            // Nobody approved a manager's edit, so it goes to the feed too.
+            Change::Update { id: _, role, .. } if unattended => ("updated", role.clone().flatten().unwrap_or_default()),
             Change::Update { .. } => return,
         };
         let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -484,6 +493,7 @@ fn autonomy_label(level: u8) -> &'static str {
         1 => "only answers, no tools",
         2 => "suggests, never changes anything itself",
         3 => "asks before every change",
+        5 => "acts on its own and manages its subordinates without asking",
         _ => "acts on its own",
     }
 }
@@ -992,6 +1002,41 @@ mod tests {
     fn as_caller(path: &Path, caller: &str) -> (Arc<dyn Tool>, Arc<Scripted>) {
         let approver = Arc::new(Scripted { answer: true, asked: Mutex::new(Vec::new()) });
         (ManageAgentsTool::new(path).with_caller(caller).with_approver(approver.clone()).unwrap(), approver)
+    }
+
+    #[tokio::test]
+    async fn a_level_five_manager_changes_its_subordinates_without_asking_and_stays_inside_its_branch() {
+        let path = organization();
+        let tool = ManageAgentsTool::new(&path).with_caller("a").with_caller_autonomy(5);
+        // No approver at all: at level 5 that is no obstacle.
+        tool.call(json!({ "action": "create", "id": "fresh", "persona": "p" })).await.unwrap();
+        let fresh = agents_on_disk(&path).into_iter().find(|a| a.id == "fresh").unwrap();
+        assert_eq!(fresh.reports_to.as_deref(), Some("a"));
+        assert_eq!(fresh.autonomy, 3, "never above the creator's cap, and never 5");
+        assert!(!fresh.can_manage_agents && !fresh.can_delegate_to_agents);
+        tool.call(json!({ "action": "update", "id": "a1", "role": "Reviewer" })).await.unwrap();
+        assert_eq!(agents_on_disk(&path).into_iter().find(|a| a.id == "a1").unwrap().role.as_deref(), Some("Reviewer"));
+        tool.call(json!({ "action": "delete", "id": "a11" })).await.unwrap();
+        assert!(agents_on_disk(&path).iter().all(|a| a.id != "a11"));
+
+        // The branch still holds: a peer, the superior, itself and an outsider are refused.
+        for target in ["b", "boss", "a", "solo"] {
+            let err = tool.call(json!({ "action": "delete", "id": target })).await.unwrap_err().to_string();
+            assert!(err.contains("is not yours to"), "{target}: {err}");
+        }
+
+        // The edits nobody approved are in the feed of activity.
+        let feed = crate::agent_changes::read_agent_changes(&crate::agent_changes::beside(&path));
+        let kinds: Vec<&str> = feed.iter().map(|c| c.kind.as_str()).collect();
+        assert_eq!(kinds, ["created", "updated", "removed"]);
+    }
+
+    #[tokio::test]
+    async fn below_level_five_a_change_still_needs_an_approver() {
+        let path = organization();
+        let tool = ManageAgentsTool::new(&path).with_caller("a").with_caller_autonomy(4);
+        let err = tool.call(json!({ "action": "update", "id": "a1", "role": "Reviewer" })).await.unwrap_err().to_string();
+        assert!(err.contains("needs the user's approval"), "{err}");
     }
 
     #[tokio::test]

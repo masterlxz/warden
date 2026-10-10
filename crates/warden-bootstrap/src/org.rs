@@ -1,6 +1,6 @@
 //! The organization of the owner's agents (P120): each one may have a role and a superior (`AgentConfig.role`,
-//! `.reports_to`). For now this is what the screens show and nothing more — it changes none of what an agent may do
-//! (delegating, messaging, approvals and autonomy don't read it).
+//! `.reports_to`). It is what the screens show, and it is
+//! the scope of `manage_agents` (an agent changes only the agents below it) and of autonomy level 5.
 
 use std::collections::HashSet;
 

@@ -881,6 +881,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     <option value={2}>2 — sugere, não muda nada sozinho</option>
                     <option value={3}>3 — pede aprovação a cada mudança</option>
                     <option value={4}>4 — age sozinho</option>
+                    <option value={5}>5 — age sozinho e gerencia os subordinados sem pedir (exige "pode gerenciar agentes")</option>
                   </select>
                 </label>
               </div>

@@ -846,7 +846,8 @@ impl Orchestrator {
             .iter()
             .find(|t| t.spec().name == tool_call.name)
             .ok_or_else(|| anyhow::anyhow!("model requested unknown tool '{}'", tool_call.name))?;
-        let category = self.classifier.as_ref().and_then(|classify| classify(tool_call));
+        // P122: a manager (level 5) changes the agents below it without a yes, so that one tool is not held on a category.
+        let category = self.classifier.as_ref().and_then(|classify| classify(tool_call)).filter(|_| !self.autonomy.skips_approval_for(&tool_call.name));
         crate::autonomy::authorize(self.autonomy, &self.read_only_tools, &self.approval_required, category, self.approver.as_ref(), tool_call).await?;
         tool.call(tool_call.arguments.clone()).await
     }

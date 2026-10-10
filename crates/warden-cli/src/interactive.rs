@@ -2106,10 +2106,10 @@ async fn prompt_agent_can_manage_tasks(terminal: &mut CliTerminal, initial: bool
     prompt_agent_flag(terminal, " pode criar e editar tarefas agendadas? (sempre com a sua aprovação) (s/n) ", initial).await
 }
 
-/// 1 to 4, how much the agent may do without asking (P122).
+/// 1 to 5, how much the agent may do without asking (P122).
 async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyhow::Result<Option<u8>> {
     loop {
-        let Some(input) = prompt_field(terminal, " autonomia: 1 só responde, 2 sugere, 3 pede aprovação a cada mudança, 4 age sozinho ", &initial.to_string()).await? else {
+        let Some(input) = prompt_field(terminal, " autonomia: 1 só responde, 2 sugere, 3 pede aprovação a cada mudança, 4 age sozinho, 5 também gerencia os subordinados sem pedir (precisa de 'gerenciar agentes') ", &initial.to_string()).await? else {
             return Ok(None);
         };
         match parse_agent_autonomy(&input) {
@@ -2163,8 +2163,8 @@ fn parse_approval_categories(input: &str) -> Result<Vec<warden_core::autonomy::C
 
 fn parse_agent_autonomy(input: &str) -> Result<u8, String> {
     match input.trim().parse::<u8>() {
-        Ok(level) if (1..=4).contains(&level) => Ok(level),
-        _ => Err("use um número de 1 a 4".to_string()),
+        Ok(level) if (1..=5).contains(&level) => Ok(level),
+        _ => Err("use um número de 1 a 5".to_string()),
     }
 }
 
@@ -3216,9 +3216,10 @@ mod tests {
     }
 
     #[test]
-    fn the_autonomy_answer_is_a_level_from_one_to_four() {
+    fn the_autonomy_answer_is_a_level_from_one_to_five() {
         assert_eq!(parse_agent_autonomy(" 3 "), Ok(3));
-        for bad in ["", "0", "5", "-1", "três", "2.5"] {
+        assert_eq!(parse_agent_autonomy("5"), Ok(5));
+        for bad in ["", "0", "6", "-1", "três", "2.5"] {
             assert!(parse_agent_autonomy(bad).is_err(), "{bad:?}");
         }
     }

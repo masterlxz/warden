@@ -159,8 +159,8 @@ pub struct AgentConfig {
     /// conversation's agent or as a `delegate_to_agent` target.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
-    /// How much this agent may do without asking (P122), 1 to 4: 1 only answers, 2 suggests (a call that would change
-    /// something is refused), 3 asks a person before every such call, 4 runs its tools on its own. 4 is what every
+    /// How much this agent may do without asking (P122), 1 to 5: 1 only answers, 2 suggests (a call that would change
+    /// something is refused), 3 asks a person before every such call, 4 runs its tools on its own, 5 also manages the agents below it without asking (needs `can_manage_agents`). 4 is what every
     /// agent written before this field did, so it is the default. Applied in code (`Orchestrator::with_autonomy`),
     /// and a delegate target never gets more than the agent that called it.
     #[serde(default = "default_autonomy")]

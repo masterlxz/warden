@@ -27,24 +27,33 @@ pub enum Autonomy {
     AskFirst,
     /// 4: runs its tools on its own, as an agent without a level always did.
     Autonomous,
+    /// 5: as 4, and also manages the agents below it in the organization without asking (P122, P120): `manage_agents`
+    /// is the only tool that stops asking, and it stays inside the agent's own branch.
+    Manager,
 }
 
 impl Autonomy {
     pub const DEFAULT_LEVEL: u8 = 4;
 
-    /// The level a config file or a screen writes down (1 to 4); anything else is not a level.
+    /// The level a config file or a screen writes down (1 to 5); anything else is not a level.
     pub fn from_level(level: u8) -> Option<Self> {
         match level {
             1 => Some(Self::AnswerOnly),
             2 => Some(Self::Suggest),
             3 => Some(Self::AskFirst),
             4 => Some(Self::Autonomous),
+            5 => Some(Self::Manager),
             _ => None,
         }
     }
 
     pub fn level(self) -> u8 {
         self as u8 + 1
+    }
+
+    /// A manager's changes to its subordinates need no yes, neither from the tool nor from a risk category.
+    pub fn skips_approval_for(self, tool_name: &str) -> bool {
+        self == Self::Manager && tool_name == "manage_agents"
     }
 }
 
@@ -127,8 +136,8 @@ async fn authorize_within(
     let needs_category_yes = category.is_some_and(|c| required.contains(&c));
     let why = match level {
         Autonomy::AnswerOnly => anyhow::bail!("this agent answers in text only and has no tools"),
-        Autonomy::Autonomous if !needs_category_yes => return Ok(()),
-        Autonomy::Autonomous => format!("this kind of action ({}) needs a person's yes for this agent", category.map_or("", Category::as_str)),
+        Autonomy::Autonomous | Autonomy::Manager if !needs_category_yes => return Ok(()),
+        Autonomy::Autonomous | Autonomy::Manager => format!("this kind of action ({}) needs a person's yes for this agent", category.map_or("", Category::as_str)),
         Autonomy::Suggest | Autonomy::AskFirst if read_only.contains(&call.name) => return Ok(()),
         Autonomy::Suggest => anyhow::bail!(
             "'{}' was not run: this agent only suggests (autonomy level 2). Describe what you would do and let the person decide",
@@ -202,14 +211,30 @@ mod tests {
     }
 
     #[test]
-    fn a_level_is_one_to_four_and_nothing_else() {
+    fn a_level_is_one_to_five_and_nothing_else() {
         assert_eq!(Autonomy::from_level(0), None);
-        assert_eq!(Autonomy::from_level(5), None);
-        for level in 1..=4 {
+        assert_eq!(Autonomy::from_level(6), None);
+        for level in 1..=5 {
             assert_eq!(Autonomy::from_level(level).unwrap().level(), level);
         }
         assert!(Autonomy::Suggest < Autonomy::AskFirst);
+        assert!(Autonomy::Autonomous < Autonomy::Manager);
         assert_eq!(Autonomy::DEFAULT_LEVEL, Autonomy::Autonomous.level());
+    }
+
+    #[tokio::test]
+    async fn level_five_runs_everything_like_four_and_still_asks_for_a_listed_category() {
+        let approver: Arc<dyn Approver> = Says::new(Answer::Reject);
+        assert!(authorize(Autonomy::Manager, &[], Some(&approver), &call("write_file")).await.is_ok());
+        let err = super::authorize(Autonomy::Manager, &[], &[Category::SpendMoney], Some(Category::SpendMoney), Some(&approver), &call("buy")).await;
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn only_a_manager_skips_the_yes_and_only_for_manage_agents() {
+        assert!(Autonomy::Manager.skips_approval_for("manage_agents"));
+        assert!(!Autonomy::Manager.skips_approval_for("shell"));
+        assert!(!Autonomy::Autonomous.skips_approval_for("manage_agents"));
     }
 
     #[tokio::test]

@@ -2,7 +2,17 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-10 (Sessão 179)
+> Última atualização: 2026-10-10 (Sessão 180)
+
+---
+
+### 2026-10-10 — Sessão 180
+
+- **Objetivo**: terceira fatia do P122, o nível de autonomia 5 (o usuário escolheu a fatia e que o gerente age sem perguntar só dentro da subárvore). Planejada em Plan mode.
+- **Feito**: `Autonomy::Manager`; `manage_agents` sem aprovação no 5 (tool e categoria), escopo e teto do `plan()` intactos, feed de atividade com criar, editar e remover; `check_agents` 1 a 5 e exige `can_manage_agents`; seletor no desktop, na web e no CLI.
+- **Ambiente**: o Rust não estava instalado e o Docker negava o socket; o usuário instalou o `rustup`. Antes disso escrevi o código sem compilar e disse isso.
+- **Testes**: `warden-core`, `warden-bootstrap` (443) e `warden-cli` verdes; `agents` e `org_edit` do hub verdes; clippy só com avisos antigos. Um teste de `warden-bootstrap` falhou na primeira compilação e passou depois (4 rodadas). Web e desktop: `tsc` não rodado (sem `node_modules`).
+- **Fica**: permissões novas do P122; teste de orquestrador e de hub real do nível 5; telas não vistas.
 
 ---
 
