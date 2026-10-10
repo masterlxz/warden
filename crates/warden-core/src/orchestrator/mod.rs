@@ -2014,6 +2014,84 @@ mod tests {
         assert!(orchestrator.run_tool(&call_of("shell")).await.is_ok());
     }
 
+    /// Calls `shell` once, then answers with what came back.
+    struct CallsShellOnce;
+
+    #[async_trait]
+    impl ModelProvider for CallsShellOnce {
+        async fn chat_stream(&self, messages: Vec<Message>, _tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let response = match messages.last().filter(|m| m.role == Role::Tool) {
+                Some(result) => Response { content: format!("got: {}", result.content), tool_calls: Vec::new(), usage: None },
+                None => Response { content: String::new(), tool_calls: vec![call_of("shell")], usage: None },
+            };
+            Ok(response_stream(response))
+        }
+    }
+
+    /// A sub-agent held to ask before `shell` (a category a person wants approved), and who it asks.
+    fn shell_asking_sub_agent() -> Orchestrator {
+        use crate::autonomy::Classifier;
+        let mut inner = Orchestrator::new(Arc::new(CallsShellOnce), temp_vault());
+        inner.register_tool(Arc::new(NamedTool("shell")));
+        let classify: Classifier = Arc::new(|call: &ToolCall| (call.name == "shell").then_some(Category::CriticalInfra));
+        inner.with_approval_rules(&[Category::CriticalInfra], Some(classify))
+    }
+
+    use crate::tool::Answer;
+
+    struct Says(Answer, std::sync::Mutex<usize>);
+
+    #[async_trait]
+    impl Approver for Says {
+        async fn approve(&self, _request: crate::tool::ApprovalRequest) -> bool {
+            true
+        }
+        async fn ask(&self, _request: crate::tool::ApprovalRequest, _always: Option<&str>) -> Answer {
+            *self.1.lock().unwrap() += 1;
+            match self.0 {
+                Answer::Once => Answer::Once,
+                _ => Answer::Reject,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sub_agent_behind_delegate_task_asks_the_turns_approver_instead_of_being_refused() {
+        use crate::tool::delegate::DelegateTool;
+        let tool: Arc<dyn Tool> = Arc::new(DelegateTool::new(shell_asking_sub_agent()));
+        let task = serde_json::json!({ "task": "x" });
+
+        // Nobody to ask: refused, as before.
+        let alone = tool.call(task.clone()).await.unwrap();
+        assert!(alone.to_string().contains("can't ask"), "{alone}");
+
+        let yes = Arc::new(Says(Answer::Once, Default::default()));
+        let asking = tool.with_approver(yes.clone()).expect("delegate_task hands the approver to its sub-agent");
+        let out = asking.call(task.clone()).await.unwrap();
+        assert_eq!(out["result"], "got: \"ran\"", "{out}");
+        assert_eq!(*yes.1.lock().unwrap(), 1, "the person was asked once");
+
+        let no = Arc::new(Says(Answer::Reject, Default::default()));
+        let refused = tool.with_approver(no.clone()).unwrap().call(task).await.unwrap();
+        assert_eq!(*no.1.lock().unwrap(), 1);
+        assert_ne!(refused["result"], "got: \"ran\"", "a no stops the call: {refused}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_behind_delegate_to_agent_asks_the_turns_approver_instead_of_being_refused() {
+        use crate::tool::delegate_to_agent::{DelegateToAgentTool, NamedSubAgent};
+        let agent = NamedSubAgent { id: "ops".into(), description: String::new(), orchestrator: shell_asking_sub_agent(), persona: None, delegation: None };
+        let tool: Arc<dyn Tool> = Arc::new(DelegateToAgentTool::new(vec![agent]));
+        let task = serde_json::json!({ "agent_id": "ops", "task": "x" });
+
+        assert!(tool.call(task.clone()).await.unwrap().to_string().contains("can't ask"));
+
+        let yes = Arc::new(Says(Answer::Once, Default::default()));
+        let asking = tool.with_approver(yes.clone()).expect("delegate_to_agent hands the approver to its agents");
+        assert_eq!(asking.call(task).await.unwrap()["result"], "got: \"ran\"");
+        assert_eq!(*yes.1.lock().unwrap(), 1);
+    }
+
     /// Scripted by what it is offered, and it reports 1+1 tokens per call. Whoever can `delegate_task`
     /// delegates once and then repeats what came back; a leaf with a `noop` tool keeps calling it
     /// (burns model calls until something stops it); any other leaf just answers "leaf".

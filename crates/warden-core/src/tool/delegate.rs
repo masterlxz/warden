@@ -160,6 +160,10 @@ impl Tool for DelegateTool {
         self.rebuilt(self.orchestrator.with_approval_rules(required, classifier.cloned()), self.jobs.clone())
     }
 
+    fn with_approver(&self, approver: Arc<dyn crate::tool::Approver>) -> Option<Arc<dyn Tool>> {
+        self.rebuilt(self.orchestrator.with_approver(approver), self.jobs.clone())
+    }
+
     fn with_vault(&self, vault: &Arc<crate::memory::Vault>) -> Option<Arc<dyn Tool>> {
         self.rebuilt(self.orchestrator.with_vault(vault.clone()), self.jobs.clone())
     }

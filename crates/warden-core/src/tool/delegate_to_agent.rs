@@ -9,7 +9,7 @@ use crate::jobs::{JobBoard, TaskDraft};
 use crate::orchestrator::{Orchestrator, MAX_TASK_DEPTH};
 use crate::tool::delegate::{model_property, pick_model, ModelChoices};
 use crate::tool::job_tools::{background_property, job_label, start_task_with, wants_background};
-use crate::tool::{Tool, ToolSpec};
+use crate::tool::{Approver, Tool, ToolSpec};
 
 /// One addressable target for `DelegateToAgentTool` (P46's opt-in "chief" mechanism) — a
 /// specific configured agent, not an anonymous scoped sub-agent like `DelegateTool`'s
@@ -87,11 +87,14 @@ pub struct DelegateToAgentTool {
     jobs: Option<Arc<JobBoard>>,
     /// The models the caller may pick for a task (P123): the `model` argument, when the host offers any.
     models: Option<ModelChoices>,
+    /// Who the turn asks for a yes, once bound (`with_approver`): the targets ask the same person, so a call they may not make alone
+    /// (a category a person wants approved, level 3) is asked about instead of refused for want of anyone to ask.
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl DelegateToAgentTool {
     pub fn new(agents: Vec<NamedSubAgent>) -> Self {
-        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None, jobs: None, models: None }
+        Self { targets: Mutex::new(Targets { seen: 0, agents: Arc::new(agents) }), live: None, budget: None, jobs: None, models: None, approver: None }
     }
 
     /// Lets the caller pick a model for each task (P123), instead of the target agent's own.
@@ -110,6 +113,7 @@ impl DelegateToAgentTool {
             budget: None,
             jobs: None,
             models: None,
+            approver: None,
         }
     }
 
@@ -122,9 +126,12 @@ impl DelegateToAgentTool {
             if revision != targets.seen {
                 targets.seen = revision;
                 if let Some(mut fresh) = (live.resolver)().filter(|list| !list.is_empty()) {
-                    if let Some(budget) = &self.budget {
-                        for agent in &mut fresh {
+                    for agent in &mut fresh {
+                        if let Some(budget) = &self.budget {
                             agent.orchestrator = agent.orchestrator.charged_to(budget.clone());
+                        }
+                        if let Some(approver) = &self.approver {
+                            agent.orchestrator = agent.orchestrator.with_approver(approver.clone());
                         }
                     }
                     targets.agents = Arc::new(fresh);
@@ -186,6 +193,20 @@ impl Tool for DelegateToAgentTool {
             budget: Some(budget.clone()),
             jobs: self.jobs.clone(),
             models: self.models.clone(),
+            approver: self.approver.clone(),
+        }))
+    }
+
+    fn with_approver(&self, approver: Arc<dyn Approver>) -> Option<Arc<dyn Tool>> {
+        let agents = self.current().iter().map(|a| NamedSubAgent { orchestrator: a.orchestrator.with_approver(approver.clone()), ..a.clone() }).collect();
+        let seen = self.targets.lock().unwrap_or_else(|e| e.into_inner()).seen;
+        Some(Arc::new(Self {
+            targets: Mutex::new(Targets { seen, agents: Arc::new(agents) }),
+            live: self.live.clone(),
+            budget: self.budget.clone(),
+            jobs: self.jobs.clone(),
+            models: self.models.clone(),
+            approver: Some(approver),
         }))
     }
 
@@ -198,6 +219,7 @@ impl Tool for DelegateToAgentTool {
             budget: self.budget.clone(),
             jobs: self.jobs.clone(),
             models: choices.cloned(),
+            approver: self.approver.clone(),
         }))
     }
 
@@ -210,6 +232,7 @@ impl Tool for DelegateToAgentTool {
             budget: self.budget.clone(),
             jobs: Some(board.clone()),
             models: self.models.clone(),
+            approver: self.approver.clone(),
         }))
     }
 
