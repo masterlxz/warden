@@ -2,7 +2,23 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-10 (Sessão 180)
+> Última atualização: 2026-10-10 (Sessão 181)
+
+---
+
+### 2026-10-10 — Sessão 181
+
+- **Objetivo**: continuar o P122 pelo que sobrava (editor das categorias, sub-agente sem aprovador, "sempre permitir", celular e extensão) e começar a verificar de verdade o que se acumulou como "não visto".
+- **Duas permissões que faltavam** (`can_message_user`, `can_choose_models`, ligadas para os agentes de hoje e desligadas para os criados por `manage_agents`): sem a primeira o agente não recebe `message_user` mesmo com entrada em `[[outreach]]`; sem a segunda nenhuma delegação oferece o argumento `model`. Estavam meio feitas no working tree depois da queda do computador; conferi, testei e commitei. O prompt de autonomia da CLI passou a citar o nível 5.
+- **Editor de `[[tool_categories]]`**: `ToolCategoryDto` no protocolo, `toolCategories` em `HubSettings` e em `HubSettingsUpdate` (omitido mantém o mapa, lista vazia limpa), `check_tool_categories` (ferramenta nomeada, categoria que existe, sem repetir), seção "Risk categories" no desktop (pelo Tauri local) e "Categorias de risco" na web. O desktop em modo hub e a CLI não editam o mapa.
+- **Sub-agente sem aprovador (conserto)**: `delegate_task` e `delegate_to_agent` repassavam nível, regras e modelos ao orquestrador aninhado, mas **não o aprovador**; uma categoria exigida era recusada com "can't ask". Agora `Tool::with_approver` chega aos dois (e aos agentes recriados no meio do turno). Sem aprovador no turno a recusa continua.
+- **"Sempre permitir"**: o botão já aparecia nas telas, e a resposta era **jogada fora**. A pergunta passou a oferecer a categoria (ou a ferramenta, sem categoria) e `RememberingApprover` guarda o "sempre" num `Grants` por conversa e agente (`GrantBook`), só em memória. Ligado no hub (por conexão) e no desktop local; a CLI não tem "sempre". "Sim uma vez", "não" e o "sempre" do motor de código não passam por aqui.
+- **Extensão e celular**: **não têm tela de Settings** (só a Organização, que resume os poderes e edita cargo, superior e modelos), então não ganharam editor: o resumo mostra o que foi tirado das quatro permissões. **Correção do que eu havia proposto**: o "item 5" falava em editores; isso pediria uma tela nova.
+- **Testes**: bootstrap 454, protocolo 49, core (3 do "sempre", 2 do aprovador no sub-agente), hub (`tests/agents.rs`, 1 novo de ponta a ponta), extensão 76, celular 242 (`flutter analyze` limpo nos dois arquivos). Tudo verde.
+- **Verificado de verdade nesta sessão**: a web num Chromium headless contra um hub real de pasta temporária (checkboxes com o estado do config, a seção de categorias adiciona e grava no `config.toml`, as permissões desligadas sobrevivem ao salvar, sem erro de página; as capturas foram vistas) e a suíte `npm run test:e2e` (34 passam); o assistente `/agents create` da CLI num terminal emulado com `pyte` (perguntas novas na ordem certa, grava `can_message_user`, `can_choose_models`, `autonomy = 5`, `approval_required`); o celular com o Flutter 3.47.7. Ferramentas instaladas fora do projeto: Chromium do Playwright e `pyte` num diretório temporário da sessão, e o Flutter em `~/flutter-sdk` (o `unzip` o usuário instalou).
+- **Não verificado**: o desktop (Tauri) numa janela, a extensão carregada no navegador (o `tsc` dela não rodou: sem `node_modules`) e **qualquer modelo real** (nível 5, categoria marcada pedindo o sim, sub-agente pedindo o sim, "sempre permitir" parando de perguntar). Não há tela para ver ou revogar o que foi permitido com "sempre".
+- **Observação de interface**: o cartão do agente tem dois checkboxes parecidos ("Pode puxar conversa com você…", a permissão, e "Pode iniciar mensagens para você, no canal dele…", a entrada de `[[outreach]]`); fazem coisas diferentes e o texto confunde. Não mexi.
+- **Deslizes meus**: eu havia dito que o item das telas do celular e da extensão era "adicionar editores", sem conferir que elas não têm tela de edição; o primeiro teste do aprovador no sub-agente falhou por eu comparar o texto com as aspas escapadas do JSON (o conserto estava certo, o teste não); e travei um tempo no meu próprio driver de terminal (o campo vem pré-preenchido, então minha resposta virava `nn`).
 
 ---
 
