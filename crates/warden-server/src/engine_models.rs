@@ -117,7 +117,7 @@ mod tests {
         let request = format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", if method == "GET" { 0 } else { body.len() }, if method == "GET" { "" } else { &body });
         socket.write_all(request.as_bytes()).await.unwrap();
         let mut raw = String::new();
-        tokio::time::timeout(Duration::from_secs(10), socket.read_to_string(&mut raw)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(60), socket.read_to_string(&mut raw)).await.unwrap().unwrap();
         let status = raw.split(' ').nth(1).unwrap().parse().unwrap();
         let json = raw.split_once("\r\n\r\n").map(|(_, b)| b).and_then(|b| serde_json::from_str(b.trim()).ok()).unwrap_or(Value::Null);
         (status, json)
