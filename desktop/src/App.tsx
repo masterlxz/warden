@@ -28,6 +28,7 @@ import {
   hubDisconnect,
   hubHistory,
   hubListConversations,
+  hubListAgentOrg,
   hubListDirs,
   hubListNodes,
   hubListProjects,
@@ -48,6 +49,7 @@ import AgentWorkList from "./components/AgentWorkList";
 import { agentWork as sideWorkOf, workButtonLabel } from "./lib/agentWork";
 import ThreadPanel, { LocalThreadPanel } from "./components/ThreadPanel";
 import { parseNodeFolder, type NodeInfo } from "./lib/workdir";
+import { orgAccessOf, type OrgAccess } from "./lib/org";
 import type { Attachment, ChatMessage, CodeMode, Conversation, ProjectEntry, ProviderFallback, SavedHub, Settings, Usage } from "./types";
 
 const emptySettings: Settings = {
@@ -162,6 +164,44 @@ function App() {
   const [knownNodes, setKnownNodes] = useState<NodeInfo[]>([]);
   const hubState = activeHubId ? hubStates[activeHubId] : undefined;
   const isHubOwner = hubState?.state === "connected" && hubState.user === null;
+  // P120: what the owner lets a member do with the organization arrives at sign-in only, so a change made afterwards is looked for: a
+  // `listAgentOrg` is the probe (the hub reads the access at each request), asked when the window comes back to the front and when the
+  // connection is made anew. `undefined` for the owner and on this computer, which see the whole tree.
+  const hubMember = hubState?.state === "connected" ? hubState.user : null;
+  const isHubMember = hubMember !== null;
+  const [probedOrg, setProbedOrg] = useState<{ hubId: string; access: OrgAccess } | null>(null);
+  const memberOrg: OrgAccess | undefined = !isHubMember ? undefined : probedOrg?.hubId === activeHubId ? probedOrg.access : orgAccessOf(hubMember.orgAccess);
+  useEffect(() => {
+    if (!remoteReady || !isHubMember || activeHubId === null) return;
+    const hubId = activeHubId;
+    let live = true;
+    const probe = async () => {
+      let access: OrgAccess;
+      try {
+        access = orgAccessOf((await hubListAgentOrg()).access);
+      } catch (err) {
+        // The hub's refusal is an `Error`: none. A connection that failed or timed out says nothing about the access.
+        if (!(err instanceof Error)) return;
+        access = "none";
+      }
+      if (live) setProbedOrg((current) => (current?.hubId === hubId && current.access === access ? current : { hubId, access }));
+    };
+    const onShow = () => {
+      if (document.visibilityState === "visible") void probe();
+    };
+    void probe();
+    document.addEventListener("visibilitychange", onShow);
+    window.addEventListener("focus", onShow);
+    return () => {
+      live = false;
+      document.removeEventListener("visibilitychange", onShow);
+      window.removeEventListener("focus", onShow);
+    };
+  }, [remoteReady, isHubMember, activeHubId]);
+  // The screen goes with the access: a member who loses it is taken back to the chat.
+  useEffect(() => {
+    if (memberOrg === "none") setView((current) => (current === "organization" ? "chat" : current));
+  }, [memberOrg]);
   // What the listeners (set up once) need to know about the machine in use.
   const activeHubRef = useRef<string | null>(null);
   activeHubRef.current = activeHubId;
@@ -829,7 +869,7 @@ function App() {
         onOpenTasks={() => setView("tasks")}
         onOpenWebhooks={() => setView("webhooks")}
         onOpenWorkspace={() => setView("workspace")}
-        onOpenOrganization={() => setView("organization")}
+        onOpenOrganization={memberOrg === "none" ? undefined : () => setView("organization")}
         onOpenAgents={remote ? () => setView("agents") : undefined}
         agentsUnread={unreadChannels.length}
         onOpenAgentWork={() => {
@@ -888,7 +928,7 @@ function App() {
           }}
         />
       ) : view === "organization" ? (
-        <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
+        <OrganizationView key={activeHubId ?? "local"} agents={settings.agents} remote={remote} memberAccess={memberOrg} onChanged={() => void loadSettings()} onEdit={() => setView("settings")} onOpenChat={openChatWith} onOpenTasks={(id) => { setAgentWorkFilter(id); setView("agentWork"); }} />
       ) : (
         <div className="chat-with-thread">
         {view === "agents" && (

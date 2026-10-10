@@ -28,6 +28,15 @@ export function buildOrg<T extends OrgAgent>(agents: T[]): OrgNode<T>[] {
   return agents.filter((a) => !a.reportsTo || !ids.has(a.reportsTo)).map(nodeOf);
 }
 
+/** What the owner of a hub lets a member do with the organization of the agents (P120). The tree is one, the owner's. */
+export type OrgAccess = "none" | "view" | "edit";
+
+/** The access the hub sent (`orgAccess` of the member, absent when it is none). A value this app doesn't know counts as none, so it
+ * never shows a screen the hub will refuse. */
+export function orgAccessOf(value: string | null | undefined): OrgAccess {
+  return value === "view" || value === "edit" ? value : "none";
+}
+
 /** Every agent below `id`, at any depth: the ones it can't be made to report to. */
 export function descendantsOf(agents: OrgAgent[], id: string): Set<string> {
   const below = new Set<string>();

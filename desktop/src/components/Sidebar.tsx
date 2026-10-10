@@ -17,7 +17,8 @@ interface SidebarProps {
   onOpenTasks: () => void;
   onOpenWebhooks: () => void;
   onOpenWorkspace: () => void;
-  onOpenOrganization: () => void;
+  /** Omitted for a member the owner gave no access to the organization (P120). */
+  onOpenOrganization?: () => void;
   onOpenAgentWork: () => void;
   /** The feed of activity (P121): what happened among the agents. */
   onOpenActivity: () => void;
@@ -187,15 +188,17 @@ function Sidebar({
           <ProjectsIcon size={17} />
           {!collapsed && "Projects"}
         </button>
-        <button
-          type="button"
-          className={`sidebar-footer-btn${view === "organization" ? " sidebar-footer-btn--active" : ""}`}
-          onClick={onOpenOrganization}
-          title="Organization"
-        >
-          <OrgIcon size={17} />
-          {!collapsed && "Organization"}
-        </button>
+        {onOpenOrganization && (
+          <button
+            type="button"
+            className={`sidebar-footer-btn${view === "organization" ? " sidebar-footer-btn--active" : ""}`}
+            onClick={onOpenOrganization}
+            title="Organization"
+          >
+            <OrgIcon size={17} />
+            {!collapsed && "Organization"}
+          </button>
+        )}
         <button
           type="button"
           className={`sidebar-footer-btn${view === "agentWork" ? " sidebar-footer-btn--active" : ""}`}

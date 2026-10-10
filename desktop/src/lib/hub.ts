@@ -43,7 +43,7 @@ import {
 } from "./hubMap";
 
 import type { DirListing, NodeInfo } from "./workdir";
-import type { OrgEdit } from "./org";
+import type { OrgAgent, OrgEdit } from "./org";
 
 export { HubTurnError } from "./hubMap";
 export type { RemoteState, RemoteStatePayload, HubUser } from "./hubMap";
@@ -234,6 +234,21 @@ export async function hubControlAgentTask(askKey: KeyAsker, taskId: string, acti
 export async function hubEditAgentOrg(askKey: KeyAsker, edit: OrgEdit): Promise<void> {
   const message = { type: "editAgentOrg", edit, pairingKey: await askKey("Changing the organization changes what the agents of the hub may reach.") };
   await ask(message, "settingsSaved");
+}
+
+/** The tree of the organization as the hub shows it to a member (P120): only the id, the role and the superior of each agent, and the
+ * access they have (`view` or `edit`). A refusal (the owner gave no access) rejects with an `Error`; a connection that failed rejects
+ * with whatever the command gave, which is not one. */
+export async function hubListAgentOrg(): Promise<{ agents: OrgAgent[]; access: string }> {
+  const reply = await ask<{ type: string; agents: OrgAgent[]; access: string }>({ type: "listAgentOrg" }, "agentOrgList");
+  return { agents: reply.agents, access: reply.access };
+}
+
+/** The same as `hubEditAgentOrg`, for a member with the `edit` access: their session is the authorization, so no pairing key is asked.
+ * Only a role and a superior, a new report and a removal are theirs. Returns the tree as it is now. */
+export async function hubEditAgentOrgAsMember(edit: OrgEdit): Promise<{ agents: OrgAgent[]; access: string }> {
+  const reply = await ask<{ type: string; agents: OrgAgent[]; access: string }>({ type: "editAgentOrg", edit }, "agentOrgList");
+  return { agents: reply.agents, access: reply.access };
 }
 
 interface HubWebhookReply {

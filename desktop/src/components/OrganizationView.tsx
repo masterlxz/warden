@@ -3,15 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AgentEntry, AgentTask } from "../types";
 import { activityLine, activityOf } from "../lib/agentTasks";
 import { approvalCategoryLabel } from "../lib/approvalCategories";
-import { hubAgentTasks, hubEditAgentOrg } from "../lib/hub";
-import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgEdit, type OrgNode } from "../lib/org";
+import { hubAgentTasks, hubEditAgentOrg, hubEditAgentOrgAsMember, hubListAgentOrg } from "../lib/hub";
+import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgAccess, type OrgAgent, type OrgEdit, type OrgNode } from "../lib/org";
 import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
 const AUTONOMY: Record<number, string> = { 1: "answers only", 2: "suggests", 3: "asks first", 4: "acts alone" };
 
+/** The agent has the powers of the Settings screen (the owner gets them; a member gets only the id, the role and the superior). */
+function hasPowers(agent: OrgAgent): agent is AgentEntry {
+  return "autonomy" in agent;
+}
+
 /** The small facts shown next to an agent: what it is allowed to do, as the Settings screen sets it. */
-function badges(agent: AgentEntry): string[] {
+function badges(agent: OrgAgent): string[] {
   const list: string[] = [];
+  if (!hasPowers(agent)) return list;
   if (agent.canDelegateToAgents) list.push("delegates");
   if (agent.canManageAgents) list.push("manages agents");
   if (agent.canMessageAgents) list.push("leaves notes");
@@ -28,7 +34,11 @@ interface Editing {
   /** Opens a new conversation with this agent, or the tasks it was given and delegated. */
   onOpenChat: (id: string) => void;
   onOpenTasks: (id: string) => void;
-  agents: AgentEntry[];
+  agents: OrgAgent[];
+  /** A member (P120): no chat or tasks per node (the owner's agents are not always theirs) and no powers to show. */
+  member: boolean;
+  /** Who looks at the tree may change it: the owner always, a member only with the `edit` access. */
+  editable: boolean;
   panel: Panel | null;
   busy: boolean;
   open: (panel: Panel | null) => void;
@@ -47,7 +57,7 @@ function onDropOn(editing: Editing, target: string | null): void {
   if (edit) void editing.apply(edit);
 }
 
-function PositionForm({ agent, editing }: { agent: AgentEntry; editing: Editing }) {
+function PositionForm({ agent, editing }: { agent: OrgAgent; editing: Editing }) {
   const [role, setRole] = useState(agent.role ?? "");
   const [superior, setSuperior] = useState(agent.reportsTo ?? "");
   const choices = superiorChoices(editing.agents, agent.id);
@@ -101,7 +111,9 @@ function AddForm({ under, editing }: { under: string | null; editing: Editing })
         <textarea value={persona} rows={3} placeholder="Its instructions, in a few lines." onChange={(e) => setPersona(e.target.value)} />
         <span className="field-hint">
           {under ? `It reports to ${under}. ` : "It starts at the top of the tree. "}
-          It begins careful: read-only tools, asks before every change, and can't delegate or manage agents until you turn that on in Settings.
+          {editing.member
+            ? "It begins careful: read-only tools, asks before every change, and can't delegate or manage agents until the owner turns that on."
+            : "It begins careful: read-only tools, asks before every change, and can't delegate or manage agents until you turn that on in Settings."}
         </span>
       </label>
       <div className="org-form-actions">
@@ -116,7 +128,7 @@ function AddForm({ under, editing }: { under: string | null; editing: Editing })
   );
 }
 
-function RemoveConfirm({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }) {
+function RemoveConfirm({ node, editing }: { node: OrgNode<OrgAgent>; editing: Editing }) {
   const { agent, children } = node;
   const superior = agent.reportsTo;
   return (
@@ -138,7 +150,7 @@ function RemoveConfirm({ node, editing }: { node: OrgNode<AgentEntry>; editing: 
   );
 }
 
-function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }) {
+function Node({ node, editing }: { node: OrgNode<OrgAgent>; editing: Editing }) {
   const { agent, children } = node;
   const { panel } = editing;
   const validTarget = editing.dragging !== null && moveEdit(editing.agents, editing.dragging, agent.id) !== null;
@@ -147,7 +159,7 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
       {/* The drag sits on the card, not on the <li>: the `dragover` of the reports must not bubble up to their superior's card. */}
       <div
         className={`org-card${editing.dragging === agent.id ? " org-card--dragging" : ""}${validTarget ? " org-card--target" : ""}`}
-        draggable={!editing.busy}
+        draggable={editing.editable && !editing.busy}
         onDragStart={(e) => {
           e.dataTransfer.setData("text/plain", agent.id);
           e.dataTransfer.effectAllowed = "move";
@@ -174,21 +186,29 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
         {children.length > 0 && <span className="org-count">{children.length === 1 ? "1 report" : `${children.length} reports`}</span>}
         {editing.activity(agent.id) && <span className="org-activity">{editing.activity(agent.id)}</span>}
         <span className="org-actions">
-          <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenChat(agent.id)} title={`Start a conversation with ${agent.id}`}>
-            Chat
-          </button>
-          <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenTasks(agent.id)} title={`The tasks ${agent.id} was given and the ones it delegated`}>
-            Tasks
-          </button>
-          <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "edit", id: agent.id })}>
-            Edit
-          </button>
-          <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "add", under: agent.id })}>
-            Add report
-          </button>
-          <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "remove", id: agent.id })}>
-            Remove
-          </button>
+          {!editing.member && (
+            <>
+              <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenChat(agent.id)} title={`Start a conversation with ${agent.id}`}>
+                Chat
+              </button>
+              <button type="button" className="settings-browse-btn" onClick={() => editing.onOpenTasks(agent.id)} title={`The tasks ${agent.id} was given and the ones it delegated`}>
+                Tasks
+              </button>
+            </>
+          )}
+          {editing.editable && (
+            <>
+              <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "edit", id: agent.id })}>
+                Edit
+              </button>
+              <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "add", under: agent.id })}>
+                Add report
+              </button>
+              <button type="button" className="settings-browse-btn" disabled={editing.busy} onClick={() => editing.open({ kind: "remove", id: agent.id })}>
+                Remove
+              </button>
+            </>
+          )}
         </span>
       </div>
       {panel?.kind === "edit" && panel.id === agent.id && <PositionForm key={`edit-${agent.id}`} agent={agent} editing={editing} />}
@@ -209,8 +229,9 @@ function Node({ node, editing }: { node: OrgNode<AgentEntry>; editing: Editing }
  * Each change is written on its own (nothing else of the settings is touched) and an agent that manages or delegates reaches only the
  * ones below it, so the tree is what sets its reach. On a hub it asks for the pairing key, like any change to it. */
 function OrganizationView({
-  agents,
+  agents: ownerAgents,
   remote = false,
+  memberAccess,
   onChanged,
   onEdit,
   onOpenChat,
@@ -218,11 +239,18 @@ function OrganizationView({
 }: {
   agents: AgentEntry[];
   remote?: boolean;
+  /** A member of the hub (P120): the access the owner gave, `view` or `edit`. Absent for the owner and on this computer. The member reads
+   * and edits by their session, with no pairing key, and gets only the id, the role and the superior of each agent. */
+  memberAccess?: OrgAccess;
   onChanged: () => void;
   onEdit: () => void;
   onOpenChat: (id: string) => void;
   onOpenTasks: (id: string) => void;
 }) {
+  const member = memberAccess !== undefined;
+  const editable = memberAccess === undefined || memberAccess === "edit";
+  const [memberAgents, setMemberAgents] = useState<OrgAgent[]>([]);
+  const agents: OrgAgent[] = member ? memberAgents : ownerAgents;
   const tree = buildOrg(agents);
   const nobodyReports = tree.every((node) => node.children.length === 0);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -232,8 +260,22 @@ function OrganizationView({
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const { askKey, dialog } = usePairingKey();
 
+  // A member's tree is the owner's, read from the hub as the access they were given allows.
+  useEffect(() => {
+    if (!member) return;
+    let alive = true;
+    hubListAgentOrg().then(
+      (loaded) => alive && (setMemberAgents(loaded.agents), setError(null)),
+      (err) => alive && setError(String(err instanceof Error ? err.message : err)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [member]);
+
   // The activity of each node is an extra: without the tasks, the card just shows no line.
   useEffect(() => {
+    if (member) return;
     let alive = true;
     (remote ? hubAgentTasks() : invoke<AgentTask[]>("list_agent_tasks")).then(
       (loaded) => alive && setTasks(loaded),
@@ -242,7 +284,7 @@ function OrganizationView({
     return () => {
       alive = false;
     };
-  }, [remote, agents]);
+  }, [remote, member, ownerAgents]);
 
   const editing: Editing = {
     dragging,
@@ -254,6 +296,8 @@ function OrganizationView({
     onOpenChat,
     onOpenTasks,
     agents,
+    member,
+    editable,
     panel,
     busy,
     open: (next) => {
@@ -264,10 +308,11 @@ function OrganizationView({
       setBusy(true);
       setError(null);
       try {
-        if (remote) await hubEditAgentOrg(askKey, edit);
+        if (member) setMemberAgents((await hubEditAgentOrgAsMember(edit)).agents);
+        else if (remote) await hubEditAgentOrg(askKey, edit);
         else await invoke("edit_agent_org", { edit });
         setPanel(null);
-        onChanged();
+        if (!member) onChanged();
       } catch (err) {
         if (!(err instanceof KeyCancelled)) setError(String(err));
       } finally {
@@ -280,8 +325,11 @@ function OrganizationView({
     <div className="settings-view">
       <h2 className="settings-title">Organization</h2>
       <p className="settings-hint">
-        Who reports to whom among your agents. An agent that manages or delegates to other agents reaches only the ones below it; an agent
-        outside the hierarchy delegates as before. Every change an agent makes still waits for your yes.
+        {member
+          ? editable
+            ? "Who reports to whom among the workspace's agents. The owner let you change the hierarchy: the role and the superior of an agent, a new report, a removal. What the agents may do is the owner's."
+            : "Who reports to whom among the workspace's agents. You can look at the tree; changing it is the owner's."
+          : "Who reports to whom among your agents. An agent that manages or delegates to other agents reaches only the ones below it; an agent outside the hierarchy delegates as before. Every change an agent makes still waits for your yes."}
       </p>
       {error && <p className="usage-error">{error}</p>}
 
@@ -294,7 +342,7 @@ function OrganizationView({
           ))}
         </ul>
       )}
-      {dragging !== null && moveEdit(agents, dragging, null) !== null && (
+      {editable && dragging !== null && moveEdit(agents, dragging, null) !== null && (
         <div
           className="org-top"
           onDragOver={(e) => e.preventDefault()}
@@ -306,16 +354,20 @@ function OrganizationView({
           Drop here to take it out from under its superior (top of the tree)
         </div>
       )}
-      {tree.length > 0 && nobodyReports && <p className="settings-hint">Nobody reports to anybody yet: drag a card onto another, or use "Edit" on an agent to pick its superior.</p>}
+      {editable && tree.length > 0 && nobodyReports && <p className="settings-hint">Nobody reports to anybody yet: drag a card onto another, or use "Edit" on an agent to pick its superior.</p>}
       {panel?.kind === "add" && panel.under === null && <AddForm key="add-top" under={null} editing={editing} />}
-      <div className="org-form-actions">
-        <button type="button" className="settings-browse-btn" disabled={busy} onClick={() => editing.open({ kind: "add", under: null })}>
-          Add an agent at the top
-        </button>
-        <button type="button" className="settings-browse-btn" onClick={onEdit}>
-          More settings per agent
-        </button>
-      </div>
+      {editable && (
+        <div className="org-form-actions">
+          <button type="button" className="settings-browse-btn" disabled={busy} onClick={() => editing.open({ kind: "add", under: null })}>
+            Add an agent at the top
+          </button>
+          {!member && (
+            <button type="button" className="settings-browse-btn" onClick={onEdit}>
+              More settings per agent
+            </button>
+          )}
+        </div>
+      )}
       {dialog}
     </div>
   );

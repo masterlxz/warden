@@ -25,6 +25,8 @@ export interface HubUser {
   mustChangePassword: boolean;
   /** Encrypted, and only a password sign-in opens it again after the hub restarted. */
   locked?: boolean;
+  /** P120 — what the owner lets them do with the organization of the agents: "view" or "edit"; absent: none. */
+  orgAccess?: string;
 }
 
 /** Where the connection to a hub stands (`warden_server::remote_client::RemoteState`, tagged by `state`). */

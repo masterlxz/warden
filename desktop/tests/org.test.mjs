@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { addReportEdit, buildOrg, descendantsOf, moveEdit, positionEdit, removeFromOrg, renameInReports, superiorChoices } from "../src/lib/org.ts";
+import { addReportEdit, buildOrg, descendantsOf, moveEdit, orgAccessOf, positionEdit, removeFromOrg, renameInReports, superiorChoices } from "../src/lib/org.ts";
 
 const agent = (id, reportsTo = null, role = null) => ({ id, reportsTo, role });
 const ids = (nodes) => nodes.map((n) => n.agent.id);
@@ -84,5 +84,16 @@ describe("dragging a card onto another", () => {
     assert.equal(moveEdit(team, "solo", null), null, "it is already at the top");
     assert.equal(moveEdit(team, "ghost", "boss"), null);
     assert.equal(moveEdit(team, "dev", "ghost"), null);
+  });
+});
+
+describe("what a member may do with the organization", () => {
+  test("view and edit are taken as they come; anything else, and nothing at all, is none", () => {
+    assert.equal(orgAccessOf("view"), "view");
+    assert.equal(orgAccessOf("edit"), "edit");
+    assert.equal(orgAccessOf(undefined), "none");
+    assert.equal(orgAccessOf(null), "none");
+    assert.equal(orgAccessOf(""), "none");
+    assert.equal(orgAccessOf("admin"), "none", "a level this app doesn't know never opens the screen");
   });
 });
