@@ -11,6 +11,7 @@ use std::time::Duration;
 use warden_core::code_engine::opencode::OpencodeEngine;
 use warden_core::code_engine::process::OpencodeProcesses;
 use warden_core::code_engine::{CodeEngine, CodeModes};
+use warden_core::tool::code_task::{CodeEngineSlot, CodeTaskTool};
 
 use crate::engine_models::EngineModels;
 
@@ -26,6 +27,13 @@ const OPENCODE_IDLE: Duration = Duration::from_secs(30 * 60);
 pub fn opencode_engine(models: &EngineModels) -> Arc<dyn CodeEngine> {
     let binary = std::env::var(OPENCODE_BIN_ENV).ok().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| "opencode".to_string());
     Arc::new(OpencodeEngine::new(Arc::new(OpencodeProcesses::new(binary, Some(models.opencode_config()), OPENCODE_IDLE))))
+}
+
+/// Gives `orchestrator` the `code_task` tool (P89): an agent that a person listed it for hands tasks to the engine that
+/// `engine` will hold. The hub builds its orchestrator again whenever its settings are saved, so every build goes through
+/// here with the same slot.
+pub fn register_code_task(orchestrator: &mut warden_core::orchestrator::Orchestrator, engine: &CodeEngineSlot) {
+    orchestrator.register_tool(Arc::new(CodeTaskTool::new(orchestrator.vault().clone(), engine.clone())));
 }
 
 #[derive(Clone, Default)]

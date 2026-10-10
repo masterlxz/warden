@@ -8,7 +8,7 @@ use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, P
 use warden_bootstrap::tasks::{check_tasks, next_run, run_task, task_status, TaskStore, Zone};
 use warden_bootstrap::webhooks::{upsert_webhook, WebhookAuth, WebhookConfig};
 use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
-use warden_core::tool::code_task::{CodeEngineSlot, CodeTaskTool};
+use warden_core::tool::code_task::CodeEngineSlot;
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
 
@@ -622,7 +622,7 @@ struct ServeSettings {
 async fn bootstrap_hub(config: Option<&str>, overrides: Overrides, code_engine: &CodeEngineSlot) -> anyhow::Result<warden_core::orchestrator::Orchestrator> {
     let mut orchestrator = bootstrap(config, overrides, default_vault_path()).await?;
     // P89 — an agent given `code_task` hands tasks to the engine of a code project; nobody has it until a person lists it.
-    orchestrator.register_tool(Arc::new(CodeTaskTool::new(orchestrator.vault().clone(), code_engine.clone())));
+    warden_server::code_turns::register_code_task(&mut orchestrator, code_engine);
     Ok(orchestrator)
 }
 
