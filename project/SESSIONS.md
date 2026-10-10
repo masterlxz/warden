@@ -2,7 +2,15 @@
 
 > **Nota**: Este log foi criado junto com o projeto. As sessões serão registradas aqui conforme o trabalho avança.
 >
-> Última atualização: 2026-10-10 (Sessão 179)
+> Última atualização: 2026-10-10 (Sessão 180)
+
+---
+
+### 2026-10-10 — Sessão 180
+
+- **Objetivo**: fechar a única decisão aberta da hierarquia na P84 (a hierarquia é do workspace ou de cada pessoa).
+- **Decisão do usuário**: os agentes próprios dos membros **continuam fora** da árvore. A árvore é uma só, a do dono, e o membro com acesso a edita. Descartados: mini-árvore por membro e membro dentro da árvore única.
+- **Feito**: só registro, sem código (`VISAO_AGENTES.md`, Parte 3, tensão 2). Nenhum teste rodado, nada mudou no código.
 
 ---
 

@@ -1615,6 +1615,9 @@ levar isto a `/plan`.
    que ele) ou se muda.
 2. **Agente global × agente de um membro.** A visão fala de uma organização; o Warden tem agentes do dono, agentes
    compartilhados e agentes próprios de cada membro (P84). A hierarquia é do workspace ou de cada pessoa?
+   **Decidido (Sessão 180)**: uma árvore só, a do dono, no workspace; o membro com acesso (nenhum/ver/editar) mexe nela,
+   e os agentes próprios dos membros continuam fora dela (sem cargo, sem superior). Mini-árvore por membro e membro
+   dentro da árvore única foram descartados por ora (o segundo cruza com a privacidade e com o teto de autoridade).
 3. **O modo de código não usa agentes do Warden.** O projeto de código roda o opencode (P103). A visão quer um
    Programming Manager do Warden coordenando o trabalho de código. O gerente comanda o opencode como ferramenta, ou
    há subagentes de programação do próprio Warden (P89)?
