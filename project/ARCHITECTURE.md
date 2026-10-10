@@ -3282,6 +3282,15 @@ Cada agente tem um nível (`AgentConfig.autonomy`, 1 a 4, padrão **4** = o comp
 - **Para o orquestrador o 5 é um 4**: `with_autonomy` guarda `min(atual, pedido)` e o teto do orquestrador é o 4, então `authorize` trata os dois igual e uma categoria que a pessoa ligou (`approval_required`, como `elevated_agent` e `delete_data` para `manage_agents`) **ainda pergunta** antes de a tool rodar; nesse caso a tool não pergunta de novo.
 - **Limite aceito**: o gerente pode, sem perguntar, dar a um subordinado tools que ele mesmo tem (o teto é o gerente), inclusive trocar a lista de um que já age sozinho. O que ele não faz é passar do que tem.
 
+### Permissões "iniciar tarefas" e "criar agentes temporários" (P122, Sessão 180)
+
+Duas flags em `AgentConfig`, `can_start_tasks` e `can_create_workers` (**ligadas por padrão**: um config antigo carrega como sempre; não são escritas no arquivo enquanto ligadas). **Decisão do usuário**: duas flags, ligadas para os agentes de hoje e **desligadas para o agente que outro agente cria** (`manage_agents` e a árvore de `org_edit`); o agente de um membro nasce ligado, porque `delegate_task` e `jobs` são tools padrão de membro.
+
+- **O que fazem**: `can_start_tasks` desligada tira a tool `jobs` do agente, e sem `jobs` o orquestrador não monta a fila (`attach_jobs`), então `background: true` some de `delegate_task` e de `delegate_to_agent`. `can_create_workers` desligada tira o `delegate_task` (anônimo ou com `name`). `delegate_to_agent` continua com a `can_delegate_to_agents` de sempre.
+- **Onde se aplica** (`tools_without_permission` e `without_unpermitted_tools`, em `warden-bootstrap/src/lib.rs`): em `scope_to_agent` (o agente da conversa) e em `delegate_targets` (o agente alcançado por outro), **depois** da lista `allowed_tools`, então valem seja qual for a lista. Os sub-agentes aninhados são estreitados junto (`with_allowed_tools`).
+- **Telas**: duas caixas no Settings do desktop e da web e duas perguntas no wizard `/agents` do CLI; `AgentSettingsDto` e `AgentPayload` ganharam os campos com `default = true`. O `agentFromHub` do desktop **não** transforma `false` em `true` (teste), porque salvar o formulário reativaria a permissão. A extensão e o celular só leem a árvore e não salvam Configurações, então ficaram como estão.
+- **Limite**: ligar ou desligar uma das flags não tem aprovação nem categoria de risco; é só Settings, como as outras `can_*`.
+
 ### Aprovação por categoria de risco (P122, Sessão 146)
 
 Um agente que age sozinho (nível 4) pode ter **tipos de ação** que ainda exigem um "sim": `AgentConfig.approval_required` (vazio por padrão = como sempre). As sete categorias (`warden_core::autonomy::Category`, ids em snake_case no config, no hub e nas telas): `delete_data`, `spend_money`, `critical_infra`, `external_message`, `publish_code`, `important_config`, `elevated_agent`.

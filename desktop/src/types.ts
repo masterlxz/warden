@@ -175,6 +175,9 @@ export interface AgentEntry {
   canMessageAgents: boolean;
   /** P92 — the `manage_tasks` tool; only a person turns it on. */
   canManageTasks: boolean;
+  /** P122 — background work (`jobs`) and temporary workers (`delegate_task`); on for an agent that predates them, off for one another agent creates. */
+  canStartTasks: boolean;
+  canCreateWorkers: boolean;
   /** Tool isolation (P46) — the only tools this agent may use, by name; `null` = every tool. The
    * `delegate_to_agent`/`manage_agents` tools follow the two checkboxes above, never this list. */
   allowedTools: string[] | null;

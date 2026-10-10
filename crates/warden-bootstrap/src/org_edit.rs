@@ -59,6 +59,9 @@ pub fn apply_org_edit(config: &mut FileConfig, edit: &AgentOrgEdit) -> Result<()
                 owner: None,
                 shared_with: Vec::new(),
                 delegation_models: Vec::new(),
+                // Cautious like an agent a manager creates: only a person turns these on.
+                can_start_tasks: false,
+                can_create_workers: false,
             });
         }
         AgentOrgEdit::SetDelegationModels { id, models } => {
@@ -119,6 +122,8 @@ mod tests {
             owner: None,
             shared_with: Vec::new(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 
@@ -175,6 +180,7 @@ mod tests {
         let new = config.agents.iter().find(|a| a.id == "reviewer").unwrap();
         assert_eq!((new.reports_to.as_deref(), new.role.as_deref(), new.autonomy, new.owner.as_deref()), (Some("lead"), Some("Reviewer"), 3, None));
         assert!(!new.can_delegate_to_agents && !new.can_manage_agents && !new.can_message_agents && !new.can_manage_tasks);
+        assert!(!new.can_start_tasks && !new.can_create_workers);
         assert_eq!(new.approval_required, Category::ALL.to_vec());
         assert!(new.allowed_tools.as_ref().is_some_and(|tools| tools.iter().all(|t| SAFE_AGENT_TOOLS.contains(&t.as_str()))));
 

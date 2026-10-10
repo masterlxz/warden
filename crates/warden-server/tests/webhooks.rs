@@ -79,6 +79,8 @@ fn agent(id: &str, persona: &str) -> AgentConfig {
         owner: None,
         shared_with: Vec::new(),
         delegation_models: Vec::new(),
+        can_start_tasks: true,
+        can_create_workers: true,
     }
 }
 

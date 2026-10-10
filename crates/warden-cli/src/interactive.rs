@@ -2106,6 +2106,14 @@ async fn prompt_agent_can_manage_tasks(terminal: &mut CliTerminal, initial: bool
     prompt_agent_flag(terminal, " pode criar e editar tarefas agendadas? (sempre com a sua aprovação) (s/n) ", initial).await
 }
 
+async fn prompt_agent_can_start_tasks(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode iniciar trabalho em segundo plano (tarefas que correm sozinhas)? (s/n) ", initial).await
+}
+
+async fn prompt_agent_can_create_workers(terminal: &mut CliTerminal, initial: bool) -> anyhow::Result<Option<bool>> {
+    prompt_agent_flag(terminal, " pode criar agentes temporários (workers que somem no fim do turno)? (s/n) ", initial).await
+}
+
 /// 1 to 4, how much the agent may do without asking (P122).
 async fn prompt_agent_autonomy(terminal: &mut CliTerminal, initial: u8) -> anyhow::Result<Option<u8>> {
     loop {
@@ -2279,6 +2287,12 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
     let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, false).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
+    let Some(can_start_tasks) = prompt_agent_can_start_tasks(terminal, true).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
+    let Some(can_create_workers) = prompt_agent_can_create_workers(terminal, true).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
+    };
     let Some(autonomy) = prompt_agent_autonomy(terminal, warden_bootstrap::default_autonomy()).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("criação cancelada".to_string(), dim_style())]);
     };
@@ -2314,6 +2328,8 @@ async fn wizard_agents_create(terminal: &mut CliTerminal, session: &mut CliSessi
         owner: None,
         shared_with: Vec::new(),
         delegation_models,
+        can_start_tasks,
+        can_create_workers,
     });
     if let Err(message) = warden_bootstrap::org::check_hierarchy(&config.agents) {
         return render_message_card(terminal, "erro", error_style(), vec![(message, Style::default())]);
@@ -2352,6 +2368,12 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
     let Some(can_manage_tasks) = prompt_agent_can_manage_tasks(terminal, current.can_manage_tasks).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
+    let Some(can_start_tasks) = prompt_agent_can_start_tasks(terminal, current.can_start_tasks).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
+    let Some(can_create_workers) = prompt_agent_can_create_workers(terminal, current.can_create_workers).await? else {
+        return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
+    };
     let Some(autonomy) = prompt_agent_autonomy(terminal, current.autonomy).await? else {
         return render_message_card(terminal, "agentes", dim_style(), vec![("edição cancelada".to_string(), dim_style())]);
     };
@@ -2388,6 +2410,8 @@ async fn wizard_agents_edit(terminal: &mut CliTerminal, session: &mut CliSession
         owner: None,
         shared_with: current.shared_with.clone(),
         delegation_models,
+        can_start_tasks,
+        can_create_workers,
     };
     // Whoever reported to it under the old name reports to it under the new one.
     warden_bootstrap::org::rename_in_reports(&mut config.agents, &old_id, &new_id);
@@ -3216,9 +3240,10 @@ mod tests {
     }
 
     #[test]
-    fn the_autonomy_answer_is_a_level_from_one_to_four() {
+    fn the_autonomy_answer_is_a_level_from_one_to_five() {
         assert_eq!(parse_agent_autonomy(" 3 "), Ok(3));
-        for bad in ["", "0", "5", "-1", "três", "2.5"] {
+        assert_eq!(parse_agent_autonomy("5"), Ok(5));
+        for bad in ["", "0", "6", "-1", "três", "2.5"] {
             assert!(parse_agent_autonomy(bad).is_err(), "{bad:?}");
         }
     }

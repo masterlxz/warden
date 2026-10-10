@@ -97,7 +97,7 @@ mod tests {
     }
 
     fn agent(id: &str) -> AgentConfig {
-        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false, can_message_agents: false, can_manage_tasks: false, allowed_tools: None, autonomy: warden_bootstrap::default_autonomy(), approval_required: Vec::new(), role: None, reports_to: None, owner: None, shared_with: Vec::new(), delegation_models: Vec::new() }
+        AgentConfig { id: id.into(), persona: String::new(), provider_id: None, can_delegate_to_agents: false, can_manage_agents: false, can_message_agents: false, can_manage_tasks: false, allowed_tools: None, autonomy: warden_bootstrap::default_autonomy(), approval_required: Vec::new(), role: None, reports_to: None, owner: None, shared_with: Vec::new(), delegation_models: Vec::new(), can_start_tasks: true, can_create_workers: true }
     }
 
     #[test]

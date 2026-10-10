@@ -435,6 +435,15 @@ struct AgentPayload {
     /// P123 — the models this agent may pick for its delegations, the first being the default — see `AgentConfig::delegation_models`.
     #[serde(default)]
     delegation_models: Vec<String>,
+    /// P122 — may the agent start background work (`jobs`) and create temporary workers (`delegate_task`); on when absent.
+    #[serde(default = "payload_true")]
+    can_start_tasks: bool,
+    #[serde(default = "payload_true")]
+    can_create_workers: bool,
+}
+
+fn payload_true() -> bool {
+    true
 }
 
 /// IPC shape for `GitSyncConfig` (P63/P71 Settings UI) — same "dedicated payload struct for
@@ -585,6 +594,8 @@ fn get_settings() -> Result<SettingsSnapshot, String> {
                 reports_to: a.reports_to,
                 shared_with: a.shared_with,
                 delegation_models: a.delegation_models,
+                can_start_tasks: a.can_start_tasks,
+                can_create_workers: a.can_create_workers,
             })
             .collect(),
         git_sync: config.git_sync.map(GitSyncConfigPayload::from),
@@ -675,6 +686,8 @@ async fn save_settings(state: State<'_, AppState>, payload: SettingsFormPayload)
                 owner: None,
                 shared_with: warden_bootstrap::users::clean_shares(a.shared_with, &existing.users),
                 delegation_models: a.delegation_models,
+                can_start_tasks: a.can_start_tasks,
+                can_create_workers: a.can_create_workers,
             })
         })
         .collect::<Result<Vec<AgentConfig>, String>>()?;
