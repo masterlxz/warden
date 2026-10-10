@@ -143,7 +143,7 @@ export interface AgentInfo {
   canManageAgents: boolean;
   canMessageAgents: boolean;
   canManageTasks: boolean;
-  /** 1 só responde, 2 sugere, 3 pede antes, 4 age sozinho. */
+  /** 1 só responde, 2 sugere, 3 pede antes, 4 age sozinho, 5 também gerencia os subordinados sem perguntar. */
   autonomy: number;
   approvalRequired: string[];
   /** Os modelos que o agente pode escolher ao delegar; vazio = aberto. */

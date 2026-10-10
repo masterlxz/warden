@@ -2163,8 +2163,8 @@ fn parse_approval_categories(input: &str) -> Result<Vec<warden_core::autonomy::C
 
 fn parse_agent_autonomy(input: &str) -> Result<u8, String> {
     match input.trim().parse::<u8>() {
-        Ok(level) if (1..=4).contains(&level) => Ok(level),
-        _ => Err("use um número de 1 a 4".to_string()),
+        Ok(level) if (1..=5).contains(&level) => Ok(level),
+        _ => Err("use um número de 1 a 5".to_string()),
     }
 }
 

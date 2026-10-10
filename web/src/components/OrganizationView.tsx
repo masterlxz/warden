@@ -5,7 +5,7 @@ import { activityLine, activityOf } from "../hub/agentTasks";
 import { approvalCategoryLabel } from "../hub/approvalCategories";
 import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgAccess, type OrgAgent, type OrgEdit, type OrgNode } from "../hub/org";
 
-const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho" };
+const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho", 5: "gerencia sozinho" };
 
 /** O agente tem os poderes das Configurações (o dono os recebe; um membro só recebe o id, o cargo e o superior). */
 function temPoderes(agent: OrgAgent): agent is AgentSettings {

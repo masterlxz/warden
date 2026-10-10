@@ -841,10 +841,13 @@ function AgentCard({
           <option value={2}>2 — Suggests (never changes anything itself)</option>
           <option value={3}>3 — Asks before every change</option>
           <option value={4}>4 — Acts on its own</option>
+          <option value={5}>5 — Acts on its own and manages its subordinates without asking</option>
         </select>
         <span className="settings-hint">
           Reading tools always work at levels 2 and 3. A delegate never gets more autonomy than the agent that called
-          it. An agent made by another agent starts at 3.
+          it. An agent made by another agent starts at 3. Level 5 only changes Manage agents: the agents that report to it
+          are created, changed and removed without your yes, but never its own powers, its own place or an agent outside
+          its branch; a kind of action ticked below still asks.
         </span>
       </label>
 

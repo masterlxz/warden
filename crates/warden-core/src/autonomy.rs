@@ -27,18 +27,23 @@ pub enum Autonomy {
     AskFirst,
     /// 4: runs its tools on its own, as an agent without a level always did.
     Autonomous,
+    /// 5: like 4, and `manage_agents` changes the agents that report to it without a person's yes (P122). The only thing
+    /// it adds is read by that tool from the agent's level; to the orchestrator it is a 4 (`with_autonomy` never goes
+    /// above the orchestrator's own 4), so every other tool and the categories a person ticked behave exactly as at 4.
+    Manager,
 }
 
 impl Autonomy {
     pub const DEFAULT_LEVEL: u8 = 4;
 
-    /// The level a config file or a screen writes down (1 to 4); anything else is not a level.
+    /// The level a config file or a screen writes down (1 to 5); anything else is not a level.
     pub fn from_level(level: u8) -> Option<Self> {
         match level {
             1 => Some(Self::AnswerOnly),
             2 => Some(Self::Suggest),
             3 => Some(Self::AskFirst),
             4 => Some(Self::Autonomous),
+            5 => Some(Self::Manager),
             _ => None,
         }
     }
@@ -127,8 +132,8 @@ async fn authorize_within(
     let needs_category_yes = category.is_some_and(|c| required.contains(&c));
     let why = match level {
         Autonomy::AnswerOnly => anyhow::bail!("this agent answers in text only and has no tools"),
-        Autonomy::Autonomous if !needs_category_yes => return Ok(()),
-        Autonomy::Autonomous => format!("this kind of action ({}) needs a person's yes for this agent", category.map_or("", Category::as_str)),
+        Autonomy::Autonomous | Autonomy::Manager if !needs_category_yes => return Ok(()),
+        Autonomy::Autonomous | Autonomy::Manager => format!("this kind of action ({}) needs a person's yes for this agent", category.map_or("", Category::as_str)),
         Autonomy::Suggest | Autonomy::AskFirst if read_only.contains(&call.name) => return Ok(()),
         Autonomy::Suggest => anyhow::bail!(
             "'{}' was not run: this agent only suggests (autonomy level 2). Describe what you would do and let the person decide",
@@ -202,14 +207,30 @@ mod tests {
     }
 
     #[test]
-    fn a_level_is_one_to_four_and_nothing_else() {
+    fn a_level_is_one_to_five_and_nothing_else() {
         assert_eq!(Autonomy::from_level(0), None);
-        assert_eq!(Autonomy::from_level(5), None);
-        for level in 1..=4 {
+        assert_eq!(Autonomy::from_level(6), None);
+        for level in 1..=5 {
             assert_eq!(Autonomy::from_level(level).unwrap().level(), level);
         }
         assert!(Autonomy::Suggest < Autonomy::AskFirst);
         assert_eq!(Autonomy::DEFAULT_LEVEL, Autonomy::Autonomous.level());
+    }
+
+    #[tokio::test]
+    async fn level_five_asks_exactly_what_level_four_asks() {
+        let approver: Arc<dyn Approver> = Says::new(Answer::Once);
+        let shell = call("shell");
+        // No category ticked: both run on their own, with nobody to ask.
+        for level in [Autonomy::Autonomous, Autonomy::Manager] {
+            assert!(authorize(level, &reads(), None, &shell).await.is_ok(), "{level:?}");
+        }
+        // A category a person ticked still asks at 5, and with nobody to ask it is refused.
+        let required = [Category::CriticalInfra];
+        for level in [Autonomy::Autonomous, Autonomy::Manager] {
+            assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), None, &shell).await.is_err(), "{level:?}");
+            assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), Some(&approver), &shell).await.is_ok(), "{level:?}");
+        }
     }
 
     #[tokio::test]

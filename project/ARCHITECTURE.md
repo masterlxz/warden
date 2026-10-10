@@ -3273,6 +3273,15 @@ Cada agente tem um nível (`AgentConfig.autonomy`, 1 a 4, padrão **4** = o comp
 - **Config**: `#[serde(default = "default_autonomy")]` (o arquivo antigo carrega como 4); `check_agents` recusa fora de 1 a 4. DTO do hub `AgentSettingsDto.autonomy` (`#[serde(default)]`), `AgentPayload` do desktop, seletor nas telas de Settings do desktop e da web e pergunta no wizard `/agents` do CLI. Mobile e extensão não editam agentes.
 - **Nível 3 com `manage_agents` pergunta duas vezes** (o nível, depois a mudança que a própria tool mostra): aceito por ora, é o preço de um ponto único de controle.
 
+### Nível 5, gerenciar subordinados sem perguntar (P122, Sessão 180)
+
+`Autonomy::Manager` (`AgentConfig.autonomy = 5`, aceito por `check_agents`, pelo wizard do CLI e pelos seletores do desktop e da web; os rótulos de desktop, web, extensão e celular conhecem o 5). **Decisão do usuário**: dentro do escopo, sem o "sim".
+
+- **O que muda**: só o `manage_agents`. `ManageAgentsTool::manages_alone` (nível 5 **e** um chamador na organização, `with_caller`) pula a pergunta ao aprovador em `create`, `update` e `delete`. Sem chamador (o uso de antes da organização), o 5 não vale nada e tudo continua esperando a pessoa. Sem aprovador (Telegram, tarefa agendada), o 5 consegue e o 4 recusa ("this channel can't ask").
+- **O que não muda**: `plan` roda antes e segura a mudança no escopo do gerente (só os subordinados, nunca ele, o superior ou um par) e no teto dele (tools e poderes que ele tem); ligar poderes (`can_*`) segue só de um humano, e uma lista de tools com `manage_agents` ou `delegate_to_agent` é recusada; o agente criado nasce no nível 3, só com tools de leitura e com todas as categorias ligadas. Quem edita o nível de um agente continua sendo só uma pessoa (o `update` não tem campo de autonomia).
+- **Para o orquestrador o 5 é um 4**: `with_autonomy` guarda `min(atual, pedido)` e o teto do orquestrador é o 4, então `authorize` trata os dois igual e uma categoria que a pessoa ligou (`approval_required`, como `elevated_agent` e `delete_data` para `manage_agents`) **ainda pergunta** antes de a tool rodar; nesse caso a tool não pergunta de novo.
+- **Limite aceito**: o gerente pode, sem perguntar, dar a um subordinado tools que ele mesmo tem (o teto é o gerente), inclusive trocar a lista de um que já age sozinho. O que ele não faz é passar do que tem.
+
 ### Aprovação por categoria de risco (P122, Sessão 146)
 
 Um agente que age sozinho (nível 4) pode ter **tipos de ação** que ainda exigem um "sim": `AgentConfig.approval_required` (vazio por padrão = como sempre). As sete categorias (`warden_core::autonomy::Category`, ids em snake_case no config, no hub e nas telas): `delete_data`, `spend_money`, `critical_infra`, `external_message`, `publish_code`, `important_config`, `elevated_agent`.
