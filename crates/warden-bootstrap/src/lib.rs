@@ -191,6 +191,42 @@ pub struct AgentConfig {
     /// gets — so a list of one is the person dictating the model of every task this agent hands out. Set by a person only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegation_models: Vec<String>,
+    /// P122: whether this agent may start work in the background (`background: true` on a delegation, with the `jobs` tool
+    /// that collects it). On (the default) is what every agent written before this field did; off takes `jobs` away, so
+    /// nothing it delegates leaves its turn. An agent made by another agent starts with it off; only a person turns it on.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub can_start_tasks: bool,
+    /// P122: whether this agent may create temporary workers, `delegate_task` (anonymous or named, gone at the end of the
+    /// turn). Same default and same rule as `can_start_tasks`.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub can_create_workers: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// The tools an agent's permissions take away (`can_start_tasks`, `can_create_workers`), whatever its tool list says:
+/// a permission that is off is not a tool that happens to be missing from a list.
+pub fn tools_without_permission(agent: &AgentConfig) -> Vec<&'static str> {
+    let mut banned = Vec::new();
+    if !agent.can_create_workers {
+        banned.push("delegate_task");
+    }
+    if !agent.can_start_tasks {
+        banned.push("jobs");
+    }
+    banned
+}
+
+/// `orchestrator` without the tools `agent`'s permissions take away, and the nested sub-agents narrowed the same way.
+pub fn without_unpermitted_tools(orchestrator: Orchestrator, agent: &AgentConfig) -> Orchestrator {
+    let banned = tools_without_permission(agent);
+    if banned.is_empty() {
+        return orchestrator;
+    }
+    let kept: Vec<String> = orchestrator.tools().iter().map(|t| t.spec().name).filter(|name| !banned.contains(&name.as_str())).collect();
+    orchestrator.with_allowed_tools(Some(&kept))
 }
 
 /// `AgentConfig.autonomy` of an agent that doesn't say (P122): 4, no change from before the field existed.
@@ -1914,7 +1950,8 @@ fn delegate_targets(config: &FileConfig, orchestrator: &Orchestrator, caller: Op
         let capped = |o: Orchestrator| o.with_autonomy(level, &read_only).with_approval_rules(&agent.approval_required, None);
         // What this agent would delegate from: its own model and limits, but every tool, so each of ITS targets is narrowed to its own.
         let nested_base = capped(modeled.clone());
-        let target_orchestrator = capped(modeled.with_allowed_tools(agent.allowed_tools.as_deref()));
+        // P122: and its permissions, whatever its tool list says — a worker or a background task it may not start is not one it can.
+        let target_orchestrator = without_unpermitted_tools(capped(modeled.with_allowed_tools(agent.allowed_tools.as_deref())), agent);
         // P123: an agent that may delegate builds its own `delegate_to_agent` when a background task of it starts, reaching only
         // whoever the hierarchy lets it reach. Built then, not now, so the tools of every agent aren't built up front.
         let delegation: Option<DelegationSpawner> = match (&snapshot, agent.can_delegate_to_agents) {
@@ -2570,6 +2607,8 @@ oauth = true
                 owner: None,
                 shared_with: Vec::new(),
                 delegation_models: Vec::new(),
+                can_start_tasks: true,
+                can_create_workers: true,
             }],
             tool_categories: vec![risk::ToolCategoryConfig { tool: "pay".to_string(), category: warden_core::autonomy::Category::SpendMoney }],
             combos: vec![ComboConfig { id: "local-first".to_string(), providers: vec!["ollama-local".to_string()] }],
@@ -3660,6 +3699,8 @@ oauth = true
                 owner: None,
                 shared_with: Vec::new(),
                 delegation_models: Vec::new(),
+                can_start_tasks: true,
+                can_create_workers: true,
             }],
             ..Default::default()
         };
@@ -3792,6 +3833,8 @@ oauth = true
             owner: None,
             shared_with: Vec::new(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 
@@ -4057,6 +4100,48 @@ oauth = true
         let scoped = scope_to_agent(&base, &open, None, "manager", AgentExtras::default()).unwrap();
         let spec = scoped.orchestrator.tools().iter().map(|t| t.spec()).find(|s| s.name == "delegate_to_agent").unwrap();
         assert_eq!(spec.parameters["properties"]["model"]["enum"], serde_json::json!(["small", "big", "reasoning"]));
+    }
+
+    #[tokio::test]
+    async fn the_permissions_to_start_background_work_and_to_create_workers_take_jobs_and_delegate_task_away() {
+        use warden_core::tool::job_tools::JobsTool;
+        let config_with = |start: bool, workers: bool| FileConfig {
+            agents: vec![
+                AgentConfig { can_delegate_to_agents: true, can_start_tasks: start, can_create_workers: workers, ..agent_config("manager", None) },
+                AgentConfig { can_start_tasks: start, can_create_workers: workers, ..agent_config("worker", None) },
+            ],
+            ..FileConfig::default()
+        };
+        let vault = Arc::new(Vault::new(std::env::temp_dir().join(format!("warden-permissions-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))));
+        let mut base = Orchestrator::new(Arc::new(Hierarchy { offered: Default::default(), worker_model: None }), vault);
+        base.register_tool(Arc::new(DelegateTool::new(base.clone())));
+        base.register_tool(Arc::new(JobsTool::new()));
+        let names = |o: &Orchestrator| o.tools().iter().map(|t| t.spec().name).collect::<Vec<_>>();
+
+        for (start, workers) in [(true, true), (false, true), (true, false), (false, false)] {
+            let config = config_with(start, workers);
+            // As the conversation's agent…
+            let scoped = scope_to_agent(&base, &config, None, "manager", AgentExtras::default()).unwrap();
+            let has = |name: &str| names(&scoped.orchestrator).iter().any(|n| n == name);
+            assert_eq!((has("jobs"), has("delegate_task")), (start, workers), "as the agent, start={start} workers={workers}");
+            assert!(has("delegate_to_agent"), "the permissions are not about delegating to named agents");
+            // …and as a target another agent delegates to.
+            let targets = delegate_targets(&config, &base, None);
+            let worker = targets.iter().find(|t| t.id == "worker").unwrap();
+            let has = |name: &str| names(&worker.orchestrator).iter().any(|n| n == name);
+            assert_eq!((has("jobs"), has("delegate_task")), (start, workers), "as a target, start={start} workers={workers}");
+        }
+    }
+
+    #[test]
+    fn the_new_permissions_are_on_in_an_old_config_and_not_written_while_they_are() {
+        let old: AgentConfig = toml::from_str("id = \"a\"\npersona = \"p\"\n").unwrap();
+        assert!(old.can_start_tasks && old.can_create_workers, "an agent written before them keeps what it did");
+        let text = toml::to_string(&old).unwrap();
+        assert!(!text.contains("can_start_tasks") && !text.contains("can_create_workers"), "{text}");
+        let off = AgentConfig { can_start_tasks: false, can_create_workers: false, ..old };
+        let back: AgentConfig = toml::from_str(&toml::to_string(&off).unwrap()).unwrap();
+        assert!(!back.can_start_tasks && !back.can_create_workers);
     }
 
     #[test]

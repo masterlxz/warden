@@ -27,8 +27,9 @@ pub enum Autonomy {
     AskFirst,
     /// 4: runs its tools on its own, as an agent without a level always did.
     Autonomous,
-    /// 5: as 4, and also manages the agents below it in the organization without asking (P122, P120): `manage_agents`
-    /// is the only tool that stops asking, and it stays inside the agent's own branch.
+    /// 5: like 4, and `manage_agents` changes the agents that report to it without a person's yes (P122). The only thing
+    /// it adds is read by that tool from the agent's level; to the orchestrator it is a 4 (`with_autonomy` never goes
+    /// above the orchestrator's own 4), so every other tool and the categories a person ticked behave exactly as at 4.
     Manager,
 }
 
@@ -49,11 +50,6 @@ impl Autonomy {
 
     pub fn level(self) -> u8 {
         self as u8 + 1
-    }
-
-    /// A manager's changes to its subordinates need no yes, neither from the tool nor from a risk category.
-    pub fn skips_approval_for(self, tool_name: &str) -> bool {
-        self == Self::Manager && tool_name == "manage_agents"
     }
 }
 
@@ -218,23 +214,23 @@ mod tests {
             assert_eq!(Autonomy::from_level(level).unwrap().level(), level);
         }
         assert!(Autonomy::Suggest < Autonomy::AskFirst);
-        assert!(Autonomy::Autonomous < Autonomy::Manager);
         assert_eq!(Autonomy::DEFAULT_LEVEL, Autonomy::Autonomous.level());
     }
 
     #[tokio::test]
-    async fn level_five_runs_everything_like_four_and_still_asks_for_a_listed_category() {
-        let approver: Arc<dyn Approver> = Says::new(Answer::Reject);
-        assert!(authorize(Autonomy::Manager, &[], Some(&approver), &call("write_file")).await.is_ok());
-        let err = super::authorize(Autonomy::Manager, &[], &[Category::SpendMoney], Some(Category::SpendMoney), Some(&approver), &call("buy")).await;
-        assert!(err.is_err());
-    }
-
-    #[test]
-    fn only_a_manager_skips_the_yes_and_only_for_manage_agents() {
-        assert!(Autonomy::Manager.skips_approval_for("manage_agents"));
-        assert!(!Autonomy::Manager.skips_approval_for("shell"));
-        assert!(!Autonomy::Autonomous.skips_approval_for("manage_agents"));
+    async fn level_five_asks_exactly_what_level_four_asks() {
+        let approver: Arc<dyn Approver> = Says::new(Answer::Once);
+        let shell = call("shell");
+        // No category ticked: both run on their own, with nobody to ask.
+        for level in [Autonomy::Autonomous, Autonomy::Manager] {
+            assert!(authorize(level, &reads(), None, &shell).await.is_ok(), "{level:?}");
+        }
+        // A category a person ticked still asks at 5, and with nobody to ask it is refused.
+        let required = [Category::CriticalInfra];
+        for level in [Autonomy::Autonomous, Autonomy::Manager] {
+            assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), None, &shell).await.is_err(), "{level:?}");
+            assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), Some(&approver), &shell).await.is_ok(), "{level:?}");
+        }
     }
 
     #[tokio::test]

@@ -282,6 +282,8 @@ mod tests {
             owner: owner.map(str::to_string),
             shared_with: Vec::new(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 

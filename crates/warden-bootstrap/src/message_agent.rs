@@ -10,12 +10,15 @@
 //! 2. B runs from the channel's base orchestrator, like a `delegate_to_agent` target: its own persona,
 //!    model, skills and tool list — and never `message_agent`, `delegate_to_agent`, `manage_agents` or
 //!    an approver, since those are attached per turn and B's turn gets none. That is what stops two
-//!    agents from messaging each other back and forth forever.
+//!    agents from messaging each other back and forth forever. The one thing B gets for A is
+//!    `ask_back` (see `AskBackTool`): a question to A that A answers in a turn built the same way
+//!    (so with no `ask_back` of its own), at most `MAX_ASKS_BACK` per message.
 //! 3. One message in flight per conversation: while B is still answering A, another message from A
 //!    to B is refused. At most one background turn per pair of agents, whatever the model does.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -169,6 +172,20 @@ impl MessageAgentTool {
         Ok(())
     }
 
+    /// `orchestrator` (B's) with `ask_back` for the turn that answers `original`: the one tool B gets that talks to the caller.
+    /// Built per message, so its count of questions starts from nothing every time.
+    fn with_ask_back(&self, orchestrator: &Orchestrator, responder: &str, original: &str, thread: &str) -> Orchestrator {
+        let mut orchestrator = orchestrator.clone();
+        orchestrator.register_tool(Arc::new(AskBackTool {
+            outer: self.clone(),
+            responder: responder.to_string(),
+            original: original.to_string(),
+            thread: thread.to_string(),
+            asked: Arc::new(AtomicUsize::new(0)),
+        }));
+        orchestrator
+    }
+
     async fn send(&self, to: &str, message: &str, wait: bool) -> anyhow::Result<Value> {
         let message = message.trim();
         if message.is_empty() {
@@ -189,6 +206,7 @@ impl MessageAgentTool {
         };
 
         let dir = self.conversations_dir.clone();
+        let responder = self.with_ask_back(&target.orchestrator, to, message, &conversation_id);
         let history: Vec<_> = load_conversation(&dir, &conversation_id)?.iter().flat_map(|c| &c.messages).map(to_message).collect();
         let content = format!("Message from {}:\n\n{message}", self.caller);
         let user = ConversationMessage {
@@ -211,7 +229,7 @@ impl MessageAgentTool {
         let thread = conversation_id.clone();
         tokio::spawn(async move {
             let _claim = claim;
-            let outcome = target.orchestrator.handle_turn(&history, &content, Vec::new(), target.persona.as_deref()).await;
+            let outcome = responder.handle_turn(&history, &content, Vec::new(), target.persona.as_deref()).await;
             let reply = match outcome {
                 Ok(outcome) => {
                     let saved = append_to_conversation(&dir, &thread, "", Some(&to_owned), None, false, vec![assistant_message(&outcome)]);
@@ -344,6 +362,89 @@ impl Tool for MessageAgentTool {
     }
 }
 
+/// How many times B may ask A back while it answers one message. A fixed cap, not the model's judgement: it is what keeps a
+/// question and its answer from becoming a conversation nobody is watching.
+const MAX_ASKS_BACK: usize = 3;
+
+/// `ask_back`: the tool B has, only while it answers a message from A, to ask A something it needs to go on. A answers in a turn
+/// of its own, built like B's (from the channel's base, so without `message_agent`, `ask_back` or an approver), which is why
+/// A can't ask B back in turn: the exchange is one question deep. The question and the answer go in the pair's conversation,
+/// where the person sees them as they happen.
+struct AskBackTool {
+    /// The tool A used to send the message: its `caller` is A, and it knows the config, the conversations and A's orchestrator.
+    outer: MessageAgentTool,
+    responder: String,
+    /// What A's message said, so A's turn knows what B is asking about.
+    original: String,
+    thread: String,
+    asked: Arc<AtomicUsize>,
+}
+
+fn thread_message(role: ChatRole, content: String) -> ConversationMessage {
+    ConversationMessage { id: message_id(), role, content, created_at: now_millis(), usage: None, answered_by: None, attachments: Vec::new(), generated_files: Vec::new(), tools_used: Vec::new() }
+}
+
+#[async_trait]
+impl Tool for AskBackTool {
+    fn spec(&self) -> ToolSpec {
+        let asker = &self.outer.caller;
+        ToolSpec {
+            name: "ask_back".to_string(),
+            description: format!(
+                "Ask '{asker}', the agent whose message you are answering, a question you need answered to go on — something its \
+                 message left out. It answers now, in a turn of its own, and you get the answer back. It does not see your \
+                 reasoning, only the question and its own message, so make the question complete. At most {MAX_ASKS_BACK} \
+                 questions per message: after that, answer with what you have."
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": { "question": { "type": "string", "description": "A complete, self-contained question." } },
+                "required": ["question"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Value) -> anyhow::Result<Value> {
+        let question = args.get("question").and_then(Value::as_str).map(str::trim).filter(|q| !q.is_empty()).ok_or_else(|| anyhow::anyhow!("missing required 'question' argument"))?;
+        if question.chars().count() > MAX_MESSAGE_CHARS {
+            anyhow::bail!("the question is too long (max {MAX_MESSAGE_CHARS} characters)");
+        }
+        // Counted before anything runs, so a question that fails still uses one up.
+        if self.asked.fetch_add(1, Ordering::SeqCst) >= MAX_ASKS_BACK {
+            anyhow::bail!("you have already asked {MAX_ASKS_BACK} questions for this message — answer with what you have");
+        }
+        let asker = &self.outer.caller;
+        let config = self.outer.load()?;
+        let Some(target) = delegate_targets(&config, &self.outer.base, None).into_iter().find(|t| &t.id == asker) else {
+            anyhow::bail!("'{asker}' can't be reached right now (its model provider is missing or invalid)");
+        };
+
+        let dir = &self.outer.conversations_dir;
+        // The question is in the conversation before A starts on it, as the message is before B starts on that.
+        append_to_conversation(dir, &self.thread, "", Some(&self.responder), None, false, vec![thread_message(ChatRole::Assistant, format!("(asks {asker}) {question}"))])?;
+        self.outer.notify(&self.thread);
+
+        let prompt = format!(
+            "'{}' is working on your message and asks you a question to go on.\n\nYour message to it was:\n\n{}\n\nIts question:\n\n{question}\n\nAnswer it directly, with what it needs.",
+            self.responder, self.original
+        );
+        let outcome = tokio::time::timeout(self.outer.wait_timeout, target.orchestrator.handle_turn(&[], &prompt, Vec::new(), target.persona.as_deref())).await;
+        let (saved, result) = match outcome {
+            Ok(Ok(outcome)) => (format!("Message from {asker} (answering your question):\n\n{}", outcome.content), Ok(outcome.content)),
+            Ok(Err(err)) => (format!("(could not answer: {err:#})"), Err(format!("'{asker}' could not answer: {err:#}"))),
+            Err(_) => (format!("(did not answer within {} seconds)", self.outer.wait_timeout.as_secs()), Err(format!("'{asker}' did not answer in time — go on without it"))),
+        };
+        // The answer is A's words, so it is a `user` message to B, like the original; a failure is a note from B's side.
+        let role = if result.is_ok() { ChatRole::User } else { ChatRole::Assistant };
+        append_to_conversation(dir, &self.thread, "", Some(&self.responder), None, false, vec![thread_message(role, saved)])?;
+        self.outer.notify(&self.thread);
+        match result {
+            Ok(answer) => Ok(json!({ "answer": answer })),
+            Err(message) => anyhow::bail!("{message}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -395,6 +496,8 @@ mod tests {
             owner: None,
             shared_with: Vec::new(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 
@@ -511,6 +614,102 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "condition not met within 30s");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// bia asks ana a question before answering; ana answers "blue". Remembers the tools each turn was offered.
+    struct Duo {
+        offered: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    #[async_trait]
+    impl ModelProvider for Duo {
+        async fn chat_stream(&self, messages: Vec<Message>, tools: Vec<ToolSpec>) -> anyhow::Result<ChatStream> {
+            let persona = messages.iter().find(|m| m.role == Role::System).map(|m| m.content.clone()).unwrap_or_default();
+            self.offered.lock().unwrap().push((persona.clone(), tools.iter().map(|t| t.name.clone()).collect()));
+            let last = messages.last().unwrap();
+            let reply = |content: String| Ok(response_stream(Response { content, tool_calls: Vec::new(), usage: None }));
+            if persona.contains("I am ana") {
+                return reply("blue".into());
+            }
+            if last.role == Role::Tool {
+                return reply(format!("bia heard: {}", last.content));
+            }
+            let call = warden_core::model::ToolCall { id: "c1".into(), name: "ask_back".into(), arguments: json!({ "question": "which colour?" }), thought_signature: None };
+            Ok(response_stream(Response { content: String::new(), tool_calls: vec![call], usage: None }))
+        }
+    }
+
+    fn setup_duo() -> (Setup, Arc<Duo>) {
+        let mut s = setup(false);
+        let duo = Arc::new(Duo { offered: Mutex::default() });
+        s.base = Orchestrator::new(duo.clone(), Arc::new(Vault::new(s.dir.join("vault"))));
+        (s, duo)
+    }
+
+    #[tokio::test]
+    async fn the_colleague_can_ask_back_while_it_answers_and_the_exchange_is_in_the_conversation() {
+        let (s, duo) = setup_duo();
+        let result = s.tool().call(json!({ "action": "send", "agent_id": "bia", "message": "paint the wall", "wait": true })).await.unwrap();
+        assert_eq!(result["status"], "answered");
+        assert!(result["answer"].as_str().unwrap().starts_with("bia heard: "), "{result}");
+        assert!(result["answer"].as_str().unwrap().contains("blue"), "{result}");
+
+        let thread = s.thread();
+        let said: Vec<(ChatRole, &str)> = thread.messages.iter().map(|m| (m.role, m.content.as_str())).collect();
+        assert_eq!(said.len(), 4, "{said:?}");
+        assert_eq!(said[0], (ChatRole::User, "Message from ana:\n\npaint the wall"));
+        assert_eq!(said[1], (ChatRole::Assistant, "(asks ana) which colour?"));
+        assert_eq!(said[2], (ChatRole::User, "Message from ana (answering your question):\n\nblue"));
+        assert_eq!(said[3].0, ChatRole::Assistant);
+        // `read` still gives only what came after ana's last words: bia's final answer.
+        assert_eq!(s.tool().call(json!({ "action": "read", "agent_id": "bia" })).await.unwrap()["answers"].as_array().unwrap().len(), 1);
+
+        // Only bia, answering, can ask back: ana's own turn, which answers the question, has neither tool.
+        let offered = duo.offered.lock().unwrap();
+        for (persona, tools) in offered.iter() {
+            let has = |name: &str| tools.iter().any(|t| t == name);
+            if persona.contains("I am ana") {
+                assert!(!has("ask_back") && !has("message_agent"), "{tools:?}");
+            } else {
+                assert!(has("ask_back"), "{tools:?}");
+            }
+        }
+        assert!(offered.iter().any(|(p, _)| p.contains("I am ana")), "ana was asked");
+    }
+
+    #[tokio::test]
+    async fn the_colleague_has_no_ask_back_outside_an_answer_and_only_a_few_questions_inside_one() {
+        let (s, duo) = setup_duo();
+        let tool = s.tool();
+        let config = tool.load().unwrap();
+        let ask = tool.with_ask_back(&s.base, "bia", "paint the wall", &thread_id("ana", "bia"));
+        assert!(ask.tools().iter().any(|t| t.spec().name == "ask_back"), "bia's answering turn has it");
+        assert!(!s.base.tools().iter().any(|t| t.spec().name == "ask_back"), "the base, which every other turn is built from, does not");
+        assert!(delegate_targets(&config, &s.base, None).iter().all(|t| !t.orchestrator.tools().iter().any(|x| x.spec().name == "ask_back")));
+
+        let back = AskBackTool { outer: tool, responder: "bia".into(), original: "paint the wall".into(), thread: thread_id("ana", "bia"), asked: Arc::new(AtomicUsize::new(0)) };
+        for _ in 0..MAX_ASKS_BACK {
+            assert_eq!(back.call(json!({ "question": "which colour?" })).await.unwrap()["answer"], "blue");
+        }
+        let err = back.call(json!({ "question": "and now?" })).await.unwrap_err();
+        assert!(err.to_string().contains("already asked"), "{err:#}");
+        let asks_of_ana = duo.offered.lock().unwrap().iter().filter(|(p, _)| p.contains("I am ana")).count();
+        assert_eq!(asks_of_ana, MAX_ASKS_BACK, "the refused one never reached ana");
+    }
+
+    #[tokio::test]
+    async fn an_ask_back_that_ana_cannot_answer_is_told_to_bia_and_left_in_the_conversation() {
+        let s = setup(true);
+        // What `send` has done by the time bia is answering: ana's message is in the conversation.
+        let first = thread_message(ChatRole::User, "Message from ana:\n\nhi".into());
+        append_to_conversation(&s.conversations, &thread_id("ana", "bia"), &thread_title("ana", "bia"), Some("bia"), None, true, vec![first]).unwrap();
+        let back = AskBackTool { outer: s.tool(), responder: "bia".into(), original: "hi".into(), thread: thread_id("ana", "bia"), asked: Arc::new(AtomicUsize::new(0)) };
+        let err = back.call(json!({ "question": "which colour?" })).await.unwrap_err();
+        assert!(err.to_string().contains("could not answer"), "{err:#}");
+        let roles_and_text: Vec<_> = s.thread().messages.iter().skip(1).map(|m| (m.role, m.content.clone())).collect();
+        assert_eq!(roles_and_text[0], (ChatRole::Assistant, "(asks ana) which colour?".to_string()));
+        assert_eq!(roles_and_text[1].0, ChatRole::Assistant);
+        assert!(roles_and_text[1].1.starts_with("(could not answer"), "{roles_and_text:?}");
     }
 
     #[tokio::test]

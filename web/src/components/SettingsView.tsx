@@ -779,7 +779,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                 ...d,
                 agents: [
                   ...d.agents,
-                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] }),
+                  keyed({ id: "", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, allowedTools: null, autonomy: 4, approvalRequired: [] }),
                 ],
               }))
             }
@@ -848,6 +848,14 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                   Pode criar e editar tarefas agendadas (sempre com a sua aprovação)
                 </label>
                 <label className="settings-check">
+                  <input type="checkbox" checked={a.canStartTasks ?? true} onChange={(e) => patchAgent(a.key, { canStartTasks: e.target.checked })} />
+                  Pode iniciar trabalho em segundo plano (entrega a tarefa e segue; um agente criado por outro agente começa sem isto)
+                </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={a.canCreateWorkers ?? true} onChange={(e) => patchAgent(a.key, { canCreateWorkers: e.target.checked })} />
+                  Pode criar agentes temporários (somem no fim do turno; um agente criado por outro agente começa sem isto)
+                </label>
+                <label className="settings-check">
                   <input type="checkbox" checked={outreachOn(draft.outreach, a.id)} onChange={(e) => update((d) => ({ ...d, outreach: setOutreach(d.outreach, a.id, e.target.checked) }))} />
                   Pode iniciar mensagens para você, no canal dele (no máximo 12 por hora)
                 </label>
@@ -881,7 +889,7 @@ export default function SettingsView({ conn }: { conn: ServerConnection | null }
                     <option value={2}>2 — sugere, não muda nada sozinho</option>
                     <option value={3}>3 — pede aprovação a cada mudança</option>
                     <option value={4}>4 — age sozinho</option>
-                    <option value={5}>5 — age sozinho e gerencia os subordinados sem pedir (exige "pode gerenciar agentes")</option>
+                    <option value={5}>5 — age sozinho e gerencia os subordinados sem perguntar</option>
                   </select>
                 </label>
               </div>

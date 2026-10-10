@@ -6,7 +6,7 @@ import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type 
 import { delegationCandidates, delegationSummary, limitEdit, limitModels, nextPolicyId, policiesEdit, policiesWith, policiesWithout } from "./lib/modelPolicies";
 import PairingKeyForm from "./PairingKeyForm";
 
-const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho" };
+const AUTONOMIA: Record<number, string> = { 1: "só responde", 2: "sugere", 3: "pede antes", 4: "age sozinho", 5: "gerencia sozinho" };
 
 /** O que o agente pode fazer, como a tela de Configurações define. */
 function selos(agent: AgentInfo): string[] {

@@ -252,10 +252,6 @@ pub fn check_agents(agents: Vec<AgentConfig>, providers: &[ProviderConfig], comb
         if warden_core::autonomy::Autonomy::from_level(a.autonomy).is_none() {
             return Err(format!("agent '{id}' has autonomy {}: pick a level from 1 to 5", a.autonomy));
         }
-        // P122: level 5 is "manages the agents below it", which only means something with the power to manage agents.
-        if a.autonomy == warden_core::autonomy::Autonomy::Manager.level() && !a.can_manage_agents {
-            return Err(format!("agent '{id}' has autonomy 5, which manages the agents below it: turn on 'can manage agents' too"));
-        }
         // P120: a blank role or superior is none, and a stray space doesn't make a different id.
         let role = a.role.as_deref().and_then(non_empty);
         let reports_to = a.reports_to.as_deref().and_then(non_empty);
@@ -465,6 +461,8 @@ pub fn hub_settings(config: &FileConfig, tool_names: Vec<String>, host_notes: Ve
                 shared_with: a.shared_with.clone(),
                 owner: None,
                 delegation_models: a.delegation_models.clone(),
+                can_start_tasks: a.can_start_tasks,
+                can_create_workers: a.can_create_workers,
             })
             .collect(),
         tavily_key: secret_status(config.api_keys.tavily.as_deref()),
@@ -628,6 +626,8 @@ pub fn apply_hub_settings(existing: FileConfig, update: HubSettingsUpdate) -> Re
             owner: None,
             shared_with: crate::users::clean_shares(dto.shared_with, &config.users),
             delegation_models: dto.delegation_models,
+            can_start_tasks: dto.can_start_tasks,
+            can_create_workers: dto.can_create_workers,
         });
     }
     let kept: HashSet<String> = renames.iter().map(|(original, _)| original.clone()).chain(agents.iter().map(|a| a.id.trim().to_string())).collect();
@@ -754,6 +754,8 @@ mod tests {
             owner: None,
             shared_with: Vec::new(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 
@@ -1106,20 +1108,13 @@ mod tests {
 
     #[test]
     fn an_agent_autonomy_is_a_level_from_one_to_five() {
-        for level in 1..=4 {
+        for level in 1..=5 {
             assert!(check_agents(vec![AgentConfig { autonomy: level, ..agent("a") }], &[], &[]).is_ok());
         }
         for level in [0, 6, 200] {
             let err = check_agents(vec![AgentConfig { autonomy: level, ..agent("a") }], &[], &[]).unwrap_err();
             assert!(err.contains("autonomy") && err.contains("1 to 5"), "{err}");
         }
-    }
-
-    #[test]
-    fn level_five_needs_the_power_to_manage_agents() {
-        let err = check_agents(vec![AgentConfig { autonomy: 5, ..agent("a") }], &[], &[]).unwrap_err();
-        assert!(err.contains("autonomy 5") && err.contains("manage agents"), "{err}");
-        assert!(check_agents(vec![AgentConfig { autonomy: 5, can_manage_agents: true, ..agent("a") }], &[], &[]).is_ok());
     }
 
     #[test]
@@ -1434,6 +1429,29 @@ mod tests {
         update.providers.retain(|p| p.id != "spare");
         assert_eq!(apply_hub_settings(with(vec!["main".into(), "spare".into()]), update.clone()).unwrap().combos[0].providers, vec!["main".to_string()]);
         assert!(apply_hub_settings(with(vec!["spare".into()]), update).unwrap().combos.is_empty());
+    }
+
+    #[test]
+    fn the_permissions_to_start_background_work_and_create_workers_round_trip_through_the_settings() {
+        let config = sample();
+        let shown = hub_settings(&config, Vec::new(), Vec::new());
+        assert!(shown.agents[0].can_start_tasks && shown.agents[0].can_create_workers, "an agent from before them shows on");
+
+        // Switched off on a screen, saved, and shown off again.
+        let mut update = untouched(&config);
+        update.agents[0].can_start_tasks = false;
+        update.agents[0].can_create_workers = false;
+        let saved = apply_hub_settings(sample(), update).unwrap();
+        assert!(!saved.agents[0].can_start_tasks && !saved.agents[0].can_create_workers);
+        let shown = hub_settings(&saved, Vec::new(), Vec::new());
+        assert!(!shown.agents[0].can_start_tasks && !shown.agents[0].can_create_workers);
+
+        // A screen that doesn't know them sends the agent without the fields: they read as on, the way an old file does.
+        let mut json = serde_json::to_value(&shown.agents[0]).unwrap();
+        json.as_object_mut().unwrap().remove("can_start_tasks");
+        json.as_object_mut().unwrap().remove("canStartTasks");
+        let old: AgentSettingsDto = serde_json::from_value(json).unwrap();
+        assert!(old.can_start_tasks);
     }
 
     #[test]

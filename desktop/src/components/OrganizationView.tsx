@@ -7,7 +7,7 @@ import { hubAgentTasks, hubEditAgentOrg, hubEditAgentOrgAsMember, hubListAgentOr
 import { addReportEdit, buildOrg, moveEdit, positionEdit, superiorChoices, type OrgAccess, type OrgAgent, type OrgEdit, type OrgNode } from "../lib/org";
 import { KeyCancelled, usePairingKey } from "./PairingKeyDialog";
 
-const AUTONOMY: Record<number, string> = { 1: "answers only", 2: "suggests", 3: "asks first", 4: "acts alone" };
+const AUTONOMY: Record<number, string> = { 1: "answers only", 2: "suggests", 3: "asks first", 4: "acts alone", 5: "manages alone" };
 
 /** The agent has the powers of the Settings screen (the owner gets them; a member gets only the id, the role and the superior). */
 function hasPowers(agent: OrgAgent): agent is AgentEntry {

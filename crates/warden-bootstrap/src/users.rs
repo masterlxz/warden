@@ -304,8 +304,9 @@ pub fn spaces_for<'a>(spaces: &'a [SpaceConfig], user: &str) -> Vec<(&'a SpaceCo
 /// Tools a member never gets, whatever the owner lists: each reaches past the member's own space in
 /// a way `Orchestrator::with_vault` can't close — other agents' orchestrators and conversations
 /// (`delegate_to_agent`, `message_agent`), the owner's agents and tasks (`manage_agents`,
-/// `manage_tasks`), or the whole hub's spending (`usage_stats`).
-pub const NEVER_FOR_MEMBERS: &[&str] = &["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats"];
+/// `manage_tasks`), the whole hub's spending (`usage_stats`), or the owner's code projects and their folders on this
+/// machine (`code_task`).
+pub const NEVER_FOR_MEMBERS: &[&str] = &["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats", "code_task"];
 
 /// The tools a member has when the owner never set a list: their own vault's files and skills, a
 /// sub-agent (rebound to their vault too), background jobs, their spending, documents, and web
@@ -899,6 +900,8 @@ pub fn save_member_agent(config: &mut FileConfig, owner: &str, original_id: Opti
         owner: Some(owner.to_string()),
         shared_with: Vec::new(),
         delegation_models: Vec::new(),
+        can_start_tasks: true,
+        can_create_workers: true,
     };
     match original_id {
         Some(original) => {
@@ -1391,6 +1394,8 @@ mod tests {
             owner: owner.map(Into::into),
             shared_with: shared_with.iter().map(|s| s.to_string()).collect(),
             delegation_models: Vec::new(),
+            can_start_tasks: true,
+            can_create_workers: true,
         }
     }
 

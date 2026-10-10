@@ -8,6 +8,7 @@ use warden_bootstrap::auto_sync::{SyncBackend, SyncRunner, AUTO_SYNC_INTERVAL, P
 use warden_bootstrap::tasks::{check_tasks, next_run, run_task, task_status, TaskStore, Zone};
 use warden_bootstrap::webhooks::{upsert_webhook, WebhookAuth, WebhookConfig};
 use warden_bootstrap::{bootstrap, load_config_from_path, save_config, Overrides, TaskConfig};
+use warden_core::tool::code_task::CodeEngineSlot;
 use warden_server::chat_input::WhisperTranscriber;
 use warden_server::{resolve_server_name, EmbeddedWebUi, HubTls, PairingStore, Server, WebAssets};
 
@@ -613,6 +614,16 @@ struct ServeSettings {
     config_path: PathBuf,
     explicit_config: Option<String>,
     overrides: Overrides,
+    /// Where the hub's code engine goes once it exists, for the `code_task` of every orchestrator built here.
+    code_engine: CodeEngineSlot,
+}
+
+/// What `bootstrap` builds, plus the tools that need the hub (the code engine, which needs the hub's model route).
+async fn bootstrap_hub(config: Option<&str>, overrides: Overrides, code_engine: &CodeEngineSlot) -> anyhow::Result<warden_core::orchestrator::Orchestrator> {
+    let mut orchestrator = bootstrap(config, overrides, default_vault_path()).await?;
+    // P89 — an agent given `code_task` hands tasks to the engine of a code project; nobody has it until a person lists it.
+    warden_server::code_turns::register_code_task(&mut orchestrator, code_engine);
+    Ok(orchestrator)
 }
 
 #[async_trait::async_trait]
@@ -622,7 +633,7 @@ impl warden_server::SettingsHost for ServeSettings {
     }
 
     async fn build(&self) -> anyhow::Result<warden_core::orchestrator::Orchestrator> {
-        bootstrap(self.explicit_config.as_deref(), self.overrides.clone(), default_vault_path()).await
+        bootstrap_hub(self.explicit_config.as_deref(), self.overrides.clone(), &self.code_engine).await
     }
 
     fn notes(&self) -> Vec<String> {
@@ -1177,11 +1188,13 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     let overrides = Overrides { provider: args.provider.map(Into::into), model: args.model.clone(), vault_path: args.vault_path.clone(), ..Default::default() };
-    let orchestrator = bootstrap(args.config.as_deref(), overrides.clone(), default_vault_path()).await?;
+    let code_engine = CodeEngineSlot::default();
+    let orchestrator = bootstrap_hub(args.config.as_deref(), overrides.clone(), &code_engine).await?;
     let settings = args.config.as_ref().map(PathBuf::from).or_else(warden_bootstrap::default_config_path).map(|config_path| ServeSettings {
         config_path,
         explicit_config: args.config.clone(),
         overrides,
+        code_engine: code_engine.clone(),
     });
 
     // P61 — the vault syncs on its own every few minutes, and the web's Sync screen drives it too.
@@ -1196,6 +1209,9 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let shared = warden_server::SharedOrchestrator::new(orchestrator);
     // P103 b — the opencode's door to the hub's model, on the loopback.
     let engine_models = warden_server::engine_models::EngineModels::start(shared.clone()).await?;
+    let opencode = warden_server::code_turns::opencode_engine(&engine_models);
+    // The same engine serves the code projects' conversations and the agents' `code_task`.
+    code_engine.set(opencode.clone()).ok();
     let mut server = Server::bind(args.listen, auth_key, server_name.clone(), shared, conversations_dir, devices_path()?)
         .await?
         // P78 — voice input from the web UI, with the Whisper key from the same config file.
@@ -1203,7 +1219,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_sync(runner, Some(AUTO_SYNC_INTERVAL))
         .with_api(api_keys_path()?)
         // P103 b — the conversations of code projects are tasks for the opencode, started per project folder.
-        .with_code_engine(warden_server::code_turns::opencode_engine(&engine_models))
+        .with_code_engine(opencode)
         // P92 — every device lists the tasks' conversations; only `--run-tasks` runs them.
         .with_tasks(tasks_store()?, args.run_tasks)
         // P105 — `POST /hooks/<id>` with a webhook's token; the conversations go next to the tasks' ones.

@@ -805,6 +805,36 @@ function AgentCard({
 
       <label className="settings-field settings-checkbox-field">
         <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canStartTasks}
+            onChange={(e) => onChange({ ...agent, canStartTasks: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can start work in the background</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent hand a task to a colleague or a worker and keep going, then collect the result with the jobs
+          tool. Off, everything it delegates finishes inside its turn. An agent another agent creates starts with this off.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
+          <input
+            type="checkbox"
+            checked={agent.canCreateWorkers}
+            onChange={(e) => onChange({ ...agent, canCreateWorkers: e.currentTarget.checked })}
+          />
+          <span className="settings-label">Can create temporary workers</span>
+        </span>
+        <span className="settings-hint">
+          Lets this agent spin up a helper for one task (it is gone when the turn ends and never joins the organization).
+          An agent another agent creates starts with this off.
+        </span>
+      </label>
+
+      <label className="settings-field settings-checkbox-field">
+        <span className="settings-checkbox-row">
           <input type="checkbox" checked={outreachOn(outreach, agent.id)} onChange={(e) => onOutreach(setOutreach(outreach, agent.id, e.currentTarget.checked))} />
           <span className="settings-label">Can start messages to you</span>
         </span>
@@ -845,7 +875,9 @@ function AgentCard({
         </select>
         <span className="settings-hint">
           Reading tools always work at levels 2 and 3. A delegate never gets more autonomy than the agent that called
-          it. An agent made by another agent starts at 3. Level 5 needs “can manage agents” and only reaches the agents below it in the organization.
+          it. An agent made by another agent starts at 3. Level 5 only changes Manage agents: the agents that report to it
+          are created, changed and removed without your yes, but never its own powers, its own place or an agent outside
+          its branch; a kind of action ticked below still asks.
         </span>
       </label>
 
@@ -1385,7 +1417,7 @@ function SettingsView() {
       ...f,
       agents: [
         ...f.agents,
-        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] },
+        { id: nextAgentId(f.agents), persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, allowedTools: null, autonomy: 4, approvalRequired: [] },
       ],
     }));
   }

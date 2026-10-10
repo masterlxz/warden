@@ -761,10 +761,20 @@ pub struct AgentSettingsDto {
     /// delegation that names none. Empty leaves the choice open. A member's agent has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegation_models: Vec<String>,
+    /// P122: may the agent start work in the background (`jobs`), and create temporary workers (`delegate_task`). On when
+    /// absent: a screen from before these existed leaves both as they were.
+    #[serde(default = "default_true")]
+    pub can_start_tasks: bool,
+    #[serde(default = "default_true")]
+    pub can_create_workers: bool,
 }
 
 fn default_autonomy() -> u8 {
     4
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One task an agent delegated in the background (P123), as the screens list it. `state` is `pending`, `running`, `waiting` (its

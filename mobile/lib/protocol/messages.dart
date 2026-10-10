@@ -381,7 +381,7 @@ class AgentInfo {
   final bool canMessageAgents;
   final bool canManageTasks;
 
-  /// 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone.
+  /// 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone, 5 also manages its subordinates without asking.
   final int autonomy;
   final List<String> approvalRequired;
 

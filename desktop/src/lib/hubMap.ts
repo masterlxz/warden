@@ -72,6 +72,8 @@ export interface HubAgent {
   canManageAgents: boolean;
   canMessageAgents?: boolean;
   canManageTasks?: boolean;
+  canStartTasks?: boolean;
+  canCreateWorkers?: boolean;
   allowedTools: string[] | null;
   autonomy?: number;
   approvalRequired?: string[];
@@ -190,6 +192,9 @@ export function agentFromHub(agent: HubAgent): AgentEntry {
     canManageAgents: agent.canManageAgents,
     canMessageAgents: agent.canMessageAgents ?? false,
     canManageTasks: agent.canManageTasks ?? false,
+    // On when the hub says nothing: it is what an agent from before these did.
+    canStartTasks: agent.canStartTasks ?? true,
+    canCreateWorkers: agent.canCreateWorkers ?? true,
     allowedTools: agent.allowedTools,
     autonomy: agent.autonomy ?? 4,
     approvalRequired: agent.approvalRequired ?? [],

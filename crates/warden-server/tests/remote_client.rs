@@ -98,6 +98,8 @@ async fn spin_up() -> Hub {
         owner: None,
         shared_with: Vec::new(),
         delegation_models: Vec::new(),
+        can_start_tasks: true,
+        can_create_workers: true,
     };
     let mut config = FileConfig { agents: vec![chief], ..FileConfig::default() };
     // A member with a password of her own already (no provisional one to change first).

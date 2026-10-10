@@ -110,9 +110,17 @@ describe("a turn's reply", () => {
 describe("agents and projects", () => {
   test("an agent keeps what the picker reads, with the opt-ins defaulting to off", () => {
     const agent = agentFromHub({ id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, allowedTools: null });
-    assert.deepEqual(agent, { id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, canMessageAgents: false, canManageTasks: false, allowedTools: null, autonomy: 4, approvalRequired: [] });
+    assert.deepEqual(agent, { id: "poet", persona: "You write.", providerId: "", canDelegateToAgents: false, canManageAgents: true, canMessageAgents: false, canManageTasks: false, canStartTasks: true, canCreateWorkers: true, allowedTools: null, autonomy: 4, approvalRequired: [] });
     assert.deepEqual(agentFromHub({ id: "a", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null, approvalRequired: ["critical_infra"] }).approvalRequired, ["critical_infra"]);
     assert.deepEqual(agentFromHub({ id: "a", persona: "", providerId: "p", canDelegateToAgents: false, canManageAgents: false, allowedTools: ["shell"], sharedWith: ["ana"] }).sharedWith, ["ana"]);
+  });
+
+  test("an off permission to start background work or create workers stays off, and a hub that says nothing means on", () => {
+    const base = { id: "a", persona: "", providerId: "", canDelegateToAgents: false, canManageAgents: false, allowedTools: null };
+    const off = agentFromHub({ ...base, canStartTasks: false, canCreateWorkers: false });
+    assert.deepEqual([off.canStartTasks, off.canCreateWorkers], [false, false], "saving the form must not switch them back on");
+    const silent = agentFromHub(base);
+    assert.deepEqual([silent.canStartTasks, silent.canCreateWorkers], [true, true]);
   });
 
   test("a project is read as is, and is not a code project unless the hub says so", () => {

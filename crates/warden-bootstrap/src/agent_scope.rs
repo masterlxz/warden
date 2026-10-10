@@ -105,6 +105,8 @@ pub fn scope_to_agent(base: &Orchestrator, config: &FileConfig, config_path: Opt
     }
 
     // The agent's own tool list (P46) applies to what it had; the opt-in tools follow their flags.
-    let orchestrator = extra.into_iter().fold(orchestrator.with_allowed_tools(agent.allowed_tools.as_deref()), |o, tool| o.with_tool(tool));
+    // P122: the permissions to start background work and to create workers take `jobs` and `delegate_task` away, whatever the list says.
+    let narrowed = crate::without_unpermitted_tools(orchestrator.with_allowed_tools(agent.allowed_tools.as_deref()), agent);
+    let orchestrator = extra.into_iter().fold(narrowed, |o, tool| o.with_tool(tool));
     Some(ScopedAgent { orchestrator, persona: agent.persona.clone(), provider_id: agent.provider_id.clone() })
 }

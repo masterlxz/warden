@@ -307,6 +307,8 @@ pub fn member_agents_view(config: &FileConfig, member: &str) -> Vec<AgentSetting
                 shared_with: Vec::new(),
                 owner: mine.then(|| member.to_string()),
                 delegation_models: Vec::new(),
+                can_start_tasks: true,
+                can_create_workers: true,
             }
         })
         .collect()
@@ -453,10 +455,10 @@ mod tests {
         for ok in ["read_file", "write_file", "use_skill", "manage_skill", "delegate_task", "tavily-search", "generate_document"] {
             assert!(default_member_tool(ok), "{ok}");
         }
-        for no in ["shell", "ssh_exec", "list_nodes", "node_shell", "home-pc__query", "manage_agents", "manage_tasks", "message_agent", "usage_stats", "delegate_to_agent", "github__create_issue"] {
+        for no in ["shell", "ssh_exec", "list_nodes", "node_shell", "home-pc__query", "manage_agents", "manage_tasks", "message_agent", "usage_stats", "delegate_to_agent", "code_task", "github__create_issue"] {
             assert!(!default_member_tool(no), "{no}");
         }
-        for never in ["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats"] {
+        for never in ["delegate_to_agent", "message_agent", "manage_agents", "manage_tasks", "usage_stats", "code_task"] {
             assert!(NEVER_FOR_MEMBERS.contains(&never), "{never}");
         }
     }

@@ -89,6 +89,8 @@ fn agent(id: &str, persona: &str, manage: bool, message: bool) -> AgentConfig {
         owner: None,
         shared_with: Vec::new(),
         delegation_models: Vec::new(),
+        can_start_tasks: true,
+        can_create_workers: true,
     }
 }
 
@@ -296,6 +298,30 @@ async fn an_agent_at_autonomy_three_asks_the_device_before_a_change_and_only_a_y
             assert_eq!(asked_actions(&others), ["tool_call"]);
             assert!(matches!(&reply, ServerMessage::ChatResponse { content, .. } if content.contains("was not run")), "got {reply:?}");
         }
+    }
+}
+
+#[tokio::test]
+async fn an_agent_at_autonomy_five_creates_an_agent_without_asking_unless_the_kind_was_ticked() {
+    use warden_core::autonomy::Category;
+    // At 4 the tool asks for its own yes; at 5 nobody is asked; a ticked kind still asks before the tool runs, and then the tool
+    // itself does not ask again.
+    for (level, required, expected) in [
+        (4, vec![], vec!["create_agent"]),
+        (5, vec![], vec![]),
+        (5, vec![Category::ElevatedAgent], vec!["tool_call"]),
+    ] {
+        let hub = spin_up().await;
+        set_autonomy(&hub, "chief", level);
+        set_approval_required(&hub, "chief", &required);
+        let mut conn = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+        conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+        let (_, others) = finish_turn(&mut conn, true).await;
+        assert_eq!(asked_actions(&others), expected, "level {level}, ticked {required:?}");
+        let config = load_config_from_path(&hub.config_path, true).unwrap();
+        let critic = config.agents.iter().find(|a| a.id == "critic").unwrap_or_else(|| panic!("level {level}: the agent was created"));
+        // Whatever the level, the new agent is the cautious one, and the manager did not give it powers.
+        assert_eq!((critic.autonomy, critic.can_manage_agents, critic.reports_to.as_deref()), (3, false, Some("chief")), "level {level}");
     }
 }
 

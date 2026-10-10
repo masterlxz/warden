@@ -8,7 +8,7 @@ import '../services/agent_work.dart';
 import '../services/server_connection.dart' show HubRequestException;
 import 'member_org_tab.dart';
 
-const _autonomy = {1: 'only answers', 2: 'suggests', 3: 'asks first', 4: 'acts alone'};
+const _autonomy = {1: 'only answers', 2: 'suggests', 3: 'asks first', 4: 'acts alone', 5: 'manages alone'};
 
 /// P120, P123 — the organization of the agents and the work they hand each other, on the phone: the tree (a role and a
 /// superior for each agent, add or remove one, open a chat with it or its tasks) and the background tasks (state, progress,

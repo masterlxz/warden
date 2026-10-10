@@ -233,8 +233,11 @@ export interface AgentSettings {
   canMessageAgents: boolean;
   /** P92 — the `manage_tasks` tool. */
   canManageTasks: boolean;
+  /** P122 — trabalho em segundo plano (`jobs`) e workers temporários (`delegate_task`); ligados quando o hub não diz nada. */
+  canStartTasks?: boolean;
+  canCreateWorkers?: boolean;
   allowedTools: string[] | null;
-  /** P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone. */
+  /** P122 — 1 only answers, 2 suggests, 3 asks before every change, 4 acts alone, 5 also manages its subordinates without asking. */
   autonomy: number;
   /** P122 — the kinds of action (ids, see `approvalCategories.ts`) that need the person's yes even at autonomy 4. */
   approvalRequired: string[];
