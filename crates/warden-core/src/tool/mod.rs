@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::budget::TurnBudget;
 use crate::jobs::JobBoard;
 
+pub mod code_task;
 pub mod delegate;
 pub mod delegate_to_agent;
 pub mod document;

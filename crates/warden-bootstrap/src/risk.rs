@@ -27,7 +27,7 @@ pub fn builtin_category(name: &str, arguments: &Value) -> Option<Category> {
     let base = name.rsplit_once("__").map_or(name, |(_, tool)| tool);
     let action = arguments.get("action").and_then(Value::as_str).unwrap_or_default();
     match base {
-        "shell" | "ssh_exec" | "ssh_upload" | "ssh_download" | "node_shell" | "node_write_file" => Some(Category::CriticalInfra),
+        "shell" | "ssh_exec" | "ssh_upload" | "ssh_download" | "node_shell" | "node_write_file" | "code_task" => Some(Category::CriticalInfra),
         "manage_agents" => match action {
             "list" => None,
             "delete" => Some(Category::DeleteData),
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn warden_tools_that_reach_a_machine_are_critical_infrastructure() {
-        for name in ["shell", "ssh_exec", "ssh_upload", "ssh_download", "node_shell", "node_write_file", "pc__shell"] {
+        for name in ["shell", "ssh_exec", "ssh_upload", "ssh_download", "node_shell", "node_write_file", "pc__shell", "code_task"] {
             assert_eq!(builtin_category(name, &json!({})), Some(Category::CriticalInfra), "{name}");
         }
         for name in ["read_file", "write_file", "use_skill", "list_nodes", "node_read_file", "delegate_task", "message_agent"] {
