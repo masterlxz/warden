@@ -443,6 +443,7 @@ mod tests {
             generated_files_root: temp_dir.join("generated"),
             embedded_server: std::sync::Mutex::new(None),
             approvals: std::sync::Arc::new(crate::approval::ApprovalBroker::default()),
+            grants: Default::default(),
             code: crate::code_cmds::CodeState::default(),
             sync_runner: Arc::new(warden_bootstrap::auto_sync::SyncRunner::new(
                 temp_dir.join("vault"),

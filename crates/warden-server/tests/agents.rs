@@ -147,6 +147,22 @@ async fn finish_turn(conn: &mut ServerConnection, approve: bool) -> (ServerMessa
     }
 }
 
+/// Like `finish_turn` saying yes, and "always" to every ask that offers it.
+async fn finish_turn_always(conn: &mut ServerConnection) -> Vec<ServerMessage> {
+    let mut others = Vec::new();
+    loop {
+        let msg = conn.recv().await.unwrap().expect("connection closed");
+        match msg {
+            ServerMessage::ChatResponse { .. } | ServerMessage::ChatError { .. } => return others,
+            ServerMessage::ApprovalRequest { approval_id, ref always, .. } => {
+                conn.send(&ClientMessage::ResolveApproval { approval_id, approved: true, always: always.is_some() }).await.unwrap();
+                others.push(msg);
+            }
+            other => others.push(other),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_chat_naming_an_agent_speaks_with_its_persona_and_the_conversation_remembers_it() {
     let hub = spin_up().await;
@@ -368,4 +384,31 @@ async fn an_agent_that_acts_alone_still_asks_for_the_kind_of_action_it_was_told_
         });
         assert_eq!(by_rule.flatten().as_deref(), if required.is_empty() { None } else { Some("elevated_agent") });
     }
+}
+
+#[tokio::test]
+async fn an_always_to_a_kind_of_action_holds_for_that_conversation_and_agent_only() {
+    use warden_core::autonomy::Category;
+    let hub = spin_up().await;
+    set_autonomy(&hub, "chief", 5);
+    set_approval_required(&hub, "chief", &[Category::ElevatedAgent]);
+    let mut conn = ServerConnection::connect(&hub.url, "web-1", "Browser", "test-key").await.unwrap();
+    let tool_call_asks = |others: &[ServerMessage]| asked_actions(others).iter().filter(|a| *a == "tool_call").count();
+
+    // The first ask offers the whole kind of action, and "always" to it is the last time it is asked in this conversation.
+    conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+    let others = finish_turn_always(&mut conn).await;
+    let offered = others.iter().find_map(|m| match m {
+        ServerMessage::ApprovalRequest { action, always, .. } if action == "tool_call" => Some(always.clone()),
+        _ => None,
+    });
+    assert_eq!(offered, Some(Some("elevated_agent".to_string())));
+    assert_eq!(tool_call_asks(&others), 1);
+
+    conn.send(&chat("CREATE a critic", "c1", Some("chief"))).await.unwrap();
+    assert_eq!(tool_call_asks(&finish_turn_always(&mut conn).await), 0, "same conversation, same agent: not asked again");
+
+    // Another conversation asks again.
+    conn.send(&chat("CREATE a critic", "c2", Some("chief"))).await.unwrap();
+    assert_eq!(tool_call_asks(&finish_turn_always(&mut conn).await), 1, "another conversation");
 }

@@ -1107,6 +1107,8 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
     let mut orchestrator = ConnectionOrchestrator::new(shared_orchestrator.clone(), tools, tool_channel.clone(), device_id.clone());
     // P46: approvals for this device's turns come back on this connection.
     let approver = WsApprover::new(tx.clone());
+    // P122: what the person said "always" to, per conversation and agent, for as long as this connection lasts.
+    let grants = warden_core::autonomy::GrantBook::default();
 
     // P36: `revoke` must also end a connection that's already open — it happens in another
     // process (`warden-server devices revoke`, the desktop's Workspace screen), so the only signal
@@ -1397,7 +1399,7 @@ async fn handle_connection<S: Transport>(ws: WebSocketStream<S>, peer: SocketAdd
                         }
                         // `manage_agents`, SSH hosts and spending limits that need a yes ask this device.
                         // P104: `search_history` reads the owner's conversations, the ones this hub keeps for them.
-                        None => orchestrator.with_conversations_dir(&conversation_dirs.device).with_approver(Arc::new(approver.clone())),
+                        None => orchestrator.with_conversations_dir(&conversation_dirs.device).with_approver(Arc::new(warden_core::autonomy::RememberingApprover::new(Arc::new(approver.clone()), grants.of(&conversation_id, agent_id.as_deref())))),
                     };
                     // P102 fatia 2: a conversation that works in a folder on a node reads, writes and runs there. Set up
                     // here because the node tools are the hub's; a member has nobody to ask, so for them a command that

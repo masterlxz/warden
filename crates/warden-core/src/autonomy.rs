@@ -145,10 +145,70 @@ async fn authorize_within(
         anyhow::bail!("'{}' was not run: {why} and this channel can't ask", call.name);
     };
     let request = ApprovalRequest { target: call.name.clone(), action: TOOL_CALL_ACTION.to_string(), detail: summarize(&call.arguments), category };
-    match tokio::time::timeout(timeout, approver.ask(request, Some(&call.name))).await {
+    // What an "always" would cover: the whole kind of action when the call is classified, the tool otherwise.
+    let covers = category.map_or_else(|| call.name.clone(), |c| c.as_str().to_string());
+    match tokio::time::timeout(timeout, approver.ask(request, Some(&covers))).await {
         Ok(Answer::Once | Answer::Always) => Ok(()),
         Ok(Answer::Reject) => anyhow::bail!("'{}' was not run: the person said no", call.name),
         Err(_) => anyhow::bail!("'{}' was not run: nobody answered in time", call.name),
+    }
+}
+
+/// What a person said "always" to (P122), kept for one conversation and one agent: the ids `authorize` offered, a category (`delete_data`)
+/// or a tool name. In memory only, so it ends with the process; nothing is written to the agent's configuration.
+#[derive(Clone, Default)]
+pub struct Grants(Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
+
+impl Grants {
+    pub fn allows(&self, covers: &str) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).contains(covers)
+    }
+
+    fn remember(&self, covers: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(covers.to_string());
+    }
+}
+
+/// The `Grants` of each conversation and agent a host serves, made on first use.
+#[derive(Default)]
+pub struct GrantBook(std::sync::Mutex<std::collections::HashMap<String, Grants>>);
+
+impl GrantBook {
+    pub fn of(&self, conversation: &str, agent: Option<&str>) -> Grants {
+        let key = format!("{conversation}\u{0}{}", agent.unwrap_or_default());
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_default().clone()
+    }
+}
+
+/// Wraps whoever asks the person so that an "always" to a tool call (`authorize`'s asks, not another tool's) is a yes the next time without
+/// asking again, as far as `grants` goes. A "no" is never remembered, and neither is a "yes, once".
+pub struct RememberingApprover {
+    inner: Arc<dyn Approver>,
+    grants: Grants,
+}
+
+impl RememberingApprover {
+    pub fn new(inner: Arc<dyn Approver>, grants: Grants) -> Self {
+        Self { inner, grants }
+    }
+}
+
+#[async_trait::async_trait]
+impl Approver for RememberingApprover {
+    async fn approve(&self, request: ApprovalRequest) -> bool {
+        self.inner.approve(request).await
+    }
+
+    async fn ask(&self, request: ApprovalRequest, always: Option<&str>) -> Answer {
+        let covers = always.filter(|_| request.action == TOOL_CALL_ACTION);
+        if covers.is_some_and(|c| self.grants.allows(c)) {
+            return Answer::Always;
+        }
+        let answer = self.inner.ask(request, always).await;
+        if let (Answer::Always, Some(covers)) = (answer, covers) {
+            self.grants.remember(covers);
+        }
+        answer
     }
 }
 
@@ -231,6 +291,59 @@ mod tests {
             assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), None, &shell).await.is_err(), "{level:?}");
             assert!(super::authorize(level, &reads(), &required, Some(Category::CriticalInfra), Some(&approver), &shell).await.is_ok(), "{level:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_always_on_offer_covers_the_kind_of_action_when_the_call_is_classified_and_the_tool_otherwise() {
+        let says = Says::new(Answer::Once);
+        let approver: Arc<dyn Approver> = says.clone();
+        super::authorize(Autonomy::Autonomous, &reads(), &[Category::CriticalInfra], Some(Category::CriticalInfra), Some(&approver), &call("shell")).await.unwrap();
+        authorize(Autonomy::AskFirst, &reads(), Some(&approver), &call("write_file")).await.unwrap();
+        let offered: Vec<_> = says.asked.lock().unwrap().iter().map(|(_, always)| always.clone()).collect();
+        assert_eq!(offered, [Some("critical_infra".to_string()), Some("write_file".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn an_always_is_remembered_for_that_conversation_and_agent_and_a_no_or_a_once_is_not() {
+        let book = GrantBook::default();
+        let required = [Category::CriticalInfra];
+        let ask = |approver: &Arc<dyn Approver>| {
+            let approver = approver.clone();
+            async move { super::authorize(Autonomy::Autonomous, &[], &required, Some(Category::CriticalInfra), Some(&approver), &call("shell")).await }
+        };
+        let wrap = |inner: &Arc<Says>, conversation: &str, agent: Option<&str>| -> Arc<dyn Approver> { Arc::new(RememberingApprover::new(inner.clone(), book.of(conversation, agent))) };
+
+        // Once and no leave nothing behind: asked every time.
+        for answer in [Answer::Once, Answer::Reject] {
+            let says = Says::new(answer);
+            let approver = wrap(&says, "c-once", None);
+            let _ = ask(&approver).await;
+            let _ = ask(&approver).await;
+            assert_eq!(says.asked.lock().unwrap().len(), 2, "{answer:?}");
+        }
+
+        // Always is asked once, then the same kind of action runs on its own — through another wrapper of the same conversation and agent...
+        let says = Says::new(Answer::Always);
+        assert!(ask(&wrap(&says, "c1", Some("ops"))).await.is_ok());
+        assert!(ask(&wrap(&says, "c1", Some("ops"))).await.is_ok());
+        assert_eq!(says.asked.lock().unwrap().len(), 1, "the second one was not asked");
+        // ...but not in another conversation, nor for another agent, nor for another kind of action.
+        assert!(ask(&wrap(&says, "c2", Some("ops"))).await.is_ok());
+        assert!(ask(&wrap(&says, "c1", Some("other"))).await.is_ok());
+        assert_eq!(says.asked.lock().unwrap().len(), 3);
+        let approver = wrap(&says, "c1", Some("ops"));
+        super::authorize(Autonomy::Autonomous, &[], &[Category::DeleteData], Some(Category::DeleteData), Some(&approver), &call("delete")).await.unwrap();
+        assert_eq!(says.asked.lock().unwrap().len(), 4, "another kind is asked on its own");
+    }
+
+    #[tokio::test]
+    async fn an_always_to_something_that_is_not_a_tool_call_is_not_remembered() {
+        let says = Says::new(Answer::Always);
+        let approver = RememberingApprover::new(says.clone(), Grants::default());
+        let request = || ApprovalRequest::new("repo", "bash", "git status");
+        assert_eq!(approver.ask(request(), Some("git status *")).await, Answer::Always);
+        assert_eq!(approver.ask(request(), Some("git status *")).await, Answer::Always);
+        assert_eq!(says.asked.lock().unwrap().len(), 2, "the code engine keeps its own memory");
     }
 
     #[tokio::test]

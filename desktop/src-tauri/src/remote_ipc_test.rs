@@ -114,6 +114,7 @@ fn app_state(dir: &Path) -> crate::AppState {
         generated_files_root: dir.join("generated"),
         embedded_server: Mutex::new(None),
         approvals: Arc::new(approval::ApprovalBroker::default()),
+        grants: Default::default(),
         code: crate::code_cmds::CodeState::default(),
         sync_runner: Arc::new(warden_bootstrap::auto_sync::SyncRunner::new(
             dir.join("vault"),

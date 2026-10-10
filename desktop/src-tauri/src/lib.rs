@@ -68,6 +68,8 @@ struct AppState {
     embedded_server: Mutex<Option<server_cmds::EmbeddedServerHandle>>,
     /// Actions waiting for the user's yes/no (P47 SSH, P46 `manage_agents`) — see `approval::TauriApprover`.
     approvals: Arc<approval::ApprovalBroker>,
+    /// What the person said "always" to (P122), per conversation and agent, until the app closes.
+    grants: warden_core::autonomy::GrantBook,
     /// P103 b — the opencode that runs a code project's conversations, started with the first one. See `code_cmds.rs`.
     code: code_cmds::CodeState,
     /// P61/P71 — the automatic vault sync: looped by `sync_cmds::spawn_auto_sync` and handed to the
@@ -279,7 +281,10 @@ async fn send_message(
 
     // Tools that need a human "yes" (SSH hosts with `require_approval`, `manage_agents`) ask through
     // the window; every other channel has no approver and those actions are refused there.
-    let orchestrator = orchestrator.with_approver(Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() }));
+    // P122: an "always" to a tool call holds for this conversation and agent, so the same kind of action isn't asked again.
+    let asks = Arc::new(approval::TauriApprover { app, broker: state.approvals.clone() });
+    let grants = state.grants.of(conversation_id.as_deref().unwrap_or(""), agent_id.as_deref());
+    let orchestrator = orchestrator.with_approver(Arc::new(warden_core::autonomy::RememberingApprover::new(asks, grants)));
     let outcome =
         orchestrator.handle_turn(&history, &content, attachments, persona.as_deref()).await.map_err(|e| format!("{e:#}"))?;
     Ok(SendMessageResult {
@@ -1041,6 +1046,7 @@ pub fn run() {
         generated_files_root,
         embedded_server: Mutex::new(None),
         approvals: Arc::new(approval::ApprovalBroker::default()),
+        grants: Default::default(),
         code: code_cmds::CodeState::default(),
         sync_runner: sync_runner.clone(),
         lending: Mutex::new(None),
