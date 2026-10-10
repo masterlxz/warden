@@ -12,6 +12,7 @@
 - **Decisão do usuário**: os agentes próprios dos membros **continuam fora** da árvore. A árvore é uma só, a do dono, e o membro com acesso a edita. Descartados: mini-árvore por membro e membro dentro da árvore única.
 - **Feito**: só registro, sem código (`VISAO_AGENTES.md`, Parte 3, tensão 2). Nenhum teste rodado, nada mudou no código.
 - **Tensão 5 (conversa sem agente no desktop)**: já estava feita (P124, `4bca2ee`: "Chat without an agent" no seletor e "No agent" no cabeçalho, com troca de agente a qualquer hora). A tabela e a Parte 3 da visão estavam velhas, de novo; corrigi as duas. Eu a propus como próximo item sem conferir o código, o mesmo deslize da Sessão 178. Não há teste de unidade da regra `needsAgentPick` (`ChatArea.tsx`).
+- **Tensão 3 (Programming Manager × opencode)**: decisão do usuário, **opencode como ferramenta** (uma tool `code_task` para um agente mandar tarefa a um projeto de código, pela `CodeEngine`; sessões paralelas ficam para depois). Registrada em `VISAO_AGENTES.md`. **Sem código ainda.** Levantamento para a fatia: a tool pode seguir o `ShellTool` (recebe o aprovador por `with_approver`, e sem ele recusa); o motor mora no hub (`opencode_engine`, `server.rs`), então a tool nasce lá; precisa entrar em `NEVER_FOR_MEMBERS` (`users.rs`) e nas listas de `people.rs` e `manage_agents.rs` (`FLAG_GATED_TOOLS`), com modo `Manual` fixo para tudo passar pelo aprovador.
 
 ---
 

@@ -1621,6 +1621,11 @@ levar isto a `/plan`.
 3. **O modo de código não usa agentes do Warden.** O projeto de código roda o opencode (P103). A visão quer um
    Programming Manager do Warden coordenando o trabalho de código. O gerente comanda o opencode como ferramenta, ou
    há subagentes de programação do próprio Warden (P89)?
+   **Decidido (Sessão 180)**: o opencode como ferramenta. Um agente do Warden (o gerente é um agente comum, com persona
+   de gerente) manda tarefas a um projeto de código por uma tool (`code_task`, ainda não feita), pela camada
+   `CodeEngine`; os "subagentes de programação" são sessões do opencode, não agentes do Warden com motor próprio. Fica
+   para depois: várias sessões ao mesmo tempo, cada uma com o seu cargo na árvore. Coerente com a decisão da P89 (usar
+   o opencode, não construir motor).
 4. **Canal por agente × conversas por conversa.** O modo Agents quer uma conversa principal persistente por agente. Hoje
    há conversas avulsas, conversas "A → B" (`message_agent`) e `task-*` (tarefas). Elas viram vistas dessa conversa
    principal, ou convivem?
