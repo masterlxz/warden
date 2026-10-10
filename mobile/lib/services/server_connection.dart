@@ -128,7 +128,7 @@ typedef ServerConnector = Future<ServerConnection> Function({
   Map<String, ToolHandler> toolHandlers,
 });
 
-class ServerConnection implements ConversationBackend, AgentsBackend {
+class ServerConnection implements ConversationBackend, AgentsBackend, MemberOrgBackend {
   ServerConnection._(this._channel, this._subscription, this.serverName, this.issuedDeviceToken, this.user, this._toolHandlers) {
     _setStatus(Connected(serverName));
     _startHeartbeat();
@@ -340,6 +340,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
               SettingsMessage() ||
               SettingsSavedMessage() ||
               SettingsErrorMessage() ||
+              AgentOrgListMessage() ||
               AgentTaskListMessage() ||
               ActivityListMessage() ||
               TaskErrorMessage() ||
@@ -392,6 +393,7 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
       case SettingsMessage(:final requestId) ||
             SettingsSavedMessage(:final requestId) ||
             SettingsErrorMessage(:final requestId) ||
+            AgentOrgListMessage(:final requestId) ||
             AgentTaskListMessage(:final requestId) ||
             ActivityListMessage(:final requestId) ||
             TaskErrorMessage(:final requestId):
@@ -505,6 +507,32 @@ class ServerConnection implements ConversationBackend, AgentsBackend {
       _ => throw ConversationException('Unexpected reply to the organization change: $reply'),
     };
   }
+
+  /// P120 — the tree of the organization as the hub shows it to a member: only the id, the role and the superior of each
+  /// agent, and the access they have (`view` or `edit`). Throws a [HubRequestException] when the owner gave no access (the
+  /// hub's refusal), and a [ConversationException] when the hub can't be asked (a timeout, a closed connection).
+  @override
+  Future<MemberOrg> listAgentOrg() async {
+    final reply = await _conversationRequest(ListAgentOrgMessage.new);
+    return _memberOrgOf(reply);
+  }
+
+  /// P120 — the same as [editAgentOrg], for a member with the `edit` access: their session is the authorization, so there
+  /// is no pairing key. Only a role and a superior, a new report and a removal are theirs. Returns the tree as it is now.
+  @override
+  Future<MemberOrg> editAgentOrgAsMember(OrgEdit edit) async {
+    final reply = await _conversationRequest(
+      (requestId) => EditAgentOrgMessage.asMember(requestId, edit),
+      timeout: const Duration(seconds: 120),
+    );
+    return _memberOrgOf(reply);
+  }
+
+  MemberOrg _memberOrgOf(ServerMessage reply) => switch (reply) {
+        AgentOrgListMessage(:final agents, :final access) => MemberOrg(agents, access),
+        SettingsErrorMessage(:final message, :final authRejected) => throw HubRequestException(message, authRejected: authRejected),
+        _ => throw ConversationException('Unexpected reply to the organization request: $reply'),
+      };
 
   /// P123 — the work agents delegated to each other, newest first.
   @override

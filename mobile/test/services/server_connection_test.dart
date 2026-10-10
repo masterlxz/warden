@@ -475,6 +475,38 @@ void main() {
     expect(await fromClient.next as String, '{"type":"chat","message":"hi","conversationId":"c1"}');
   });
 
+  test('a member asks for the organization by their session: the tree with the access, an edit with no key, a refusal as an exception (P120)', () async {
+    final controller = StreamChannelController<dynamic>();
+    final fromClient = StreamQueue<dynamic>(controller.local.stream);
+
+    final future = ServerConnection.connectOverChannel(
+      channel: controller.foreign,
+      deviceId: 'dev-1',
+      deviceName: 'Test',
+      authKey: 'test-key',
+    );
+    await fromClient.next; // Hello
+    controller.local.sink.add('{"type":"helloAck","serverName":"warden-server"}');
+    final conn = await future;
+
+    final list = conn.listAgentOrg();
+    expect(await fromClient.next as String, '{"type":"listAgentOrg","requestId":1}');
+    controller.local.sink.add('{"type":"agentOrgList","requestId":1,"agents":[{"id":"chief","role":"CTO"},{"id":"dev","reportsTo":"chief"}],"access":"edit"}');
+    final org = await list;
+    expect(org.access, 'edit');
+    expect(org.agents.map((a) => a.id).toList(), ['chief', 'dev']);
+
+    final edit = conn.editAgentOrgAsMember(const RemoveAgentEdit('dev'));
+    expect(await fromClient.next as String, '{"type":"editAgentOrg","requestId":2,"edit":{"kind":"remove","id":"dev"}}');
+    controller.local.sink.add('{"type":"agentOrgList","requestId":2,"agents":[{"id":"chief","role":"CTO"}],"access":"edit"}');
+    expect((await edit).agents.map((a) => a.id).toList(), ['chief']);
+
+    final refused = conn.listAgentOrg();
+    expect(await fromClient.next as String, '{"type":"listAgentOrg","requestId":3}');
+    controller.local.sink.add('{"type":"settingsError","requestId":3,"message":"no access","conflict":false,"authRejected":false}');
+    await expectLater(refused, throwsA(isA<HubRequestException>().having((e) => e.message, 'message', 'no access')));
+  });
+
   test('the folder list is asked for and answered by request id, and a refusal becomes an exception (P102)', () async {
     final controller = StreamChannelController<dynamic>();
     final fromClient = StreamQueue<dynamic>(controller.local.stream);

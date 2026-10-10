@@ -253,12 +253,27 @@ final class ControlAgentTaskMessage extends ClientMessage {
 final class EditAgentOrgMessage extends ClientMessage {
   const EditAgentOrgMessage(this.requestId, this.pairingKey, this.edit);
 
+  /// A member the owner gave the `edit` access sends no key: their session is the authorization. They are answered by
+  /// [AgentOrgListMessage].
+  const EditAgentOrgMessage.asMember(this.requestId, this.edit) : pairingKey = null;
+
   final int requestId;
-  final String pairingKey;
+  final String? pairingKey;
   final OrgEdit edit;
 
   @override
-  Map<String, dynamic> toJson() => {'type': 'editAgentOrg', 'requestId': requestId, 'pairingKey': pairingKey, 'edit': edit.toJson()};
+  Map<String, dynamic> toJson() => {'type': 'editAgentOrg', 'requestId': requestId, if (pairingKey != null) 'pairingKey': pairingKey, 'edit': edit.toJson()};
+}
+
+/// P120 — the tree of the organization, for the owner or a member whose access is `view` or `edit`. Answered by
+/// [AgentOrgListMessage], or by [SettingsErrorMessage] when the owner gave no access.
+final class ListAgentOrgMessage extends ClientMessage {
+  const ListAgentOrgMessage(this.requestId);
+
+  final int requestId;
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'listAgentOrg', 'requestId': requestId};
 }
 
 /// One change made from the organization tree (P120), as the hub receives it (`AgentOrgEdit`). A blank [role] or
@@ -823,6 +838,11 @@ sealed class ServerMessage {
           modelPolicies: _policiesOf(json['settings'] as Map<String, dynamic>),
           modelIds: _modelIdsOf(json['settings'] as Map<String, dynamic>),
         ),
+      'agentOrgList' => AgentOrgListMessage(
+          json['requestId'] as int,
+          [for (final agent in (json['agents'] as List<dynamic>? ?? const [])) AgentInfo.fromJson(agent)],
+          json['access'] as String? ?? '',
+        ),
       'settingsError' => SettingsErrorMessage(json['requestId'] as int, json['message'] as String, authRejected: json['authRejected'] as bool? ?? false),
       'agentTaskList' => AgentTaskListMessage(
           json['requestId'] as int,
@@ -891,6 +911,7 @@ final class UserInfo {
     this.recoveryPolicy = '',
     this.recoveries = const [],
     this.truthid = '',
+    this.orgAccess = '',
   });
 
   /// The username.
@@ -925,6 +946,9 @@ final class UserInfo {
   /// P84 fatia 5 — the TruthID username they linked; empty if none.
   final String truthid;
 
+  /// P120 — what the owner lets them do with the organization of the agents: `view` or `edit`; empty is none.
+  final String orgAccess;
+
   UserInfo withTruthId(String username) => UserInfo(
         id: id,
         name: name,
@@ -937,6 +961,7 @@ final class UserInfo {
         recoveryPolicy: recoveryPolicy,
         recoveries: recoveries,
         truthid: username,
+        orgAccess: orgAccess,
       );
 
   /// The recoveries they haven't been told about yet.
@@ -954,6 +979,7 @@ final class UserInfo {
         recoveryPolicy: json['recoveryPolicy'] as String? ?? '',
         recoveries: [for (final e in (json['recoveries'] as List<dynamic>? ?? const [])) RecoveryEvent.fromJson(e as Map<String, dynamic>)],
         truthid: json['truthid'] as String? ?? '',
+        orgAccess: json['orgAccess'] as String? ?? '',
       );
 
   /// After a password change: the same person, no longer on the provisional password and (if the owner
@@ -968,6 +994,7 @@ final class UserInfo {
         recoveryPolicy: recoveryPolicy,
         recoveries: recoveries,
         truthid: truthid,
+        orgAccess: orgAccess,
       );
 }
 
@@ -1181,6 +1208,16 @@ final class SettingsSavedMessage extends ServerMessage {
   final List<AgentInfo> agents;
   final List<ModelPolicy> modelPolicies;
   final List<String> modelIds;
+}
+
+/// P120 — the tree as a member sees it: only the id, the role and the superior of each agent of the owner. [access] is `view` or `edit`.
+/// The reply to [ListAgentOrgMessage] and to a member's [EditAgentOrgMessage.asMember].
+final class AgentOrgListMessage extends ServerMessage {
+  const AgentOrgListMessage(this.requestId, this.agents, this.access);
+
+  final int requestId;
+  final List<AgentInfo> agents;
+  final String access;
 }
 
 /// [authRejected]: the pairing key was wrong; nothing was written.

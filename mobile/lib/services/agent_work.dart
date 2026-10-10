@@ -22,6 +22,34 @@ abstract interface class AgentsBackend {
   Future<List<ActivityEvent>> listActivity();
 }
 
+/// What a member of the hub (P120) is allowed to do with the organization of the agents, as the owner set it.
+enum OrgAccess { none, view, edit }
+
+/// The access the hub sent (`orgAccess`, empty when it is none). A value this app doesn't know counts as none, so it never
+/// shows a screen the hub will refuse.
+OrgAccess orgAccessOf(String? value) => switch (value) {
+      'view' => OrgAccess.view,
+      'edit' => OrgAccess.edit,
+      _ => OrgAccess.none,
+    };
+
+/// The tree as the hub shows it to a member: the owner's agents with only the id, the role and the superior, and the [access]
+/// they have (`view` or `edit`).
+class MemberOrg {
+  const MemberOrg(this.agents, this.access);
+
+  final List<AgentInfo> agents;
+  final String access;
+}
+
+/// What the organization tab of a member needs from the hub — `ServerConnection` in the app, a fake in tests. The owner's
+/// calls are in [AgentsBackend]; these two ask by the member's own session, with no pairing key.
+abstract interface class MemberOrgBackend {
+  /// Throws a `HubRequestException` when the owner gave no access, and a `ConversationException` when the hub can't be asked.
+  Future<MemberOrg> listAgentOrg();
+  Future<MemberOrg> editAgentOrgAsMember(OrgEdit edit);
+}
+
 // ---- P120: the organization tree. Mirrors `web/src/hub/org.ts`. ----
 
 class OrgNode {

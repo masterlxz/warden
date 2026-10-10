@@ -6,6 +6,7 @@ import '../protocol/messages.dart';
 import '../services/activity.dart';
 import '../services/agent_work.dart';
 import '../services/server_connection.dart' show HubRequestException;
+import 'member_org_tab.dart';
 
 const _autonomy = {1: 'only answers', 2: 'suggests', 3: 'asks first', 4: 'acts alone'};
 
@@ -20,10 +21,19 @@ class AgentsScreen extends StatefulWidget {
     this.onOpenChat,
     this.onOpenConversation,
     this.onOpenChannel,
+    this.memberOrg,
+    this.memberOrgAccess = OrgAccess.none,
     this.refreshEvery = const Duration(seconds: 3),
   });
 
   final AgentsBackend backend;
+
+  /// A member of the hub (P120): the Organization tab shows the owner's tree as the access they were given allows, by their own
+  /// session, instead of the owner's tab. Null for the owner.
+  final MemberOrgBackend? memberOrg;
+
+  /// The access the hub sent at sign-in, shown until the tab has asked again.
+  final OrgAccess memberOrgAccess;
 
   /// Starts a conversation with this agent; the screen closes after it. Null hides the action.
   final void Function(String agentId)? onOpenChat;
@@ -75,16 +85,19 @@ class _AgentsScreenState extends State<AgentsScreen> with SingleTickerProviderSt
       body: TabBarView(
         controller: _tabs,
         children: [
-          OrganizationTab(
-            backend: widget.backend,
-            onOpenChat: widget.onOpenChat == null
-                ? null
-                : (id) {
-                    Navigator.of(context).pop();
-                    widget.onOpenChat!(id);
-                  },
-            onOpenTasks: _openTasks,
-          ),
+          if (widget.memberOrg case final member?)
+            MemberOrganizationTab(backend: member, initialAccess: widget.memberOrgAccess)
+          else
+            OrganizationTab(
+              backend: widget.backend,
+              onOpenChat: widget.onOpenChat == null
+                  ? null
+                  : (id) {
+                      Navigator.of(context).pop();
+                      widget.onOpenChat!(id);
+                    },
+              onOpenTasks: _openTasks,
+            ),
           AgentTasksTab(
             backend: widget.backend,
             agent: _taskAgent,
@@ -222,17 +235,17 @@ class _PairingKeyDialogState extends State<_PairingKeyDialog> {
 
 /// The role and the superior of an agent. Owns its controller, so it is disposed only after the dialog's exit
 /// animation (disposing it right after `showDialog` returns would break that animation).
-class _PositionDialog extends StatefulWidget {
-  const _PositionDialog({required this.agent, required this.choices});
+class PositionDialog extends StatefulWidget {
+  const PositionDialog({super.key, required this.agent, required this.choices});
 
   final AgentInfo agent;
   final List<AgentInfo> choices;
 
   @override
-  State<_PositionDialog> createState() => _PositionDialogState();
+  State<PositionDialog> createState() => _PositionDialogState();
 }
 
-class _PositionDialogState extends State<_PositionDialog> {
+class _PositionDialogState extends State<PositionDialog> {
   late final TextEditingController _role = TextEditingController(text: widget.agent.role ?? '');
   late String _superior = widget.choices.any((a) => a.id == widget.agent.reportsTo) ? widget.agent.reportsTo! : '';
 
@@ -415,16 +428,16 @@ class _PolicyDialogState extends State<_PolicyDialog> {
 }
 
 /// A new agent: name, role and what it does. Starts careful (the hub decides what that means).
-class _NewAgentDialog extends StatefulWidget {
-  const _NewAgentDialog({required this.under});
+class NewAgentDialog extends StatefulWidget {
+  const NewAgentDialog({super.key, required this.under});
 
   final String? under;
 
   @override
-  State<_NewAgentDialog> createState() => _NewAgentDialogState();
+  State<NewAgentDialog> createState() => _NewAgentDialogState();
 }
 
-class _NewAgentDialogState extends State<_NewAgentDialog> {
+class _NewAgentDialogState extends State<NewAgentDialog> {
   final _id = TextEditingController();
   final _role = TextEditingController();
   final _persona = TextEditingController();
@@ -556,7 +569,7 @@ class _OrganizationTabState extends State<OrganizationTab> {
   Future<void> _edit(AgentInfo agent, List<AgentInfo> all) async {
     final picked = await showDialog<({String role, String superior})>(
       context: context,
-      builder: (_) => _PositionDialog(agent: agent, choices: superiorChoices(all, agent.id)),
+      builder: (_) => PositionDialog(agent: agent, choices: superiorChoices(all, agent.id)),
     );
     if (picked == null || !mounted) return;
     await _apply(SetPositionEdit(agent.id, role: picked.role, reportsTo: picked.superior), 'Change ${agent.id}');
@@ -565,7 +578,7 @@ class _OrganizationTabState extends State<OrganizationTab> {
   Future<void> _add(String? under) async {
     final picked = await showDialog<({String id, String role, String persona})>(
       context: context,
-      builder: (_) => _NewAgentDialog(under: under),
+      builder: (_) => NewAgentDialog(under: under),
     );
     if (picked == null || !mounted) return;
     await _apply(AddReportEdit(picked.id, picked.persona, role: picked.role, reportsTo: under), 'Add ${picked.id}');

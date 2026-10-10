@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 
 import '../protocol/messages.dart';
+import '../services/agent_work.dart' show orgAccessOf;
 import '../services/chat_notifications.dart';
 import '../services/chat_transcript.dart';
 import '../services/mobile_file_tool.dart';
@@ -255,6 +256,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       MaterialPageRoute(
         builder: (_) => AgentsScreen(
           backend: widget.connection,
+          // A member sees the owner's tree as the access they were given allows (P120); the owner's tab is the owner's.
+          memberOrg: widget.connection.user == null ? null : widget.connection,
+          memberOrgAccess: orgAccessOf(widget.connection.user?.orgAccess),
           onOpenChat: (agentId) {
             widget.transcript.startNew();
             widget.transcript.selectAgent(agentId);

@@ -192,4 +192,43 @@ void main() {
       expect(msg.events, isEmpty);
     });
   });
+
+  // P120 — a member's access to the organization: what they ask, what the hub answers and what they were told at sign-in.
+  group('a member and the organization', () {
+    test('listing the tree, and an edit by the member\'s own session that carries no pairing key', () {
+      expect(const ListAgentOrgMessage(3).toJson(), {'type': 'listAgentOrg', 'requestId': 3});
+      expect(
+        jsonDecode(const EditAgentOrgMessage.asMember(4, RemoveAgentEdit('dev')).encode()),
+        {
+          'type': 'editAgentOrg',
+          'requestId': 4,
+          'edit': {'kind': 'remove', 'id': 'dev'},
+        },
+      );
+      expect(const EditAgentOrgMessage(5, 'k', RemoveAgentEdit('dev')).toJson()['pairingKey'], 'k', reason: 'the owner still sends it');
+    });
+
+    test('the tree a member gets keeps the id, the role and the superior, and the access', () {
+      final msg = ServerMessage.decode(jsonEncode({
+        'type': 'agentOrgList',
+        'requestId': 3,
+        'agents': [
+          {'id': 'chief', 'role': 'CTO'},
+          {'id': 'dev', 'reportsTo': 'chief'},
+        ],
+        'access': 'edit',
+      })) as AgentOrgListMessage;
+      expect((msg.requestId, msg.access), (3, 'edit'));
+      expect(msg.agents.map((a) => (a.id, a.role, a.reportsTo)), [('chief', 'CTO', null), ('dev', null, 'chief')]);
+      expect(msg.agents.every((a) => !a.canDelegateToAgents && a.autonomy == 4), isTrue, reason: 'no powers are sent, so none are shown');
+    });
+
+    test('the access comes with the user at sign-in and survives what changes in the user afterwards', () {
+      final user = UserInfo.fromJson({'id': 'ana', 'name': 'Ana', 'mustChangePassword': false, 'orgAccess': 'view'});
+      expect(user.orgAccess, 'view');
+      expect(user.withOwnPassword().orgAccess, 'view');
+      expect(user.withTruthId('ana.truth').orgAccess, 'view');
+      expect(UserInfo.fromJson({'id': 'bo', 'name': 'Bo'}).orgAccess, '', reason: 'absent is none');
+    });
+  });
 }
