@@ -1576,7 +1576,7 @@ Essas decisões devem ser feitas posteriormente sem perder os princípios defini
 |---|---|---|---|
 | §2, §16, §46 — agentes globais | **Parcial.** `[[agents]]` no `config.toml` (id, persona, modelo padrão, tools permitidas), globais ao workspace. Usados no desktop, no CLI, no hub (web, celular, extensão), nas tarefas agendadas e nos webhooks. Um membro tem agentes próprios e compartilhados. | O mesmo agente no modo de código: o projeto de código roda o opencode, não um agente do Warden. | P45, P46, P84, P87, P103 |
 | §3 — três modos (Chat, Agents, Code) | **Parcial.** Chat existe (conversas, projetos, pasta de trabalho) em todos os clientes. Code existe como projeto de código sobre o opencode. | O modo **Agents** não existe; a troca rápida entre os três como módulos. | P103, P89 |
-| §4–5 — chat sem agente, com agente, troca | **Parcial.** O hub e a web aceitam conversa sem agente. O **desktop obriga escolher um agente** antes da primeira mensagem, e o agente fica fixo na conversa. O modelo se troca por conversa no desktop (modelo ou combo); no hub o modelo vem do agente. | Conversa sem agente no desktop; trocar de agente no meio quando fizer sentido. | P45, P90 |
+| §4–5 — chat sem agente, com agente, troca | **Feito, menos o contexto da troca.** O hub, a web e o desktop aceitam conversa sem agente (P124); o desktop troca de agente pelo cabeçalho, com as próximas mensagens falando como o novo. O modelo se troca por conversa no desktop (modelo ou combo); no hub o modelo vem do agente. | Não conferi na Sessão 180 o que acontece com o contexto do modelo ao trocar de agente no meio. | P45, P90, P124 |
 | §5, §17, §47 — o Chat entrega o trabalho a um agente de programação e acompanha | **Parcial.** `delegate_to_agent` e `delegate_task`, síncronos ou em segundo plano (`jobs`). O destino é sempre um agente do Warden. | Entregar a especificação ao motor de código por delegação e acompanhar o resultado no Chat. | P46, P62, P103 |
 | §6–7 — modo Agents, canal persistente por agente | **Existe** (P121, sessões 165 a 175). Cada agente tem **um canal fixo**, a conversa principal dele com a pessoa, numa tela de contatos na web, no desktop (com hub), na extensão e no celular; os recados "A → B" e as execuções `task-*` do agente ficam numa lista dentro do contato dele (decisão da sessão 175). | Vista numa janela real. | P121 |
 | §8 — agentes que iniciam mensagens | **Parcial.** Tarefas agendadas (cron, a cada, uma vez) e webhooks rodam um agente sem prompt e deixam a conversa na lista; notificações no celular. | O agente decidir avisar sozinho, perguntar ao usuário fora de uma tarefa, lembretes, monitoramento contínuo. | P92, P105 |
@@ -1624,7 +1624,8 @@ levar isto a `/plan`.
 4. **Canal por agente × conversas por conversa.** O modo Agents quer uma conversa principal persistente por agente. Hoje
    há conversas avulsas, conversas "A → B" (`message_agent`) e `task-*` (tarefas). Elas viram vistas dessa conversa
    principal, ou convivem?
-5. **Conversa sem agente no desktop.** O hub aceita; o desktop obriga escolher.
+5. ~~**Conversa sem agente no desktop.**~~ **Já resolvida (P124, commit `4bca2ee`; conferido no código na Sessão 180)**:
+   o desktop começa com "Chat without an agent" ou com um agente, e troca de agente pelo cabeçalho a qualquer hora.
 
 **Decisões de desenho que a visão não toma**
 

@@ -11,6 +11,7 @@
 - **Objetivo**: fechar a única decisão aberta da hierarquia na P84 (a hierarquia é do workspace ou de cada pessoa).
 - **Decisão do usuário**: os agentes próprios dos membros **continuam fora** da árvore. A árvore é uma só, a do dono, e o membro com acesso a edita. Descartados: mini-árvore por membro e membro dentro da árvore única.
 - **Feito**: só registro, sem código (`VISAO_AGENTES.md`, Parte 3, tensão 2). Nenhum teste rodado, nada mudou no código.
+- **Tensão 5 (conversa sem agente no desktop)**: já estava feita (P124, `4bca2ee`: "Chat without an agent" no seletor e "No agent" no cabeçalho, com troca de agente a qualquer hora). A tabela e a Parte 3 da visão estavam velhas, de novo; corrigi as duas. Eu a propus como próximo item sem conferir o código, o mesmo deslize da Sessão 178. Não há teste de unidade da regra `needsAgentPick` (`ChatArea.tsx`).
 
 ---
 
